@@ -1,0 +1,8 @@
+configs/
+original/
+inputs/*
+outputs/*
+__pycache__/
+core/__pycache__/
+prompts/*
+utils/__pycache__/
