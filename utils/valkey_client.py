@@ -20,7 +20,7 @@ class ValkeyKeys:
     PROGRESS_OVERALL = f"{PREFIX}:progress:overall"
     @staticmethod
     def progress_per_api(api_idx):
-        return f"{PREFIX}:progress:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:progress:api:{api_idx}"
 
     # --- Global Statistics ---
     STAT_TOTAL_ATTEMPTS = f"{PREFIX}:stats:total_attempts"
@@ -32,19 +32,19 @@ class ValkeyKeys:
     # --- Per-API Statistics ---
     @staticmethod
     def stat_total_attempts_per_api(api_idx):
-        return f"{PREFIX}:stats:total_attempts:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:stats:total_attempts:api:{api_idx}"
     @staticmethod
     def stat_refusal_per_api(api_idx):
-        return f"{PREFIX}:stats:refusal:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:stats:refusal:api:{api_idx}"
     @staticmethod
     def stat_user_speaking_per_api(api_idx):
-        return f"{PREFIX}:stats:user_speak:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:stats:user_speak:api:{api_idx}"
     @staticmethod
     def stat_slop_per_api(api_idx):
-        return f"{PREFIX}:stats:slop:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:stats:slop:api:{api_idx}"
     @staticmethod
     def stat_error_per_api(api_idx):
-        return f"{PREFIX}:stats:error:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:stats:error:api:{api_idx}"
     
     # --- Recent Issues ---
     RECENT_REFUSALS_TOTAL = f"{PREFIX}:recent:refusals:total"
@@ -53,16 +53,16 @@ class ValkeyKeys:
     RECENT_ERRORS_TOTAL = f"{PREFIX}:recent:errors:total"
     @staticmethod
     def recent_refusals_per_api(api_idx):
-        return f"{PREFIX}:recent:refusals:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:recent:refusals:api:{api_idx}"
     @staticmethod
     def recent_user_speaking_per_api(api_idx):
-        return f"{PREFIX}:recent:user_speaking:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:recent:user_speaking:api:{api_idx}"
     @staticmethod
     def recent_slop_per_api(api_idx):
-        return f"{PREFIX}:recent:slop:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:recent:slop:api:{api_idx}"
     @staticmethod
     def recent_errors_per_api(api_idx):
-        return f"{PREFIX}:recent:errors:api:{api_idx}"
+        return f"{ValkeyKeys.PREFIX}:recent:errors:api:{api_idx}"
 
 class ValkeyClient:
     def __init__(self, host='localhost', port=6379, db=0):
