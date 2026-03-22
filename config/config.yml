@@ -1,0 +1,142 @@
+api:
+  master_duplication_mode: false
+  apis:
+  - url: https://api.host.com/v1/chat/completions
+    model: ''
+    key: ''
+    enabled: true
+    threads: 2
+    rate_limit_rpm: 400
+  - url: ''
+    model: ''
+    key: ''
+    enabled: false
+    threads: 10
+    rate_limit_rpm: 1
+  - url: ''
+    model: ''
+    key: ''
+    enabled: false
+    threads: 10
+    rate_limit_rpm: 1
+  - url: ''
+    model: ''
+    key: ''
+    enabled: false
+    threads: 10
+    rate_limit_rpm: 1
+  - url: https://api.host.com/v1/chat/completions
+    model: ''
+    key: ''
+    threads: 10
+    rate_limit_rpm: 400
+  - url: https://api.host.com/v1/chat/completions
+    model: ''
+    key: ''
+    threads: 10
+    rate_limit_rpm: 60
+  threads: 10
+  pricing:
+    cost_per_1k_tokens: 0.01
+valkey:
+  host: localhost
+  port: 6379
+  db: 0
+  password: null
+  enabled: true
+generation:
+  subject_size: 2048
+  context_size: 4096
+  max_attempts: 8
+  num_turns: 1
+  history_size: 10
+  num_random_chunks: 12000
+  sanitize_input_max_length: 100000000
+  remove_reasoning: false
+  remove_em_dash: false
+  remove_asterisks: false
+  remove_asterisk_space_asterisk: false
+  remove_all_asterisks: false
+  ensure_space_after_line_break: false
+  max_slop_sentence_fix_iterations: 20
+  output_format: sharegpt
+  api_request_timeout: 300
+  max_newlines_malformed: 16
+  max_text_length_malformed: 5000
+prompts:
+  system:
+    base: ''
+    variable: true
+    variations: []
+    top_level_system_prompt: ''
+  question: ''
+  answer: ''
+  user_continuation_prompt: ''
+  use_questions_file: false
+  character:
+    enabled: true
+    name: []
+    job: []
+    clothing: []
+    appearance: []
+    backstory: []
+  emotional_states:
+    enabled: true
+    states: []
+detection:
+  no_user_impersonation: false
+  refusal:
+    phrases: []
+    fixes: []
+  anti_slop:
+    phrases: []
+    fixes: []
+  user_speaking:
+    male:
+      phrases:
+      - test2
+      fixes:
+      - tester2
+    female:
+      phrases: []
+      fixes: []
+    neutral:
+      phrases:
+      - test3
+      fixes:
+      - tester3
+  slop:
+    phrases: []
+    fixes: []
+samplers:
+  priority:
+  - repetition_penalty
+  - top_p
+  - top_k
+  - min_p
+  - temperature
+  - max_tokens
+  temperature: 0.6
+  top_p: 0.9
+  min_p: 0.02
+  top_k: 40
+  repetition_penalty: 1.1
+  max_tokens_question: 768
+  max_tokens_answer: 768
+  max_tokens_user_reply: 768
+  enable_thinking: true
+  slop_fixer_params:
+    temperature: 0.5
+    top_p: 0.9
+    min_p: 0.02
+    max_tokens: 768
+    top_k: 40
+    repetition_penalty: 1.1
+  anti_slop_params:
+    temperature: 0.5
+    top_p: 0.9
+    min_p: 0.02
+    max_tokens: 768
+    top_k: 40
+    repetition_penalty: 1.1
+gender: female

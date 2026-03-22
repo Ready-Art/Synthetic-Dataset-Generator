@@ -1,0 +1,69 @@
+{
+    "completed_task_ids": [],
+    "system_prompt_counter": 0,
+    "question_history": [],
+    "total_attempts_global": 0,
+    "refusal_count_total": 0,
+    "user_speaking_count_total": 0,
+    "slop_count_total": 0,
+    "error_count_total": 0,
+    "refusal_counts_per_api": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+    },
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "estimated_cost": 0.0,
+    "user_speaking_counts_per_api": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+    },
+    "slop_counts_per_api": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+    },
+    "error_counts_per_api": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+    },
+    "total_attempts_per_api": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+    },
+    "anti_slop_count_total": 0,
+    "anti_slop_counts_per_api": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+    },
+    "config_snapshot": {
+        "prompts.use_questions_file": false,
+        "generation.num_turns": 1,
+        "generation.subject_size": 2048,
+        "generation.context_size": 4096,
+        "api.master_duplication_mode": false
+    }
+}

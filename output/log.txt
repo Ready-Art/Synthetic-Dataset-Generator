@@ -1,0 +1,94 @@
+2026-03-22 08:41:21 [INFO] - Using theme: solar
+2026-03-22 08:41:21 [INFO] - Application started. UI initializing.
+2026-03-22 08:41:21 [INFO] - All global statistics, history, and progress trackers have been reset.
+2026-03-22 08:41:23 [DEBUG] - Character Engine fields enabled
+2026-03-22 08:41:23 [DEBUG] - Emotional States fields enabled
+2026-03-22 08:41:23 [INFO] - Configuration loaded into editor.
+2026-03-22 08:41:23 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:23 [DEBUG] - ConfigEditor: Profile list updated.
+2026-03-22 08:41:33 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:33 [DEBUG] - ConfigEditor: Switched display to 'female' user speaking data.
+2026-03-22 08:41:33 [INFO] - Rate limit set for API Slot 1: 400 RPM
+2026-03-22 08:41:33 [INFO] - Rate limit set for API Slot 2: 1 RPM
+2026-03-22 08:41:33 [INFO] - Rate limit set for API Slot 3: 1 RPM
+2026-03-22 08:41:33 [INFO] - Rate limit set for API Slot 4: 1 RPM
+2026-03-22 08:41:33 [INFO] - Rate limit set for API Slot 5: 400 RPM
+2026-03-22 08:41:34 [INFO] - ConfigEditor: Close button clicked. Saving configuration automatically.
+2026-03-22 08:41:34 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:34 [DEBUG] - ConfigEditor: Switched display to 'female' user speaking data.
+2026-03-22 08:41:35 [INFO] - Rate limit set for API Slot 1: 400 RPM
+2026-03-22 08:41:35 [INFO] - Rate limit set for API Slot 2: 1 RPM
+2026-03-22 08:41:35 [INFO] - Rate limit set for API Slot 3: 1 RPM
+2026-03-22 08:41:35 [INFO] - Rate limit set for API Slot 4: 1 RPM
+2026-03-22 08:41:35 [INFO] - Rate limit set for API Slot 5: 400 RPM
+2026-03-22 08:41:35 [INFO] - Configuration saved successfully from editor to main config.
+2026-03-22 08:41:35 [INFO] - Configuration saved successfully from editor to main config.
+2026-03-22 08:41:37 [INFO] - Quit button pressed. Initiating shutdown.
+2026-03-22 08:41:37 [INFO] - Quit: Saving generation state before exiting...
+2026-03-22 08:41:37 [INFO] - Generation state saved.
+2026-03-22 08:41:37 [INFO] - Quit: Destroying Tkinter root window...
+2026-03-22 08:41:37 [INFO] - Application shutdown sequence complete. Exiting process.
+2026-03-22 08:41:37 [INFO] - Application exiting via main finally block.
+2026-03-22 08:41:37 [INFO] - Main finally block attempting to save state.
+2026-03-22 08:41:37 [INFO] - Generation state saved.
+2026-03-22 08:41:37 [INFO] - Main finally block executed. Process should exit if not already via sys.exit().
+2026-03-22 08:41:38 [INFO] - Using theme: solar
+2026-03-22 08:41:38 [INFO] - Application started. UI initializing.
+2026-03-22 08:41:38 [INFO] - All global statistics, history, and progress trackers have been reset.
+2026-03-22 08:41:39 [DEBUG] - Character Engine fields enabled
+2026-03-22 08:41:39 [DEBUG] - Emotional States fields enabled
+2026-03-22 08:41:39 [INFO] - Configuration loaded into editor.
+2026-03-22 08:41:39 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:39 [DEBUG] - ConfigEditor: Profile list updated.
+2026-03-22 08:41:51 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:51 [DEBUG] - ConfigEditor: Switched display to 'female' user speaking data.
+2026-03-22 08:41:51 [INFO] - Rate limit set for API Slot 1: 400 RPM
+2026-03-22 08:41:51 [INFO] - Rate limit set for API Slot 2: 1 RPM
+2026-03-22 08:41:51 [INFO] - Rate limit set for API Slot 3: 1 RPM
+2026-03-22 08:41:51 [INFO] - Rate limit set for API Slot 4: 1 RPM
+2026-03-22 08:41:51 [INFO] - Rate limit set for API Slot 5: 400 RPM
+2026-03-22 08:41:52 [INFO] - ConfigEditor: Close button clicked. Saving configuration automatically.
+2026-03-22 08:41:52 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:52 [DEBUG] - ConfigEditor: Switched display to 'female' user speaking data.
+2026-03-22 08:41:52 [INFO] - Rate limit set for API Slot 1: 400 RPM
+2026-03-22 08:41:52 [INFO] - Rate limit set for API Slot 2: 1 RPM
+2026-03-22 08:41:52 [INFO] - Rate limit set for API Slot 3: 1 RPM
+2026-03-22 08:41:52 [INFO] - Rate limit set for API Slot 4: 1 RPM
+2026-03-22 08:41:52 [INFO] - Rate limit set for API Slot 5: 400 RPM
+2026-03-22 08:41:52 [INFO] - Configuration saved successfully from editor to main config.
+2026-03-22 08:41:53 [INFO] - Configuration saved successfully from editor to main config.
+2026-03-22 08:41:54 [INFO] - Quit button pressed. Initiating shutdown.
+2026-03-22 08:41:54 [INFO] - Quit: Saving generation state before exiting...
+2026-03-22 08:41:54 [INFO] - Generation state saved.
+2026-03-22 08:41:54 [INFO] - Quit: Destroying Tkinter root window...
+2026-03-22 08:41:54 [INFO] - Application shutdown sequence complete. Exiting process.
+2026-03-22 08:41:54 [INFO] - Application exiting via main finally block.
+2026-03-22 08:41:54 [INFO] - Main finally block attempting to save state.
+2026-03-22 08:41:54 [INFO] - Generation state saved.
+2026-03-22 08:41:54 [INFO] - Main finally block executed. Process should exit if not already via sys.exit().
+2026-03-22 08:41:56 [INFO] - Using theme: solar
+2026-03-22 08:41:56 [INFO] - Application started. UI initializing.
+2026-03-22 08:41:56 [INFO] - All global statistics, history, and progress trackers have been reset.
+2026-03-22 08:41:58 [DEBUG] - Character Engine fields enabled
+2026-03-22 08:41:58 [DEBUG] - Emotional States fields enabled
+2026-03-22 08:41:58 [INFO] - Configuration loaded into editor.
+2026-03-22 08:41:58 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:41:58 [DEBUG] - ConfigEditor: Profile list updated.
+2026-03-22 08:42:03 [INFO] - ConfigEditor: Close button clicked. Saving configuration automatically.
+2026-03-22 08:42:03 [DEBUG] - ConfigEditor: Validation successful.
+2026-03-22 08:42:03 [DEBUG] - ConfigEditor: Switched display to 'female' user speaking data.
+2026-03-22 08:42:03 [INFO] - Rate limit set for API Slot 1: 400 RPM
+2026-03-22 08:42:03 [INFO] - Rate limit set for API Slot 2: 1 RPM
+2026-03-22 08:42:03 [INFO] - Rate limit set for API Slot 3: 1 RPM
+2026-03-22 08:42:03 [INFO] - Rate limit set for API Slot 4: 1 RPM
+2026-03-22 08:42:03 [INFO] - Rate limit set for API Slot 5: 400 RPM
+2026-03-22 08:42:03 [INFO] - Configuration saved successfully from editor to main config.
+2026-03-22 08:42:05 [INFO] - Quit button pressed. Initiating shutdown.
+2026-03-22 08:42:05 [INFO] - Quit: Saving generation state before exiting...
+2026-03-22 08:42:05 [INFO] - Generation state saved.
+2026-03-22 08:42:05 [INFO] - Quit: Destroying Tkinter root window...
+2026-03-22 08:42:05 [INFO] - Application shutdown sequence complete. Exiting process.
+2026-03-22 08:42:05 [INFO] - Application exiting via main finally block.
+2026-03-22 08:42:05 [INFO] - Main finally block attempting to save state.
+2026-03-22 08:42:05 [INFO] - Generation state saved.
+2026-03-22 08:42:05 [INFO] - Main finally block executed. Process should exit if not already via sys.exit().
