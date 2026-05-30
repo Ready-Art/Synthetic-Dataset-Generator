@@ -2147,6 +2147,11 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         )
 
                         if rewritten_sentence_part and original_sentence_part:
+                            has_incomplete_quote, _ = detection.is_incomplete_quote(rewritten_sentence_part)
+                            if has_incomplete_quote:
+                                log_message(f"Thread {thread_id}: Slop fixer returned sentence with unbalanced quotes. Skipping replacement for this sentence.", "WARNING")
+                                slop_fully_resolved_by_sentence_fixer = False
+                                break # Stop this sentence's fix attempt to prevent propagating malformed quotes
                             if original_sentence_part in current_answer_being_fixed:
                                 if rewritten_sentence_part.strip() == original_sentence_part.strip():
                                     log_message(f"Thread {thread_id}: Slop fixer returned same part for '{phrase_to_fix_iter}'. Iter {slop_iter_num+1}.", "DEBUG")
@@ -2239,6 +2244,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         )
 
                         if rewritten_sentence and original_sentence:
+                            # NEW: Check for unbalanced quotes before applying the rewrite
+                            has_incomplete_quote, _ = detection.is_incomplete_quote(rewritten_sentence)
+                            if has_incomplete_quote:
+                                log_message(f"Thread {thread_id}: Anti-slop fixer returned sentence with unbalanced quotes. Skipping replacement.", "WARNING")
+                                anti_slop_fully_resolved = False
+                                break
                             if original_sentence in current_answer_being_fixed:
                                 if rewritten_sentence.strip() == original_sentence.strip():
                                     log_message(f"Thread {thread_id}: Anti-slop fixer returned same sentence for '{phrase_to_fix}'. Iter {anti_slop_iter_num+1}.", "DEBUG")
@@ -4553,7 +4564,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.8.4")
+root.title("ReadyArt Synthetic Dataset Generator v7.8.5")
 root.geometry("1400x850") # Main window size
 style = ttk.Style()
 available_themes = style.theme_names()
