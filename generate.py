@@ -2177,11 +2177,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         if stop_processing or pause_processing: return None
                         current_slop_check_needed, current_slop_details_iter = detection.is_slop(current_answer_being_fixed, slop_phrases_local)
                         if not current_slop_check_needed:
-                            log_message(f"Thread {thread_id}: Fixing slop paragraph (Iter {slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
+                            log_message(f"Thread {thread_id}: Slop paragraph fully resolved after {slop_iter_num} iterations.", "INFO")
                             answer = current_answer_being_fixed
                             issue_detected_this_main_api_call = False
                             slop_fully_resolved_by_sentence_fixer = True
                             break
+
+                        phrase_to_fix_iter, sentence_to_fix_iter = current_slop_details_iter[0]
 
                         phrase_to_fix_iter, sentence_to_fix_iter = current_slop_details_iter[0]
 
@@ -4655,7 +4657,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.9.4")
+root.title("ReadyArt Synthetic Dataset Generator v7.9.5")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
