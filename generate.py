@@ -4564,8 +4564,17 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.8.5")
+root.title("ReadyArt Synthetic Dataset Generator v7.8.6")
 root.geometry("1400x850") # Main window size
+icon_path = "taskbar.png"
+if os.path.exists(icon_path):
+    try:
+        icon_img = tk.PhotoImage(file=icon_path)
+        root.iconphoto(True, icon_img)  # True applies it to all child windows/dialogs
+    except Exception as e:
+        log_message(f"Failed to load taskbar icon: {e}", "WARNING")
+else:
+    log_message("taskbar.png not found in main directory. Using default system icon.", "WARNING")
 style = ttk.Style()
 available_themes = style.theme_names()
 try:
