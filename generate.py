@@ -1424,10 +1424,10 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 return None  # Cap reached, abort continuation
     return None
 
-def call_slop_fixer_llm(original_sentence, slop_phrase,
+def call_slop_fixer_llm(text_context, slop_phrase,
                         slop_fixer_api_config,
                         main_sampler_settings, thread_id, additional_fix_instructions="",
-                        current_max_attempts_param=5, api_request_timeout_param=300): # Added max_attempts for slop fixer's own API calls
+                        current_max_attempts_param=5, api_request_timeout_param=300):
     """Calls a dedicated LLM (API Slot 5, index 4) to rewrite a sentence containing "slop", with retries."""
     global system_prompt_lock
     global error_count_total, error_counts_per_api, recent_errors_total, total_attempts_per_api, total_attempts_global
@@ -1450,24 +1450,26 @@ def call_slop_fixer_llm(original_sentence, slop_phrase,
         return None, original_sentence
 
     for attempt_num in range(current_max_attempts_param):
-        if stop_processing or pause_processing: return None, original_sentence
+        if stop_processing or pause_processing: return None, text_context
 
-        with system_prompt_lock: # Protects global stats updates
+        with system_prompt_lock:
             total_attempts_global +=1
             total_attempts_per_api[api_slot_idx_slop_fixer] +=1
 
         try:
+            # UPDATED PROMPT: Explicitly instruct to preserve quotes & provide paragraph context
             user_rewrite_instruction = (
-                f"The following sentence contains an undesirable phrase: '{slop_phrase}'. "
-                f"Rewrite the sentence to remove or rephrase this specific undesirable phrase while preserving the original meaning and tone. "
-                f"Only output the rewritten sentence. Do not include any preamble or explanation. Just the rewritten sentence."
+                f"The following text contains an undesirable phrase: '{slop_phrase}'. "
+                f"Rewrite the text to remove or rephrase this specific undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. "
+                f"CRITICAL: Do not drop any opening or closing quotation marks. Ensure quotes remain perfectly balanced. "
+                f"Only output the rewritten text. Do not include any preamble or explanation. Just the rewritten text."
             )
             if additional_fix_instructions:
                 user_rewrite_instruction += f"\n\nImportant instruction to follow: {additional_fix_instructions}"
-            user_rewrite_instruction += f"\n\nOriginal sentence: \"{original_sentence}\""
+            user_rewrite_instruction += f"\n\nOriginal text: \"{text_context}\""
 
             messages = [
-                {"role": "system", "content": "You are an expert editor. Rewrite the given sentence to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten sentence."},
+                {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
                 {"role": "user", "content": user_rewrite_instruction}
             ]
 
@@ -1601,7 +1603,7 @@ def call_slop_fixer_llm(original_sentence, slop_phrase,
                 return None, original_sentence
     return None, original_sentence
 
-def call_anti_slop_llm(original_sentence, anti_slop_phrase,
+def call_anti_slop_llm(text_context, anti_slop_phrase,
                        anti_slop_api_config,
                        main_sampler_settings, thread_id, additional_fix_instructions="",
                        current_max_attempts_param=5,
@@ -1623,8 +1625,7 @@ def call_anti_slop_llm(original_sentence, anti_slop_phrase,
     api_key = anti_slop_api_config['key']
 
     for attempt_num in range(current_max_attempts_param):
-        if stop_processing or pause_processing:
-            return None, original_sentence
+        if stop_processing or pause_processing: return None, text_context
 
         # FIX 2 & 3: Move rate limiter BEFORE lock, and add timeout to lock acquisition
         global_rate_limiter.wait_if_needed(api_slot_idx_anti_slop)
@@ -1641,18 +1642,19 @@ def call_anti_slop_llm(original_sentence, anti_slop_phrase,
             return None, original_sentence
 
         try:
+            # UPDATED PROMPT
             user_rewrite_instruction = (
-                f"The following sentence contains an undesirable phrase: '{anti_slop_phrase}'. "
-                f"Rewrite the sentence to remove or rephrase this specific undesirable phrase while preserving the original meaning and tone. "
-                f"ONLY output the rewritten sentence. Do not include any preamble, explanation, quotes, or other text. "
-                f"Just the rewritten sentence, nothing else."
+                f"The following text contains an undesirable phrase: '{anti_slop_phrase}'. "
+                f"Rewrite the text to remove or rephrase this specific undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. "
+                f"CRITICAL: Do not drop any opening or closing quotation marks. Ensure quotes remain perfectly balanced. "
+                f"ONLY output the rewritten text. Do not include any preamble, explanation, quotes, or other text."
             )
             if additional_fix_instructions:
                 user_rewrite_instruction += f"\n\nAdditional instruction: {additional_fix_instructions}"
-            user_rewrite_instruction += f"\n\nOriginal sentence: \"{original_sentence}\""
+            user_rewrite_instruction += f"\n\nOriginal text: \"{text_context}\""
 
             messages = [
-                {"role": "system", "content": "You are an expert editor. Rewrite the given sentence to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten sentence."},
+                {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
                 {"role": "user", "content": user_rewrite_instruction}
             ]
 
@@ -2183,15 +2185,20 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                         phrase_to_fix_iter, sentence_to_fix_iter = current_slop_details_iter[0]
 
+                        # Extract the full paragraph context to preserve quotes
+                        paragraphs = current_answer_being_fixed.split('\n\n')
+                        context_for_fixer = next((p for p in paragraphs if sentence_to_fix_iter in p), sentence_to_fix_iter)
+
                         additional_instructions_for_llm_fixer = ""
                         if slop_iter_num >= 2 and current_slop_fixes_for_rotation_param:
                             additional_instructions_for_llm_fixer = current_slop_fixes_for_rotation_param[slop_fix_instruction_rotation_idx % len(current_slop_fixes_for_rotation_param)]
                             slop_fix_instruction_rotation_idx +=1
                             log_message(f"Thread {thread_id}: SlopFixer iter {slop_iter_num+1}. Adding rotating fix: '{additional_instructions_for_llm_fixer}'", "DEBUG")
 
-                        log_message(f"Thread {thread_id}: Fixing slop (Iter {slop_iter_num+1}): '{phrase_to_fix_iter}' in '{sentence_to_fix_iter[:70]}...'", "DEBUG")
+                        log_message(f"Thread {thread_id}: Fixing anti-slop paragraph (Iter {anti_slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
+
                         rewritten_sentence_part, original_sentence_part = call_slop_fixer_llm(
-                            sentence_to_fix_iter, phrase_to_fix_iter,
+                            context_for_fixer, phrase_to_fix_iter, # Pass paragraph instead of single sentence
                             slop_fixer_api_config_param,
                             sampler_settings_local,
                             thread_id,
@@ -2278,15 +2285,20 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         phrase_to_fix = current_anti_slop_details[0][0]
                         sentence_to_fix = current_anti_slop_details[0][1]
 
+                        # Extract the full paragraph context to preserve quotes
+                        paragraphs = current_answer_being_fixed.split('\n\n')
+                        context_for_fixer = next((p for p in paragraphs if sentence_to_fix in p), sentence_to_fix)
+
                         additional_instructions = ""
                         if anti_slop_iter_num >= 1 and current_slop_fixes_for_rotation_param:
                             additional_instructions = current_slop_fixes_for_rotation_param[anti_slop_iter_num % len(current_slop_fixes_for_rotation_param)]
                             log_message(f"Thread {thread_id}: AntiSlop iter {anti_slop_iter_num+1}. Adding fix: '{additional_instructions}'", "DEBUG")
 
-                        log_message(f"Thread {thread_id}: Fixing anti-slop sentence (Iter {anti_slop_iter_num+1}): '{phrase_to_fix}' in '{sentence_to_fix[:70]}...'", "DEBUG")
+                        log_message(f"Thread {thread_id}: Fixing anti-slop paragraph (Iter {anti_slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
+
 
                         rewritten_sentence, original_sentence = call_anti_slop_llm(
-                            sentence_to_fix,
+                            context_for_fixer, # Pass paragraph instead of single sentence
                             phrase_to_fix,
                             anti_slop_fixer_api_config_param,
                             sampler_settings_local,
