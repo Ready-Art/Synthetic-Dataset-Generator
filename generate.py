@@ -396,13 +396,22 @@ def update_question_history(question, current_history_size):
         question_history.pop(0) # Remove the oldest question
 
 def estimate_time_remaining(processed_items, total_items, times_list):
-    """Estimates the time remaining for a set of tasks based on average processing time."""
+    """Estimates the time remaining using an Exponential Moving Average (EMA) for smoother ETAs."""
     if not times_list or processed_items < 1 or total_items == 0:
         return "Estimating..."
-    average_time_per_item = sum(times_list) / len(times_list)
+
+    # Exponential Moving Average (EMA) calculation
+    # alpha controls responsiveness: recent samples get weighted more heavily
+    # 0.3 = balanced (recommended), 0.1 = very smooth, 0.5 = highly reactive
+    alpha = 0.3
+    ema = times_list[0]
+    for t in times_list[1:]:
+        ema = alpha * t + (1 - alpha) * ema
+
     remaining_items = total_items - processed_items
-    if remaining_items <= 0: return "Done!" 
-    remaining_time_seconds = remaining_items * average_time_per_item
+    if remaining_items <= 0: return "Done!"
+    remaining_time_seconds = remaining_items * ema
+
     # Format as H:M:S
     return time.strftime('%H:%M:%S', time.gmtime(remaining_time_seconds))
 
@@ -4544,7 +4553,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.8.3")
+root.title("ReadyArt Synthetic Dataset Generator v7.8.4")
 root.geometry("1400x850") # Main window size
 style = ttk.Style()
 available_themes = style.theme_names()
