@@ -979,20 +979,20 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             current_attempt_wait = 0
 
         # FIX: Use stats_lock instead of system_prompt_lock, with timeout
-        lock_acquired = stats_lock.acquire(timeout=7.0)
+        lock_acquired = system_prompt_lock.acquire(timeout=0.05)
         if lock_acquired:
             try:
                 total_attempts_global += 1
                 total_attempts_per_api[api_slot_idx] += 1
             finally:
-                stats_lock.release()
+                system_prompt_lock.release()
         else:
-            log_message(f"Thread {thread_id}: WARNING - Could not acquire stats_lock for question gen. Skipping stats update.", "WARNING")
+            log_message(f"Thread {thread_id}: Skipped stat update (system_prompt_lock busy)", "DEBUG")
 
         try:
             # FIX: Use question_history_lock with timeout
             recent_questions_str = ""
-            lock_acquired_qh = question_history_lock.acquire(timeout=7.0)
+            lock_acquired_qh = question_history_lock.acquire(timeout=0.05)
             if lock_acquired_qh:
                 try:
                     recent_questions_str = "\n- ".join(question_history[-history_size_local_param:]) if question_history else "None"
@@ -1236,9 +1236,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
         MAX_TOTAL_RETRY_WAIT = 20
         current_attempt_wait = 0
 
-        with system_prompt_lock: # Protects global stats updates
-            total_attempts_global +=1
-            total_attempts_per_api[api_slot_idx] +=1
+        lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+        if lock_acquired:
+            try:
+                total_attempts_global += 1
+                total_attempts_per_api[api_slot_idx] += 1
+            finally:
+                system_prompt_lock.release()
 
         try:
             # Get the last assistant message for the prompt template
@@ -1342,15 +1346,19 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             else: # API call failed
                 error_message = f"Thread {thread_id}: Error generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
-                with system_prompt_lock:
-                    error_count_total +=1
-                    error_counts_per_api[api_slot_idx] += 1
-                    err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
-                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx))
-                    if api_slot_idx < 4:
-                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        error_count_total += 1
+                        error_counts_per_api[api_slot_idx] += 1
+                        err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
+                        if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
+                        recent_errors_total.append((err_summary, api_slot_idx))
+                        if api_slot_idx < 4:
+                            if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
+                            recent_errors_per_api[api_slot_idx].append(err_summary)
+                    finally:
+                        system_prompt_lock.release()
 
                 with issue_timestamps_lock:
                     issue_timestamps['errors'].append(time.time())
@@ -1369,15 +1377,19 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Timeout generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
-            with system_prompt_lock: 
-                error_count_total +=1
-                error_counts_per_api[api_slot_idx] += 1
-                err_summary = f"T{thread_id} UserCont-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
-                if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                recent_errors_total.append((err_summary, api_slot_idx))
-                if api_slot_idx < 4:
-                    if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                    recent_errors_per_api[api_slot_idx].append(err_summary)
+            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+            if lock_acquired:
+                try:
+                    error_count_total += 1
+                    error_counts_per_api[api_slot_idx] += 1
+                    err_summary = f"T{thread_id} UserCont-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
+                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
+                    recent_errors_total.append((err_summary, api_slot_idx))
+                    if api_slot_idx < 4:
+                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
+                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                finally:
+                    system_prompt_lock.release()
             sleep_dur = random.uniform(0.5, 1.5)
             if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
                 time.sleep(sleep_dur)
@@ -1390,15 +1402,19 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             log_message(error_message, "ERROR")
             import traceback
             log_message(traceback.format_exc(), "ERROR")
-            with system_prompt_lock: 
-                error_count_total +=1
-                error_counts_per_api[api_slot_idx] += 1
-                err_summary = f"T{thread_id} UserCont-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
-                if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                recent_errors_total.append((err_summary, api_slot_idx))
-                if api_slot_idx < 4:
-                    if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                    recent_errors_per_api[api_slot_idx].append(err_summary)
+            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+            if lock_acquired:
+                try:
+                    error_count_total += 1
+                    error_counts_per_api[api_slot_idx] += 1
+                    err_summary = f"T{thread_id} UserCont-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
+                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
+                    recent_errors_total.append((err_summary, api_slot_idx))
+                    if api_slot_idx < 4:
+                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
+                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                finally:
+                    system_prompt_lock.release()
             sleep_dur = random.uniform(0.5, 1.5)
             if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
                 time.sleep(sleep_dur)
@@ -1719,7 +1735,7 @@ def call_anti_slop_llm(original_sentence, anti_slop_phrase,
             else:
                 error_message = f"Thread {thread_id}: Anti-Slop LLM Error (Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
-                lock_acquired_err = system_prompt_lock.acquire(timeout=5.0)
+                lock_acquired_err = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired_err:
                     try:
                         error_count_total += 1
@@ -1741,7 +1757,7 @@ def call_anti_slop_llm(original_sentence, anti_slop_phrase,
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Anti-Slop LLM request timed out (Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
-            lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
                     error_count_total += 1
@@ -1763,7 +1779,7 @@ def call_anti_slop_llm(original_sentence, anti_slop_phrase,
         except Exception as e:
             error_message = f"Thread {thread_id}: Exception in call_anti_slop_llm (Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
-            lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
                     error_count_total += 1
@@ -1842,7 +1858,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 current_attempt_wait = 0
 
                 # FIX 3: Add timeout to lock acquisition
-                lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
                         total_attempts_global += 1
@@ -1850,8 +1866,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     finally:
                         system_prompt_lock.release()
                 else:
-                    log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock", "WARNING")
-                    return None
+                    log_message(f"Thread {thread_id}: Skipped stat update (system_prompt_lock busy)", "DEBUG")
 
                 messages = [{"role": "system", "content": current_system_prompt_iter}] + \
                            conversation_history_for_llm + \
@@ -1987,7 +2002,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         break
                     else:
                         log_message(f"Thread {thread_id}: Error generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}), Status {response_status_code}: {response_text_content[:200]}", "ERROR")
-                        lock_acquired_err = system_prompt_lock.acquire(timeout=5.0)
+                        lock_acquired_err = system_prompt_lock.acquire(timeout=0.05)
                         if lock_acquired_err:
                             try:
                                 error_count_total += 1
@@ -2015,7 +2030,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 except requests.exceptions.Timeout:
                     log_message(f"Thread {thread_id}: API Timeout generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}).", "ERROR")
-                    lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                    lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
                             error_count_total += 1; error_counts_per_api[api_slot_idx] += 1
@@ -2032,7 +2047,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     else: break
                 except requests.exceptions.RequestException as e_req:
                     log_message(f"Thread {thread_id}: RequestException generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_req)}", "ERROR")
-                    lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                    lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
                             error_count_total += 1; error_counts_per_api[api_slot_idx] += 1
@@ -2050,7 +2065,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 except Exception as e_gen:
                     log_message(f"Thread {thread_id}: Exception in answer generation (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_gen)}", "ERROR")
                     import traceback; log_message(traceback.format_exc(), "ERROR")
-                    lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                    lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
                             error_count_total += 1; error_counts_per_api[api_slot_idx] += 1
@@ -2083,7 +2098,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 issue_ever_detected_this_task = True
                 refusal_detected_this_main_api_call = True
                 refusal_ever_detected_this_task = True
-                lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
                         refusal_count_total += 1
@@ -2108,7 +2123,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
             if user_speaking_detected:
                 issue_detected_this_main_api_call = True
-                lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
                         user_speaking_count_total += 1
@@ -2135,7 +2150,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 issue_detected_this_main_api_call = True
                 log_message(f"Thread {thread_id}: Initial slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
 
-                lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
                         slop_count_total += 1
@@ -2223,7 +2238,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 issue_detected_this_main_api_call = True
                 log_message(f"Thread {thread_id}: Anti-slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
 
-                lock_acquired = system_prompt_lock.acquire(timeout=5.0)
+                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
                         anti_slop_count_total += 1
@@ -4628,7 +4643,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.9.1")
+root.title("ReadyArt Synthetic Dataset Generator v7.9.2")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
