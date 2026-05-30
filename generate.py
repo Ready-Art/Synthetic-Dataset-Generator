@@ -975,6 +975,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
     for attempt_num in range(current_max_attempts_param):
         if stop_processing or pause_processing:
             return None
+            MAX_TOTAL_RETRY_WAIT = 20
+            current_attempt_wait = 0
 
         # FIX: Use stats_lock instead of system_prompt_lock, with timeout
         lock_acquired = stats_lock.acquire(timeout=7.0)
@@ -1231,6 +1233,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
     for attempt_num in range(current_max_attempts_param):
         if stop_processing or pause_processing: return None
+        MAX_TOTAL_RETRY_WAIT = 20
+        current_attempt_wait = 0
 
         with system_prompt_lock: # Protects global stats updates
             total_attempts_global +=1
@@ -1295,11 +1299,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 content = response.json()['choices'][0]['message'].get('content')
                 if content is None:
                     log_message(f"Thread {thread_id}: API returned None for user continuation content (API Slot {api_slot_idx+1}, Attempt {attempt_num+1})", "WARNING")
-                    if attempt_num < current_max_attempts_param - 1:
-                        time.sleep(random.uniform(0.5, 1.5))
+                    sleep_dur = random.uniform(0.5, 1.5)
+                    if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                        time.sleep(sleep_dur)
+                        current_attempt_wait += sleep_dur
                         continue
                     else:
-                        return None
+                        return None  # Cap reached, abort continuation
                 user_reply_text = content.strip()
                 if not user_reply_text or len(user_reply_text) < 5:
                     log_message(f"Thread {thread_id}: API returned empty/very short user reply. Content: '{user_reply_text}'", "WARNING")
@@ -1324,11 +1330,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                             f"Snippet: '{user_reply_text[:100]}...'",
                             "WARNING"
                         )
-                        if attempt_num < current_max_attempts_param - 1:
-                            time.sleep(random.uniform(0.5, 1.5))
+                        sleep_dur = random.uniform(0.5, 1.5)
+                        if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                            time.sleep(sleep_dur)
+                            current_attempt_wait += sleep_dur
                             continue
                         else:
-                            return None
+                            return None  # Cap reached, abort continuation
                 # --- FIX END ---
                 return user_reply_text
             else: # API call failed
@@ -1351,11 +1359,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     if api_slot_idx < 4:
                         if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                         recent_errors_per_api[api_slot_idx].append(err_summary)
-                if attempt_num < current_max_attempts_param - 1:
-                    time.sleep(random.uniform(0.5, 1.5))
+                sleep_dur = random.uniform(0.5, 1.5)
+                if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                    time.sleep(sleep_dur)
+                    current_attempt_wait += sleep_dur
                     continue
                 else:
-                    return None
+                    return None  # Cap reached, abort continuation
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Timeout generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
@@ -1368,11 +1378,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 if api_slot_idx < 4:
                     if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                     recent_errors_per_api[api_slot_idx].append(err_summary)
-            if attempt_num < current_max_attempts_param - 1:
-                time.sleep(random.uniform(0.5, 1.5))
+            sleep_dur = random.uniform(0.5, 1.5)
+            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                time.sleep(sleep_dur)
+                current_attempt_wait += sleep_dur
                 continue
             else:
-                return None
+                return None  # Cap reached, abort continuation
         except Exception as e: # Catch any other exceptions
             error_message = f"Thread {thread_id}: Exception in generate_user_continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
@@ -1387,11 +1399,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 if api_slot_idx < 4:
                     if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                     recent_errors_per_api[api_slot_idx].append(err_summary)
-            if attempt_num < current_max_attempts_param - 1:
-                time.sleep(random.uniform(0.5, 1.5))
+            sleep_dur = random.uniform(0.5, 1.5)
+            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                time.sleep(sleep_dur)
+                current_attempt_wait += sleep_dur
                 continue
             else:
-                return None
+                return None  # Cap reached, abort continuation
     return None
 
 def call_slop_fixer_llm(original_sentence, slop_phrase,
@@ -1824,6 +1838,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
             for api_call_attempt_num in range(api_call_retries_for_this_iteration):
                 if stop_processing or pause_processing: return None
+                MAX_TOTAL_RETRY_WAIT = 30  # Cap total sleep per outer attempt
+                current_attempt_wait = 0
 
                 # FIX 3: Add timeout to lock acquisition
                 lock_acquired = system_prompt_lock.acquire(timeout=5.0)
@@ -1928,19 +1944,25 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         if content is None:
                             log_message(f"Thread {thread_id}: API returned None for answer content (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1})", "WARNING")
                             if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
-                                time.sleep(random.uniform(0.5, 1.5))
-                                continue
-                            else:
-                                break
+                                sleep_dur = random.uniform(0.5, 1.5)
+                                if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                    time.sleep(sleep_dur)
+                                    current_attempt_wait += sleep_dur
+                                    continue
+                                else:
+                                    return None  # Cap reached, abort question generation
                         answer = content.strip()
 
                         if not answer or len(answer) < 10:
                             log_message(f"Thread {thread_id}: API returned empty/very short answer. Content: '{answer}'", "WARNING")
                             if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
-                                time.sleep(random.uniform(0.5, 1.5))
-                                continue
-                            else:
-                                break
+                                sleep_dur = random.uniform(0.5, 1.5)
+                                if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                    time.sleep(sleep_dur)
+                                    current_attempt_wait += sleep_dur
+                                    continue
+                                else:
+                                    return None  # Cap reached, abort question generation
 
                         newline_count = answer.count('\n')
                         text_length = len(answer)
@@ -1955,12 +1977,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                 f"Snippet: '{answer[:100]}...'",
                                 "WARNING"
                             )
-                            if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
-                                time.sleep(random.uniform(0.5, 1.5))
+                            sleep_dur = random.uniform(0.5, 1.5)
+                            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                time.sleep(sleep_dur)
+                                current_attempt_wait += sleep_dur
                                 continue
                             else:
-                                break
-
+                                return None  # Cap reached, abort question generation
                         break
                     else:
                         log_message(f"Thread {thread_id}: Error generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}), Status {response_status_code}: {response_text_content[:200]}", "ERROR")
@@ -1982,10 +2005,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             finally:
                                 system_prompt_lock.release()
                         if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
-                            time.sleep(random.uniform(0.5, 1.5))
-                            continue
-                        else:
-                            break
+                            sleep_dur = random.uniform(0.5, 1.5)
+                            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                time.sleep(sleep_dur)
+                                current_attempt_wait += sleep_dur
+                                continue
+                            else:
+                                return None  # Cap reached, abort question generation
 
                 except requests.exceptions.Timeout:
                     log_message(f"Thread {thread_id}: API Timeout generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}).", "ERROR")
@@ -4602,7 +4628,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.9.0")
+root.title("ReadyArt Synthetic Dataset Generator v7.9.1")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
