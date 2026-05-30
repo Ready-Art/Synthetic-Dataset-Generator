@@ -3267,9 +3267,13 @@ def start_processing():
                         task_queue.overall_time_label.config(text="Time Rem: No tasks")
                 
                 update_dashboard() # Refresh dashboard stats
-                if root.winfo_exists(): 
-                    #changing from 1000 to 2000 so GUI updates less in background.
-                    root.after(1000, update_gui_progress) # Schedule next update
+                if root.winfo_exists():
+                    # ADAPTIVE UPDATE FREQUENCY
+                    is_active = processing_active and not stop_processing and not pause_processing
+                    has_work = task_queue and hasattr(task_queue, 'qsize') and task_queue.qsize() > 0
+
+                    delay = 500 if (is_active and has_work) else 2000
+                    root.after(delay, update_gui_progress) # Schedule next update
             except Exception as e_gui: # Catch errors during GUI update
                 log_message(f"GUI update error: {str(e_gui)}", "ERROR")
                 if processing_active and not stop_processing and root.winfo_exists(): 
@@ -4564,7 +4568,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.8.6")
+root.title("ReadyArt Synthetic Dataset Generator v7.8.7")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -4780,8 +4784,43 @@ def quit_application():
 quit_button = ttk.Button(button_frame, text="Quit Application", command=quit_application); quit_button.pack(side=tk.LEFT, padx=10)
 root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
+def clear_dashboard():
+    global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total, recent_anti_slop_total
+    global recent_refusals_per_api, recent_user_speaking_per_api, recent_slop_per_api, recent_errors_per_api, recent_anti_slop_per_api
+    global issue_timestamps, issue_timestamps_lock
+
+    # Clear total recent lists
+    recent_refusals_total = []
+    recent_user_speaking_total = []
+    recent_slop_total = []
+    recent_anti_slop_total = []
+    recent_errors_total = []
+
+    # Clear per-API recent lists
+    for i in range(6):
+        recent_refusals_per_api[i] = []
+        recent_user_speaking_per_api[i] = []
+        recent_slop_per_api[i] = []
+        recent_anti_slop_per_api[i] = []
+        recent_errors_per_api[i] = []
+
+    # Clear graph timestamps safely
+    with issue_timestamps_lock:
+        for key in issue_timestamps:
+            issue_timestamps[key] = []
+
+    # Refresh the UI
+    update_dashboard()
+    log_message("Dashboard and issue graph cleared.", "INFO")
+
 # --- Dashboard Setup ---
 dashboard_outer_frame = ttk.Frame(root); dashboard_outer_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+dashboard_toolbar = ttk.Frame(dashboard_outer_frame)
+dashboard_toolbar.pack(fill=tk.X, pady=(0, 5))
+clear_dash_btn = ttk.Button(dashboard_toolbar, text="🧹 Clear Dashboard", command=clear_dashboard)
+clear_dash_btn.pack(side=tk.RIGHT, padx=5)
+
 dashboard_notebook = ttk.Notebook(dashboard_outer_frame)
 dashboard_notebook.pack(fill=tk.BOTH, expand=True)
 dashboard_notebook.tabs_widgets = {} # To store references to text areas in tabs
