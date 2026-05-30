@@ -396,21 +396,33 @@ def update_question_history(question, current_history_size):
         question_history.pop(0) # Remove the oldest question
 
 def estimate_time_remaining(processed_items, total_items, times_list):
-    """Estimates the time remaining using an Exponential Moving Average (EMA) for smoother ETAs."""
+    """Estimates the time remaining using a robust trimmed mean for stability."""
     if not times_list or processed_items < 1 or total_items == 0:
         return "Estimating..."
 
-    # Exponential Moving Average (EMA) calculation
-    # alpha controls responsiveness: recent samples get weighted more heavily
-    # 0.3 = balanced (recommended), 0.1 = very smooth, 0.5 = highly reactive
-    alpha = 0.3
-    ema = times_list[0]
-    for t in times_list[1:]:
-        ema = alpha * t + (1 - alpha) * ema
+    # Require a minimum number of samples for a reliable estimate
+    if len(times_list) < 3:
+        return "Estimating..."
+
+    # 1. Filter out extreme outliers to prevent "wonky" jumps
+    # We keep only values within 0.5x to 3.0x the median
+    sorted_times = sorted(times_list)
+    median = sorted_times[len(sorted_times) // 2]
+    filtered_times = [t for t in times_list if 0.5 * median <= t <= 3.0 * median]
+
+    # Fallback to original list if filtering accidentally removes everything
+    if not filtered_times:
+        filtered_times = times_list
+
+    # 2. Use a simple average of the filtered times
+    # A filtered mean is significantly smoother for ETAs than a raw EMA
+    avg_time_per_item = sum(filtered_times) / len(filtered_times)
 
     remaining_items = total_items - processed_items
-    if remaining_items <= 0: return "Done!"
-    remaining_time_seconds = remaining_items * ema
+    if remaining_items <= 0:
+        return "Done!"
+
+    remaining_time_seconds = remaining_items * avg_time_per_item
 
     # Format as H:M:S
     return time.strftime('%H:%M:%S', time.gmtime(remaining_time_seconds))
@@ -4568,7 +4580,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.8.8")
+root.title("ReadyArt Synthetic Dataset Generator v7.8.9")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
