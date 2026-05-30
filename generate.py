@@ -1108,7 +1108,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                         time.sleep(random.uniform(0.5, 1.5))
                         continue
                     else:
-                        return None
+                        return None, text_context
                 generated_question_text = content.strip()
                 newline_count = generated_question_text.count('\n')
                 text_length = len(generated_question_text)
@@ -1544,21 +1544,21 @@ def call_slop_fixer_llm(text_context, slop_phrase,
 
                 # FIXED: Don't return None for content issues - let the caller handle retries
                 if not rewritten_sentence or len(rewritten_sentence) < 5:
-                    log_message(f"Thread {thread_id}: Slop fixer returned empty/very short response. Original: '{original_sentence}'", "WARNING")
-                    return None, text_context # This is OK - content issue, not API failure
+                    log_message(f"Thread {thread_id}: Slop fixer returned empty/very short response. Original: '{text_context}'", "WARNING")
+                    return None, text_context
 
-                if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(original_sentence) * 2:
+                if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(text_context) * 2:
                     log_message(f"Thread {thread_id}: Slop fixer response appears malformed. Using original.", "WARNING")
-                    return None, text_context  # This is OK - content issue, not API failure
+                    return None, text_context
 
                 if rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"') and len(rewritten_sentence) > 2:
                     rewritten_sentence = rewritten_sentence[1:-1]
 
-                if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(original_sentence):
-                    log_message(f"Thread {thread_id}: Slop fixer returned very short/empty sentence: '{rewritten_sentence}'. Original: '{original_sentence}'", "WARNING")
-                    return None, text_context  # This is OK - content issue, not API failure
+                if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(text_context):
+                    log_message(f"Thread {thread_id}: Slop fixer returned very short/empty sentence: '{rewritten_sentence}'. Original: '{text_context}'", "WARNING")
+                    return None, text_context
 
-                return None, text_context
+                return rewritten_sentence, text_context
             else: # API call failed
                 error_message = f"Thread {thread_id}: Slop Fixer LLM Error (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
@@ -1721,18 +1721,18 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     log_message(f"Thread {thread_id}: Anti-slop fixer returned empty/very short sentence. Content: '{rewritten_sentence}'", "WARNING")
                     return None, text_context
 
-                if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(original_sentence) * 2:
+                if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(text_context) * 2:
                     log_message(f"Thread {thread_id}: Anti-slop fixer response appears malformed. Using original.", "WARNING")
                     return None, text_context
 
                 if rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"') and len(rewritten_sentence) > 2:
                     rewritten_sentence = rewritten_sentence[1:-1]
 
-                if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(original_sentence):
+                if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(text_context):
                     log_message(f"Thread {thread_id}: Anti-slop fixer returned very short/empty sentence", "WARNING")
                     return None, text_context
 
-                return None, text_context
+                return rewritten_sentence, text_context
 
             else:
                 error_message = f"Thread {thread_id}: Anti-Slop LLM Error (Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
@@ -4655,7 +4655,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.9.3")
+root.title("ReadyArt Synthetic Dataset Generator v7.9.4")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
