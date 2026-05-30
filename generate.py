@@ -2269,7 +2269,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             log_message(f"Thread {thread_id}: Anti-slop still unresolved after fixer attempt.", "WARNING")
                         else:
                             issue_detected_this_main_api_call = False
-
+                incomplete_quote_detected, _ = detection.is_incomplete_quote(answer)
                 if incomplete_quote_detected:
                     issue_detected_this_main_api_call = True
                     log_message(f"Thread {thread_id}: Incomplete quote detected (API Slot {api_slot_idx+1}). Retrying with fix instruction.", "DEBUG")
