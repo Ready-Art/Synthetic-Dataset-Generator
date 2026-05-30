@@ -2195,7 +2195,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             slop_fix_instruction_rotation_idx +=1
                             log_message(f"Thread {thread_id}: SlopFixer iter {slop_iter_num+1}. Adding rotating fix: '{additional_instructions_for_llm_fixer}'", "DEBUG")
 
-                        log_message(f"Thread {thread_id}: Fixing anti-slop paragraph (Iter {anti_slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
+                        log_message(f"Thread {thread_id}: Fixing slop paragraph (Iter {slop_iter_num+1}): '{phrase_to_fix_iter}' in context...", "DEBUG")
 
                         rewritten_sentence_part, original_sentence_part = call_slop_fixer_llm(
                             context_for_fixer, phrase_to_fix_iter, # Pass paragraph instead of single sentence
