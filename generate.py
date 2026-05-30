@@ -1438,7 +1438,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
     if not slop_fixer_api_config or not slop_fixer_api_config.get('url') or \
        not slop_fixer_api_config.get('model') or not slop_fixer_api_config.get('key'):
         log_message(f"Thread {thread_id}: Slop Fixer LLM (API Slot {api_slot_idx_slop_fixer+1}) not fully configured. Cannot call.", "WARNING")
-        return None, original_sentence # Return None for rewritten, and original sentence
+        return None, text_context # Return None for rewritten, and original sentence
 
     api_url = slop_fixer_api_config['url']
     model_name = slop_fixer_api_config['model']
@@ -1447,7 +1447,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
     # Added validation for main_sampler_settings to prevent NameError-like issues from bad config
     if not main_sampler_settings or not isinstance(main_sampler_settings, dict):
         log_message(f"Thread {thread_id}: main_sampler_settings passed to call_slop_fixer_llm is invalid. Expected a dictionary.", "ERROR")
-        return None, original_sentence
+        return None, text_context
 
     for attempt_num in range(current_max_attempts_param):
         if stop_processing or pause_processing: return None, text_context
@@ -1481,7 +1481,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 "min_p": anti_slop_sampler_overrides.get("min_p", 0.0),
                 "top_k": anti_slop_sampler_overrides.get("top_k", 50),
                 "repetition_penalty": anti_slop_sampler_overrides.get("repetition_penalty", 1.1),
-                "max_tokens": anti_slop_sampler_overrides.get("max_tokens", len(original_sentence.split()) * 3 + 70),
+                "max_tokens": anti_slop_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
             }
 
             payload_data = {
@@ -1538,27 +1538,27 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                         time.sleep(random.uniform(0.5, 1.5))
                         continue
                     else:
-                        return None, original_sentence
+                        return None, text_context
 
                 rewritten_sentence = content.strip()
 
                 # FIXED: Don't return None for content issues - let the caller handle retries
                 if not rewritten_sentence or len(rewritten_sentence) < 5:
                     log_message(f"Thread {thread_id}: Slop fixer returned empty/very short response. Original: '{original_sentence}'", "WARNING")
-                    return None, original_sentence  # This is OK - content issue, not API failure
+                    return None, text_context # This is OK - content issue, not API failure
 
                 if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(original_sentence) * 2:
                     log_message(f"Thread {thread_id}: Slop fixer response appears malformed. Using original.", "WARNING")
-                    return None, original_sentence  # This is OK - content issue, not API failure
+                    return None, text_context  # This is OK - content issue, not API failure
 
                 if rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"') and len(rewritten_sentence) > 2:
                     rewritten_sentence = rewritten_sentence[1:-1]
 
                 if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(original_sentence):
                     log_message(f"Thread {thread_id}: Slop fixer returned very short/empty sentence: '{rewritten_sentence}'. Original: '{original_sentence}'", "WARNING")
-                    return None, original_sentence  # This is OK - content issue, not API failure
+                    return None, text_context  # This is OK - content issue, not API failure
 
-                return rewritten_sentence, original_sentence
+                return None, text_context
             else: # API call failed
                 error_message = f"Thread {thread_id}: Slop Fixer LLM Error (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
@@ -1572,7 +1572,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                     time.sleep(random.uniform(0.5, 1.5))
                     continue
                 else:
-                    return None, original_sentence
+                    return None, text_context
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Slop Fixer LLM request timed out (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
@@ -1586,7 +1586,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
             else:
-                return None, original_sentence
+                return None, text_context
         except Exception as e: # Catch any other exceptions
             error_message = f"Thread {thread_id}: Exception in call_slop_fixer_llm (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
@@ -1600,8 +1600,8 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
             else:
-                return None, original_sentence
-    return None, original_sentence
+                return None, text_context
+    return None, text_context
 
 def call_anti_slop_llm(text_context, anti_slop_phrase,
                        anti_slop_api_config,
@@ -1618,7 +1618,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
     if not anti_slop_api_config or not anti_slop_api_config.get('url') or \
        not anti_slop_api_config.get('model') or not anti_slop_api_config.get('key'):
         log_message(f"Thread {thread_id}: Anti-Slop LLM not fully configured. Cannot call.", "WARNING")
-        return None, original_sentence
+        return None, text_context
 
     api_url = anti_slop_api_config['url']
     model_name = anti_slop_api_config['model']
@@ -1639,7 +1639,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 system_prompt_lock.release()
         else:
             log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock", "WARNING")
-            return None, original_sentence
+            return None, text_context
 
         try:
             # UPDATED PROMPT
@@ -1665,7 +1665,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 "min_p": slop_fixer_sampler_overrides.get("min_p", 0.0),
                 "top_k": slop_fixer_sampler_overrides.get("top_k", 50),
                 "repetition_penalty": slop_fixer_sampler_overrides.get("repetition_penalty", 1.1),
-                "max_tokens": slop_fixer_sampler_overrides.get("max_tokens", len(original_sentence.split()) * 3 + 70),
+                "max_tokens": slop_fixer_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
             }
 
             payload_data = {
@@ -1710,29 +1710,29 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 if content is None:
                     log_message(f"Thread {thread_id}: API returned None for anti-slop content (Attempt {attempt_num+1})", "WARNING")
                     if attempt_num < current_max_attempts_param - 1:
-                        if stop_processing or pause_processing: return None, original_sentence
+                        if stop_processing or pause_processing: return None, text_context
                         time.sleep(random.uniform(0.5, 1.5))
                         continue
                     else:
-                        return None, original_sentence
+                        return None, text_context
 
                 rewritten_sentence = content.strip()
                 if not rewritten_sentence or len(rewritten_sentence) < 5:
                     log_message(f"Thread {thread_id}: Anti-slop fixer returned empty/very short sentence. Content: '{rewritten_sentence}'", "WARNING")
-                    return None, original_sentence
+                    return None, text_context
 
                 if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(original_sentence) * 2:
                     log_message(f"Thread {thread_id}: Anti-slop fixer response appears malformed. Using original.", "WARNING")
-                    return None, original_sentence
+                    return None, text_context
 
                 if rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"') and len(rewritten_sentence) > 2:
                     rewritten_sentence = rewritten_sentence[1:-1]
 
                 if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(original_sentence):
                     log_message(f"Thread {thread_id}: Anti-slop fixer returned very short/empty sentence", "WARNING")
-                    return None, original_sentence
+                    return None, text_context
 
-                return rewritten_sentence, original_sentence
+                return None, text_context
 
             else:
                 error_message = f"Thread {thread_id}: Anti-Slop LLM Error (Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
@@ -1750,11 +1750,11 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                         system_prompt_lock.release()
 
                 if attempt_num < current_max_attempts_param - 1:
-                    if stop_processing or pause_processing: return None, original_sentence
+                    if stop_processing or pause_processing: return None, text_context
                     time.sleep(random.uniform(0.5, 1.5))
                     continue
                 else:
-                    return None, original_sentence
+                    return None, text_context
 
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Anti-Slop LLM request timed out (Attempt {attempt_num+1}/{current_max_attempts_param})."
@@ -1772,11 +1772,11 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     system_prompt_lock.release()
 
             if attempt_num < current_max_attempts_param - 1:
-                if stop_processing or pause_processing: return None, original_sentence
+                if stop_processing or pause_processing: return None, text_context
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
             else:
-                return None, original_sentence
+                return None, text_context
 
         except Exception as e:
             error_message = f"Thread {thread_id}: Exception in call_anti_slop_llm (Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
@@ -1794,13 +1794,13 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     system_prompt_lock.release()
 
             if attempt_num < current_max_attempts_param - 1:
-                if stop_processing or pause_processing: return None, original_sentence
+                if stop_processing or pause_processing: return None, text_context
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
             else:
-                return None, original_sentence
+                return None, text_context
 
-    return None, original_sentence
+    return None, text_context
 
 
 def generate_answer_with_retries(base_system_prompt, conversation_history_for_llm, answer_prompt_template,
@@ -2177,7 +2177,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         if stop_processing or pause_processing: return None
                         current_slop_check_needed, current_slop_details_iter = detection.is_slop(current_answer_being_fixed, slop_phrases_local)
                         if not current_slop_check_needed:
-                            log_message(f"Thread {thread_id}: All slop fixed by sentence fixer (API Slot {api_slot_idx+1}) after {slop_iter_num} rewrites.", "INFO")
+                            log_message(f"Thread {thread_id}: Fixing slop paragraph (Iter {slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
                             answer = current_answer_being_fixed
                             issue_detected_this_main_api_call = False
                             slop_fully_resolved_by_sentence_fixer = True
@@ -4655,7 +4655,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.9.2")
+root.title("ReadyArt Synthetic Dataset Generator v7.9.3")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
