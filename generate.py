@@ -2312,17 +2312,28 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         continue
                     else:
                         log_message(f"Thread {thread_id}: Incomplete quote detected, max retries reached. Applying programmatic fix.", "WARNING")
-                        # PROGRAMMATIC FALLBACK: Auto-fix missing opening/closing quotes
-                        if answer.endswith('"') and not answer.startswith('"'):
-                            answer = '"' + answer
-                        elif answer.startswith('"') and not answer.endswith('"'):
-                            answer = answer + '"'
-                        # Handle curly quotes fallback
-                        elif answer.endswith('”') and not answer.startswith('“'):
-                            answer = '“' + answer
-                        elif answer.startswith('“') and not answer.endswith('”'):
-                            answer = answer + '”'
-                        issue_detected_this_main_api_call = False # Mark as resolved so it saves
+
+                        # ROBUST PROGRAMMATIC FALLBACK: Auto-fix unbalanced quotes
+                        cleaned = answer.strip()
+
+                        # 1. Fix straight quotes (")
+                        straight_count = cleaned.count('"')
+                        if straight_count % 2 != 0:
+                            if not cleaned.startswith('"') and cleaned.endswith('"'):
+                                answer = '"' + cleaned
+                            elif cleaned.startswith('"') and not cleaned.endswith('"'):
+                                answer = cleaned + '"'
+
+                        # 2. Fix curly/smart quotes (“ and ”)
+                        left_curly = cleaned.count('“')
+                        right_curly = cleaned.count('”')
+                        if left_curly != right_curly:
+                            if right_curly > left_curly and not cleaned.startswith('“'):
+                                answer = '“' + cleaned
+                            elif left_curly > right_curly and not cleaned.endswith('”'):
+                                answer = cleaned + '”'
+
+                        issue_detected_this_main_api_call = False  # Mark as resolved so it saves
 
             if not issue_detected_this_main_api_call:
                 log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")
