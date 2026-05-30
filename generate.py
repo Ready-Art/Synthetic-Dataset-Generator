@@ -2306,12 +2306,23 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     issue_detected_this_main_api_call = True
                     log_message(f"Thread {thread_id}: Incomplete quote detected (API Slot {api_slot_idx+1}). Retrying with fix instruction.", "DEBUG")
 
-                    if fix_attempts_specific['incomplete_quote'] < 3:  # Prevent infinite loops for this specific issue
-                        current_system_prompt_iter += " CRITICAL INSTRUCTION: All dialogue quotes must be properly paired. If you open a quote with \", you must close it with \". Fix any incomplete quotes in your response."
+                    if fix_attempts_specific['incomplete_quote'] < 3:
+                        current_system_prompt_iter += " CRITICAL INSTRUCTION: All dialogue quotes must be properly paired. Ensure every opening quote has a matching closing quote."
                         fix_attempts_specific['incomplete_quote'] += 1
-                        continue  # Jumps back to the top of the while loop to retry the API call
+                        continue
                     else:
-                        log_message(f"Thread {thread_id}: Incomplete quote detected, but max fix attempts reached. Proceeding.", "WARNING")
+                        log_message(f"Thread {thread_id}: Incomplete quote detected, max retries reached. Applying programmatic fix.", "WARNING")
+                        # PROGRAMMATIC FALLBACK: Auto-fix missing opening/closing quotes
+                        if answer.endswith('"') and not answer.startswith('"'):
+                            answer = '"' + answer
+                        elif answer.startswith('"') and not answer.endswith('"'):
+                            answer = answer + '"'
+                        # Handle curly quotes fallback
+                        elif answer.endswith('”') and not answer.startswith('“'):
+                            answer = '“' + answer
+                        elif answer.startswith('“') and not answer.endswith('”'):
+                            answer = answer + '”'
+                        issue_detected_this_main_api_call = False # Mark as resolved so it saves
 
             if not issue_detected_this_main_api_call:
                 log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")
@@ -4580,7 +4591,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.8.9")
+root.title("ReadyArt Synthetic Dataset Generator v7.9.0")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):

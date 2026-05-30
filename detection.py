@@ -164,16 +164,19 @@ def is_incomplete_quote(text):
     if not text:
         return False, []
 
-    quote_count = text.count('"')
-    if quote_count % 2 != 0:
+    # Count straight and curly quotes separately
+    straight_count = text.count('"')
+    curly_left = text.count('“')
+    curly_right = text.count('”')
+
+    # Check for unbalanced straight quotes
+    if straight_count % 2 != 0:
         snippet = text[:150] + ("..." if len(text) > 150 else "")
-        detected_info = [("Incomplete quote (unbalanced quotation marks)", snippet)]
+        return True, [("Incomplete quote (unbalanced straight quotes)", snippet)]
 
-        if issue_timestamps is not None and issue_timestamps_lock is not None:
-            with issue_timestamps_lock:
-                issue_timestamps['incomplete_quotes'].append(time.time())
-                cutoff = time.time() - 3600
-                issue_timestamps['incomplete_quotes'] = [t for t in issue_timestamps['incomplete_quotes'] if t > cutoff]
+    # Check for mismatched curly quotes
+    if curly_left != curly_right:
+        snippet = text[:150] + ("..." if len(text) > 150 else "")
+        return True, [("Incomplete quote (unbalanced curly quotes)", snippet)]
 
-        return True, detected_info
     return False, []
