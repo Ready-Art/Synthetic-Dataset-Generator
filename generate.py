@@ -1752,6 +1752,12 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             api_call_start_time = time.time()
             response = requests.post(api_url, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))
 
+            api_response_time = time.time() - api_call_start_time
+            with api_response_times_lock:
+                api_response_times_per_slot[api_slot_idx_anti_slop].append(api_response_time)
+                if len(api_response_times_per_slot[api_slot_idx_anti_slop]) > MAX_RESPONSE_TIMES_TO_TRACK:
+                    api_response_times_per_slot[api_slot_idx_anti_slop] = api_response_times_per_slot[api_slot_idx_anti_slop][-MAX_RESPONSE_TIMES_TO_TRACK:]
+
             if response.status_code == 200:
                 response_data = response.json()
                 content = response_data['choices'][0]['message'].get('content')
@@ -2505,6 +2511,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         processed_content = text_utils.remove_all_asterisks(processed_content) if remove_all_asterisks_flag else processed_content
         processed_content = text_utils.ensure_space_after_line_break(processed_content) if ensure_space_after_line_break_flag else processed_content
         processed_content = text_utils.remove_markdown(processed_content) if remove_markdown_flag else processed_content
+        processed_content = text_utils.normalize_quotes(processed_content)
 
         # Convert roles for ShareGPT format
         sg_role = "human" if role == "user" else "gpt" if role == "assistant" else role
@@ -4846,7 +4853,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.1.0")
+root.title("ReadyArt Synthetic Dataset Generator v8.1.2")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
