@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v8.2.2
+# ReadyArt Synthetic Dataset Generator v8.2.3
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
@@ -27,6 +27,9 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Live Prompt Preview](#live-prompt-preview)
   - [Configuration Profiles](#configuration-profiles)
   - [API Connection Testing](#api-connection-testing)
+  - [Stop & Clear Job](#stop--clear-job)
+  - [Force Recovery](#force-recovery)
+  - [Database Management](#database-management)
 - [Output Formats](#-output-formats)
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
@@ -73,7 +76,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Strip markdown formatting to plain text
 - Normalize and balance quotation marks
 
-### Infrastructure
+### Infrastructure & UI
 - **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached
 - **Circuit Breaker** — Automatically disables API slots after consecutive failures and re-enables them after a cooldown period
 - **Per-API Rate Limiting** — Configurable RPM per API slot with automatic wait and real-time status display with color-coded indicators
@@ -88,6 +91,16 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Debug Logging Toggle** — Enable/disable verbose debug logging from the UI with a single checkbox
 - **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
 - **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting
+- **Stop & Clear Job** — Stop the current generation job, clear all progress, and reset for a fresh start
+- **Force Recovery** — Bypass configuration compatibility checks and force-load a previous generation state
+- **Clear Database** — Clear the PostgreSQL `generated_conversations` table from the UI with confirmation dialog
+- **Export DB → JSONL** — Export stored conversations from PostgreSQL to a JSONL file
+- **Rate Limit Status Display** — Real-time per-API rate limit usage indicators with color-coded status (green/orange/red)
+- **API Response Times** — Average, min, max response times and sample count per API slot displayed in the UI
+- **Thread Status Display** — Shows spawned and active thread counts in the metrics bar
+- **Dashboard Search** — Case-insensitive search across all issue panels within a dashboard tab with auto-scroll to first match
+- **Dashboard Copy All** — Copy all issue text from a dashboard tab to clipboard
+- **Clear Dashboard** — Reset all recent issue lists and graph data with a single button
 
 ---
 
@@ -193,11 +206,11 @@ All configuration is managed through `config/config.yml` and can be edited via t
 
 The application supports **6 API slots**:
 
-| Slot | Purpose | Part of Duplication? | Configurable Threads? |
-|------|---------|---------------------|----------------------|
-| 1-4  | Main generation APIs | Yes | Yes |
-| 5    | Slop Fixer LLM | No | Yes |
-| 6    | Anti-Slop Fixer LLM | No | Yes |
+| Slot | Purpose | Part of Duplication? | Configurable Threads? | Configurable Rate Limit? |
+|------|---------|---------------------|----------------------|------------------------|
+| 1-4  | Main generation APIs | Yes | Yes | Yes |
+| 5    | Slop Fixer LLM | No | Yes | Yes |
+| 6    | Anti-Slop Fixer LLM | No | Yes | Yes |
 
 ```yaml
 api:
@@ -235,13 +248,13 @@ generation:
   max_attempts: 5                 # Retries per Q/A turn
   num_turns: 1                    # Q/A pairs per conversation
   history_size: 10               # Recent questions to avoid repetition
-  api_request_timeout: 300        # Seconds for API connect/read timeout
+  api_request_timeout: 300       # Seconds for API connect/read timeout
   max_newlines_malformed: 16      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
   max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing
   max_anti_slop_fix_iterations: 3      # Iterations for sentence-level anti-slop fixing
   output_format: "sharegpt"       # "sharegpt" or "openai"
-  sanitize_input_max_length: 100000000
+  sanitize_input_max_length: 100000000  # Max input text length for sanitization
 
   # Text post-processing flags
   remove_reasoning: false
@@ -343,6 +356,7 @@ samplers:
   max_tokens_answer: 1024
   max_tokens_user_reply: 256
   enable_thinking: false
+  logit_bias: ""                 # JSON format, e.g., {"15": 100}
 
   # Slop Fixer LLM overrides (API Slot 5)
   slop_fixer_params:
@@ -362,6 +376,10 @@ samplers:
     repetition_penalty: 1.1
     max_tokens: 200
 ```
+
+- **`logit_bias`** — JSON object mapping token IDs to bias values. Passed directly to the API payload. Leave empty (`""`) to disable.
+- **`enable_thinking`** — When `true`, adds `{"chat_template_kwargs": {"enable_thinking": false}}` to the API payload to disable chain-of-thought output in reasoning models.
+- **`max_tokens_user_reply`** — Maximum tokens for LLM-generated user continuation messages.
 
 ### Database & Caching
 
@@ -474,7 +492,7 @@ The real-time dashboard provides:
 - **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes (10-minute bins)
 - **Per-API tabs** — Individual API statistics and recent issues (APIs 1-6)
 - **Metrics bar** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
-- **Budget indicator** — Current spend vs. budget limit with color-coded status
+- **Budget indicator** — Current spend vs. budget limit with color-coded status (turns red when exceeded)
 - **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
 - **API response times** — Average, min, max response times and sample count per slot
 - **Thread status** — Shows spawned and active thread counts
@@ -513,6 +531,25 @@ The Configuration Editor includes a **Test Connection** button for each API slot
 - The model name is accepted by the endpoint
 
 Results are displayed next to the button with color-coded status (green for success, red for failure with error details).
+
+### Stop & Clear Job
+
+The **Stop & Clear Job** button stops the current generation, clears all progress, removes the state file, and resets all statistics. This allows you to start a completely fresh generation run. Output files are not deleted by this action (they are backed up on the next fresh start).
+
+### Force Recovery
+
+The **🔄 Force Recovery** button bypasses configuration compatibility checks and forces the application to reload a previous generation state. This is useful when:
+
+- You intentionally changed critical settings but still want to resume
+- The normal resume dialog is blocking you due to detected incompatibilities
+- You want to continue from a saved state without starting fresh
+
+Use with caution, as incompatible settings may lead to unexpected behavior.
+
+### Database Management
+
+- **Export DB → JSONL** — Exports all conversations stored in PostgreSQL to a JSONL file. A file dialog prompts for the save location.
+- **Clear Database** — Truncates the `generated_conversations` table in PostgreSQL. A confirmation dialog prevents accidental data loss.
 
 ---
 
@@ -678,6 +715,22 @@ Failure count >= max_consecutive_failures (5)?
     └── No  → Continue using this API slot
 ```
 
+### Task Requeue on Host Failure
+
+When an API host is down (circuit breaker open), tasks assigned to that slot are requeued rather than discarded:
+
+```
+Worker detects circuit is open for assigned API slot
+    │
+    ▼
+Requeue task (up to MAX_TASK_REQUEUES = 50 times)
+    │
+    ├── Requeue successful → Back off, wait for circuit to close
+    └── Max requeues exceeded → Discard task, log error
+```
+
+This ensures that temporary outages don't result in lost work — tasks are automatically retried when the host recovers.
+
 ### Budget Enforcement
 
 ```
@@ -705,7 +758,7 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **High refusal rate** | Add more jailbreak fixes in Detection → Refusal → Fixes |
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL, model, and key |
 | **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
-| **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators |
+| **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators in the UI |
 | **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers after 60s |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
@@ -718,8 +771,11 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **API connection test fails** | Verify URL format (must include scheme like `https://`), model name, and API key |
 | **Resume incompatibility warning** | Critical settings changed since last run; choose to start fresh or proceed with caution |
 | **Need to force resume** | Click **🔄 Force Recovery** to bypass config checks and reload state |
-| **Want to clear all data** | Use **Clear Database** button (with confirmation) or **Stop & Clear Job** to reset progress |
+| **Want to clear all data** | Use **Stop & Clear Job** to reset progress, or **Clear Database** for PostgreSQL data |
 | **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in the toolbar to disable verbose logging |
+| **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
+| **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
+| **Reasoning models outputting thinking blocks** | Enable `enable_thinking: false` in samplers config to add `chat_template_kwargs` to API payload |
 
 ### Environment Variables
 
@@ -756,6 +812,7 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Use the Live Prompt Preview** to verify your prompt templates are working correctly before committing to a full run
 - **Pause and adjust** rate limits mid-run — configuration is reloaded when you resume
 - **Monitor circuit breaker** — if an API slot's circuit opens frequently, the endpoint may be experiencing issues
+- **Use Force Recovery** if you need to resume with intentionally changed settings, but be aware of potential incompatibilities
 
 ---
 
