@@ -144,6 +144,36 @@ def check_budget_limit():
         return True
     return False
 
+API_CIRCUIT_BREAKER = {
+    "max_consecutive_failures": 5,
+    "cooldown_seconds": 60,
+    "failures": {i: 0 for i in range(6)},
+    "last_failure_time": {i: 0.0 for i in range(6)},
+    "is_open": {i: False for i in range(6)}
+}
+api_circuit_breaker_lock = threading.Lock()
+
+def check_circuit_breaker(api_slot_idx):
+    """Returns True if API slot is allowed to make requests, False if circuit is open."""
+    with api_circuit_breaker_lock:
+        if API_CIRCUIT_BREAKER["is_open"][api_slot_idx]:
+            elapsed = time.time() - API_CIRCUIT_BREAKER["last_failure_time"][api_slot_idx]
+            if elapsed >= API_CIRCUIT_BREAKER["cooldown_seconds"]:
+                API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = False
+                API_CIRCUIT_BREAKER["failures"][api_slot_idx] = 0
+                log_message(f"API Slot {api_slot_idx+1} circuit closed. Resuming requests.", "INFO")
+                return True
+            return False
+        return True
+
+def record_api_failure(api_slot_idx):
+    with api_circuit_breaker_lock:
+        API_CIRCUIT_BREAKER["failures"][api_slot_idx] += 1
+        API_CIRCUIT_BREAKER["last_failure_time"][api_slot_idx] = time.time()
+        if API_CIRCUIT_BREAKER["failures"][api_slot_idx] >= API_CIRCUIT_BREAKER["max_consecutive_failures"]:
+            API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = True
+            log_message(f"API Slot {api_slot_idx+1} circuit OPEN after {API_CIRCUIT_BREAKER['max_consecutive_failures']} consecutive failures. Cooling down...", "WARNING")
+
 # --- Crash Recovery Functions ---
 def save_generation_state():
     """Saves the current generation state to a JSON file for potential recovery."""
@@ -1111,6 +1141,11 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             # Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx)
 
+            # Circuit Breaker Check
+            if not check_circuit_breaker(api_slot_idx):
+                log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} circuit open. Skipping question generation.", "DEBUG")
+                return None
+
             # Track API response time
             api_call_start_time = time.time()
 
@@ -1209,6 +1244,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             else: # API call failed
                 error_message = f"Thread {thread_id}: Error generating question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
+                record_api_failure(api_slot_idx)
                 # Update error counters with timeout
                 lock_acquired_err = stats_lock.acquire(timeout=7.0)
                 if lock_acquired_err:
@@ -1235,6 +1271,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Timeout generating question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx)
             lock_acquired_err = stats_lock.acquire(timeout=7.0)
             if lock_acquired_err:
                 try:
@@ -1258,6 +1295,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             log_message(error_message, "ERROR")
             import traceback
             log_message(traceback.format_exc(), "ERROR")
+            record_api_failure(api_slot_idx)
             lock_acquired_err = stats_lock.acquire(timeout=7.0)
             if lock_acquired_err:
                 try:
@@ -1349,6 +1387,11 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             # NEW: Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx)
 
+            # Circuit Breaker Check
+            if not check_circuit_breaker(api_slot_idx):
+                log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} circuit open. Skipping user continuation.", "DEBUG")
+                return None
+
             # Track API response time
             api_call_start_time = time.time()
             response = requests.post(api_url_local, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))  # (connect_timeout, read_timeout)
@@ -1406,6 +1449,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 # --- FIX END ---
                 return user_reply_text
             else: # API call failed
+                record_api_failure(api_slot_idx)
                 error_message = f"Thread {thread_id}: Error generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
                 lock_acquired = system_prompt_lock.acquire(timeout=0.05)
@@ -1439,6 +1483,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Timeout generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx)
             lock_acquired = system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
@@ -1464,6 +1509,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             log_message(error_message, "ERROR")
             import traceback
             log_message(traceback.format_exc(), "ERROR")
+            record_api_failure(api_slot_idx)
             lock_acquired = system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
@@ -1626,6 +1672,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             else: # API call failed
                 error_message = f"Thread {thread_id}: Slop Fixer LLM Error (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
+                record_api_failure(api_slot_idx_slop_fixer)
                 with system_prompt_lock:
                     error_count_total +=1
                     error_counts_per_api[api_slot_idx_slop_fixer] += 1
@@ -1640,6 +1687,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Slop Fixer LLM request timed out (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_slop_fixer)
             with system_prompt_lock:
                 error_count_total +=1
                 error_counts_per_api[api_slot_idx_slop_fixer] += 1
@@ -1654,6 +1702,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
         except Exception as e: # Catch any other exceptions
             error_message = f"Thread {thread_id}: Exception in call_slop_fixer_llm (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_slop_fixer)
             with system_prompt_lock:
                 error_count_total +=1
                 error_counts_per_api[api_slot_idx_slop_fixer] += 1
@@ -1693,6 +1742,11 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
 
         # FIX 2 & 3: Move rate limiter BEFORE lock, and add timeout to lock acquisition
         global_rate_limiter.wait_if_needed(api_slot_idx_anti_slop)
+
+        # Circuit Breaker Check
+        if not check_circuit_breaker(api_slot_idx_anti_slop):
+            log_message(f"Thread {thread_id}: API Slot {api_slot_idx_anti_slop+1} circuit open. Skipping anti-slop fixer.", "DEBUG")
+            return None, text_context
 
         lock_acquired = system_prompt_lock.acquire(timeout=0.05)
         if lock_acquired:
@@ -1809,6 +1863,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             else:
                 error_message = f"Thread {thread_id}: Anti-Slop LLM Error (Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
+                record_api_failure(api_slot_idx_anti_slop)
                 lock_acquired_err = system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired_err:
                     try:
@@ -1831,6 +1886,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
         except requests.exceptions.Timeout:
             error_message = f"Thread {thread_id}: Anti-Slop LLM request timed out (Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_anti_slop)
             lock_acquired = system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
@@ -1853,6 +1909,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
         except Exception as e:
             error_message = f"Thread {thread_id}: Exception in call_anti_slop_llm (Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_anti_slop)
             lock_acquired = system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
@@ -1981,6 +2038,11 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 global_rate_limiter.wait_if_needed(api_slot_idx)
 
+                # Circuit Breaker Check
+                if not check_circuit_breaker(api_slot_idx):
+                    log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} circuit open. Skipping answer generation.", "DEBUG")
+                    break  # Exit inner retry loop; outer loop handles fallback
+
                 api_call_start_time = time.time()
                 prompt_content = json.dumps(messages, sort_keys=True)
                 prompt_hash = hashlib.md5(prompt_content.encode()).hexdigest()
@@ -2080,6 +2142,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         break
                     else:
                         log_message(f"Thread {thread_id}: Error generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}), Status {response_status_code}: {response_text_content[:200]}", "ERROR")
+                        record_api_failure(api_slot_idx)
                         lock_acquired_err = system_prompt_lock.acquire(timeout=0.05)
                         if lock_acquired_err:
                             try:
@@ -2108,6 +2171,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 except requests.exceptions.Timeout:
                     log_message(f"Thread {thread_id}: API Timeout generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}).", "ERROR")
+                    record_api_failure(api_slot_idx)
                     lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
@@ -2125,6 +2189,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     else: break
                 except requests.exceptions.RequestException as e_req:
                     log_message(f"Thread {thread_id}: RequestException generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_req)}", "ERROR")
+                    record_api_failure(api_slot_idx)
                     lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
@@ -2143,6 +2208,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 except Exception as e_gen:
                     log_message(f"Thread {thread_id}: Exception in answer generation (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_gen)}", "ERROR")
                     import traceback; log_message(traceback.format_exc(), "ERROR")
+                    record_api_failure(api_slot_idx)
                     lock_acquired = system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
@@ -2988,24 +3054,19 @@ def start_processing():
         log_message("Valkey caching is disabled in config.", "INFO")
     # --- End Valkey Initialization ---
 
-    should_resume = False # Flag to indicate if resuming from a previous state
-    if os.path.exists(STATE_FILE_PATH): # Check if a state file exists
-        if messagebox.askyesno("Resume", "Previous generation state found. Do you want to resume? (Choosing 'No' will start fresh and backup old output files)."):
-            if load_generation_state(): # Attempt to load state, also handles incompatibility checks
-                should_resume = True
-                log_message("Resuming previous generation.", "INFO")
-            else: 
-                log_message("Failed to load state or user chose not to resume with incompatible settings. Starting fresh.", "INFO")
-                cleanup_old_files_and_backup_output() 
-                reset_all_stats_and_history() 
-        else: 
-            log_message("User chose not to resume. Starting fresh.", "INFO")
+    should_resume = False # ✅ Correctly indented (function scope)
+    if os.path.exists(STATE_FILE_PATH):
+        if load_generation_state():
+            should_resume = True
+            log_message("Auto-resuming previous generation (config matched).", "INFO")
+        else:
+            log_message("State incompatible or failed to load. Starting fresh.", "WARNING")
             cleanup_old_files_and_backup_output()
             reset_all_stats_and_history()
-    else: 
+    else:
         log_message("No state file found. Starting fresh.", "INFO")
-        cleanup_old_files_and_backup_output() 
-        reset_all_stats_and_history() 
+        cleanup_old_files_and_backup_output()
+        reset_all_stats_and_history()
 
     # --- Load API Configurations ---
     all_apis_config_from_yml = global_config.get('api.apis', [])
@@ -4857,7 +4918,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.1.3")
+root.title("ReadyArt Synthetic Dataset Generator v8.1.5")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5090,6 +5151,22 @@ root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) bu
 status_bar = ttk.Label(root, text="Ready", foreground="lightgray", anchor="w")
 status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=2)
 
+def force_recovery():
+    """Bypasses config checks and forces state reload + thread restart."""
+    if not processing_active and not any(t.is_alive() for t in threads):
+        if os.path.exists(STATE_FILE_PATH):
+            if load_generation_state():
+                log_message("Force recovery: State loaded. Ready to resume.", "INFO")
+                reset_all_stats_and_history()
+                update_dashboard()
+                messagebox.showinfo("Recovery", "State recovered. Click Start to resume.")
+            else:
+                messagebox.showwarning("Recovery Failed", "Could not load state. Check logs.")
+        else:
+            messagebox.showinfo("No State", "No previous state found to recover.")
+    else:
+        messagebox.showwarning("Busy", "Cannot force recovery while processing is active.")
+
 def trigger_export():
     file_path = filedialog.asksaveasfilename(
         defaultextension=".jsonl",
@@ -5114,6 +5191,10 @@ export_button.pack(side=tk.LEFT, padx=10)
 
 clear_db_button = ttk.Button(button_frame, text="Clear Database", command=clear_database)
 clear_db_button.pack(side=tk.LEFT, padx=10)
+
+recovery_button = ttk.Button(button_frame, text="🔄 Force Recovery", command=force_recovery)
+recovery_button.pack(side=tk.LEFT, padx=10)
+
 
 def clear_dashboard():
     global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total, recent_anti_slop_total
@@ -5143,6 +5224,8 @@ def clear_dashboard():
     # Refresh the UI
     update_dashboard()
     log_message("Dashboard and issue graph cleared.", "INFO")
+
+# --- Dashboard Setup ---
 
 # --- Dashboard Setup ---
 dashboard_outer_frame = ttk.Frame(root); dashboard_outer_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
@@ -5305,6 +5388,8 @@ for tab_name in tab_names:
         graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
         draw_issue_graph(graph_canvas_widget)
+
+
 
 def search_in_dashboard_tab(tab_name):
     """Highlights matching text across all issue panels in the active tab."""
