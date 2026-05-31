@@ -1535,21 +1535,23 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 {"role": "user", "content": user_rewrite_instruction}
             ]
 
-            # Use Anti-Slop sampler settings if available, otherwise fallback to Slop Fixer or defaults
-            anti_slop_sampler_overrides = main_sampler_settings.get("anti_slop_params", {}) or main_sampler_settings.get("slop_fixer_params", {})
-            final_anti_slop_params = {
-                "temperature": anti_slop_sampler_overrides.get("temperature", 0.5),
-                "top_p": anti_slop_sampler_overrides.get("top_p", 0.95),
-                "min_p": anti_slop_sampler_overrides.get("min_p", 0.0),
-                "top_k": anti_slop_sampler_overrides.get("top_k", 50),
-                "repetition_penalty": anti_slop_sampler_overrides.get("repetition_penalty", 1.1),
-                "max_tokens": anti_slop_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
+            # Use dedicated Slop Fixer sampler settings from the API config
+            slop_fixer_sampler_overrides = slop_fixer_api_config.get('sampler_settings', {}) or main_sampler_settings
+
+            # Renamed to match the function context
+            final_slop_fixer_params = {
+                "temperature": slop_fixer_sampler_overrides.get("temperature", 0.5),
+                "top_p": slop_fixer_sampler_overrides.get("top_p", 0.95),
+                "min_p": slop_fixer_sampler_overrides.get("min_p", 0.0),
+                "top_k": slop_fixer_sampler_overrides.get("top_k", 50),
+                "repetition_penalty": slop_fixer_sampler_overrides.get("repetition_penalty", 1.1),
+                "max_tokens": slop_fixer_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
             }
 
             payload_data = {
                 "model": model_name,
                 "messages": messages,
-                **final_anti_slop_params,
+                **final_slop_fixer_params,
                 "stream": False
             }
             payload = json.dumps(payload_data)
@@ -1720,14 +1722,16 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 {"role": "user", "content": user_rewrite_instruction}
             ]
 
-            slop_fixer_sampler_overrides = main_sampler_settings.get("slop_fixer_params", {})
+            # Use dedicated Anti-Slop sampler settings from the API config
+            anti_slop_sampler_overrides = anti_slop_api_config.get('sampler_settings', {}) or main_sampler_settings
+
             final_anti_slop_params = {
-                "temperature": slop_fixer_sampler_overrides.get("temperature", 0.5),
-                "top_p": slop_fixer_sampler_overrides.get("top_p", 0.95),
-                "min_p": slop_fixer_sampler_overrides.get("min_p", 0.0),
-                "top_k": slop_fixer_sampler_overrides.get("top_k", 50),
-                "repetition_penalty": slop_fixer_sampler_overrides.get("repetition_penalty", 1.1),
-                "max_tokens": slop_fixer_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
+                "temperature": anti_slop_sampler_overrides.get("temperature", 0.5),
+                "top_p": anti_slop_sampler_overrides.get("top_p", 0.95),
+                "min_p": anti_slop_sampler_overrides.get("min_p", 0.0),
+                "top_k": anti_slop_sampler_overrides.get("top_k", 50),
+                "repetition_penalty": anti_slop_sampler_overrides.get("repetition_penalty", 1.1),
+                "max_tokens": anti_slop_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
             }
 
             payload_data = {
@@ -4853,7 +4857,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.1.2")
+root.title("ReadyArt Synthetic Dataset Generator v8.1.3")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
