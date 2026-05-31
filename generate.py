@@ -123,6 +123,25 @@ loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded
 state_file_lock = Lock() # Lock for thread-safe access to the generation_state.json file
 prompt_preview_text = None
 
+def check_budget_limit():
+    global stop_processing, total_input_tokens, total_output_tokens
+    if stop_processing:
+        return False
+
+    budget_limit = global_config.get('api.pricing.budget_limit', 0.0)
+    if budget_limit <= 0:
+        return False  # Budget disabled
+
+    with stats_lock:  # 🔒 Safer concurrent read
+        price_per_1k = global_config.get('api.pricing.cost_per_1k_tokens', 0)
+        current_cost = (total_input_tokens + total_output_tokens) * (price_per_1k / 1000.0)
+
+    if current_cost >= budget_limit:
+        log_message(f"API budget limit of ${budget_limit:.2f} reached. Current cost: ${current_cost:.2f}. Stopping generation.", "WARNING")
+        stop_processing = True
+        return True
+    return False
+
 # --- Crash Recovery Functions ---
 def save_generation_state():
     """Saves the current generation state to a JSON file for potential recovery."""
@@ -501,13 +520,17 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
 
     while not stop_processing:
+        if check_budget_limit():
+            log_message(f"Thread {thread_id}: Budget limit reached. Exiting worker.", "INFO")
+            break
         # Enhanced pause check: threads sleep briefly while paused, allowing GUI to remain responsive
         while pause_processing and not stop_processing:
             time.sleep(0.1) 
             if hasattr(root, 'update') and root.winfo_exists(): # Keep Tkinter main loop alive if paused
                 try: root.update()
                 except tk.TclError: log_message(f"Thread {thread_id}: Root window closed during pause.", "DEBUG"); pass
-            if stop_processing: break 
+            if stop_processing: break
+
         if stop_processing: break # Exit if stop signal received during pause
 
         try:
@@ -2786,6 +2809,14 @@ def update_dashboard():
     price_per_token = global_config.get('api.pricing.cost_per_1k_tokens', 0) / 1000
     estimated_cost = (total_input_tokens + total_output_tokens) * price_per_token
 
+    budget_limit = global_config.get('api.pricing.budget_limit', 0.0)
+    if budget_label.winfo_exists():
+        if budget_limit > 0:
+            budget_label.config(text=f"Budget: ${estimated_cost:.2f} / ${budget_limit:.2f}",
+                                foreground="red" if estimated_cost >= budget_limit else "lightgray")
+        else:
+            budget_label.config(text="Budget: Disabled", foreground="lightgray")
+
     if api_handler.valkey_client:
         try:
             api_handler.valkey_client.set("stats:refusal_count", refusal_count_total)
@@ -3415,6 +3446,7 @@ def start_processing():
     # --- GUI Progress Update Loop ---
     def update_gui_progress():
         if processing_active and not stop_processing: 
+            check_budget_limit()
             try:
                 process = psutil.Process()
                 open_files = process.open_files()
@@ -3634,6 +3666,11 @@ class ConfigEditor(tk.Toplevel):
         self.pricing_var = tk.StringVar()
         ttk.Entry(self.api_content_frame, width=10, textvariable=self.pricing_var).grid(row=0, column=1, padx=10, pady=10, sticky="w")
         ttk.Label(self.api_content_frame, text="(Enter 0 if unknown)").grid(row=0, column=2, padx=10, pady=10, sticky="w")
+
+        ttk.Label(self.api_content_frame, text="API Budget Limit ($):").grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        self.budget_limit_var = tk.StringVar()
+        ttk.Entry(self.api_content_frame, width=10, textvariable=self.budget_limit_var).grid(row=1, column=1, padx=10, pady=10, sticky="w")
+        ttk.Label(self.api_content_frame, text="(Set to 0 to disable)").grid(row=1, column=2, padx=10, pady=10, sticky="w")
 
         # Valkey Configuration Section (now inside api_content_frame)
         valkey_frame = ttk.LabelFrame(self.api_content_frame, text="Valkey Cache Settings")
@@ -4336,7 +4373,8 @@ class ConfigEditor(tk.Toplevel):
                 'threads': int(self.num_threads_var_editor.get()),
                 # NEW: Add Pricing Section
                 'pricing': {
-                    'cost_per_1k_tokens': float(self.pricing_var.get())
+                    'cost_per_1k_tokens': float(self.pricing_var.get()),
+                    'budget_limit': float(self.budget_limit_var.get() or 0.0)
                 }
             },
             'valkey': {
@@ -4587,6 +4625,7 @@ class ConfigEditor(tk.Toplevel):
             # NEW: Load pricing value
             pricing_config = api_config_main.get('pricing', {})
             self.pricing_var.set(str(pricing_config.get('cost_per_1k_tokens', 0.0)))
+            self.budget_limit_var.set(str(pricing_config.get('budget_limit', 0.0)))
 
             # NEW: Load valkey configuration
             valkey_config = config.get('valkey', {})
@@ -4808,7 +4847,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.2")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.3")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -4847,6 +4886,9 @@ error_percent_label = ttk.Label(metrics_frame, text="Total Errors logged: 0 (0.0
 
 token_label = ttk.Label(metrics_frame, text="Tokens: 0"); token_label.pack(side=tk.LEFT, padx=10)
 cost_label = ttk.Label(metrics_frame, text="Est. Cost: $0.0000"); cost_label.pack(side=tk.LEFT, padx=10)
+
+budget_label = ttk.Label(metrics_frame, text="Budget: $0.00 / $0.00", foreground="lightgray")
+budget_label.pack(side=tk.LEFT, padx=10)
 
 # NEW: Rate Limit Status Labels
 rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)"); rate_limit_frame.pack(pady=5, padx=10, fill="x")
