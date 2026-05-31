@@ -174,6 +174,35 @@ def record_api_failure(api_slot_idx):
             API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = True
             log_message(f"API Slot {api_slot_idx+1} circuit OPEN after {API_CIRCUIT_BREAKER['max_consecutive_failures']} consecutive failures. Cooling down...", "WARNING")
 
+# --- Resilience: requeue tasks that fail while their API host is down ---
+# When a host goes down the circuit breaker (above) opens for that slot. Without
+# requeueing, a worker would consume each pulled task, fail it, and discard it,
+# draining the queue so nothing is left to process when the host recovers. These
+# helpers let the worker put such tasks back, bounded so a genuinely-bad task
+# (one that fails for content reasons while the host is up) can't loop forever.
+MAX_TASK_REQUEUES = 50
+task_retry_counts = {}
+task_retry_lock = threading.Lock()
+
+def api_host_is_down(api_slot_idx):
+    """Read-only: True if this slot's circuit is currently open (host down).
+    Unlike check_circuit_breaker(), this does NOT close the circuit on cooldown."""
+    if api_slot_idx is None or api_slot_idx < 0:
+        return False
+    with api_circuit_breaker_lock:
+        return bool(API_CIRCUIT_BREAKER["is_open"].get(api_slot_idx, False))
+
+def requeue_task(q, task, task_id):
+    """Put a task back on the queue for a later retry (host-outage recovery).
+    Returns True if requeued, False once it has exhausted MAX_TASK_REQUEUES."""
+    with task_retry_lock:
+        n = task_retry_counts.get(task_id, 0) + 1
+        task_retry_counts[task_id] = n
+        if n > MAX_TASK_REQUEUES:
+            return False
+    q.put(task)
+    return True
+
 # --- Crash Recovery Functions ---
 def save_generation_state():
     """Saves the current generation state to a JSON file for potential recovery."""
@@ -556,6 +585,14 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
 
+    # Resilience: in non-duplication mode each worker is pinned to one API slot
+    # (thread_id % num_active_apis). Capture it up-front so we can pause -- not
+    # drain -- the queue when that host's circuit is open. -1 = duplication/unknown.
+    worker_api_slot = -1
+    if not master_duplication_enabled_local and active_enabled_api_configs_for_worker:
+        worker_api_slot = active_enabled_api_configs_for_worker[
+            thread_id % len(active_enabled_api_configs_for_worker)]['original_slot_idx']
+
     while not stop_processing:
         if check_budget_limit():
             log_message(f"Thread {thread_id}: Budget limit reached. Exiting worker.", "INFO")
@@ -615,6 +652,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             target_processed_overall = q.processed_tasks + increment_amount
                             q.processed_tasks = min(target_processed_overall, q.total_tasks_for_progress)
                 continue
+
+        # --- Resilience gate: if this worker's API host is down (circuit open),
+        # put the task back and back off instead of consuming it. This pauses the
+        # queue during an outage so the run resumes automatically when the host
+        # returns, rather than draining (and discarding) tasks while it's down. ---
+        if worker_api_slot >= 0 and not check_circuit_breaker(worker_api_slot):
+            q.put(task)
+            q.task_done()
+            log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down (circuit open); "
+                        f"requeued task {task_id} and backing off.", "DEBUG")
+            time.sleep(min(5.0, max(1.0, API_CIRCUIT_BREAKER['cooldown_seconds'] / 4.0)))
+            continue
 
         try:
             if stop_processing: q.task_done(); continue # Check again before intensive processing
@@ -976,7 +1025,14 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         # Do NOT add to completed_task_ids - this task should not be marked complete
                     elif len(conversation_history_for_output) < (current_num_turns * 2):
                         log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {current_num_turns * 2} messages, got {len(conversation_history_for_output)}. NOT saving to output.jsonl.", "WARNING")
-                        # Do NOT add to completed_task_ids - this task should be retried
+                        # Do NOT add to completed_task_ids - this task should be retried.
+                        # If the host is down, requeue it so it's retried once the host recovers
+                        # (otherwise it would just be discarded and lost).
+                        if api_host_is_down(worker_api_slot):
+                            if requeue_task(q, task, task_id):
+                                log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued incomplete task {task_id} for retry.", "WARNING")
+                            else:
+                                log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
                     else:
                         with output_data_lock:
                             write_conversation(None, conversation_history_for_output, current_remove_reasoning,
@@ -994,6 +1050,13 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     log_message(f"Thread {thread_id}: Processed task {task_id} (API Slot {api_slot_idx_for_this_task+1}) from file {file_name}. Turns: {len(conversation_history_for_output)//2}", "INFO")
                 else:
                     log_message(f"Thread {thread_id}: No valid conversation generated for task {task_id} (API Slot {api_slot_idx_for_this_task+1}). Not writing to output.", "WARNING")
+                    # If this failed because the host is down (circuit open), requeue it so
+                    # it's retried after the host recovers instead of being silently dropped.
+                    if api_host_is_down(worker_api_slot):
+                        if requeue_task(q, task, task_id):
+                            log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued task {task_id} for retry.", "WARNING")
+                        else:
+                            log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
             else: # Master duplication mode - mark task complete if it went through turns
                 # Individual API outputs were already handled per turn inside the loop.
                 if conversation_history_for_output or current_llm_conversation_context: # Check if at least initial question was made
