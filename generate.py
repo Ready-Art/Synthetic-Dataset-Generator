@@ -4780,7 +4780,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.0")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.1")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5085,6 +5085,24 @@ for tab_name in tab_names:
     dashboard_notebook.add(tab_frame, text=tab_name)
     dashboard_notebook.tabs_widgets[tab_name] = {} # Store widgets for this tab
 
+    if tab_name == "Totals":
+        search_frame = ttk.Frame(dashboard_notebook.tabs_widgets[tab_name].get('scrollable_frame', tab_frame))
+    else:
+        search_frame = ttk.Frame(tab_frame)
+    search_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(5, 2))
+
+    search_var = tk.StringVar()
+    search_entry = ttk.Entry(search_frame, textvariable=search_var)
+    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+    search_entry.bind("<Return>", lambda e, t=tab_name: search_in_dashboard_tab(t))
+
+    ttk.Button(search_frame, text="🔍 Search", command=lambda t=tab_name: search_in_dashboard_tab(t)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(search_frame, text="❌ Clear", command=lambda t=tab_name: clear_dashboard_search(t)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(search_frame, text="📋 Copy All", command=lambda t=tab_name: copy_dashboard_tab(t)).pack(side=tk.LEFT, padx=2)
+
+    dashboard_notebook.tabs_widgets[tab_name]['search_var'] = search_var
+    dashboard_notebook.tabs_widgets[tab_name]['search_entry'] = search_entry
+
     # NEW: Make the Totals tab scrollable to accommodate the graph
     if tab_name == "Totals":
         # Create a canvas with scrollbar for the Totals tab
@@ -5100,8 +5118,10 @@ for tab_name in tab_names:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        tab_frame.columnconfigure(0, weight=1)
+        tab_frame.rowconfigure(1, weight=1)
 
         # Bind mouse wheel to canvas for scrolling
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
@@ -5163,6 +5183,61 @@ for tab_name in tab_names:
 
             for tag_name_cfg, config_cfg in highlight_colors.items():
                 text_area.tag_configure(tag_name_cfg, foreground=config_cfg["foreground"], font=config_cfg["font"])
+
+def search_in_dashboard_tab(tab_name):
+    """Highlights matching text across all issue panels in the active tab."""
+    query = dashboard_notebook.tabs_widgets[tab_name].get('search_var', tk.StringVar()).get().strip()
+    if not query:
+        clear_dashboard_search(tab_name)
+        return
+
+    clear_dashboard_search(tab_name)
+    issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"]
+
+    for key in issue_keys:
+        text_widget = dashboard_notebook.tabs_widgets[tab_name].get(key)
+        if text_widget and text_widget.winfo_exists():
+            # Configure highlight tag (doesn't interfere with existing issue tags)
+            text_widget.tag_configure("search_match", background="#FFD700", foreground="#000000", underline=False)
+
+            start_pos = "1.0"
+            while True:
+                # Case-insensitive search
+                pos = text_widget.search(query, start_pos, stopindex=tk.END, nocase=True)
+                if not pos:
+                    break
+                end_pos = f"{pos}+{len(query)}c"
+                text_widget.tag_add("search_match", pos, end_pos)
+                start_pos = end_pos
+
+            # Auto-scroll to first match if found
+            if text_widget.tag_ranges("search_match"):
+                text_widget.see(text_widget.tag_ranges("search_match")[0])
+
+def clear_dashboard_search(tab_name):
+    """Removes search highlights from all panels in the specified tab."""
+    for key in ["refusals", "user_speak", "slop", "anti_slop", "errors"]:
+        text_widget = dashboard_notebook.tabs_widgets[tab_name].get(key)
+        if text_widget and text_widget.winfo_exists():
+            text_widget.tag_remove("search_match", "1.0", tk.END)
+
+def copy_dashboard_tab(tab_name):
+    """Copies all text from the active tab's panels to clipboard."""
+    clipboard_text = []
+    for key in ["refusals", "user_speak", "slop", "anti_slop", "errors"]:
+        text_widget = dashboard_notebook.tabs_widgets[tab_name].get(key)
+        if text_widget and text_widget.winfo_exists():
+            content = text_widget.get("1.0", tk.END).strip()
+            if content and content != f"No recent {key}.":
+                clipboard_text.append(f"--- {key.upper()} ---\n{content}\n")
+
+    if clipboard_text:
+        root.clipboard_clear()
+        root.clipboard_append("\n".join(clipboard_text))
+        root.update()
+        status_bar.config(text="Dashboard text copied to clipboard!", foreground="green")
+    else:
+        status_bar.config(text="No data to copy.", foreground="orange")
 
 def update_dashboard_safe(): 
     """Safely updates the dashboard, checking if the root window still exists. Called from ConfigEditor."""
