@@ -10,11 +10,17 @@ init()
 LOG_FILE_PATH = os.path.join('output', 'log.txt')
 os.makedirs('output', exist_ok=True)
 
+DEBUG_LOGGING_ENABLED = False
+
 def log_message(message, level="INFO"):
     """
     Writes a message to the log file and prints to console with color.
     Use this function in ALL your Python files.
     """
+
+    if level == "DEBUG" and not DEBUG_LOGGING_ENABLED:
+        return
+
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
     log_entry = f"{timestamp} [{level}] - {message}"
 

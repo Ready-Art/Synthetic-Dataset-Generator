@@ -31,6 +31,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from urllib.parse import urlparse
 from api_handler import RateLimiter, global_rate_limiter, get_cached_response, set_cached_response, api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK
+import logging_config
+from logging_config import log_message, LOG_FILE_PATH
 
 init()
 
@@ -4844,7 +4846,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.8")
+root.title("ReadyArt Synthetic Dataset Generator v8.1.0")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -4867,6 +4869,7 @@ except tk.TclError: # If solar theme doesn't exist, try system default
 num_threads_var = tk.StringVar(value=str(global_config.get('threads', 10))) # Default from config or 10
 no_user_impersonation_var = tk.BooleanVar(value=global_config.get('detection.no_user_impersonation', False))
 master_duplication_enabled_var = tk.BooleanVar(value=global_config.get('api.master_duplication_mode', False))
+debug_logging_var = tk.BooleanVar(value=False)
 
 log_message("Application started. UI initializing.", "INFO") 
 
@@ -4912,6 +4915,11 @@ progress_frame = ttk.Frame(root); progress_frame.pack(pady=10, padx=10, fill=tk.
 button_frame = ttk.Frame(root); button_frame.pack(pady=10)
 start_button = ttk.Button(button_frame, text="Start Generation", command=start_processing); start_button.pack(side=tk.LEFT, padx=10)
 pause_button = ttk.Button(button_frame, text="Pause", command=toggle_pause, state=tk.DISABLED); pause_button.pack(side=tk.LEFT, padx=10)
+
+def toggle_debug_logging():
+    # Update the flag in the logging module
+    logging_config.DEBUG_LOGGING_ENABLED = debug_logging_var.get()
+    log_message(f"Debug logging {'enabled' if debug_logging_var.get() else 'disabled'}.", "INFO")
 
 # --- Stop and Clear Job Functionality ---
 def stop_and_clear_processing_job():
@@ -5008,6 +5016,9 @@ stop_clear_button.pack(side=tk.LEFT, padx=10)
 # --- End of Stop and Clear Job Functionality ---
 
 config_button = ttk.Button(button_frame, text="Edit Config", command=open_config_editor); config_button.pack(side=tk.LEFT, padx=10)
+
+debug_log_check = ttk.Checkbutton(button_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
+debug_log_check.pack(side=tk.LEFT, padx=10)
 
 def quit_application():
     """Handles graceful shutdown of the application when Quit button or window X is clicked."""
