@@ -2504,26 +2504,18 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         processed_content = text_utils.ensure_space_after_line_break(processed_content) if ensure_space_after_line_break_flag else processed_content
         processed_content = text_utils.remove_markdown(processed_content) if remove_markdown_flag else processed_content
 
-        if output_format_local == 'sharegpt': # Convert roles for ShareGPT format
-            sg_role = "human" if role == "user" else "gpt" if role == "assistant" else role
-            processed_conversation_turns.append({"from": sg_role, "value": processed_content})
-        else: # Default OpenAI-like format
-            processed_conversation_turns.append({"role": role, "content": processed_content})
+        # Convert roles for ShareGPT format
+        sg_role = "human" if role == "user" else "gpt" if role == "assistant" else role
+        processed_conversation_turns.append({"from": sg_role, "value": processed_content})
 
     output_data_id = task_id_for_output
     if is_duplication_turn and master_duplication_enabled_var.get(): # Check global var for safety
         output_data_id = f"{task_id_for_output}_api{api_slot_idx_for_output_file}_turn{turn_number_for_duplication}"
 
-    if output_format_local == 'sharegpt':
-        output_data = {
-            "id": output_data_id, 
-            "conversations": processed_conversation_turns 
-        }
-    else: # OpenAI-like format
-        output_data = {
-            "id": output_data_id, 
-            "messages": processed_conversation_turns 
-        }
+    output_data = {
+        "id": output_data_id,
+        "conversations": processed_conversation_turns
+    }
 
     use_db = global_config.get('database.enabled', False)
 
@@ -3099,7 +3091,7 @@ def start_processing():
     current_remove_all_asterisks = global_config.get('generation.remove_all_asterisks', False) # NEW ADDITION
     current_remove_markdown = global_config.get('generation.remove_markdown', False)
     current_ensure_space_after_line_break = global_config.get('generation.ensure_space_after_line_break', False) # NEW
-    current_output_format = global_config.get('generation.output_format', 'sharegpt')
+    current_output_format = 'sharegpt'
     current_num_turns = global_config.get('generation.num_turns', 1) 
     if current_num_turns <= 0: current_num_turns = 1 
 
@@ -3872,8 +3864,8 @@ class ConfigEditor(tk.Toplevel):
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
         
         ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="e")
-        self.output_format_var = tk.StringVar()
-        ttk.Combobox(gen_settings_frame, textvariable=self.output_format_var, values=['sharegpt', 'jinja2'], state="readonly").grid(row=row_idx, column=1, padx=5, pady=5, sticky="w")
+        self.output_format_var = tk.StringVar(value="sharegpt")
+        ttk.Label(gen_settings_frame, text="sharegpt").grid(row=row_idx, column=1, padx=5, pady=5, sticky="w")
         ttk.Label(gen_settings_frame, text="(Format for output.jsonl files)").grid(row=row_idx, column=2, padx=5, pady=5, sticky="w"); row_idx+=1
 
         # --- Prompts Tab ---
@@ -4852,7 +4844,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.7")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.8")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
