@@ -18,6 +18,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Sampler Parameters](#sampler-parameters)
   - [Database & Caching](#database--caching)
   - [Budget & Cost Control](#budget--cost-control)
+  - [Circuit Breaker](#circuit-breaker)
 - [Usage](#-usage)
   - [Starting a Generation Run](#starting-a-generation-run)
   - [Resuming & Crash Recovery](#resuming--crash-recovery)
@@ -50,7 +51,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **User Speaking Detection** — Detects when the assistant impersonates the user, with gender-specific phrase lists
 - **Slop Detection** — Identifies undesirable phrases/patterns in generated text
 - **Anti-Slop Detection** — Secondary detection layer for additional phrase filtering
-- **Incomplete Quote Detection** — Catches unbalanced quotation marks with programmatic auto-fix fallback
+- **Incomplete Quote Detection** — Catches unbalanced quotation marks (both straight `"` and curly `""` quotes) with programmatic auto-fix fallback
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
 - **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
@@ -70,9 +71,11 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Remove all asterisks
 - Ensure spaces after line breaks
 - Strip markdown formatting to plain text
+- Normalize and balance quotation marks
 
 ### Infrastructure
 - **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached
+- **Circuit Breaker** — Automatically disables API slots after consecutive failures and re-enables them after a cooldown period
 - **Per-API Rate Limiting** — Configurable RPM per API slot with automatic wait and real-time status display with color-coded indicators
 - **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed) to avoid redundant API calls
 - **PostgreSQL Storage** — Optional database backend with connection pooling and JSONL export
@@ -82,6 +85,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
 - **Live Prompt Preview** — View prompts being sent to APIs in real-time as JSON
 - **Token & Cost Tracking** — Track input/output tokens and estimate API costs with budget enforcement
+- **Debug Logging Toggle** — Enable/disable verbose debug logging from the UI with a single checkbox
 - **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
 - **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting
 
@@ -114,7 +118,16 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
     ┌─────────┐  ┌─────────┐  ┌──────────┐
     │ API 1-4 │  │ API 5   │  │  API 6   │
     │ (Gen)   │  │(SlopFix)│  │(AntiSlop)│
-    └─────────┘  └─────────┘  └──────────┘
+    └────┬────┘  └────┬────┘  └────┬─────┘
+         │             │             │
+         └─────────────┼─────────────┘
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ Circuit  │ │  Rate    │ │  Budget  │
+    │ Breaker  │ │ Limiter  │ │  Check   │
+    └──────────┘ └──────────┘ └──────────┘
                        │
          ┌─────────────┼─────────────┐
          ▼             ▼             ▼
@@ -221,7 +234,7 @@ generation:
   context_size: 3000              # Total characters (subject + surrounding context)
   max_attempts: 5                 # Retries per Q/A turn
   num_turns: 1                    # Q/A pairs per conversation
-  history_size: 10                # Recent questions to avoid repetition
+  history_size: 10               # Recent questions to avoid repetition
   api_request_timeout: 300        # Seconds for API connect/read timeout
   max_newlines_malformed: 16      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
@@ -392,7 +405,25 @@ api:
 - **`cost_per_1k_tokens`** — The price per 1,000 tokens used to estimate cost
 - **`budget_limit`** — When estimated cost reaches this value, generation automatically stops. Set to `0` or leave empty to disable budget enforcement
 
-The budget status is displayed in the metrics bar at the top of the application, showing current spend vs. limit. The label turns red when the budget is exceeded.
+The budget status is displayed in the metrics bar at the top of the application, showing current spend vs. limit. The label turns red when the budget is exceeded. Budget is checked at the start of each worker loop iteration with thread-safe access to token counters.
+
+### Circuit Breaker
+
+The application includes an automatic **circuit breaker** for each API slot that prevents cascading failures:
+
+```python
+API_CIRCUIT_BREAKER = {
+    "max_consecutive_failures": 5,   # Failures before circuit opens
+    "cooldown_seconds": 60,          # Seconds before retrying
+    ...
+}
+```
+
+When an API slot experiences 5 consecutive failures (HTTP errors, timeouts, or exceptions), the circuit breaker **opens** and skips requests to that slot. After 60 seconds of cooldown, the circuit **closes** and requests resume. This prevents wasting time and resources on consistently failing endpoints.
+
+Circuit breaker events are logged:
+- `API Slot X circuit OPEN after 5 consecutive failures. Cooling down...` (WARNING)
+- `API Slot X circuit closed. Resuming requests.` (INFO)
 
 ---
 
@@ -420,7 +451,7 @@ The state file tracks:
 - Per-API progress (in duplication mode)
 - Configuration snapshot (warns if settings changed since last run)
 
-**Configuration Incompatibility Detection:** When resuming, the application compares critical settings (use_questions_file, num_turns, subject_size, context_size, master_duplication_mode) between the saved state and current config. If they differ, a warning dialog presents the differences and lets you choose whether to proceed or start fresh.
+**Configuration Incompatibility Detection:** When resuming, the application compares critical settings (`use_questions_file`, `num_turns`, `subject_size`, `context_size`, `master_duplication_mode`) between the saved state and current config. If they differ, a warning dialog presents the differences and lets you choose whether to proceed or start fresh.
 
 **Pause & Reload:** When you pause generation and resume, the configuration is automatically reloaded from `config.yml`, allowing you to make mid-run adjustments to rate limits and other settings without restarting.
 
@@ -446,9 +477,11 @@ The real-time dashboard provides:
 - **Budget indicator** — Current spend vs. budget limit with color-coded status
 - **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
 - **API response times** — Average, min, max response times and sample count per slot
+- **Thread status** — Shows spawned and active thread counts
 - **Search** — Search across all issue panels in a tab with case-insensitive matching and auto-scroll to first result
 - **Copy All** — Copy all issue text from a tab to clipboard
 - **Clear Dashboard** button — Resets all recent issue lists and graph data
+- **Live Prompt Preview** tab — Shows exact JSON payloads being sent to APIs in real-time
 
 ### Live Prompt Preview
 
@@ -529,7 +562,7 @@ readyart-dataset-generator/
 ├── detection.py             # Issue detection (refusals, slop, quotes, anti-slop)
 ├── text_utils.py            # Text post-processing utilities
 ├── config_loader.py         # Configuration management & profiles
-├── api_handler.py           # Rate limiting & Valkey caching
+├── api_handler.py           # Rate limiting, circuit breaker & Valkey caching
 ├── logging_config.py        # Centralized logging with colorama
 ├── config/
 │   ├── config.yml           # Main configuration file
@@ -558,16 +591,16 @@ readyart-dataset-generator/
 ### Generation Pipeline
 
 1. **Task Creation** — Random chunks are extracted from input files (subject + surrounding context), or questions are read from `questions.txt`
-2. **Question Generation** — An LLM generates an initial question based on the subject/context, avoiding recent question history
+2. **Question Generation** — An LLM generates an initial question based on the subject/context, avoiding recent question history. Responses are checked for malformed content (excessive newlines/length)
 3. **Answer Generation** — The assistant generates an answer, with automatic detection and retry for:
    - Refusals → Apply jailbreak prompts and retry
    - User speaking → Apply speaking fix prompts and retry
    - Slop → Attempt sentence-level rewriting via Slop Fixer LLM, then fallback to system prompt fixes
    - Anti-slop → Attempt sentence-level rewriting via Anti-Slop Fixer LLM
    - Incomplete quotes → Retry with fix instruction, then programmatic auto-fix
-4. **User Continuation** — If multi-turn, an LLM generates the user's next message
+4. **User Continuation** — If multi-turn, an LLM generates the user's next message. Responses are also checked for malformed content
 5. **Repeat** — Steps 3-4 repeat for the configured number of turns
-6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, etc.)
+6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, etc.)
 7. **Output** — Write to JSONL file or PostgreSQL database
 8. **State Save** — Update crash recovery state
 
@@ -580,11 +613,11 @@ Slop Detected
 Extract paragraph context around slop phrase
     │
     ▼
-Call Slop Fixer LLM (API Slot 5) to rewrite
+Call Slop Fixer LLM (API Slot 5) to rewrite paragraph
     │
     ├── Success → Check for incomplete quotes
     │       │
-    │       ├── Quotes OK → Replace in text
+    │       ├── Quotes balanced → Replace in text
     │       └── Quotes broken → Skip replacement (preserve original)
     │
     └── Failure → Try next iteration with rotating fix instructions
@@ -602,11 +635,11 @@ Anti-Slop Detected
 Extract paragraph context around anti-slop phrase
     │
     ▼
-Call Anti-Slop Fixer LLM (API Slot 6) to rewrite
+Call Anti-Slop Fixer LLM (API Slot 6) to rewrite paragraph
     │
     ├── Success → Check for incomplete quotes
     │       │
-    │       ├── Quotes OK → Replace in text
+    │       ├── Quotes balanced → Replace in text
     │       └── Quotes broken → Skip replacement (preserve original)
     │
     └── Failure → Try next iteration with rotating fix instructions
@@ -615,14 +648,35 @@ Call Anti-Slop Fixer LLM (API Slot 6) to rewrite
             └── All fixes exhausted → Accept with anti-slop remaining
 ```
 
-### Incomplete Quote Auto-Fix
+### Incomplete Quote Detection & Auto-Fix
 
-When the LLM returns a response with unbalanced quotation marks and retries are exhausted:
+When the LLM returns a response with unbalanced quotation marks and retries are exhausted, the `normalize_quotes()` function applies programmatic fixes:
 
-1. **Straight quotes (`"`)** — If odd count, add a quote to the beginning or end as appropriate
-2. **Curly quotes (`"`, `"`)** — If left and right counts don't match, add the missing quote
+1. **Collapse runs** — Multiple consecutive quotes of the same type are collapsed to a single mark
+2. **Curly quotes (`"`, `"`)** — If left and right counts don't match, the missing openers are prepended or closers are appended to balance them
+3. **Straight quotes (`"`)** — Because the same glyph is used for both opening and closing, an odd count is ambiguous. The function deliberately **does not** guess where the missing quote belongs — this is handled by the detection and retry system instead
 
-This programmatic fallback ensures conversations aren't lost due to minor formatting issues.
+This approach prevents the common bug where a trailing quote is force-appended to dialogue that intentionally lacks one (e.g., inch marks like `6"`).
+
+### Circuit Breaker Flow
+
+```
+API Call Fails (HTTP error, timeout, or exception)
+    │
+    ▼
+Increment failure counter for this API slot
+    │
+    ▼
+Failure count >= max_consecutive_failures (5)?
+    │
+    ├── Yes → Open circuit (skip this API slot)
+    │         Log: "API Slot X circuit OPEN after 5 consecutive failures"
+    │         Wait for cooldown_seconds (60s)
+    │         Then: Close circuit, reset failure counter
+    │         Log: "API Slot X circuit closed. Resuming requests."
+    │
+    └── No  → Continue using this API slot
+```
 
 ### Budget Enforcement
 
@@ -639,7 +693,7 @@ Is current_cost >= budget_limit?
     └── No  → Continue generation
 ```
 
-Budget is checked at the start of each worker loop iteration and after each task completes, ensuring spending doesn't significantly exceed the limit.
+Budget is checked at the start of each worker loop iteration with thread-safe access to token counters, ensuring spending doesn't significantly exceed the limit.
 
 ---
 
@@ -652,6 +706,7 @@ Budget is checked at the start of each worker loop iteration and after each task
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL, model, and key |
 | **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
 | **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators |
+| **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers after 60s |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
 | **Database connection failed** | Verify PostgreSQL is running and credentials are correct |
@@ -662,6 +717,9 @@ Budget is checked at the start of each worker loop iteration and after each task
 | **Budget exceeded unexpectedly** | Review `cost_per_1k_tokens` setting; ensure it matches your API provider's pricing |
 | **API connection test fails** | Verify URL format (must include scheme like `https://`), model name, and API key |
 | **Resume incompatibility warning** | Critical settings changed since last run; choose to start fresh or proceed with caution |
+| **Need to force resume** | Click **🔄 Force Recovery** to bypass config checks and reload state |
+| **Want to clear all data** | Use **Clear Database** button (with confirmation) or **Stop & Clear Job** to reset progress |
+| **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in the toolbar to disable verbose logging |
 
 ### Environment Variables
 
@@ -672,6 +730,15 @@ export API_URL_1="https://api.example.com/v1/chat/completions"
 export MODEL_NAME_1="gpt-4"
 export API_KEY_1="sk-..."
 ```
+
+### Debug Logging
+
+The application supports two levels of logging:
+
+- **Normal** — INFO, WARNING, ERROR, and CRITICAL messages are always logged
+- **Debug** — Verbose DEBUG messages are hidden by default; enable with the **🐛 Debug Logs** checkbox in the toolbar
+
+All logs are written to `output/log.txt` regardless of the debug toggle.
 
 ---
 
@@ -688,6 +755,7 @@ export API_KEY_1="sk-..."
 - **Test API connections** in the config editor before starting a generation run
 - **Use the Live Prompt Preview** to verify your prompt templates are working correctly before committing to a full run
 - **Pause and adjust** rate limits mid-run — configuration is reloaded when you resume
+- **Monitor circuit breaker** — if an API slot's circuit opens frequently, the endpoint may be experiencing issues
 
 ---
 
