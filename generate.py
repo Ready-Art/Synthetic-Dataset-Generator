@@ -1220,7 +1220,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                             issue_timestamps['errors'].append(time.time())
                             cutoff = time.time() - 3600
                             issue_timestamps['errors'] = [t for t in issue_timestamps['errors'] if t > cutoff]
-                        if api_slot_idx < 4 :
+                        if api_slot_idx < 6 :
                             if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                             recent_errors_per_api[api_slot_idx].append(err_summary)
                     finally:
@@ -1414,7 +1414,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                         err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
                         if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
                         recent_errors_total.append((err_summary, api_slot_idx))
-                        if api_slot_idx < 4:
+                        if api_slot_idx < 6:
                             if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                             recent_errors_per_api[api_slot_idx].append(err_summary)
                     finally:
@@ -2080,7 +2080,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                     issue_timestamps['errors'].append(time.time())
                                     cutoff = time.time() - 3600
                                     issue_timestamps['errors'] = [t for t in issue_timestamps['errors'] if t > cutoff]
-                                if api_slot_idx < 5:
+                                if api_slot_idx < 6:
                                     if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                                     recent_errors_per_api[api_slot_idx].append(err_summary)
                             finally:
@@ -2103,7 +2103,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             err_summary = f"T{thread_id} Ans-Timeout (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
                             if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
                             recent_errors_total.append((err_summary, api_slot_idx))
-                            if api_slot_idx < 4:
+                            if api_slot_idx < 6:
                                 if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                                 recent_errors_per_api[api_slot_idx].append(err_summary)
                         finally:
@@ -2120,7 +2120,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             err_summary = f"T{thread_id} Ans-ReqExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
                             if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
                             recent_errors_total.append((err_summary, api_slot_idx))
-                            if api_slot_idx < 4:
+                            if api_slot_idx < 6:
                                 if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                                 recent_errors_per_api[api_slot_idx].append(err_summary)
                         finally:
@@ -2138,7 +2138,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             err_summary = f"T{thread_id} Ans-GenExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}: {str(e_gen)[:20]}"
                             if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
                             recent_errors_total.append((err_summary, api_slot_idx))
-                            if api_slot_idx < 4:
+                            if api_slot_idx < 6:
                                 if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
                                 recent_errors_per_api[api_slot_idx].append(err_summary)
                         finally:
@@ -2173,7 +2173,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             detected_phrase, detected_sentence = refusal_info[0]
                             if len(recent_refusals_total) >= MAX_RECENT: recent_refusals_total.pop(0)
                             recent_refusals_total.append((detected_phrase, detected_sentence, api_slot_idx))
-                            if api_slot_idx < 4:
+                            if api_slot_idx < 6:
                                 if len(recent_refusals_per_api[api_slot_idx]) >= MAX_RECENT: recent_refusals_per_api[api_slot_idx].pop(0)
                                 recent_refusals_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
@@ -2198,7 +2198,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             detected_phrase, detected_sentence = user_speaking_info[0]
                             if len(recent_user_speaking_total) >= MAX_RECENT: recent_user_speaking_total.pop(0)
                             recent_user_speaking_total.append((detected_phrase, detected_sentence, api_slot_idx))
-                            if api_slot_idx < 4:
+                            if api_slot_idx < 6:
                                 if len(recent_user_speaking_per_api[api_slot_idx]) >= MAX_RECENT: recent_user_speaking_per_api[api_slot_idx].pop(0)
                                 recent_user_speaking_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
@@ -2225,7 +2225,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             detected_phrase, detected_sentence = slop_info[0]
                             if len(recent_slop_total) >= MAX_RECENT: recent_slop_total.pop(0)
                             recent_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
-                            if api_slot_idx < 4:
+                            if api_slot_idx < 6:
                                 if len(recent_slop_per_api[api_slot_idx]) >= MAX_RECENT: recent_slop_per_api[api_slot_idx].pop(0)
                                 recent_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
@@ -4852,7 +4852,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.6")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.7")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
