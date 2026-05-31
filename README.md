@@ -63,7 +63,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Top-Level System Prompt** — Prepend a universal instruction to all system prompts across all conversations
 
 ### Text Post-Processing
-- Remove thinking blocks (`<think&gt;...&lt;/think&gt;`) from reasoning models
+- Remove thinking blocks from reasoning models
 - Remove em dashes (—)
 - Remove excessive asterisks (`**`, `****`, etc.)
 - Remove `* *` patterns
