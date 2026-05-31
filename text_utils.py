@@ -76,30 +76,37 @@ def remove_markdown(text):
     return text.strip()
 
 def normalize_quotes(text):
-    """Normalizes excessive quotes and fixes basic unbalanced pairing."""
-    if not text:
-        return text
-
-    # 1. Collapse excessive consecutive quotes (e.g., """" -> ", "" -> ")
+    if not text: return text
+    # 1. Keep your existing excessive quote collapsing...
     text = re.sub(r'"{2,}', '"', text)
     text = re.sub(r'"{2,}', '"', text)
     text = re.sub(r'"{2,}', '"', text)
 
-    # 2. Fix unbalanced straight quotes
-    straight_count = text.count('"')
-    if straight_count % 2 != 0:
-        if not text.startswith('"') and text.endswith('"'):
-            text = '"' + text
-        elif text.startswith('"') and not text.endswith('"'):
-            text = text + '"'
+    # 2. Replace parity logic with structural balancing
+    result = []
+    straight_open = False
+    curly_open = False
 
-    # 3. Fix unbalanced curly/smart quotes
-    left_curly = text.count('"')
-    right_curly = text.count('"')
-    if left_curly != right_curly:
-        if right_curly > left_curly and not text.startswith('"'):
-            text = '"' + text
-        elif left_curly > right_curly and not text.endswith('"'):
-            text = text + '"'
+    for char in text:
+        if char == '"':
+            if not straight_open:
+                result.append('"')
+                straight_open = True
+            else:
+                result.append('"')
+                straight_open = False
+        elif char == '"':
+            if not curly_open:
+                result.append('"')
+                curly_open = True
+            else:
+                result.append('"')
+                curly_open = False
+        else:
+            result.append(char)
 
-    return text
+    # Force-close any unclosed quotes at the end
+    if straight_open: result.append('"')
+    if curly_open: result.append('"')
+
+    return "".join(result)

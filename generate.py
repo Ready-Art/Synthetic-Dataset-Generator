@@ -1574,7 +1574,15 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             )
             if additional_fix_instructions:
                 user_rewrite_instruction += f"\n\nImportant instruction to follow: {additional_fix_instructions}"
-            user_rewrite_instruction += f"\n\nOriginal text: \"{text_context}\""
+
+            user_rewrite_instruction += (
+                "\n\nCRITICAL RULES:\n"
+                "1. Preserve ALL existing quotation marks exactly where they appear structurally.\n"
+                "2. If you must add or remove a quote, ensure every opening mark has a matching closing mark.\n"
+                "3. Do not wrap the entire output in quotes."
+            )
+
+            user_rewrite_instruction += f"\n\n<original_text>\n{text_context}\n</original_text>"
 
             messages = [
                 {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
@@ -1769,7 +1777,15 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             )
             if additional_fix_instructions:
                 user_rewrite_instruction += f"\n\nAdditional instruction: {additional_fix_instructions}"
-            user_rewrite_instruction += f"\n\nOriginal text: \"{text_context}\""
+
+            user_rewrite_instruction += (
+                "\n\nCRITICAL RULES:\n"
+                "1. Preserve ALL existing quotation marks exactly where they appear structurally.\n"
+                "2. If you must add or remove a quote, ensure every opening mark has a matching closing mark.\n"
+                "3. Do not wrap the entire output in quotes."
+            )
+
+            user_rewrite_instruction += f"\n\n<original_text>\n{text_context}\n</original_text>"
 
             messages = [
                 {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
@@ -2511,25 +2527,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         log_message(f"Thread {thread_id}: Incomplete quote detected, max retries reached. Applying programmatic fix.", "WARNING")
 
                         # ROBUST PROGRAMMATIC FALLBACK: Auto-fix unbalanced quotes
-                        cleaned = answer.strip()
-
-                        # 1. Fix straight quotes (")
-                        straight_count = cleaned.count('"')
-                        if straight_count % 2 != 0:
-                            if not cleaned.startswith('"') and cleaned.endswith('"'):
-                                answer = '"' + cleaned
-                            elif cleaned.startswith('"') and not cleaned.endswith('"'):
-                                answer = cleaned + '"'
-
-                        # 2. Fix curly/smart quotes (“ and ”)
-                        left_curly = cleaned.count('“')
-                        right_curly = cleaned.count('”')
-                        if left_curly != right_curly:
-                            if right_curly > left_curly and not cleaned.startswith('“'):
-                                answer = '“' + cleaned
-                            elif left_curly > right_curly and not cleaned.endswith('”'):
-                                answer = cleaned + '”'
-
+                        # Uses the upgraded structural balancer instead of simple parity counting
+                        answer = text_utils.normalize_quotes(answer.strip())
                         issue_detected_this_main_api_call = False  # Mark as resolved so it saves
 
             if not issue_detected_this_main_api_call:
@@ -4918,7 +4917,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.1.5")
+root.title("ReadyArt Synthetic Dataset Generator v8.1.6")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
