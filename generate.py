@@ -4935,7 +4935,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.1.6")
+root.title("ReadyArt Synthetic Dataset Generator v8.2.0")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -4978,6 +4978,10 @@ cost_label = ttk.Label(metrics_frame, text="Est. Cost: $0.0000"); cost_label.pac
 
 budget_label = ttk.Label(metrics_frame, text="Budget: $0.00 / $0.00", foreground="lightgray")
 budget_label.pack(side=tk.LEFT, padx=10)
+
+thread_status_var = tk.StringVar(value="Threads: 0 spawned, 0 active")
+thread_status_label = ttk.Label(metrics_frame, textvariable=thread_status_var, foreground="lightgray")
+thread_status_label.pack(side=tk.LEFT, padx=10)
 
 # NEW: Rate Limit Status Labels
 rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)"); rate_limit_frame.pack(pady=5, padx=10, fill="x")
@@ -5041,6 +5045,21 @@ def stop_and_clear_processing_job():
 
         wait_thread = threading.Thread(target=wait_for_threads_to_stop_for_clear, name="ClearJobWaiter")
         wait_thread.start()
+
+def update_thread_status_display():
+    """Periodically updates the thread count label in the GUI."""
+    global threads
+    try:
+        # Safely count spawned and active threads
+        spawned = len(threads) if 'threads' in globals() and threads else 0
+        active = sum(1 for t in threads if t.is_alive()) if spawned > 0 else 0
+        thread_status_var.set(f"Threads: {spawned} spawned, {active} active")
+    except Exception:
+        thread_status_var.set("Threads: 0 spawned, 0 active")
+
+    # Schedule next update every 1 second
+    if root.winfo_exists():
+        root.after(1000, update_thread_status_display)
 
 def wait_for_threads_to_stop_for_clear():
     """Helper function to join threads and clear state after stop_and_clear_job is initiated."""
@@ -5489,6 +5508,8 @@ def init_database_pool():
 reset_all_stats_and_history() # Initialize stats on startup
 update_dashboard() # Initial dashboard display
 init_database_pool() # <-- NEW: Initialize DB on launch
+
+root.after(1000, update_thread_status_display)
 
 if __name__ == "__main__":
     try:
