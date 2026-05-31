@@ -121,6 +121,7 @@ task_queue = None # Queue for distributing tasks to worker threads
 completed_task_ids = set() # Set of IDs for tasks that have been successfully processed
 loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded from state file
 state_file_lock = Lock() # Lock for thread-safe access to the generation_state.json file
+prompt_preview_text = None
 
 # --- Crash Recovery Functions ---
 def save_generation_state():
@@ -1038,6 +1039,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 {"role": "user", "content": final_formatted_user_prompt}
             ]
 
+            update_live_prompt_preview(messages_for_llm)
+
             # Prepare payload for LLM API
             payload_dict = {
                 "model": model_name_local,
@@ -1281,7 +1284,9 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
             messages = [{"role": "system", "content": system_prompt}] + \
                        conversation_history_for_llm + \
-                       [{"role": "user", "content": final_user_continuation_prompt}] 
+                       [{"role": "user", "content": final_user_continuation_prompt}]
+
+            update_live_prompt_preview(messages)
 
             payload_dict = {
                 "model": model_name_local,
@@ -1900,6 +1905,10 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 messages = [{"role": "system", "content": current_system_prompt_iter}] + \
                            conversation_history_for_llm + \
                            [{"role": "user", "content": answer_prompt_template}]
+
+                # --- LIVE PREVIEW HOOK ---
+                update_live_prompt_preview(messages)
+                # --- END HOOK ---
 
                 payload_dict_ans = {
                     "model": model_name_local,
@@ -2885,6 +2894,25 @@ def update_dashboard():
             except Exception as e_graph:
                 log_message(f"Error updating issue graph: {e_graph}", "ERROR")
 
+def update_live_prompt_preview(messages_list):
+    """Thread-safe function to update the Live Prompt Preview widget from worker threads."""
+    if not root.winfo_exists() or prompt_preview_text is None:
+        return
+
+    # Format payload for clean JSON readability
+    preview_json = json.dumps({"messages": messages_list}, indent=2, ensure_ascii=False)
+
+    def _apply_update():
+        if not root.winfo_exists() or prompt_preview_text is None:
+            return
+        prompt_preview_text.config(state=tk.NORMAL)
+        prompt_preview_text.delete(1.0, tk.END)
+        prompt_preview_text.insert(tk.END, preview_json)
+        prompt_preview_text.config(state=tk.DISABLED)
+        prompt_preview_text.see(tk.END)  # Auto-scroll to bottom
+
+    # Schedule UI update on the main Tkinter thread
+    root.after(0, _apply_update)
 
 def start_processing():
     """Initiates the data generation process based on current configurations."""
@@ -4780,7 +4808,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.1")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.2")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5078,6 +5106,16 @@ highlight_colors = {
 tab_names = ["Totals"] + [f"API {i+1}" for i in range(6)]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "Errors"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"] # Keys for accessing data and widgets
+
+# --- Live Prompt Preview Tab Setup ---
+preview_tab = ttk.Frame(dashboard_notebook)
+dashboard_notebook.add(preview_tab, text="Live Prompt Preview")
+
+prompt_preview_text = scrolledtext.ScrolledText(preview_tab, wrap=tk.WORD, state=tk.NORMAL, font=('Consolas', 9))
+prompt_preview_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+prompt_preview_text.insert(tk.END, "Waiting for prompt generation...\n\n(Prompts will appear here in real-time as they are queued for the API)")
+prompt_preview_text.config(state=tk.DISABLED)
+# --- End Preview Tab Setup ---
 
 
 for tab_name in tab_names:
