@@ -17,12 +17,15 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Detection & Quality Control](#detection--quality-control)
   - [Sampler Parameters](#sampler-parameters)
   - [Database & Caching](#database--caching)
+  - [Budget & Cost Control](#budget--cost-control)
 - [Usage](#-usage)
   - [Starting a Generation Run](#starting-a-generation-run)
   - [Resuming & Crash Recovery](#resuming--crash-recovery)
   - [Duplication vs. Collaborative Mode](#duplication-vs-collaborative-mode)
   - [Dashboard & Monitoring](#dashboard--monitoring)
+  - [Live Prompt Preview](#live-prompt-preview)
   - [Configuration Profiles](#configuration-profiles)
+  - [API Connection Testing](#api-connection-testing)
 - [Output Formats](#-output-formats)
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
@@ -35,6 +38,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ### Core Generation
 - **Multi-API Orchestration** — Configure up to 6 API slots (4 generation, 1 slop fixer, 1 anti-slop fixer) with independent endpoints, models, keys, and rate limits
+- **Per-API Thread Configuration** — Each API slot has its own configurable thread count for fine-grained throughput control
 - **Master Duplication Mode** — Generate the same conversation across multiple APIs simultaneously for dataset diversity
 - **Collaborative Mode** — Distribute tasks across enabled APIs for higher throughput
 - **Multi-Turn Conversations** — Generate conversations with configurable turn counts (Q/A pairs)
@@ -46,18 +50,20 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **User Speaking Detection** — Detects when the assistant impersonates the user, with gender-specific phrase lists
 - **Slop Detection** — Identifies undesirable phrases/patterns in generated text
 - **Anti-Slop Detection** — Secondary detection layer for additional phrase filtering
-- **Incomplete Quote Detection** — Catches unbalanced quotation marks with programmatic auto-fix
-- **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving context and quotes
-- **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting
+- **Incomplete Quote Detection** — Catches unbalanced quotation marks with programmatic auto-fix fallback
+- **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
+- **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
+- **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds
 
 ### Character & Persona Engine
 - **Character Profiles** — Randomly inject character names, jobs, clothing, appearance, and backstories into system prompts
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
+- **Top-Level System Prompt** — Prepend a universal instruction to all system prompts across all conversations
 
 ### Text Post-Processing
-- Remove thinking blocks from reasoning models
+- Remove thinking blocks (`<think&gt;...&lt;/think&gt;`) from reasoning models
 - Remove em dashes (—)
 - Remove excessive asterisks (`**`, `****`, etc.)
 - Remove `* *` patterns
@@ -66,13 +72,18 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Strip markdown formatting to plain text
 
 ### Infrastructure
-- **Rate Limiting** — Per-API rate limiting with configurable RPM and automatic wait
-- **Valkey/Redis Caching** — Cache LLM responses to avoid redundant API calls
-- **PostgreSQL Storage** — Optional database backend with connection pooling
-- **Crash Recovery** — Automatic state saving/loading with configuration change detection
+- **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached
+- **Per-API Rate Limiting** — Configurable RPM per API slot with automatic wait and real-time status display with color-coded indicators
+- **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed) to avoid redundant API calls
+- **PostgreSQL Storage** — Optional database backend with connection pooling and JSONL export
+- **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings
 - **Configuration Profiles** — Save, load, and delete named configuration profiles
-- **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs
-- **Token & Cost Tracking** — Track input/output tokens and estimate API costs
+- **API Connection Testing** — Test API connectivity directly from the configuration editor
+- **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
+- **Live Prompt Preview** — View prompts being sent to APIs in real-time as JSON
+- **Token & Cost Tracking** — Track input/output tokens and estimate API costs with budget enforcement
+- **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
+- **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting
 
 ---
 
@@ -169,11 +180,11 @@ All configuration is managed through `config/config.yml` and can be edited via t
 
 The application supports **6 API slots**:
 
-| Slot | Purpose | Part of Duplication? |
-|------|---------|---------------------|
-| 1-4  | Main generation APIs | Yes |
-| 5    | Slop Fixer LLM | No |
-| 6    | Anti-Slop Fixer LLM | No |
+| Slot | Purpose | Part of Duplication? | Configurable Threads? |
+|------|---------|---------------------|----------------------|
+| 1-4  | Main generation APIs | Yes | Yes |
+| 5    | Slop Fixer LLM | No | Yes |
+| 6    | Anti-Slop Fixer LLM | No | Yes |
 
 ```yaml
 api:
@@ -181,6 +192,7 @@ api:
   threads: 10
   pricing:
     cost_per_1k_tokens: 0.002
+    budget_limit: 50.0
   apis:
     - url: "https://api.example.com/v1/chat/completions"
       model: "model-name"
@@ -195,8 +207,8 @@ api:
 - **`model`**: Model identifier for the API
 - **`key`**: API key (can also be set via environment variables `API_KEY_1` through `API_KEY_6`)
 - **`enabled`**: Whether this slot is active for generation (slots 1-4 only)
-- **`threads`**: Number of worker threads dedicated to this API
-- **`rate_limit_rpm`**: Requests per minute limit for rate limiting
+- **`threads`**: Number of worker threads dedicated to this API (all slots)
+- **`rate_limit_rpm`**: Requests per minute limit for rate limiting (all slots)
 
 > **Tip:** Environment variables (`API_URL_1`, `MODEL_NAME_1`, `API_KEY_1`, etc.) take precedence over config.yml values.
 
@@ -214,6 +226,7 @@ generation:
   max_newlines_malformed: 16      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
   max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing
+  max_anti_slop_fix_iterations: 3      # Iterations for sentence-level anti-slop fixing
   output_format: "sharegpt"       # "sharegpt" or "openai"
   sanitize_input_max_length: 100000000
 
@@ -351,6 +364,8 @@ database:
   pool_size: 10
 ```
 
+When PostgreSQL is enabled, conversations are stored in the `generated_conversations` table and file writing is skipped entirely. Use the **Export DB → JSONL** button to export.
+
 **Valkey/Redis Caching:**
 ```yaml
 valkey:
@@ -361,7 +376,23 @@ valkey:
   password: null
 ```
 
-When caching is enabled, identical prompts are cached with a 1-hour TTL, avoiding redundant API calls.
+When caching is enabled, identical prompts are cached using an MD5 hash of the message content with a 1-hour TTL, avoiding redundant API calls. Cache keys include the API slot index to allow different models to produce different cached responses.
+
+### Budget & Cost Control
+
+The application tracks token usage and estimated costs in real-time. You can set a budget limit to automatically stop generation when spending exceeds the threshold.
+
+```yaml
+api:
+  pricing:
+    cost_per_1k_tokens: 0.002   # Cost per 1,000 tokens (input + output combined)
+    budget_limit: 50.0           # Maximum spend in USD (set to 0 to disable)
+```
+
+- **`cost_per_1k_tokens`** — The price per 1,000 tokens used to estimate cost
+- **`budget_limit`** — When estimated cost reaches this value, generation automatically stops. Set to `0` or leave empty to disable budget enforcement
+
+The budget status is displayed in the metrics bar at the top of the application, showing current spend vs. limit. The label turns red when the budget is exceeded.
 
 ---
 
@@ -385,9 +416,13 @@ The state file tracks:
 - Completed task IDs
 - System prompt counter
 - Question history
-- All statistics (refusals, slop, errors, tokens, etc.)
+- All statistics (refusals, slop, errors, tokens, costs, etc.)
 - Per-API progress (in duplication mode)
 - Configuration snapshot (warns if settings changed since last run)
+
+**Configuration Incompatibility Detection:** When resuming, the application compares critical settings (use_questions_file, num_turns, subject_size, context_size, master_duplication_mode) between the saved state and current config. If they differ, a warning dialog presents the differences and lets you choose whether to proceed or start fresh.
+
+**Pause & Reload:** When you pause generation and resume, the configuration is automatically reloaded from `config.yml`, allowing you to make mid-run adjustments to rate limits and other settings without restarting.
 
 ### Duplication vs. Collaborative Mode
 
@@ -395,20 +430,36 @@ The state file tracks:
 |---------|-----------------|-------------------|
 | Task distribution | Same task to all enabled APIs | Different tasks distributed across APIs |
 | Output files | Per-API JSONL files | Single combined JSONL file |
+| Debug logs | Per-API debug log files | Single debug log file |
 | Use case | Dataset diversity from multiple models | Higher throughput |
 | Progress bars | One per API | Single overall bar |
 | Question/continuation gen | Always uses API Slot 1 | Uses the worker's assigned API |
+| Thread allocation | Sum of threads from all enabled APIs | Sum of threads from all enabled APIs |
 
 ### Dashboard & Monitoring
 
 The real-time dashboard provides:
 
-- **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes
-- **Per-API tabs** — Individual API statistics and recent issues
+- **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes (10-minute bins)
+- **Per-API tabs** — Individual API statistics and recent issues (APIs 1-6)
 - **Metrics bar** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
-- **Rate limit status** — Current usage vs. limit per API slot
-- **API response times** — Average, min, max response times per slot
+- **Budget indicator** — Current spend vs. budget limit with color-coded status
+- **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
+- **API response times** — Average, min, max response times and sample count per slot
+- **Search** — Search across all issue panels in a tab with case-insensitive matching and auto-scroll to first result
+- **Copy All** — Copy all issue text from a tab to clipboard
 - **Clear Dashboard** button — Resets all recent issue lists and graph data
+
+### Live Prompt Preview
+
+A dedicated **Live Prompt Preview** tab in the dashboard shows the exact JSON payload (messages array) being sent to the API in real-time. This is useful for:
+
+- Debugging prompt templates and variable substitution
+- Verifying character engine injections and emotional state assignments
+- Confirming system prompt construction and jailbreak additions
+- Monitoring the conversation context being passed to the LLM
+
+The preview auto-scrolls to the latest prompt and updates thread-safely from worker threads.
 
 ### Configuration Profiles
 
@@ -418,6 +469,17 @@ Save and load complete configurations as named profiles:
 2. Enter a profile name and click **Save Current Editor Config As Profile**
 3. Profiles are stored in `config/profiles/` as YAML files
 4. Load a profile to overwrite `config.yml` and apply those settings
+5. Delete profiles you no longer need
+
+### API Connection Testing
+
+The Configuration Editor includes a **Test Connection** button for each API slot. Clicking it sends a minimal test request (`"Reply with 'OK'."`) to verify:
+
+- The API URL is reachable and correctly formatted
+- The API key is valid
+- The model name is accepted by the endpoint
+
+Results are displayed next to the button with color-coded status (green for success, red for failure with error details).
 
 ---
 
@@ -455,6 +517,8 @@ In **Collaborative Mode**, a single file is produced:
 
 When **PostgreSQL** is enabled, conversations are stored in the `generated_conversations` table and file writing is skipped entirely. Use the **Export DB → JSONL** button to export.
 
+> **Note:** Conversations that contain detected refusals are **not** saved to output, ensuring dataset quality. Incomplete conversations (fewer turns than configured) are also excluded.
+
 ---
 
 ## 📁 File Structure
@@ -462,11 +526,11 @@ When **PostgreSQL** is enabled, conversations are stored in the `generated_conve
 ```
 readyart-dataset-generator/
 ├── generate.py              # Main application (GUI, workers, orchestration)
-├── detection.py             # Issue detection (refusals, slop, quotes)
+├── detection.py             # Issue detection (refusals, slop, quotes, anti-slop)
 ├── text_utils.py            # Text post-processing utilities
 ├── config_loader.py         # Configuration management & profiles
 ├── api_handler.py           # Rate limiting & Valkey caching
-├── logging_config.py        # Centralized logging
+├── logging_config.py        # Centralized logging with colorama
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   └── profiles/            # Saved configuration profiles
@@ -481,7 +545,8 @@ readyart-dataset-generator/
 │   ├── output_api_slot_0.jsonl  # Per-API output (duplication mode)
 │   ├── generation_state.json    # Crash recovery state
 │   ├── log.txt              # Application log
-│   ├── debug_prompt.jsonl   # Debug logs for API requests
+│   ├── debug_prompt.jsonl        # Debug logs (collaborative mode)
+│   ├── debug_prompt_api_slot_0.jsonl  # Per-API debug logs (duplication mode)
 │   └── output_data_backup_*.zip # Auto-backups of previous runs
 └── taskbar.png              # Application icon (optional)
 ```
@@ -520,13 +585,61 @@ Call Slop Fixer LLM (API Slot 5) to rewrite
     ├── Success → Check for incomplete quotes
     │       │
     │       ├── Quotes OK → Replace in text
-    │       └── Quotes broken → Skip replacement
+    │       └── Quotes broken → Skip replacement (preserve original)
     │
     └── Failure → Try next iteration with rotating fix instructions
             │
             ├── Max iterations reached → Fallback to system prompt fix
             └── All fixes exhausted → Accept with slop remaining
 ```
+
+### Anti-Slop Fixing Flow
+
+```
+Anti-Slop Detected
+    │
+    ▼
+Extract paragraph context around anti-slop phrase
+    │
+    ▼
+Call Anti-Slop Fixer LLM (API Slot 6) to rewrite
+    │
+    ├── Success → Check for incomplete quotes
+    │       │
+    │       ├── Quotes OK → Replace in text
+    │       └── Quotes broken → Skip replacement (preserve original)
+    │
+    └── Failure → Try next iteration with rotating fix instructions
+            │
+            ├── Max iterations reached → Log warning
+            └── All fixes exhausted → Accept with anti-slop remaining
+```
+
+### Incomplete Quote Auto-Fix
+
+When the LLM returns a response with unbalanced quotation marks and retries are exhausted:
+
+1. **Straight quotes (`"`)** — If odd count, add a quote to the beginning or end as appropriate
+2. **Curly quotes (`"`, `"`)** — If left and right counts don't match, add the missing quote
+
+This programmatic fallback ensures conversations aren't lost due to minor formatting issues.
+
+### Budget Enforcement
+
+```
+After each task completes:
+    │
+    ▼
+Calculate current cost = (input_tokens + output_tokens) × (cost_per_1k / 1000)
+    │
+    ▼
+Is current_cost >= budget_limit?
+    │
+    ├── Yes → Log warning, set stop_processing = True, all workers exit
+    └── No  → Continue generation
+```
+
+Budget is checked at the start of each worker loop iteration and after each task completes, ensuring spending doesn't significantly exceed the limit.
 
 ---
 
@@ -537,13 +650,18 @@ Call Slop Fixer LLM (API Slot 5) to rewrite
 | **"No APIs enabled"** error | Ensure at least one API slot (1-4) has a valid URL and is enabled |
 | **High refusal rate** | Add more jailbreak fixes in Detection → Refusal → Fixes |
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL, model, and key |
-| **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot |
+| **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
+| **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
 | **Database connection failed** | Verify PostgreSQL is running and credentials are correct |
 | **Valkey connection failed** | Caching will be disabled automatically; check host/port |
-| **Open file limit warning** | Reduce number of threads or increase system ulimit |
+| **Open file limit warning** | Reduce number of threads or increase system ulimit (`ulimit -n`) |
+| **Queue size warning** | Large queue sizes are normal for high thread counts; reduce threads if memory is constrained |
 | **Config validation errors** | Check that all numeric fields contain valid numbers |
+| **Budget exceeded unexpectedly** | Review `cost_per_1k_tokens` setting; ensure it matches your API provider's pricing |
+| **API connection test fails** | Verify URL format (must include scheme like `https://`), model name, and API key |
+| **Resume incompatibility warning** | Critical settings changed since last run; choose to start fresh or proceed with caution |
 
 ### Environment Variables
 
@@ -559,13 +677,17 @@ export API_KEY_1="sk-..."
 
 ## 📊 Performance Tips
 
-- **Increase threads** per API for higher throughput (watch rate limits)
+- **Increase threads per API** for higher throughput (watch rate limits — the rate limit status indicators show real-time usage)
 - **Enable Valkey caching** to avoid redundant API calls for identical prompts
 - **Use PostgreSQL** for large datasets — it's more efficient than appending to JSONL
 - **Disable unused detection** features to reduce API calls (e.g., `no_user_impersonation: true`)
 - **Lower `max_attempts`** if you prefer faster generation over quality
 - **Use collaborative mode** with multiple APIs for maximum throughput
 - **Use duplication mode** when you need diverse responses from different models for the same prompts
+- **Set a budget limit** to prevent unexpected API costs during long runs
+- **Test API connections** in the config editor before starting a generation run
+- **Use the Live Prompt Preview** to verify your prompt templates are working correctly before committing to a full run
+- **Pause and adjust** rate limits mid-run — configuration is reloaded when you resume
 
 ---
 
