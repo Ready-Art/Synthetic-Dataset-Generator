@@ -4852,7 +4852,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.5")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.6")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5164,16 +5164,18 @@ prompt_preview_text.insert(tk.END, "Waiting for prompt generation...\n\n(Prompts
 prompt_preview_text.config(state=tk.DISABLED)
 # --- End Preview Tab Setup ---
 
-
 for tab_name in tab_names:
     tab_frame = ttk.Frame(dashboard_notebook)
     dashboard_notebook.add(tab_frame, text=tab_name)
-    dashboard_notebook.tabs_widgets[tab_name] = {} # Store widgets for this tab
+    dashboard_notebook.tabs_widgets[tab_name] = {}
 
-    if tab_name == "Totals":
-        search_frame = ttk.Frame(dashboard_notebook.tabs_widgets[tab_name].get('scrollable_frame', tab_frame))
-    else:
-        search_frame = ttk.Frame(tab_frame)
+    # Base grid setup for the tab
+    tab_frame.columnconfigure(0, weight=1)
+    tab_frame.columnconfigure(1, weight=1)
+    tab_frame.rowconfigure(0, weight=0)  # Search bar row (fixed height)
+
+    # 1. Create Search Bar Frame (applies to ALL tabs)
+    search_frame = ttk.Frame(tab_frame)
     search_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(5, 2))
 
     search_var = tk.StringVar()
@@ -5188,86 +5190,107 @@ for tab_name in tab_names:
     dashboard_notebook.tabs_widgets[tab_name]['search_var'] = search_var
     dashboard_notebook.tabs_widgets[tab_name]['search_entry'] = search_entry
 
-    # NEW: Make the Totals tab scrollable to accommodate the graph
+    # 2. Determine parent frame and configure grids
     if tab_name == "Totals":
-        # Create a canvas with scrollbar for the Totals tab
         canvas = tk.Canvas(tab_frame)
         scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_canvas_configure(event, c=canvas, wid=canvas_window_id):
+            if event.width > 1:
+                c.itemconfig(wid, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        tab_frame.columnconfigure(0, weight=1)
+        tab_frame.columnconfigure(1, weight=0)  # Pin scrollbar to right
+        tab_frame.rowconfigure(1, weight=1)
 
         canvas.grid(row=1, column=0, sticky="nsew")
         scrollbar.grid(row=1, column=1, sticky="ns")
-        tab_frame.columnconfigure(0, weight=1)
-        tab_frame.rowconfigure(1, weight=1)
 
-        # Bind mouse wheel to canvas for scrolling
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        scrollable_frame.columnconfigure(0, weight=1)
+        scrollable_frame.columnconfigure(1, weight=1)
+        for r in range(3): scrollable_frame.rowconfigure(r, weight=1)
 
-        # Store reference to the scrollable frame
+        parent_frame = scrollable_frame
+        panel_row_offset = 0
         dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
         dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
+        canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-        # Create the 2x3 grid in the scrollable frame
-        scrollable_frame.columnconfigure(0, weight=1); scrollable_frame.columnconfigure(1, weight=1)
-        scrollable_frame.rowconfigure(0, weight=1); scrollable_frame.rowconfigure(1, weight=1); scrollable_frame.rowconfigure(2, weight=1)  # Added row 2
+    elif tab_name.startswith("API "):
+        # Wrap API tabs in Canvas + Scrollbar
+        canvas = tk.Canvas(tab_frame)
+        scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
 
-        for idx, issue_type_title in enumerate(issue_types):
-            # Skip "Errors" (index 4) for the Totals tab
-            if idx == 4:
-                continue
-            key = issue_keys[idx]
-            panel = ttk.LabelFrame(scrollable_frame, text=f"Recent {issue_type_title}")
-            row, col = divmod(idx, 2) # Arrange in a 2x3 grid (2 columns, 3 rows)
-            panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-            text_area = scrolledtext.ScrolledText(panel, wrap=tk.WORD, height=6)
-            text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            text_area.insert(tk.END, f"No recent {key}.")
-            text_area.config(state=tk.DISABLED) # Read-only
-            dashboard_notebook.tabs_widgets[tab_name][key] = text_area
+        def _on_canvas_configure(event, c=canvas, wid=canvas_window_id):
+            if event.width > 1:
+                c.itemconfig(wid, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
 
-            for tag_name_cfg, config_cfg in highlight_colors.items():
-                text_area.tag_configure(tag_name_cfg, foreground=config_cfg["foreground"], font=config_cfg["font"])
+        # Grid setup: Canvas expands, scrollbar pinned to far right
+        tab_frame.columnconfigure(0, weight=1)
+        tab_frame.columnconfigure(1, weight=0)
+        tab_frame.rowconfigure(0, weight=0)  # Search bar (fixed height)
+        tab_frame.rowconfigure(1, weight=1)  # Canvas area (expands)
 
-        # NEW: Add graph widget below the 2x2 grid
-        graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
-        graph_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(20, 5), sticky="nsew")
-        scrollable_frame.rowconfigure(2, weight=0)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
 
-        graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')  # Darker gray background
-        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
+        scrollable_frame.columnconfigure(0, weight=1)
+        scrollable_frame.columnconfigure(1, weight=1)
+        for r in range(3): scrollable_frame.rowconfigure(r, weight=1)
 
-        # Draw initial empty graph
-        draw_issue_graph(graph_canvas_widget)
+        parent_frame = scrollable_frame
+        panel_row_offset = 0  # Panels now start at row 0 inside scrollable_frame
+        dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
+        dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
+        canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1*(e.delta/120)), "units"))
 
     else:
-        # Non-Totals tabs remain unchanged
-        tab_frame.columnconfigure(0, weight=1); tab_frame.columnconfigure(1, weight=1)
-        tab_frame.rowconfigure(0, weight=1); tab_frame.rowconfigure(1, weight=1); tab_frame.rowconfigure(2, weight=1)  # Added row 2
+        parent_frame = tab_frame
+        panel_row_offset = 1
+        tab_frame.rowconfigure(1, weight=1)
+        tab_frame.rowconfigure(2, weight=1)
+        tab_frame.rowconfigure(3, weight=1)
 
-        for idx, issue_type_title in enumerate(issue_types):
-            key = issue_keys[idx]
-            panel = ttk.LabelFrame(tab_frame, text=f"Recent {issue_type_title}")
-            row, col = divmod(idx, 2) # Arrange in a 2x3 grid (2 columns, 3 rows)
-            panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+    # 3. Create Issue Panels
+    for idx, issue_type_title in enumerate(issue_types):
+        if tab_name == "Totals" and idx == 4:  # Skip "Errors" for Totals tab
+            continue
 
-            text_area = scrolledtext.ScrolledText(panel, wrap=tk.WORD, height=6)
-            text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            text_area.insert(tk.END, f"No recent {key}.")
-            text_area.config(state=tk.DISABLED) # Read-only
-            dashboard_notebook.tabs_widgets[tab_name][key] = text_area
+        key = issue_keys[idx]
+        panel = ttk.LabelFrame(parent_frame, text=f"Recent {issue_type_title}")
+        base_row, col = divmod(idx, 2)
+        panel.grid(row=base_row + panel_row_offset, column=col, padx=5, pady=5, sticky="nsew")
 
-            for tag_name_cfg, config_cfg in highlight_colors.items():
-                text_area.tag_configure(tag_name_cfg, foreground=config_cfg["foreground"], font=config_cfg["font"])
+        text_area = scrolledtext.ScrolledText(panel, wrap=tk.WORD, height=6)
+        text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        text_area.insert(tk.END, f"No recent {key}.")
+        text_area.config(state=tk.DISABLED)
+        dashboard_notebook.tabs_widgets[tab_name][key] = text_area
+
+        for tag_name_cfg, config_cfg in highlight_colors.items():
+            text_area.tag_configure(tag_name_cfg, foreground=config_cfg["foreground"], font=config_cfg["font"])
+
+    # 4. Add Graph to Totals Tab
+    if tab_name == "Totals":
+        graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
+        graph_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(20, 5), sticky="nsew")
+
+        graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')
+        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
+        draw_issue_graph(graph_canvas_widget)
 
 def search_in_dashboard_tab(tab_name):
     """Highlights matching text across all issue panels in the active tab."""
