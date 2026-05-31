@@ -1177,6 +1177,12 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 }),
                 "stream": False
             }
+            logit_bias_str = sampler_settings_local.get('logit_bias', '')
+            if logit_bias_str:
+                try:
+                    payload_dict['logit_bias'] = json.loads(logit_bias_str)
+                except json.JSONDecodeError:
+                    log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
             if sampler_settings_local.get('enable_thinking', False):
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
 
@@ -1431,7 +1437,12 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 }),
                 "stream": False
             }
-
+            logit_bias_str = sampler_settings_local.get('logit_bias', '')
+            if logit_bias_str:
+                try:
+                    payload_dict['logit_bias'] = json.loads(logit_bias_str)
+                except json.JSONDecodeError:
+                    log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
             if sampler_settings_local.get('enable_thinking', False):
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
 
@@ -2117,6 +2128,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     }),
                     "stream": False
                 }
+
+                logit_bias_str = sampler_settings_local.get('logit_bias', '')
+                if logit_bias_str:
+                    try:
+                        payload_dict_ans['logit_bias'] = json.loads(logit_bias_str)
+                    except json.JSONDecodeError:
+                        log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
 
                 if sampler_settings_local.get('enable_thinking', False):
                     payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
@@ -4226,6 +4244,11 @@ class ConfigEditor(tk.Toplevel):
         add_sampler_param("Max Tokens (Initial Question):", 'max_tokens_question_var', "(E.g., 256)")
         add_sampler_param("Max Tokens (Assistant Answer):", 'max_tokens_answer_var', "(E.g., 1024)")
         add_sampler_param("Max Tokens (User Continuation):", 'max_tokens_user_reply_var', "(E.g., 256)")
+        ttk.Label(sampler_params_frame, text="Logit Bias (JSON format, e.g., {\"15\": 100}):").grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=5, sticky="w")
+        sampler_row += 1
+        self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=50, undo=True)
+        self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+        sampler_row += 1
         self.enable_thinking_var_editor = tk.BooleanVar(value=False)
         slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Slop Fixer LLM Sampler Overrides (API Slot 5 - Optional)")
         slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=10, sticky="ew"); sampler_row+=1 
@@ -4618,6 +4641,7 @@ class ConfigEditor(tk.Toplevel):
                 'max_tokens_answer': int(self.max_tokens_answer_var.get()),
                 'max_tokens_user_reply': int(self.max_tokens_user_reply_var.get()),
                 'enable_thinking': self.enable_thinking_var_editor.get(),
+                'logit_bias': self.logit_bias_text.get("1.0", tk.END).strip(),
                 'slop_fixer_params': slop_fixer_params_to_save,
                 'anti_slop_params': anti_slop_fixer_params_to_save
             },
@@ -4917,7 +4941,9 @@ class ConfigEditor(tk.Toplevel):
             self.repetition_penalty_var.set(str(samplers_config_load.get('repetition_penalty', 1.1)))
             self.max_tokens_question_var.set(str(samplers_config_load.get('max_tokens_question', 256))) 
             self.max_tokens_answer_var.set(str(samplers_config_load.get('max_tokens_answer', 1024))) 
-            self.max_tokens_user_reply_var.set(str(samplers_config_load.get('max_tokens_user_reply', 256))) 
+            self.max_tokens_user_reply_var.set(str(samplers_config_load.get('max_tokens_user_reply', 256)))
+            self.logit_bias_text.delete("1.0", tk.END)
+            self.logit_bias_text.insert("1.0", samplers_config_load.get('logit_bias', ''))
 
             slop_fixer_sampler_conf = samplers_config_load.get('slop_fixer_params', {})
             self.slop_fixer_temp_var.set(str(slop_fixer_sampler_conf.get('temperature', '')))
@@ -4976,6 +5002,14 @@ class ConfigEditor(tk.Toplevel):
             get_text_as_list(self.refusal_phrases_text); get_text_as_list(self.refusal_fixes_text)
             get_text_as_list(self.slop_phrases_text); get_text_as_list(self.slop_fixes_text)
             get_text_as_list(self.sampler_priority_text)
+
+            logit_bias_str = self.logit_bias_text.get("1.0", tk.END).strip()
+            if logit_bias_str:
+                try:
+                    json.loads(logit_bias_str)
+                except json.JSONDecodeError:
+                    raise ValueError("Logit bias must be valid JSON format")
+
             if self.enable_emotional_states_var_editor.get():
                 get_text_as_list(self.emotional_states_text)
             
@@ -4998,7 +5032,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.2.0")
+root.title("ReadyArt Synthetic Dataset Generator v8.2.3")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
