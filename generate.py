@@ -567,10 +567,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            master_duplication_enabled_local,
            enable_character_engine_local,
            character_name_list,
+           character_race_list,
            character_job_list,
            character_clothing_list,
            character_appearance_list,
            character_backstory_list,
+           character_setting_list,
            enable_emotional_states_local,
            emotional_states_list_local,
            no_user_impersonation_local,
@@ -694,19 +696,23 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             if enable_character_engine_local and character_job_list and character_clothing_list and character_appearance_list and character_backstory_list:
                 random_age = random.randint(18, 50)
                 random_name = random.choice(character_name_list)
+                random_race = random.choice(character_race_list)
                 random_job = random.choice(character_job_list)
                 random_clothing = random.choice(character_clothing_list)
                 random_appearance = random.choice(character_appearance_list)
                 random_backstory = random.choice(character_backstory_list)
+                random_setting = random.choice(character_setting_list) if character_setting_list else "A standard indoor environment."
 
                 character_injection = (
                     f"\n\nCHARACTER PROFILE:\n"
                     f"Name: {random_name}\n"
+                    f"Race: {random_race}\n"
                     f"Age: {random_age}\n"
                     f"Job: {random_job}\n"
                     f"Clothing: {random_clothing}\n"
                     f"Appearance: {random_appearance}\n"
                     f"Backstory: {random_backstory}\n"
+                    f"Setting: {random_setting}\n"
                     f"Maintain this persona throughout the conversation."
                 )
                 log_message(f"Thread {thread_id}: Adding character profile to system prompt for task {task_id}", "DEBUG")
@@ -3281,10 +3287,12 @@ def start_processing():
     character_config = global_config.get('prompts.character', {})
     enable_character_engine_local = character_config.get('enabled', True)
     character_name_list = character_config.get('name', [])
+    character_race_list = character_config.get('race', [])
     character_job_list = character_config.get('job', [])
     character_clothing_list = character_config.get('clothing', [])
     character_appearance_list = character_config.get('appearance', [])
     character_backstory_list = character_config.get('backstory', [])
+    character_setting_list = character_config.get('setting', [])
     current_user_continuation_prompt = global_config.get('prompts.user_continuation_prompt', "Continue the conversation naturally based on the assistant's last response: {last_assistant_message}")
     # --- NEW: Load Top Level System Prompt ---
     current_top_level_system_prompt = global_config.get('prompts.system.top_level_system_prompt', '')
@@ -3598,10 +3606,12 @@ def start_processing():
             master_duplication_enabled,
             enable_character_engine_local,
             character_name_list,
+            character_race_list,
             character_job_list,
             character_clothing_list,
             character_appearance_list,
             character_backstory_list,
+            character_setting_list,
             enable_emotional_states,
             emotional_states_list,
             no_user_impersonation_var.get(),
@@ -4135,10 +4145,12 @@ class ConfigEditor(tk.Toplevel):
 
         # Move character fields to Character Engine tab
         add_character_engine_text_area("Character Names (one per line):", 'character_name_text', height=12)
+        add_character_engine_text_area("Character Race (one per line):", 'character_race_text', height=12)
         add_character_engine_text_area("Character Job (one per line):", 'character_job_text', height=12)
         add_character_engine_text_area("Character Clothing (one per line):", 'character_clothing_text', height=12)
         add_character_engine_text_area("Character Appearance (one per line):", 'character_appearance_text', height=12)
         add_character_engine_text_area("Character Backstory (one per line):", 'character_backstory_text', height=12)
+        add_character_engine_text_area("Scene Setting/Background (location, items, atmosphere):", 'character_setting_text', height=12)
 
         # NEW: Add Emotional State configuration
         add_character_engine_text_area("Emotional States (one per line, e.g., happy, sad, angry, neutral):", 'emotional_states_text', height=12)
@@ -4601,10 +4613,12 @@ class ConfigEditor(tk.Toplevel):
                 'character': {
                     'enabled': self.enable_character_engine_var_editor.get(),
                     'name': [sanitize_input(line.strip()) for line in self.character_name_text.get("1.0", tk.END).split('\n') if line.strip()],
+                    'race': [sanitize_input(line.strip()) for line in self.character_race_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'job': [sanitize_input(line.strip()) for line in self.character_job_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'clothing': [sanitize_input(line.strip()) for line in self.character_clothing_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'appearance': [sanitize_input(line.strip()) for line in self.character_appearance_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'backstory': [sanitize_input(line.strip()) for line in self.character_backstory_text.get("1.0", tk.END).split('\n') if line.strip()]
+                    'backstory': [sanitize_input(line.strip()) for line in self.character_backstory_text.get("1.0", tk.END).split('\n') if line.strip()],
+                    'setting': [sanitize_input(line.strip()) for line in self.character_setting_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
                         # NEW: Add emotional states configuration
                 'emotional_states': {
@@ -4733,10 +4747,12 @@ class ConfigEditor(tk.Toplevel):
 
         character_engine_fields = [
             'character_name_text',
+            'character_race_text',
             'character_job_text',
             'character_clothing_text',
             'character_appearance_text',
-            'character_backstory_text'
+            'character_backstory_text',
+            'character_setting_text'
         ]
 
         for field_name in character_engine_fields:
@@ -4884,6 +4900,9 @@ class ConfigEditor(tk.Toplevel):
             self.character_name_text.delete(1.0, tk.END)
             self.character_name_text.insert(tk.END, "\n".join(character_conf.get('name', [])))
 
+            self.character_race_text.delete(1.0, tk.END)
+            self.character_race_text.insert(tk.END, "\n".join(character_conf.get('race', [])))
+
             self.character_job_text.delete(1.0, tk.END)
             self.character_job_text.insert(tk.END, "\n".join(character_conf.get('job', [])))
 
@@ -4895,6 +4914,9 @@ class ConfigEditor(tk.Toplevel):
 
             self.character_backstory_text.delete(1.0, tk.END)
             self.character_backstory_text.insert(tk.END, "\n".join(character_conf.get('backstory', [])))
+
+            self.character_setting_text.delete(1.0, tk.END)
+            self.character_setting_text.insert(tk.END, "\n".join(character_conf.get('setting', [])))
 
             # Apply the enabled/disabled state to the text fields
             self._toggle_character_engine_fields()
@@ -5032,7 +5054,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.2.3")
+root.title("ReadyArt Synthetic Dataset Generator v8.2.5")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
