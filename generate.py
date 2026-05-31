@@ -3733,7 +3733,7 @@ class ConfigEditor(tk.Toplevel):
         self.master_duplication_mode_var_editor = tk.BooleanVar(self)
         self.master_duplication_mode_var_editor.set(master_duplication_enabled_var.get())
         master_duplication_check = ttk.Checkbutton(self.api_content_frame, text="Enable Master Duplication Mode (for enabled APIs 1-4)", variable=self.master_duplication_mode_var_editor, command=self._sync_global_duplication_var_from_editor)
-        master_duplication_check.grid(row=1, column=0, columnspan=2, padx=10, pady=(10,5), sticky="w")
+        master_duplication_check.grid(row=4, column=0, columnspan=2, padx=10, pady=(10,5), sticky="w")
 
         num_api_slots = 6
         for i in range(num_api_slots):
@@ -3743,7 +3743,7 @@ class ConfigEditor(tk.Toplevel):
             if i == 5: frame_text += " (Anti-Slop Fixer LLM - Not part of Duplication)"
             
             api_frame = ttk.LabelFrame(self.api_content_frame, text=frame_text) # Changed parent to self.api_content_frame
-            api_frame.grid(row=i + 4, column=0, padx=10, pady=5, sticky="ew")
+            api_frame.grid(row=i + 5, column=0, padx=10, pady=5, sticky="ew")
             self.api_tab.grid_columnconfigure(0, weight=1) 
             
             ttk.Label(api_frame, text="API URL:").grid(row=0, column=0, padx=5, pady=2, sticky="e")
@@ -4852,7 +4852,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.4")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.5")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
