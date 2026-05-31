@@ -5054,7 +5054,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.2.5")
+root.title("ReadyArt Synthetic Dataset Generator v8.2.6")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5125,8 +5125,22 @@ progress_frame = ttk.Frame(root); progress_frame.pack(pady=10, padx=10, fill=tk.
 
 # --- Main Action Buttons Frame ---
 button_frame = ttk.Frame(root); button_frame.pack(pady=10)
-start_button = ttk.Button(button_frame, text="Start Generation", command=start_processing); start_button.pack(side=tk.LEFT, padx=10)
-pause_button = ttk.Button(button_frame, text="Pause", command=toggle_pause, state=tk.DISABLED); pause_button.pack(side=tk.LEFT, padx=10)
+
+start_button = ttk.Button(
+    button_frame,
+    text="🚀 Start Generation",
+    command=start_processing,
+    style="Accent.TButton"  # Optional: use custom style
+)
+start_button.pack(side=tk.LEFT, padx=10)
+
+pause_button = ttk.Button(
+    button_frame,
+    text="⏸️ Pause",
+    command=toggle_pause,
+    state=tk.DISABLED
+)
+pause_button.pack(side=tk.LEFT, padx=10)
 
 def toggle_debug_logging():
     # Update the flag in the logging module
@@ -5238,13 +5252,28 @@ def finalize_stop_and_clear_ui():
     quit_button.config(state=tk.NORMAL)
     log_message("Stop & Clear: UI reset. Ready for a new job.", "INFO")
 
-stop_clear_button = ttk.Button(button_frame, text="Stop & Clear Job", command=stop_and_clear_processing_job, state=tk.DISABLED)
+stop_clear_button = ttk.Button(
+    button_frame,
+    text="🛑 Stop & Clear Job",
+    command=stop_and_clear_processing_job,
+    state=tk.DISABLED
+)
 stop_clear_button.pack(side=tk.LEFT, padx=10)
 # --- End of Stop and Clear Job Functionality ---
 
-config_button = ttk.Button(button_frame, text="Edit Config", command=open_config_editor); config_button.pack(side=tk.LEFT, padx=10)
+config_button = ttk.Button(
+    button_frame,
+    text="⚙️ Edit Config",
+    command=open_config_editor
+)
+config_button.pack(side=tk.LEFT, padx=10)
 
-debug_log_check = ttk.Checkbutton(button_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
+debug_log_check = ttk.Checkbutton(
+    button_frame,
+    text="🐛 Debug Logs",
+    variable=debug_logging_var,
+    command=toggle_debug_logging
+)
 debug_log_check.pack(side=tk.LEFT, padx=10)
 
 def quit_application():
@@ -5300,7 +5329,12 @@ def quit_application():
         log_message("Application shutdown sequence complete. Exiting process.", "INFO")
         sys.exit(0) # Terminate the script
 
-quit_button = ttk.Button(button_frame, text="Quit Application", command=quit_application); quit_button.pack(side=tk.LEFT, padx=10)
+quit_button = ttk.Button(
+    button_frame,
+    text="❌ Quit Application",
+    command=quit_application
+)
+quit_button.pack(side=tk.LEFT, padx=10)
 root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
 status_bar = ttk.Label(root, text="Ready", foreground="lightgray", anchor="w")
@@ -5341,13 +5375,25 @@ def trigger_export():
 
     threading.Thread(target=run_export, daemon=True).start()
 
-export_button = ttk.Button(button_frame, text="Export DB → JSONL", command=trigger_export)
+export_button = ttk.Button(
+    button_frame,
+    text="📤 Export DB → JSONL",
+    command=trigger_export
+)
 export_button.pack(side=tk.LEFT, padx=10)
 
-clear_db_button = ttk.Button(button_frame, text="Clear Database", command=clear_database)
+clear_db_button = ttk.Button(
+    button_frame,
+    text="🗑️ Clear Database",
+    command=clear_database
+)
 clear_db_button.pack(side=tk.LEFT, padx=10)
 
-recovery_button = ttk.Button(button_frame, text="🔄 Force Recovery", command=force_recovery)
+recovery_button = ttk.Button(
+    button_frame,
+    text="🔄 Force Recovery",
+    command=force_recovery
+)
 recovery_button.pack(side=tk.LEFT, padx=10)
 
 
