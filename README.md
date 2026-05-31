@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v8.0.7
+# ReadyArt Synthetic Dataset Generator v8.0.8
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
