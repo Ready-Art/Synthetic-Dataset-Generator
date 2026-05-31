@@ -1669,7 +1669,16 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                     log_message(f"Thread {thread_id}: Slop fixer response appears malformed. Using original.", "WARNING")
                     return None, text_context
 
-                if rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"') and len(rewritten_sentence) > 2:
+                # Only strip wrapper quotes the fixer ADDED around its rewrite.
+                # If the ORIGINAL sentence was itself a fully-quoted line of
+                # dialogue (e.g. "Get out of here!"), the LLM correctly returning
+                # it still-quoted must NOT be unwrapped here -- stripping would
+                # eat the real opening/closing quotes and is a direct source of
+                # "missing a quote on one side of dialogue".
+                _orig = text_context.strip()
+                _orig_wrapped = _orig.startswith('"') and _orig.endswith('"') and len(_orig) > 2
+                if (rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"')
+                        and len(rewritten_sentence) > 2 and not _orig_wrapped):
                     rewritten_sentence = rewritten_sentence[1:-1]
 
                 if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(text_context):
@@ -1867,7 +1876,16 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     log_message(f"Thread {thread_id}: Anti-slop fixer response appears malformed. Using original.", "WARNING")
                     return None, text_context
 
-                if rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"') and len(rewritten_sentence) > 2:
+                # Only strip wrapper quotes the fixer ADDED around its rewrite.
+                # If the ORIGINAL sentence was itself a fully-quoted line of
+                # dialogue (e.g. "Get out of here!"), the LLM correctly returning
+                # it still-quoted must NOT be unwrapped here -- stripping would
+                # eat the real opening/closing quotes and is a direct source of
+                # "missing a quote on one side of dialogue".
+                _orig = text_context.strip()
+                _orig_wrapped = _orig.startswith('"') and _orig.endswith('"') and len(_orig) > 2
+                if (rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"')
+                        and len(rewritten_sentence) > 2 and not _orig_wrapped):
                     rewritten_sentence = rewritten_sentence[1:-1]
 
                 if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(text_context):

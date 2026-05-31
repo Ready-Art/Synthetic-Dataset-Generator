@@ -76,37 +76,38 @@ def remove_markdown(text):
     return text.strip()
 
 def normalize_quotes(text):
-    if not text: return text
-    # 1. Keep your existing excessive quote collapsing...
-    text = re.sub(r'"{2,}', '"', text)
-    text = re.sub(r'"{2,}', '"', text)
-    text = re.sub(r'"{2,}', '"', text)
+    if not text:
+        return text
 
-    # 2. Replace parity logic with structural balancing
-    result = []
-    straight_open = False
-    curly_open = False
+    # 1. Collapse runs of each quote type into a single mark.
+    #    These three patterns target DIFFERENT characters: straight ("),
+    #    curly-open (U+201C) and curly-close (U+201D). They are written with
+    #    explicit \u escapes ON PURPOSE so that an editor, paste, or
+    #    "smart-quote normalizer" can't silently flatten the curly literals
+    #    back to straight quotes -- which is exactly what previously broke this
+    #    function (all three subs and the if/elif below had collapsed to the
+    #    same straight-quote glyph, so curly quotes were never balanced and the
+    #    straight branch force-appended stray quotes).
+    text = re.sub(r'"{2,}', '"', text)              # straight  "
+    text = re.sub('\u201c{2,}', '\u201c', text)     # curly open  U+201C
+    text = re.sub('\u201d{2,}', '\u201d', text)     # curly close U+201D
 
-    for char in text:
-        if char == '"':
-            if not straight_open:
-                result.append('"')
-                straight_open = True
-            else:
-                result.append('"')
-                straight_open = False
-        elif char == '"':
-            if not curly_open:
-                result.append('"')
-                curly_open = True
-            else:
-                result.append('"')
-                curly_open = False
-        else:
-            result.append(char)
+    # 2. Balance CURLY quotes by direction. Curly quotes carry their own
+    #    open/close identity, so an imbalance is unambiguous: append the missing
+    #    closers at the end, or prepend the missing openers at the start.
+    n_open = text.count('\u201c')
+    n_close = text.count('\u201d')
+    if n_open > n_close:
+        text += '\u201d' * (n_open - n_close)
+    elif n_close > n_open:
+        text = '\u201c' * (n_close - n_open) + text
 
-    # Force-close any unclosed quotes at the end
-    if straight_open: result.append('"')
-    if curly_open: result.append('"')
-
-    return "".join(result)
+    # 3. Straight quotes use the SAME glyph for open and close, so an odd count
+    #    is ambiguous -- we cannot know where the missing quote belongs. The old
+    #    code force-appended a closing " on odd parity, which produced stray
+    #    trailing quotes whenever a passage mixed straight and curly quotes
+    #    (e.g. an inch mark like 6", or a lone straight quote inside curly
+    #    dialogue). We deliberately do NOT guess here; is_incomplete_quote() plus
+    #    the regeneration retry loop are the right place to handle a genuinely
+    #    unbalanced straight quote.
+    return text
