@@ -454,6 +454,11 @@ def estimate_time_remaining(processed_items, total_items, times_list):
 def clear_database():
     """Clears all data from the PostgreSQL generated_conversations table."""
     global db_pool
+
+    # Confirmation dialog: returns True for "Yes", False for "No"
+    if not messagebox.askyesno("Confirm Clear Database", "Are you sure you want to clear the database? This action cannot be undone."):
+        return  # User selected "No", so exit without doing anything
+
     if not db_pool:
         messagebox.showwarning("Database Error", "Database pool is not initialized.")
         log_message("Database pool not initialized.", "ERROR")
@@ -4847,7 +4852,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.0.3")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.4")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
