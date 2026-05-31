@@ -7,3 +7,4 @@ psutil
 colorama
 redis
 ttkbootstrap
+psycopg2-binary

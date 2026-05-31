@@ -1,0 +1,21 @@
+# This is a rough guide on how to get the postgresql database to work. It's rough. You may need to get creative.
+# The generator SHOULD function with postgresql disabled as well.
+
+sudo -u postgres createuser -P generator
+
+sudo -u postgres createdb -O generator -E UTF8 -T template0 generator
+
+sudo -u postgres -s /bin/bash
+
+psql -U generator
+
+\c generator
+
+CREATE TABLE IF NOT EXISTS generated_conversations (
+    id SERIAL PRIMARY KEY,
+    task_id TEXT UNIQUE NOT NULL,
+    conversation_data JSONB NOT NULL,
+    api_slot_idx INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_task_id ON generated_conversations(task_id);

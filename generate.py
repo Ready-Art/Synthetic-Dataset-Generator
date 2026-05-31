@@ -6,6 +6,8 @@ import redis
 import hashlib
 import tkinter as tk
 import ttkbootstrap as ttkbs
+import psycopg2
+from psycopg2 import pool
 from tkinter import ttk, scrolledtext, font, messagebox, filedialog
 from colorama import init, Fore, Style
 import threading
@@ -31,6 +33,8 @@ from urllib.parse import urlparse
 from api_handler import RateLimiter, global_rate_limiter, get_cached_response, set_cached_response, api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK
 
 init()
+
+db_pool = None
 
 # --- Global Constants and Setup ---
 from logging_config import log_message, LOG_FILE_PATH  # Import shared logger AND log file path
@@ -426,6 +430,28 @@ def estimate_time_remaining(processed_items, total_items, times_list):
 
     # Format as H:M:S
     return time.strftime('%H:%M:%S', time.gmtime(remaining_time_seconds))
+
+def clear_database():
+    """Clears all data from the PostgreSQL generated_conversations table."""
+    global db_pool
+    if not db_pool:
+        messagebox.showwarning("Database Error", "Database pool is not initialized.")
+        log_message("Database pool not initialized.", "ERROR")
+        return
+
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE generated_conversations RESTART IDENTITY;")
+            conn.commit()
+        db_pool.putconn(conn)
+        messagebox.showinfo("Success", "Database cleared successfully!")
+        log_message("Database cleared successfully.", "INFO")
+    except Exception as e:
+        log_message(f"Failed to clear database: {e}", "ERROR")
+        messagebox.showerror("Database Error", f"Failed to clear database: {e}")
+        if conn:
+            db_pool.putconn(conn)
 
 # --- Core Worker Logic ---
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
@@ -1143,6 +1169,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     try:
                         update_question_history(generated_question_text, history_size_local_param)
                         set_cached_response(prompt_hash, api_slot_idx, generated_question_text)
+                        log_message(f"Thread {thread_id}: Cache SET for API Slot {api_slot_idx+1}.", "DEBUG")
                     finally:
                         question_history_lock.release()
                 return generated_question_text
@@ -2461,12 +2488,35 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
             "messages": processed_conversation_turns 
         }
 
+    use_db = global_config.get('database.enabled', False)
+
+    if use_db and db_pool:
+        try:
+            conn = db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO generated_conversations (task_id, conversation_data, api_slot_idx)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (task_id) DO NOTHING
+                """, (output_data_id, json.dumps(output_data), api_slot_idx_for_output_file))
+                conn.commit()
+            db_pool.putconn(conn)
+            log_message(f"Saved task {task_id_for_output} to PostgreSQL.", "DEBUG")
+        except Exception as e:
+            log_message(f"DB insert failed for {task_id_for_output}: {e}", "ERROR")
+            if 'conn' in locals(): db_pool.putconn(conn)
+
+        # 🔑 CRITICAL: Exit function immediately after DB save.
+        # This guarantees the file-writing code below NEVER runs when DB is enabled.
+        return
+
+    # --- FILE WRITING (Only reached if DB is DISABLED or pool failed to init) ---
     actual_output_file_path = ""
     if api_slot_idx_for_output_file is not None and master_duplication_enabled_var.get():
         actual_output_file_path = f"{BASE_OUTPUT_FILE_PATH}_api_slot_{api_slot_idx_for_output_file}.jsonl"
-    else: 
+    else:
         actual_output_file_path = BASE_OUTPUT_FILE_PATH + ".jsonl"
-    
+
     try:
         with open(actual_output_file_path, 'a', encoding='utf-8') as file:
             file.write(json.dumps(output_data) + '\n')
@@ -2479,6 +2529,28 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         log_message(f"Unexpected error writing to {actual_output_file_path}: {e}", "ERROR")
         import traceback
         log_message(traceback.format_exc(), "ERROR")
+
+def export_db_to_jsonl(output_path):
+    if not db_pool:
+        messagebox.showerror("Export Error", "Database pool not initialized.")
+        return False
+
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor(name='export_cursor') as cur: # Server-side cursor for large datasets
+            cur.itersize = 1000
+            cur.execute("SELECT conversation_data FROM generated_conversations ORDER BY created_at")
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                for row in cur:
+                    f.write(json.dumps(row[0]) + '\n')
+        conn.commit()
+        db_pool.putconn(conn)
+        return True
+    except Exception as e:
+        log_message(f"Export failed: {e}", "ERROR")
+        if conn: db_pool.putconn(conn)
+        return False
 
 def draw_issue_graph(canvas_widget, height=400):
     """Draws a time-series graph showing issue counts over the last 60 minutes."""
@@ -2818,10 +2890,11 @@ def start_processing():
     """Initiates the data generation process based on current configurations."""
     global stop_processing, pause_processing, processing_active, num_threads, questions_list, \
            system_prompts_list, threads, task_queue, completed_task_ids, \
-           loaded_api_processed_tasks_snapshot, loaded_processed_tasks_snapshot
+           loaded_api_processed_tasks_snapshot, loaded_processed_tasks_snapshot, db_pool
 
     global_config.load() # Ensure latest config.yml is loaded
     log_message("DEBUG: start_processing() function has been called.", "INFO")
+
     # --- Initialize Valkey Connection ---
     if global_config.get('valkey.enabled', True):
         try:
@@ -3538,6 +3611,36 @@ class ConfigEditor(tk.Toplevel):
         valkey_frame = ttk.LabelFrame(self.api_content_frame, text="Valkey Cache Settings")
         valkey_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
 
+        db_frame = ttk.LabelFrame(self.api_content_frame, text="PostgreSQL Database Settings")
+        db_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+
+        self.db_enabled_var = tk.BooleanVar()
+        ttk.Checkbutton(db_frame, text="Enable PostgreSQL Database", variable=self.db_enabled_var).pack(anchor="w", padx=5, pady=2)
+
+        ttk.Label(db_frame, text="Host:").pack(anchor="w", padx=(15,0), pady=2)
+        self.db_host_var = tk.StringVar()
+        ttk.Entry(db_frame, width=40, textvariable=self.db_host_var).pack(anchor="w", padx=15, pady=2)
+
+        ttk.Label(db_frame, text="Port:").pack(anchor="w", padx=(15,0), pady=2)
+        self.db_port_var = tk.StringVar()
+        ttk.Entry(db_frame, width=15, textvariable=self.db_port_var).pack(anchor="w", padx=15, pady=2)
+
+        ttk.Label(db_frame, text="Database Name:").pack(anchor="w", padx=(15,0), pady=2)
+        self.db_dbname_var = tk.StringVar()
+        ttk.Entry(db_frame, width=40, textvariable=self.db_dbname_var).pack(anchor="w", padx=15, pady=2)
+
+        ttk.Label(db_frame, text="User:").pack(anchor="w", padx=(15,0), pady=2)
+        self.db_user_var = tk.StringVar()
+        ttk.Entry(db_frame, width=40, textvariable=self.db_user_var).pack(anchor="w", padx=15, pady=2)
+
+        ttk.Label(db_frame, text="Password:").pack(anchor="w", padx=(15,0), pady=2)
+        self.db_password_var = tk.StringVar()
+        ttk.Entry(db_frame, width=40, textvariable=self.db_password_var, show="*").pack(anchor="w", padx=15, pady=2)
+
+        ttk.Label(db_frame, text="Connection Pool Size:").pack(anchor="w", padx=(15,0), pady=2)
+        self.db_pool_size_var = tk.StringVar()
+        ttk.Entry(db_frame, width=15, textvariable=self.db_pool_size_var).pack(anchor="w", padx=15, pady=5)
+
         self.valkey_enabled_var = tk.BooleanVar()
         ttk.Checkbutton(valkey_frame, text="Enable Valkey Caching", variable=self.valkey_enabled_var).grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
 
@@ -3570,7 +3673,7 @@ class ConfigEditor(tk.Toplevel):
             if i == 5: frame_text += " (Anti-Slop Fixer LLM - Not part of Duplication)"
             
             api_frame = ttk.LabelFrame(self.api_content_frame, text=frame_text) # Changed parent to self.api_content_frame
-            api_frame.grid(row=i + 1, column=0, padx=10, pady=5, sticky="ew")
+            api_frame.grid(row=i + 4, column=0, padx=10, pady=5, sticky="ew")
             self.api_tab.grid_columnconfigure(0, weight=1) 
             
             ttk.Label(api_frame, text="API URL:").grid(row=0, column=0, padx=5, pady=2, sticky="e")
@@ -4215,6 +4318,15 @@ class ConfigEditor(tk.Toplevel):
                 'password': self.valkey_password_var.get() if self.valkey_password_var.get() else None,
                 'enabled': self.valkey_enabled_var.get()
             },
+            'database': {
+                'enabled': self.db_enabled_var.get(),
+                'host': sanitize_input(self.db_host_var.get() or 'localhost'),
+                'port': int(self.db_port_var.get() or 5432),
+                'dbname': sanitize_input(self.db_dbname_var.get()),
+                'user': sanitize_input(self.db_user_var.get()),
+                'password': self.db_password_var.get(),
+                'pool_size': int(self.db_pool_size_var.get() or 10)
+            },
             'generation': {
                 'subject_size': int(self.subject_size_var.get()), 'context_size': int(self.context_size_var.get()),
                 'max_attempts': int(self.max_attempts_var.get()),
@@ -4456,6 +4568,15 @@ class ConfigEditor(tk.Toplevel):
             self.valkey_db_var.set(str(valkey_config.get('db', 0)))
             self.valkey_password_var.set(valkey_config.get('password') or '')
 
+            db_config = config.get('database', {})
+            self.db_enabled_var.set(db_config.get('enabled', False))
+            self.db_host_var.set(db_config.get('host', 'localhost'))
+            self.db_port_var.set(str(db_config.get('port', 5432)))
+            self.db_dbname_var.set(db_config.get('dbname', ''))
+            self.db_user_var.set(db_config.get('user', ''))
+            self.db_password_var.set(db_config.get('password', ''))
+            self.db_pool_size_var.set(str(db_config.get('pool_size', 10)))
+
             self.master_duplication_mode_var_editor.set(master_duplication_enabled_var.get())
 
             apis_conf_from_yml = api_config_main.get('apis', [])
@@ -4610,6 +4731,8 @@ class ConfigEditor(tk.Toplevel):
         """Performs basic validation of numeric and list fields in the editor."""
         try:
             int(self.subject_size_var.get()); int(self.context_size_var.get()); int(self.max_attempts_var.get())
+            int(self.db_port_var.get())
+            int(self.db_pool_size_var.get())
             num_turns_val = int(self.num_turns_var.get()); assert num_turns_val > 0, "Number of turns must be > 0"
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())
             float(self.temperature_var.get()); float(self.top_p_var.get()); float(self.min_p_var.get()); int(self.top_k_var.get())
@@ -4657,7 +4780,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v7.9.5")
+root.title("ReadyArt Synthetic Dataset Generator v8.0.0")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -4866,12 +4989,42 @@ def quit_application():
         log_message("Quit: Destroying Tkinter root window...", "INFO")
         if root and hasattr(root, 'winfo_exists') and root.winfo_exists(): 
             root.destroy() 
-        
+        if db_pool:
+            db_pool.closeall()
+            log_message("PostgreSQL pool closed.", "INFO")
         log_message("Application shutdown sequence complete. Exiting process.", "INFO")
         sys.exit(0) # Terminate the script
 
 quit_button = ttk.Button(button_frame, text="Quit Application", command=quit_application); quit_button.pack(side=tk.LEFT, padx=10)
 root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
+
+status_bar = ttk.Label(root, text="Ready", foreground="lightgray", anchor="w")
+status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=2)
+
+def trigger_export():
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".jsonl",
+        filetypes=[("JSONL Files", "*.jsonl")],
+        title="Export Conversations to JSONL"
+    )
+    if not file_path: return
+
+    # Run export in background thread to prevent UI freeze
+    def run_export():
+        start_button.config(state=tk.DISABLED)
+        status_bar.config(text="Exporting from PostgreSQL...", foreground="blue")
+        success = export_db_to_jsonl(file_path)
+        root.after(0, lambda: status_bar.config(text="Export complete!" if success else "Export failed.",
+                                                foreground="green" if success else "red"))
+        root.after(0, lambda: start_button.config(state=tk.NORMAL))
+
+    threading.Thread(target=run_export, daemon=True).start()
+
+export_button = ttk.Button(button_frame, text="Export DB → JSONL", command=trigger_export)
+export_button.pack(side=tk.LEFT, padx=10)
+
+clear_db_button = ttk.Button(button_frame, text="Clear Database", command=clear_database)
+clear_db_button.pack(side=tk.LEFT, padx=10)
 
 def clear_dashboard():
     global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total, recent_anti_slop_total
@@ -5017,8 +5170,26 @@ def update_dashboard_safe():
         update_dashboard()
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 
+def init_database_pool():
+    """Initializes PostgreSQL connection pool at app startup."""
+    global db_pool
+    if global_config.get('database.enabled', False):
+        try:
+            from psycopg2 import pool
+            db_pool = pool.ThreadedConnectionPool(
+                minconn=2, maxconn=global_config.get('database.pool_size', 10),
+                host=global_config.get('database.host'), port=global_config.get('database.port'),
+                dbname=global_config.get('database.dbname'), user=global_config.get('database.user'),
+                password=global_config.get('database.password')
+            )
+            log_message("PostgreSQL connection pool initialized at startup.", "INFO")
+        except Exception as e:
+            log_message(f"Failed to init DB pool at startup: {e}", "ERROR")
+            db_pool = None
+
 reset_all_stats_and_history() # Initialize stats on startup
 update_dashboard() # Initial dashboard display
+init_database_pool() # <-- NEW: Initialize DB on launch
 
 if __name__ == "__main__":
     try:
