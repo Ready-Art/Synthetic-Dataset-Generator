@@ -25,6 +25,7 @@ import detection
 from config_loader import ConfigLoader, sanitize_input
 import psutil
 import matplotlib
+import matplotlib.ticker as ticker
 import api_handler
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -2765,178 +2766,165 @@ def export_db_to_jsonl(output_path):
         return False
 
 def draw_issue_graph(canvas_widget, height=400):
-    """Draws a time-series graph showing issue counts over the last 60 minutes."""
+    """Draws a modern, detailed time-series graph showing issue counts over the last 60 minutes."""
     global issue_timestamps
-
-    # Clear existing canvas content if any
     canvas_widget.delete("all")
 
-    # Create a new figure
-    fig = Figure(figsize=(12, 4), dpi=100)
-    fig.patch.set_facecolor('lightgray')
+    # Modern dark theme setup
+    fig = Figure(figsize=(12, 4.5), dpi=120, facecolor='#1e1e24')
+    fig.patch.set_facecolor('#1e1e24')
     ax = fig.add_subplot(111)
-    ax.set_facecolor('gray')
+    ax.set_facecolor('#2a2a35')
 
-    # Get current time and 60 minutes ago
+    # Time bins setup
     now = time.time()
     sixty_minutes_ago = now - 3600
-
-    # Create time bins (10-minute intervals)
     num_bins = 6
-    bin_size = 3600 / num_bins  # 600 seconds = 10 minutes
+    bin_size = 3600 / num_bins
 
-    # Initialize counts for each issue type
-    refusal_counts = [0] * num_bins
-    user_speaking_counts = [0] * num_bins
-    slop_counts = [0] * num_bins
-    error_counts = [0] * num_bins
-    anti_slop_counts = [0] * num_bins
+    # Initialize counts
+    counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
+              'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins}
 
-    # Count issues in each time bin
     with issue_timestamps_lock:
-        for ts in issue_timestamps['refusals']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                refusal_counts[bin_idx] += 1
+        for key in counts.keys():
+            for ts in issue_timestamps.get(key, []):
+                if sixty_minutes_ago <= ts <= now:
+                    idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
+                    counts[key][idx] += 1
 
-        for ts in issue_timestamps['user_speaking']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                user_speaking_counts[bin_idx] += 1
-
-        for ts in issue_timestamps['slop']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                slop_counts[bin_idx] += 1
-
-        for ts in issue_timestamps['errors']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                error_counts[bin_idx] += 1
-
-        for ts in issue_timestamps['anti_slop']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                anti_slop_counts[bin_idx] += 1
-
-    # Create x-axis labels (time ranges)
+    # X-axis labels (stacked for readability)
     x_labels = []
     for i in range(num_bins):
-        start_time = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + i * bin_size))
-        end_time = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + (i + 1) * bin_size))
-        x_labels.append(f"{start_time}-{end_time}")
+        start = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + i * bin_size))
+        end = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + (i + 1) * bin_size))
+        x_labels.append(f"{start}\n{end}")
 
-    # Plot the data
     x = range(num_bins)
-    width = 0.2
+    width = 0.15
+    offsets = [-2*width, -width, 0, width, 2*width]
 
-    ax.bar([i - 1.5*width for i in x], refusal_counts, width, label='Refusals', color='red', alpha=0.7)
-    ax.bar([i - 0.5*width for i in x], user_speaking_counts, width, label='User Speak', color='blue', alpha=0.7)
-    ax.bar([i + 0.5*width for i in x], slop_counts, width, label='Slop', color='purple', alpha=0.7)
-    ax.bar([i + 1.0*width for i in x], anti_slop_counts, width, label='Anti-Slop', color='orange', alpha=0.7)
-    ax.bar([i + 1.5*width for i in x], error_counts, width, label='Errors', color='darkorange', alpha=0.7)
+    # Cohesive, accessible color palette
+    colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
+              'anti_slop': '#ffd43b', 'errors': '#fc8181'}
+    labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors'}
 
-    # Customize the graph
-    ax.set_xlabel('Time (Last 60 Minutes)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Count', fontsize=12, fontweight='bold')
-    ax.set_title('Issue Detection Over Time', fontsize=14, fontweight='bold')
+    # Plot bars & add value labels
+    for i, key in enumerate(counts.keys()):
+        bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
+                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+        for rect in bar:
+            h = rect.get_height()
+            if h > 0:
+                ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
+                            xytext=(0, 4), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+
+    # Styling & Layout
+    max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
+    ax.set_ylim(0, max_val + 2)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, rotation=45, ha='right')
-    ax.legend(loc='upper right', fontsize=10)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
 
-    # Embed the plot in the canvas
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#555555')
+    ax.spines['left'].set_color('#555555')
+    ax.tick_params(axis='both', colors='#c0c0c0')
+
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
+              edgecolor='#444444', labelcolor='#e0e0e0')
+    fig.tight_layout()
+
+    # Embed in Tkinter
     canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
     canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    # Store reference for updates
     canvas_widget.graph_canvas = canvas
     canvas_widget.graph_fig = fig
     canvas_widget.graph_ax = ax
 
-
 def update_issue_graph(canvas_widget):
-    """Updates an existing issue graph with new data."""
+    """Updates an existing issue graph with new data without recreating the figure."""
     if not hasattr(canvas_widget, 'graph_canvas'):
         draw_issue_graph(canvas_widget)
         return
 
     fig = canvas_widget.graph_fig
     ax = canvas_widget.graph_ax
-
-    # Clear the axes
     ax.clear()
 
-    # Get current time and 60 minutes ago
+    # Reuse the exact same drawing logic from draw_issue_graph
+    # (We extract it into a shared helper in production, but for drop-in replacement:)
+    fig.patch.set_facecolor('#1e1e24')
+    ax.set_facecolor('#2a2a35')
+
     now = time.time()
     sixty_minutes_ago = now - 3600
-
-    # Create time bins (10-minute intervals)
     num_bins = 6
     bin_size = 3600 / num_bins
+    counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
+              'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins}
 
-    # Initialize counts for each issue type
-    refusal_counts = [0] * num_bins
-    user_speaking_counts = [0] * num_bins
-    slop_counts = [0] * num_bins
-    error_counts = [0] * num_bins
-    anti_slop_counts = [0] * num_bins
-
-    # Count issues in each time bin
     with issue_timestamps_lock:
-        for ts in issue_timestamps['refusals']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                refusal_counts[bin_idx] += 1
+        for key in counts.keys():
+            for ts in issue_timestamps.get(key, []):
+                if sixty_minutes_ago <= ts <= now:
+                    idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
+                    counts[key][idx] += 1
 
-        for ts in issue_timestamps['user_speaking']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                user_speaking_counts[bin_idx] += 1
-
-        for ts in issue_timestamps['slop']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                slop_counts[bin_idx] += 1
-
-        for ts in issue_timestamps['errors']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                error_counts[bin_idx] += 1
-
-        for ts in issue_timestamps['anti_slop']:
-            if sixty_minutes_ago <= ts <= now:
-                bin_idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
-                anti_slop_counts[bin_idx] += 1
-
-    # Create x-axis labels
     x_labels = []
     for i in range(num_bins):
-        start_time = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + i * bin_size))
-        end_time = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + (i + 1) * bin_size))
-        x_labels.append(f"{start_time}-{end_time}")
+        start = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + i * bin_size))
+        end = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + (i + 1) * bin_size))
+        x_labels.append(f"{start}\n{end}")
 
-    # Plot the data
     x = range(num_bins)
-    width = 0.2
+    width = 0.15
+    offsets = [-2*width, -width, 0, width, 2*width]
+    colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
+              'anti_slop': '#ffd43b', 'errors': '#fc8181'}
+    labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors'}
 
-    ax.bar([i - 1.5*width for i in x], refusal_counts, width, label='Refusals', color='red', alpha=0.7)
-    ax.bar([i - 0.5*width for i in x], user_speaking_counts, width, label='User Speak', color='blue', alpha=0.7)
-    ax.bar([i + 0.5*width for i in x], slop_counts, width, label='Slop', color='purple', alpha=0.7)
-    ax.bar([i + 1.0*width for i in x], anti_slop_counts, width, label='Anti-Slop', color='orange', alpha=0.7)
-    ax.bar([i + 1.5*width for i in x], error_counts, width, label='Errors', color='darkorange', alpha=0.7)
+    for i, key in enumerate(counts.keys()):
+        bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
+                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+        for rect in bar:
+            h = rect.get_height()
+            if h > 0:
+                ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
+                            xytext=(0, 4), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
 
-    # Customize the graph
-    ax.set_xlabel('Time (Last 60 Minutes)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Count', fontsize=12, fontweight='bold')
-    ax.set_title('Issue Detection Over Time', fontsize=14, fontweight='bold')
+    max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
+    ax.set_ylim(0, max_val + 2)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, rotation=45, ha='right')
-    ax.legend(loc='upper right', fontsize=10)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
 
-    # Redraw the canvas
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#555555')
+    ax.spines['left'].set_color('#555555')
+    ax.tick_params(axis='both', colors='#c0c0c0')
+
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
+              edgecolor='#444444', labelcolor='#e0e0e0')
+    fig.tight_layout()
     canvas_widget.graph_canvas.draw()
 
 def update_rate_limit_status():
@@ -2960,11 +2948,12 @@ def update_rate_limit_status():
                     # Color code the label based on usage
                     usage_percent = (used / limit) * 100 if limit > 0 else 0
                     if usage_percent > 90:
-                        rate_limit_labels[slot_idx].config(foreground="red")
+                        rate_limit_labels[slot_idx].config(foreground="#ff4d4d") # Softer red for dark theme
                     elif usage_percent > 70:
-                        rate_limit_labels[slot_idx].config(foreground="orange")
+                        rate_limit_labels[slot_idx].config(foreground="#ffaa00") # Softer orange
                     else:
-                        rate_limit_labels[slot_idx].config(foreground="black")
+                        # Remove explicit foreground so it inherits the theme's default text color
+                        rate_limit_labels[slot_idx].config(foreground="")
             except Exception as e:
                 log_message(f"Error updating rate limit status for slot {slot_idx}: {e}", "ERROR")
 
@@ -5054,7 +5043,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.2.6")
+root.title("ReadyArt Synthetic Dataset Generator v8.3.0")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5102,17 +5091,18 @@ thread_status_var = tk.StringVar(value="Threads: 0 spawned, 0 active")
 thread_status_label = ttk.Label(metrics_frame, textvariable=thread_status_var, foreground="lightgray")
 thread_status_label.pack(side=tk.LEFT, padx=10)
 
-# NEW: Rate Limit Status Labels
-rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)"); rate_limit_frame.pack(pady=5, padx=10, fill="x")
+# Rate Limit Status Labels
+rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)")
+rate_limit_frame.pack(pady=5, padx=10, fill="x")
 rate_limit_labels = {}
 for slot_idx in range(6):
-    label = ttk.Label(rate_limit_frame, text=f"API {slot_idx+1}: --/--", font=('TkDefaultFont', 8), background="lightgray")
-    label.pack(side=tk.LEFT, padx=10, pady=5)
+    label = ttk.Label(rate_limit_frame, text=f"API {slot_idx+1}: --/--")
+    label.pack(side=tk.LEFT, padx=12, pady=4)
     rate_limit_labels[slot_idx] = label
 # --- End of Metrics Display Frame ---
 
 # --- API Response Time Display Frame ---
-api_response_times_frame = ttk.LabelFrame(root, text="API Response Times"); api_response_times_frame.pack(pady=5, padx=10, fill="x")
+api_response_times_frame = tk.LabelFrame(root, text="API Response Times"); api_response_times_frame.pack(pady=5, padx=10, fill="x")
 for slot_idx in range(6):
     slot_label_name = f"api_response_time_label_{slot_idx+1}"
     slot_label = ttk.Label(api_response_times_frame, text=f"API {slot_idx+1}: No data yet", font=('TkDefaultFont', 8))
@@ -5448,7 +5438,7 @@ highlight_colors = {
     "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright orange
 }
 
-tab_names = ["Totals"] + [f"API {i+1}" for i in range(6)]
+tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "Errors"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"] # Keys for accessing data and widgets
 
