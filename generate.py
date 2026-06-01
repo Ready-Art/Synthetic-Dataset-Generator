@@ -598,6 +598,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_top_level_system_prompt,
            master_duplication_enabled_local,
            enable_character_engine_local,
+           enable_class_selection_local,
            character_name_list,
            character_race_list,
            character_job_list,
@@ -605,6 +606,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            character_appearance_list,
            character_backstory_list,
            character_setting_list,
+           character_class_list,
            enable_emotional_states_local,
            emotional_states_list_local,
            no_user_impersonation_local,
@@ -723,7 +725,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 current_system_prompt_for_task = current_top_level_system_prompt + "\n\n" + current_system_prompt_for_task
                 log_message(f"Thread {thread_id}: Prepending Top Level System Prompt for task {task_id}", "DEBUG")
 
-            # Only add character injection if character engine is enabled AND we have character data
+            # Handle character injection
             character_injection = ""
             if enable_character_engine_local and character_job_list and character_clothing_list and character_appearance_list and character_backstory_list:
                 random_age = random.randint(18, 50)
@@ -735,17 +737,26 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 random_backstory = random.choice(character_backstory_list)
                 random_setting = random.choice(character_setting_list) if character_setting_list else "A standard indoor environment."
 
+                random_class = ""
+                if enable_class_selection_local and character_class_list:
+                    random_class = random.choice(character_class_list)
+                    class_injection = f"\nClass: {random_class}\n"
+                else:
+                    class_injection = ""
+
                 character_injection = (
                     f"\n\nCHARACTER PROFILE:\n"
                     f"Name: {random_name}\n"
                     f"Race: {random_race}\n"
                     f"Age: {random_age}\n"
+                    f"Class: {random_class}\n"  # NEW: Add Class to profile
                     f"Job: {random_job}\n"
                     f"Clothing: {random_clothing}\n"
                     f"Appearance: {random_appearance}\n"
                     f"Backstory: {random_backstory}\n"
                     f"Setting: {random_setting}\n"
                     f"Maintain this persona throughout the conversation."
+                    f"{class_injection}"  # NEW: Add class injection
                 )
                 log_message(f"Thread {thread_id}: Adding character profile to system prompt for task {task_id}", "DEBUG")
             else:
@@ -3409,6 +3420,8 @@ def start_processing():
     current_api_request_timeout = global_config.get('generation.api_request_timeout', 300)
     character_config = global_config.get('prompts.character', {})
     enable_character_engine_local = character_config.get('enabled', True)
+    enable_class_selection_local = character_config.get('class_enabled', False)
+    character_class_list = character_config.get('class', [])
     character_name_list = character_config.get('name', [])
     character_race_list = character_config.get('race', [])
     character_job_list = character_config.get('job', [])
@@ -3728,6 +3741,7 @@ def start_processing():
             current_top_level_system_prompt,
             master_duplication_enabled,
             enable_character_engine_local,
+            enable_class_selection_local,
             character_name_list,
             character_race_list,
             character_job_list,
@@ -3735,6 +3749,7 @@ def start_processing():
             character_appearance_list,
             character_backstory_list,
             character_setting_list,
+            character_class_list,
             enable_emotional_states,
             emotional_states_list,
             no_user_impersonation_var.get(),
@@ -4318,6 +4333,14 @@ class ConfigEditor(tk.Toplevel):
 
         character_engine_row_idx = 0
 
+        def add_character_engine_text_area(label_text, var_name, height=4):
+            nonlocal character_engine_row_idx
+            ttk.Label(self.character_engine_content_frame, text=label_text).grid(row=character_engine_row_idx, column=0, padx=5, pady=5, sticky="nw")
+            text_widget = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=height, width=130, undo=True)
+            text_widget.grid(row=character_engine_row_idx, column=1, padx=5, pady=5, sticky="ew")
+            setattr(self, var_name, text_widget)
+            character_engine_row_idx += 1
+
         # Add checkbox to enable character engine
         self.enable_character_engine_var_editor = tk.BooleanVar()
         self.enable_character_checkbox = ttk.Checkbutton(
@@ -4335,13 +4358,16 @@ class ConfigEditor(tk.Toplevel):
                 variable=self.enable_emotional_states_var_editor, command=self._toggle_emotional_states_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w")
         character_engine_row_idx += 1
 
-        def add_character_engine_text_area(label_text, var_name, height=4): # Helper for text areas
-            nonlocal character_engine_row_idx
-            ttk.Label(self.character_engine_content_frame, text=label_text).grid(row=character_engine_row_idx, column=0, padx=5, pady=5, sticky="nw")
-            text_widget = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=height, width=130, undo=True)
-            text_widget.grid(row=character_engine_row_idx, column=1, padx=5, pady=5, sticky="ew")
-            setattr(self, var_name, text_widget)
-            character_engine_row_idx += 1
+        self.enable_class_selection_var_editor = tk.BooleanVar()
+        ttk.Checkbutton(self.character_engine_content_frame,
+                        text="Enable Class Selection (fantasy classes like mage, warlock, rogue, etc.)",
+                        variable=self.enable_class_selection_var_editor,
+                        command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        character_engine_row_idx += 1
+
+        # Add text area for class options
+        add_character_engine_text_area("Character Class (one per line, e.g., mage, warlock, rogue, paladin):",
+                                    'character_class_text', height=12)
 
         # Move character fields to Character Engine tab
         add_character_engine_text_area("Character Names (one per line):", 'character_name_text', height=12)
@@ -4812,13 +4838,15 @@ class ConfigEditor(tk.Toplevel):
                 'use_questions_file': self.use_questions_file_var_editor.get(),
                 'character': {
                     'enabled': self.enable_character_engine_var_editor.get(),
+                    'class_enabled': self.enable_class_selection_var_editor.get(),
                     'name': [sanitize_input(line.strip()) for line in self.character_name_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'race': [sanitize_input(line.strip()) for line in self.character_race_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'job': [sanitize_input(line.strip()) for line in self.character_job_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'clothing': [sanitize_input(line.strip()) for line in self.character_clothing_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'appearance': [sanitize_input(line.strip()) for line in self.character_appearance_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'backstory': [sanitize_input(line.strip()) for line in self.character_backstory_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'setting': [sanitize_input(line.strip()) for line in self.character_setting_text.get("1.0", tk.END).split('\n') if line.strip()]
+                    'setting': [sanitize_input(line.strip()) for line in self.character_setting_text.get("1.0", tk.END).split('\n') if line.strip()],
+                    'class': [sanitize_input(line.strip()) for line in self.character_class_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
                         # NEW: Add emotional states configuration
                 'emotional_states': {
@@ -4940,6 +4968,23 @@ class ConfigEditor(tk.Toplevel):
                 field_widget.config(state='disabled')
 
         log_message(f"Emotional States fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
+
+    def _toggle_class_fields(self):
+        """Enables/disables class selection text field based on checkbox state."""
+        is_enabled = self.enable_class_selection_var_editor.get()
+
+        class_fields = [
+            'character_class_text'
+        ]
+
+        for field_name in class_fields:
+            field_widget = getattr(self, field_name)
+            if is_enabled:
+                field_widget.config(state='normal')
+            else:
+                field_widget.config(state='disabled')
+
+        log_message(f"Class Selection fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 
     def _toggle_character_engine_fields(self):
         """Enables/disables character engine text fields based on checkbox state."""
@@ -5095,6 +5140,7 @@ class ConfigEditor(tk.Toplevel):
             character_conf = prompts_config.get('character', {})
             # Load character engine enabled state
             self.enable_character_engine_var_editor.set(character_conf.get('enabled', True))
+            self.enable_class_selection_var_editor.set(character_conf.get('class_enabled', False))
 
             # Load character data
             self.character_name_text.delete(1.0, tk.END)
@@ -5117,6 +5163,9 @@ class ConfigEditor(tk.Toplevel):
 
             self.character_setting_text.delete(1.0, tk.END)
             self.character_setting_text.insert(tk.END, "\n".join(character_conf.get('setting', [])))
+
+            self.character_class_text.delete(1.0, tk.END)
+            self.character_class_text.insert(tk.END, "\n".join(character_conf.get('class', [])))
 
             # Apply the enabled/disabled state to the text fields
             self._toggle_character_engine_fields()
@@ -5254,7 +5303,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.3.3")
+root.title("ReadyArt Synthetic Dataset Generator v8.3.5")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
