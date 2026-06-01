@@ -66,6 +66,9 @@ stats_lock = Lock()  # For counters (attempts, errors, tokens, refusals, slop, e
 question_history_lock = Lock()  # For question_history list
 system_prompt_counter_lock = Lock()  # For system_prompt_counter
 
+# --- UI Spacing System ---
+SPACING = 8  # Unified padding constant for all frames, widgets, and separators
+
 # --- Statistics Counters ---
 # These track various events during generation for monitoring and analysis.
 refusal_count_total = 0
@@ -3647,7 +3650,7 @@ def start_processing():
                 api_name_label = ttk.Label(progress_frame, text=f"API Slot {api_idx+1} ({api_conf.get('model', 'N/A')}):")
                 api_name_label.pack(pady=(5,0), anchor='w')
                 bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate")
-                bar.pack(pady=2, fill='x', expand=True)
+                bar.pack(pady=SPACING, fill='x', expand=True)
                 time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
                 time_label.pack(pady=(0,5), anchor='w')
                 task_queue.api_widgets[api_idx] = {'bar': bar, 'time_label': time_label, 'name_label': api_name_label}
@@ -3664,9 +3667,9 @@ def start_processing():
             processing_active = False; start_button.config(state=tk.NORMAL); return
     else: # Single overall progress bar for non-duplication mode
         overall_progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate")
-        overall_progress_bar.pack(pady=5, fill='x', expand=True)
+        overall_progress_bar.pack(pady=SPACING, fill='x', expand=True)
         overall_time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
-        overall_time_label.pack(pady=5)
+        overall_time_label.pack(pady=SPACING)
         task_queue.overall_progress_bar = overall_progress_bar
         task_queue.overall_time_label = overall_time_label
         # Initialize processed_tasks (turns)
@@ -3762,6 +3765,9 @@ def start_processing():
 
     # --- GUI Progress Update Loop ---
     def update_gui_progress():
+        if dashboard_pause_var.get():
+            root.after(1000, update_gui_progress) # Check again in 1s
+            return
         if processing_active and not stop_processing: 
             check_budget_limit()
             try:
@@ -4033,7 +4039,18 @@ class ConfigEditor(tk.Toplevel):
         self.num_threads_var_editor = tk.StringVar(value=str(global_config.get('api.threads', 10)))
 
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # --- NEW: Tab & Section Search Bar ---
+        self.search_frame = ttk.Frame(self)
+        self.search_frame.pack(fill=tk.X, padx=SPACING, pady=(SPACING, 0))
+        ttk.Label(self.search_frame, text="🔍 Search Tabs/Sections:").pack(side=tk.LEFT, padx=(0, 5))
+        self.search_entry = ttk.Entry(self.search_frame)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.search_entry.bind("<KeyRelease>", self.search_editor_tabs)
+        self.search_entry.bind("<Return>", self.search_editor_tabs)
+        # ------------------------------------
+
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
 
         # --- API Tab ---
         self.api_tab = ttk.Frame(self.notebook)
@@ -4056,73 +4073,73 @@ class ConfigEditor(tk.Toplevel):
         self.api_canvas.bind_all("<MouseWheel>", lambda e: self.api_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         # Pricing Input Field (now inside api_content_frame)
-        ttk.Label(self.api_content_frame, text="Cost per 1k Tokens ($):").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        ttk.Label(self.api_content_frame, text="Cost per 1k Tokens ($):").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="w")
         self.pricing_var = tk.StringVar()
-        ttk.Entry(self.api_content_frame, width=10, textvariable=self.pricing_var).grid(row=0, column=1, padx=10, pady=10, sticky="w")
-        ttk.Label(self.api_content_frame, text="(Enter 0 if unknown)").grid(row=0, column=2, padx=10, pady=10, sticky="w")
+        ttk.Entry(self.api_content_frame, width=10, textvariable=self.pricing_var).grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(self.api_content_frame, text="(Enter 0 if unknown)").grid(row=0, column=2, padx=SPACING, pady=SPACING, sticky="w")
 
-        ttk.Label(self.api_content_frame, text="API Budget Limit ($):").grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        ttk.Label(self.api_content_frame, text="API Budget Limit ($):").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="w")
         self.budget_limit_var = tk.StringVar()
-        ttk.Entry(self.api_content_frame, width=10, textvariable=self.budget_limit_var).grid(row=1, column=1, padx=10, pady=10, sticky="w")
-        ttk.Label(self.api_content_frame, text="(Set to 0 to disable)").grid(row=1, column=2, padx=10, pady=10, sticky="w")
+        ttk.Entry(self.api_content_frame, width=10, textvariable=self.budget_limit_var).grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(self.api_content_frame, text="(Set to 0 to disable)").grid(row=1, column=2, padx=SPACING, pady=SPACING, sticky="w")
 
         # Valkey Configuration Section (now inside api_content_frame)
         valkey_frame = ttk.LabelFrame(self.api_content_frame, text="Valkey Cache Settings")
-        valkey_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+        valkey_frame.grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="ew")
 
         db_frame = ttk.LabelFrame(self.api_content_frame, text="PostgreSQL Database Settings")
-        db_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        db_frame.grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="ew")
 
         self.db_enabled_var = tk.BooleanVar()
-        ttk.Checkbutton(db_frame, text="Enable PostgreSQL Database", variable=self.db_enabled_var).pack(anchor="w", padx=5, pady=2)
+        ttk.Checkbutton(db_frame, text="Enable PostgreSQL Database", variable=self.db_enabled_var).pack(anchor="w", padx=SPACING, pady=SPACING)
 
-        ttk.Label(db_frame, text="Host:").pack(anchor="w", padx=(15,0), pady=2)
+        ttk.Label(db_frame, text="Host:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_host_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_host_var).pack(anchor="w", padx=15, pady=2)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_host_var).pack(anchor="w", padx=SPACING, pady=SPACING)
 
-        ttk.Label(db_frame, text="Port:").pack(anchor="w", padx=(15,0), pady=2)
+        ttk.Label(db_frame, text="Port:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_port_var = tk.StringVar()
-        ttk.Entry(db_frame, width=15, textvariable=self.db_port_var).pack(anchor="w", padx=15, pady=2)
+        ttk.Entry(db_frame, width=15, textvariable=self.db_port_var).pack(anchor="w", padx=SPACING, pady=SPACING)
 
-        ttk.Label(db_frame, text="Database Name:").pack(anchor="w", padx=(15,0), pady=2)
+        ttk.Label(db_frame, text="Database Name:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_dbname_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_dbname_var).pack(anchor="w", padx=15, pady=2)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_dbname_var).pack(anchor="w", padx=SPACING, pady=SPACING)
 
-        ttk.Label(db_frame, text="User:").pack(anchor="w", padx=(15,0), pady=2)
+        ttk.Label(db_frame, text="User:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_user_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_user_var).pack(anchor="w", padx=15, pady=2)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_user_var).pack(anchor="w", padx=SPACING, pady=SPACING)
 
-        ttk.Label(db_frame, text="Password:").pack(anchor="w", padx=(15,0), pady=2)
+        ttk.Label(db_frame, text="Password:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_password_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_password_var, show="*").pack(anchor="w", padx=15, pady=2)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_password_var, show="*").pack(anchor="w", padx=SPACING, pady=SPACING)
 
-        ttk.Label(db_frame, text="Connection Pool Size:").pack(anchor="w", padx=(15,0), pady=2)
+        ttk.Label(db_frame, text="Connection Pool Size:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_pool_size_var = tk.StringVar()
-        ttk.Entry(db_frame, width=15, textvariable=self.db_pool_size_var).pack(anchor="w", padx=15, pady=5)
+        ttk.Entry(db_frame, width=15, textvariable=self.db_pool_size_var).pack(anchor="w", padx=SPACING, pady=SPACING)
 
         self.valkey_enabled_var = tk.BooleanVar()
-        ttk.Checkbutton(valkey_frame, text="Enable Valkey Caching", variable=self.valkey_enabled_var).grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        ttk.Checkbutton(valkey_frame, text="Enable Valkey Caching", variable=self.valkey_enabled_var).grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
 
-        ttk.Label(valkey_frame, text="Host:").grid(row=1, column=0, padx=5, pady=2, sticky="e")
+        ttk.Label(valkey_frame, text="Host:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.valkey_host_var = tk.StringVar()
-        ttk.Entry(valkey_frame, width=30, textvariable=self.valkey_host_var).grid(row=1, column=1, padx=5, pady=2, sticky="w")
+        ttk.Entry(valkey_frame, width=30, textvariable=self.valkey_host_var).grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
-        ttk.Label(valkey_frame, text="Port:").grid(row=2, column=0, padx=5, pady=2, sticky="e")
+        ttk.Label(valkey_frame, text="Port:").grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.valkey_port_var = tk.StringVar()
-        ttk.Entry(valkey_frame, width=10, textvariable=self.valkey_port_var).grid(row=2, column=1, padx=5, pady=2, sticky="w")
+        ttk.Entry(valkey_frame, width=10, textvariable=self.valkey_port_var).grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
-        ttk.Label(valkey_frame, text="Database:").grid(row=3, column=0, padx=5, pady=2, sticky="e")
+        ttk.Label(valkey_frame, text="Database:").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.valkey_db_var = tk.StringVar()
-        ttk.Entry(valkey_frame, width=10, textvariable=self.valkey_db_var).grid(row=3, column=1, padx=5, pady=2, sticky="w")
+        ttk.Entry(valkey_frame, width=10, textvariable=self.valkey_db_var).grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
-        ttk.Label(valkey_frame, text="Password (optional):").grid(row=4, column=0, padx=5, pady=2, sticky="e")
+        ttk.Label(valkey_frame, text="Password (optional):").grid(row=4, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.valkey_password_var = tk.StringVar()
-        ttk.Entry(valkey_frame, width=30, textvariable=self.valkey_password_var, show="*").grid(row=4, column=1, padx=5, pady=2, sticky="w")
+        ttk.Entry(valkey_frame, width=30, textvariable=self.valkey_password_var, show="*").grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
         self.master_duplication_mode_var_editor = tk.BooleanVar(self)
         self.master_duplication_mode_var_editor.set(master_duplication_enabled_var.get())
         master_duplication_check = ttk.Checkbutton(self.api_content_frame, text="Enable Master Duplication Mode (for enabled APIs 1-4)", variable=self.master_duplication_mode_var_editor, command=self._sync_global_duplication_var_from_editor)
-        master_duplication_check.grid(row=4, column=0, columnspan=2, padx=10, pady=(10,5), sticky="w")
+        master_duplication_check.grid(row=4, column=0, columnspan=2, padx=SPACING, pady=(10,5), sticky="w")
 
         num_api_slots = 6
         for i in range(num_api_slots):
@@ -4132,60 +4149,60 @@ class ConfigEditor(tk.Toplevel):
             if i == 5: frame_text += " (Anti-Slop Fixer LLM - Not part of Duplication)"
             
             api_frame = ttk.LabelFrame(self.api_content_frame, text=frame_text) # Changed parent to self.api_content_frame
-            api_frame.grid(row=i + 5, column=0, padx=10, pady=5, sticky="ew")
+            api_frame.grid(row=i + 5, column=0, padx=SPACING, pady=SPACING, sticky="ew")
             self.api_tab.grid_columnconfigure(0, weight=1) 
             
-            ttk.Label(api_frame, text="API URL:").grid(row=0, column=0, padx=5, pady=2, sticky="e")
-            url_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=url_var).grid(row=0, column=1, padx=5, pady=2, sticky="ew")
+            ttk.Label(api_frame, text="API URL:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            url_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=url_var).grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, f'api_url_var_{i+1}', url_var) 
             
-            ttk.Label(api_frame, text="Model Name:").grid(row=1, column=0, padx=5, pady=2, sticky="e")
-            model_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=model_var).grid(row=1, column=1, padx=5, pady=2, sticky="ew")
+            ttk.Label(api_frame, text="Model Name:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            model_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=model_var).grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, f'api_model_var_{i+1}', model_var)
             
-            ttk.Label(api_frame, text="API Key:").grid(row=2, column=0, padx=5, pady=2, sticky="e")
-            key_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=key_var, show="*").grid(row=2, column=1, padx=5, pady=2, sticky="ew")
+            ttk.Label(api_frame, text="API Key:").grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            key_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=key_var, show="*").grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, f'api_key_var_{i+1}', key_var)
 
             # Add status label and test button for API connection
             status_var = tk.StringVar(value="Not tested")
             status_label = ttk.Label(api_frame, textvariable=status_var, foreground="gray")
-            status_label.grid(row=6, column=0, columnspan=2, padx=5, pady=2, sticky="w")
+            status_label.grid(row=6, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
             setattr(self, f'api_status_var_{i+1}', status_var)
             setattr(self, f'api_status_label_{i+1}', status_label)
             test_btn = ttk.Button(api_frame, text="Test Connection", command=lambda idx=i: self.test_api_connection(idx))  # This should already work since it's a lambda
-            test_btn.grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+            test_btn.grid(row=7, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
             setattr(self, f'api_test_btn_{i+1}', test_btn)
             
             if i < 4: # APIs 1-4 (indices 0-3) can be enabled/disabled for main generation
                 enabled_var = tk.BooleanVar(self, value=(i==0)) # API 1 defaults to enabled
                 setattr(self, f'api_enabled_var_{i+1}', enabled_var)
-                ttk.Checkbutton(api_frame, text="Enabled for Generation/Duplication", variable=enabled_var).grid(row=3, column=0, columnspan=2, padx=5, pady=2, sticky="w")
+                ttk.Checkbutton(api_frame, text="Enabled for Generation/Duplication", variable=enabled_var).grid(row=3, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
 
                 # Add threads setting for each API
-                ttk.Label(api_frame, text="Number of Threads:").grid(row=4, column=0, padx=5, pady=2, sticky="e")
+                ttk.Label(api_frame, text="Number of Threads:").grid(row=4, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 threads_var = tk.StringVar(value="10")  # Default value
                 setattr(self, f'api_threads_var_{i+1}', threads_var)
-                ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=4, column=1, padx=5, pady=2, sticky="w")
+                ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
                 # NEW: Add rate limit setting for each API
-                ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=5, column=0, padx=5, pady=2, sticky="e")
+                ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=5, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 rate_limit_var = tk.StringVar(value="60")  # Default 60 requests per minute
                 setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
-                ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=5, column=1, padx=5, pady=2, sticky="w")
-                ttk.Label(api_frame, text="(Requests/Min)").grid(row=5, column=2, padx=5, pady=2, sticky="w")
+                ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=5, column=1, padx=SPACING, pady=SPACING, sticky="w")
+                ttk.Label(api_frame, text="(Requests/Min)").grid(row=5, column=2, padx=SPACING, pady=SPACING, sticky="w")
             else: # API Slot 5 (Slop Fixer) - add threads setting but no enabled checkbox
-                ttk.Label(api_frame, text="Number of Threads:").grid(row=3, column=0, padx=5, pady=2, sticky="e")
+                ttk.Label(api_frame, text="Number of Threads:").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 threads_var = tk.StringVar(value="10")  # Default value
                 setattr(self, f'api_threads_var_{i+1}', threads_var)
-                ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=3, column=1, padx=5, pady=2, sticky="w")
+                ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
                 # NEW: Add rate limit setting for Slop Fixer API
-                ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=4, column=0, padx=5, pady=2, sticky="e")
+                ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=4, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 rate_limit_var = tk.StringVar(value="60")  # Default 60 requests per minute
                 setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
-                ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=4, column=1, padx=5, pady=2, sticky="w")
-                ttk.Label(api_frame, text="(Requests/Min)").grid(row=4, column=2, padx=5, pady=2, sticky="w")
+                ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
+                ttk.Label(api_frame, text="(Requests/Min)").grid(row=4, column=2, padx=SPACING, pady=SPACING, sticky="w")
 
             api_frame.grid_columnconfigure(1, weight=1) # Make entry fields expand
 
@@ -4218,10 +4235,10 @@ class ConfigEditor(tk.Toplevel):
         row_idx = 0
         def add_gen_setting(label_text, var_name, help_text=""): # Helper to add a setting row
             nonlocal row_idx
-            ttk.Label(gen_settings_frame, text=label_text).grid(row=row_idx, column=0, padx=5, pady=5, sticky="e")
+            ttk.Label(gen_settings_frame, text=label_text).grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(gen_settings_frame, width=10, textvariable=var).grid(row=row_idx, column=1, padx=5, pady=5, sticky="w")
-            if help_text: ttk.Label(gen_settings_frame, text=help_text).grid(row=row_idx, column=2, padx=5, pady=5, sticky="w")
+            ttk.Entry(gen_settings_frame, width=10, textvariable=var).grid(row=row_idx, column=1, padx=SPACING, pady=SPACING, sticky="w")
+            if help_text: ttk.Label(gen_settings_frame, text=help_text).grid(row=row_idx, column=2, padx=SPACING, pady=SPACING, sticky="w")
             row_idx += 1
 
         add_gen_setting("Number of Random Chunks:", 'num_random_chunks_var', "(Total tasks to generate per run)")
@@ -4236,34 +4253,34 @@ class ConfigEditor(tk.Toplevel):
         add_gen_setting("Max Text Length (Malformed):", 'max_text_length_malformed_var', "(Max length in chars before reply is considered malformed)")
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
-        ttk.Checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         self.remove_em_dash_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Em Dash (—) from output", variable=self.remove_em_dash_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Em Dash (—) from output", variable=self.remove_em_dash_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         self.ensure_space_after_line_break_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Ensure Space After Line Break (prevents words running together)", variable=self.ensure_space_after_line_break_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Experimental: Ensure Space After Line Break (prevents words running together)", variable=self.ensure_space_after_line_break_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         # NEW: Add checkbox for removing excessive asterisks
         self.remove_asterisks_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Excessive Asterisks (**, ****, etc.) from output", variable=self.remove_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Excessive Asterisks (**, ****, etc.) from output", variable=self.remove_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         # NEW: Add checkbox for removing "* *" pattern
         self.remove_asterisk_space_asterisk_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove '* *' Pattern (asterisk space asterisk) from output", variable=self.remove_asterisk_space_asterisk_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove '* *' Pattern (asterisk space asterisk) from output", variable=self.remove_asterisk_space_asterisk_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         self.remove_all_asterisks_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove ALL Asterisks (including single *) from output", variable=self.remove_all_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove ALL Asterisks (including single *) from output", variable=self.remove_all_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         self.remove_markdown_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Markdown Formatting (Convert to plain text)", variable=self.remove_markdown_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Markdown Formatting (Convert to plain text)", variable=self.remove_markdown_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
         
-        ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.output_format_var = tk.StringVar(value="sharegpt")
-        ttk.Label(gen_settings_frame, text="sharegpt").grid(row=row_idx, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(gen_settings_frame, text="(Format for output.jsonl files)").grid(row=row_idx, column=2, padx=5, pady=5, sticky="w"); row_idx+=1
+        ttk.Label(gen_settings_frame, text="sharegpt").grid(row=row_idx, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(gen_settings_frame, text="(Format for output.jsonl files)").grid(row=row_idx, column=2, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         # --- Prompts Tab ---
         self.prompts_tab = ttk.Frame(self.notebook)
@@ -4293,14 +4310,14 @@ class ConfigEditor(tk.Toplevel):
 
         def add_prompt_text_area(label_text, var_name, height=4): # Helper for text areas
             nonlocal prompts_row_idx
-            ttk.Label(self.prompts_content_frame, text=label_text).grid(row=prompts_row_idx, column=0, padx=5, pady=5, sticky="nw")
+            ttk.Label(self.prompts_content_frame, text=label_text).grid(row=prompts_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
             text_widget = scrolledtext.ScrolledText(self.prompts_content_frame, wrap=tk.WORD, height=height, width=130, undo=True)
-            text_widget.grid(row=prompts_row_idx, column=1, padx=5, pady=5, sticky="ew")
+            text_widget.grid(row=prompts_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, var_name, text_widget)
             prompts_row_idx += 1
 
-        ttk.Checkbutton(self.prompts_content_frame, text=f"Use '{os.path.basename(QUESTIONS_FILE_PATH)}' for questions (disables subject/context chunking)", variable=self.use_questions_file_var_editor).grid(row=prompts_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); prompts_row_idx+=1
-        ttk.Checkbutton(self.prompts_content_frame, text="Use Variable System Prompts (randomly chosen from list below)", variable=self.use_variable_system_var_editor).grid(row=prompts_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); prompts_row_idx+=1
+        ttk.Checkbutton(self.prompts_content_frame, text=f"Use '{os.path.basename(QUESTIONS_FILE_PATH)}' for questions (disables subject/context chunking)", variable=self.use_questions_file_var_editor).grid(row=prompts_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w"); prompts_row_idx+=1
+        ttk.Checkbutton(self.prompts_content_frame, text="Use Variable System Prompts (randomly chosen from list below)", variable=self.use_variable_system_var_editor).grid(row=prompts_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w"); prompts_row_idx+=1
 
         add_prompt_text_area("Top Level System Prompt (Applied to ALL prompts):", 'top_level_system_prompt_text', height=12)
         add_prompt_text_area("Base System Prompt (used if not variable, or as one of variations):", 'system_base_prompt_text', height=12)
@@ -4335,9 +4352,9 @@ class ConfigEditor(tk.Toplevel):
 
         def add_character_engine_text_area(label_text, var_name, height=4):
             nonlocal character_engine_row_idx
-            ttk.Label(self.character_engine_content_frame, text=label_text).grid(row=character_engine_row_idx, column=0, padx=5, pady=5, sticky="nw")
+            ttk.Label(self.character_engine_content_frame, text=label_text).grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
             text_widget = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=height, width=130, undo=True)
-            text_widget.grid(row=character_engine_row_idx, column=1, padx=5, pady=5, sticky="ew")
+            text_widget.grid(row=character_engine_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, var_name, text_widget)
             character_engine_row_idx += 1
 
@@ -4349,20 +4366,20 @@ class ConfigEditor(tk.Toplevel):
             variable=self.enable_character_engine_var_editor,
             command=self._toggle_character_engine_fields
         )
-        self.enable_character_checkbox.grid(row=character_engine_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        self.enable_character_checkbox.grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
         # Add checkbox to enable emotional states
         self.enable_emotional_states_var_editor = tk.BooleanVar()
         ttk.Checkbutton(self.character_engine_content_frame, text="Enable Emotional States (randomly assign to conversations)",
-                variable=self.enable_emotional_states_var_editor, command=self._toggle_emotional_states_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+                variable=self.enable_emotional_states_var_editor, command=self._toggle_emotional_states_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
         self.enable_class_selection_var_editor = tk.BooleanVar()
         ttk.Checkbutton(self.character_engine_content_frame,
                         text="Enable Class Selection (fantasy classes like mage, warlock, rogue, etc.)",
                         variable=self.enable_class_selection_var_editor,
-                        command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+                        command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
         # Add text area for class options
@@ -4408,22 +4425,22 @@ class ConfigEditor(tk.Toplevel):
 
         self.gender_var_editor = tk.StringVar() # Editor's local var for gender
         gender_frame = ttk.Frame(self.detection_content_frame)
-        gender_frame.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        gender_frame.grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         ttk.Label(gender_frame, text="Assistant Persona Gender (for user speaking detection):").pack(side=tk.LEFT, padx=(0,10))
         ttk.Radiobutton(gender_frame, text="Female", variable=self.gender_var_editor, value="female", command=lambda: self.on_gender_change_editor_handler()).pack(side=tk.LEFT)
         ttk.Radiobutton(gender_frame, text="Male", variable=self.gender_var_editor, value="male", command=lambda: self.on_gender_change_editor_handler).pack(side=tk.LEFT)
         ttk.Radiobutton(gender_frame, text="Neutral", variable=self.gender_var_editor, value="neutral", command=lambda: self.on_gender_change_editor_handler).pack(side=tk.LEFT)
         
-        ttk.Checkbutton(self.detection_content_frame, text="Disable User Impersonation Detection (Globally)", variable=no_user_impersonation_var).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        ttk.Checkbutton(self.detection_content_frame, text="Disable User Impersonation Detection (Globally)", variable=no_user_impersonation_var).grid(row=1, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
 
-        col1_frame = ttk.Frame(self.detection_content_frame); col1_frame.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
-        col2_frame = ttk.Frame(self.detection_content_frame); col2_frame.grid(row=2, column=1, padx=5, pady=5, sticky="nsew")
+        col1_frame = ttk.Frame(self.detection_content_frame); col1_frame.grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="nsew")
+        col2_frame = ttk.Frame(self.detection_content_frame); col2_frame.grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="nsew")
         self.detection_content_frame.grid_columnconfigure(0, weight=1); self.detection_content_frame.grid_columnconfigure(1, weight=1)
         self.detection_content_frame.grid_rowconfigure(2, weight=1)
         
         def add_detection_list_pair(parent_frame, lf_text, phrases_var_name, fixes_var_name): # Helper for detection list pairs
             lf = ttk.LabelFrame(parent_frame, text=lf_text)
-            lf.pack(padx=5, pady=5, fill="both", expand=True)
+            lf.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
             ttk.Label(lf, text="Detection Phrases (one per line):").pack(anchor="w")
             phrases_text = scrolledtext.ScrolledText(lf, wrap=tk.WORD, height=12, undo=True)
             phrases_text.pack(fill="both", expand=True, pady=(0,5))
@@ -4462,16 +4479,16 @@ class ConfigEditor(tk.Toplevel):
         # Bind mouse wheel to canvas for scrolling
         self.samplers_canvas.bind_all("<MouseWheel>", lambda e: self.samplers_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-        ttk.Label(sampler_params_frame, text="Sampler Priority (Order for API payload, one per line, e.g., temperature, top_p):").grid(row=0, column=0, columnspan=3, padx=5, pady=5, sticky="w")
-        self.sampler_priority_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=30, undo=True); self.sampler_priority_text.grid(row=1, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+        ttk.Label(sampler_params_frame, text="Sampler Priority (Order for API payload, one per line, e.g., temperature, top_p):").grid(row=0, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        self.sampler_priority_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=30, undo=True); self.sampler_priority_text.grid(row=1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         
         sampler_row = 2 
         def add_sampler_param(label, var_name, example): # Helper for sampler parameters
             nonlocal sampler_row
-            ttk.Label(sampler_params_frame, text=label).grid(row=sampler_row, column=0, padx=5, pady=5, sticky="e")
+            ttk.Label(sampler_params_frame, text=label).grid(row=sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(sampler_params_frame, width=10, textvariable=var).grid(row=sampler_row, column=1, padx=5, pady=5, sticky="w")
-            ttk.Label(sampler_params_frame, text=example).grid(row=sampler_row, column=2, padx=5, pady=5, sticky="w")
+            ttk.Entry(sampler_params_frame, width=10, textvariable=var).grid(row=sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Label(sampler_params_frame, text=example).grid(row=sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
             sampler_row += 1
 
         add_sampler_param("Temperature:", 'temperature_var', "(E.g., 0.7)")
@@ -4482,21 +4499,21 @@ class ConfigEditor(tk.Toplevel):
         add_sampler_param("Max Tokens (Initial Question):", 'max_tokens_question_var', "(E.g., 256)")
         add_sampler_param("Max Tokens (Assistant Answer):", 'max_tokens_answer_var', "(E.g., 1024)")
         add_sampler_param("Max Tokens (User Continuation):", 'max_tokens_user_reply_var', "(E.g., 256)")
-        ttk.Label(sampler_params_frame, text="Logit Bias (JSON format, e.g., {\"15\": 100}):").grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=5, sticky="w")
+        ttk.Label(sampler_params_frame, text="Logit Bias (JSON format, e.g., {\"15\": 100}):").grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
         sampler_row += 1
         self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=50, undo=True)
-        self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+        self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         sampler_row += 1
         self.enable_thinking_var_editor = tk.BooleanVar(value=False)
         slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Slop Fixer LLM Sampler Overrides (API Slot 5 - Optional)")
-        slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=10, sticky="ew"); sampler_row+=1 
+        slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
         sf_sampler_row = 0 
         def add_slop_fixer_param(label, var_name, example): # Helper for slop fixer sampler params
             nonlocal sf_sampler_row
-            ttk.Label(slop_fixer_sampler_lf, text=label).grid(row=sf_sampler_row, column=0, padx=5, pady=2, sticky="e")
+            ttk.Label(slop_fixer_sampler_lf, text=label).grid(row=sf_sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(slop_fixer_sampler_lf, width=10, textvariable=var).grid(row=sf_sampler_row, column=1, padx=5, pady=2, sticky="w")
-            ttk.Label(slop_fixer_sampler_lf, text=example).grid(row=sf_sampler_row, column=2, padx=5, pady=2, sticky="w")
+            ttk.Entry(slop_fixer_sampler_lf, width=10, textvariable=var).grid(row=sf_sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Label(slop_fixer_sampler_lf, text=example).grid(row=sf_sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
             sf_sampler_row += 1
         add_slop_fixer_param("Temperature (Slop Fixer):", 'slop_fixer_temp_var', "(E.g., 0.5, uses main if blank)")
         add_slop_fixer_param("Top P (Slop Fixer):", 'slop_fixer_top_p_var', "(E.g., 0.95, uses main if blank)")
@@ -4506,14 +4523,14 @@ class ConfigEditor(tk.Toplevel):
         add_slop_fixer_param("Repetition Penalty (Slop Fixer):", 'slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
         # --- NEW: Anti-Slop Fixer Sampler Settings ---
         anti_slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Anti-Slop Fixer LLM Sampler Overrides (API Slot 6 - Optional)")
-        anti_slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=10, sticky="ew"); sampler_row+=1
+        anti_slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
         asf_sampler_row = 0
         def add_anti_slop_fixer_param(label, var_name, example): # Helper for anti-slop fixer sampler params
             nonlocal asf_sampler_row
-            ttk.Label(anti_slop_fixer_sampler_lf, text=label).grid(row=asf_sampler_row, column=0, padx=5, pady=2, sticky="e")
+            ttk.Label(anti_slop_fixer_sampler_lf, text=label).grid(row=asf_sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(anti_slop_fixer_sampler_lf, width=10, textvariable=var).grid(row=asf_sampler_row, column=1, padx=5, pady=2, sticky="w")
-            ttk.Label(anti_slop_fixer_sampler_lf, text=example).grid(row=asf_sampler_row, column=2, padx=5, pady=2, sticky="w")
+            ttk.Entry(anti_slop_fixer_sampler_lf, width=10, textvariable=var).grid(row=asf_sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Label(anti_slop_fixer_sampler_lf, text=example).grid(row=asf_sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
             asf_sampler_row += 1
         add_anti_slop_fixer_param("Temperature (Anti-Slop):", 'anti_slop_fixer_temp_var', "(E.g., 0.5, uses main if blank)")
         add_anti_slop_fixer_param("Top P (Anti-Slop):", 'anti_slop_fixer_top_p_var', "(E.g., 0.95, uses main if blank)")
@@ -4528,7 +4545,7 @@ class ConfigEditor(tk.Toplevel):
         )
 
         #DEBUG LATER enable_thinking_check = ttk.Checkbutton(sampler_params_frame, text="Enable chat_template_kwargs {'enable_thinking': False}", variable=self.enable_thinking_var_editor)
-        enable_thinking_check.grid(row=sampler_row, column=0, columnspan=3, padx=5, pady=5, sticky="w")
+        enable_thinking_check.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
         sampler_row += 1
 
 
@@ -4536,38 +4553,86 @@ class ConfigEditor(tk.Toplevel):
         self.profiles_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.profiles_tab, text="Profiles")
         profiles_main_frame = ttk.Frame(self.profiles_tab)
-        profiles_main_frame.pack(padx=10, pady=10, fill="both", expand=True)
+        profiles_main_frame.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
 
         load_profile_frame = ttk.LabelFrame(profiles_main_frame, text="Load Profile")
-        load_profile_frame.pack(padx=5, pady=5, fill="x", expand=False)
-        ttk.Label(load_profile_frame, text="Available Profiles:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        load_profile_frame.pack(padx=SPACING, pady=SPACING, fill="x", expand=False)
+        ttk.Label(load_profile_frame, text="Available Profiles:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.profile_list_var = tk.StringVar()
         self.profile_combobox = ttk.Combobox(load_profile_frame, textvariable=self.profile_list_var, width=40, state="readonly")
-        self.profile_combobox.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(load_profile_frame, text="Load Selected Profile to Editor & config.yml", command=self._load_selected_profile_handler).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Button(load_profile_frame, text="Delete Selected Profile", command=self._delete_selected_profile_handler).grid(row=0, column=3, padx=5, pady=5)
+        self.profile_combobox.grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+        ttk.Button(load_profile_frame, text="Load Selected Profile to Editor & config.yml", command=self._load_selected_profile_handler).grid(row=0, column=2, padx=SPACING, pady=SPACING)
+        ttk.Button(load_profile_frame, text="Delete Selected Profile", command=self._delete_selected_profile_handler).grid(row=0, column=3, padx=SPACING, pady=SPACING)
         load_profile_frame.grid_columnconfigure(1, weight=1) 
 
         save_profile_frame = ttk.LabelFrame(profiles_main_frame, text="Save Current Editor Configuration As Profile")
-        save_profile_frame.pack(padx=5, fill="x", expand=False, pady=(10,5)) 
-        ttk.Label(save_profile_frame, text="New Profile Name:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        save_profile_frame.pack(padx=SPACING, fill="x", expand=False, pady=(10,5))
+        ttk.Label(save_profile_frame, text="New Profile Name:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.new_profile_name_var = tk.StringVar()
-        ttk.Entry(save_profile_frame, textvariable=self.new_profile_name_var, width=43).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Button(save_profile_frame, text="Save Current Editor Config As Profile...", command=self._save_profile_as_handler).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Entry(save_profile_frame, textvariable=self.new_profile_name_var, width=43).grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+        ttk.Button(save_profile_frame, text="Save Current Editor Config As Profile...", command=self._save_profile_as_handler).grid(row=0, column=2, padx=SPACING, pady=SPACING)
         save_profile_frame.grid_columnconfigure(1, weight=1) 
         
         # --- Editor Toolbar and Status Bar ---
         self.status = ttk.Label(self, text="Ready", foreground="lightgray")  # Status bar at the bottom of editor
-        self.status.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0,5))
+        self.status.pack(side=tk.BOTTOM, fill=tk.X, padx=SPACING, pady=(0,5))
         toolbar = ttk.Frame(self) # Toolbar for main editor actions
-        ttk.Button(toolbar, text="Save to config.yml", command=self.save_config_handler).pack(side=tk.LEFT, padx=5)
-        ttk.Button(toolbar, text="Revert Changes (Reload from Files)", command=self.load_config_handler).pack(side=tk.LEFT, padx=5)
-        ttk.Button(toolbar, text="Validate Current Editor Values", command=self.validate_config_handler).pack(side=tk.LEFT, padx=5)
-        toolbar.pack(fill=tk.X, pady=5, padx=5)
+        ttk.Button(toolbar, text="Save to config.yml", command=self.save_config_handler).pack(side=tk.LEFT, padx=SPACING)
+        ttk.Button(toolbar, text="Revert Changes (Reload from Files)", command=self.load_config_handler).pack(side=tk.LEFT, padx=SPACING)
+        ttk.Button(toolbar, text="Validate Current Editor Values", command=self.validate_config_handler).pack(side=tk.LEFT, padx=SPACING)
+        toolbar.pack(fill=tk.X, pady=SPACING, padx=SPACING)
         
         self.load_config_handler() # Load initial config into editor UI
         self._populate_profile_list() # Populate profiles dropdown
         self.protocol("WM_DELETE_WINDOW", self.on_close_editor) # Handle editor close button
+
+    # --- NEW: Tab & Section Search Methods ---
+    def search_editor_tabs(self, event=None):
+        query = self.search_entry.get().strip().lower()
+        if not query:
+            self.search_entry.config(foreground="")
+            return
+
+        # 1. Match against Notebook Tab names
+        for tab_id in self.notebook.tabs():
+            if query in self.notebook.tab(tab_id, "text").lower():
+                self.notebook.select(tab_id)
+                self.search_entry.config(foreground="green")
+                return
+
+        # 2. Match against LabelFrame names inside tabs
+        for tab_id in self.notebook.tabs():
+            tab_widget = self.notebook.nametowidget(tab_id)
+            if self._find_and_raise_label_frame(tab_widget, query, tab_id):
+                return
+
+        self.search_entry.config(foreground="red")
+
+    def _find_and_raise_label_frame(self, widget, query, tab_id):
+        if isinstance(widget, ttk.LabelFrame):
+            lf_text = widget.cget("text").lower()
+            if query in lf_text:
+                self.notebook.select(tab_id)
+                widget.tkraise()
+                self._scroll_canvas_to(widget)
+                self.search_entry.config(foreground="green")
+                return True
+        for child in widget.winfo_children():
+            if self._find_and_raise_label_frame(child, query, tab_id):
+                return True
+        return False
+
+    def _scroll_canvas_to(self, target_widget):
+        target_widget.update_idletasks()
+        parent = target_widget.master
+        while parent:
+            if isinstance(parent, tk.Canvas):
+                # Calculate scroll fraction to bring widget near the top
+                y_pos = max(0, (target_widget.winfo_y() - 20) / parent.winfo_height())
+                parent.yview_moveto(min(1.0, y_pos))
+                return
+            parent = parent.master
+    # --- END NEW METHODS ---
 
     def _sync_global_duplication_var_from_editor(self):
         """Updates the global master_duplication_enabled_var when the editor's checkbox changes."""
@@ -4599,7 +4664,7 @@ class ConfigEditor(tk.Toplevel):
             status_label = getattr(self, f'api_status_label_{slot_index+1}', None)
             if not status_label:
                 status_label = ttk.Label(self.api_tab, text="", foreground="gray")
-                status_label.grid(row=slot_index + 2, column=0, columnspan=2, padx=5, pady=2, sticky="w")
+                status_label.grid(row=slot_index + 2, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
                 setattr(self, f'api_status_label_{slot_index+1}', status_label)
 
         def run_test(self):
@@ -5303,8 +5368,10 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.3.5")
-root.geometry("1400x850") # Main window size
+root.title("ReadyArt Synthetic Dataset Generator v8.4.0")
+root.minsize(1100, 700)  # Prevents layout breakage on resize
+root.grid_columnconfigure(0, weight=1)
+root.grid_rowconfigure(0, weight=1)
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
     try:
@@ -5314,13 +5381,31 @@ if os.path.exists(icon_path):
         log_message(f"Failed to load taskbar icon: {e}", "WARNING")
 else:
     log_message("taskbar.png not found in main directory. Using default system icon.", "WARNING")
+
 style = ttk.Style()
 available_themes = style.theme_names()
 try:
     style.theme_use('superhero')
-    log_message(f"Using theme: solar", "INFO")
-except tk.TclError: # If solar theme doesn't exist, try system default
-    log_message(f"Could not apply solar theme. Using system default.", "WARNING")
+    log_message(f"Using theme: superhero", "INFO")
+except tk.TclError:
+    log_message(f"Could not apply superhero theme. Using system default.", "WARNING")
+
+# 🎨 1. Set a Global Typography Hierarchy
+# Default body text for all standard widgets
+style.configure('.', font=('Segoe UI', 10))
+
+# Section headers, status labels, and important metrics
+style.configure('Header.TLabel', font=('Segoe UI', 12, 'bold'))
+
+# Helper text, footnotes, and secondary info
+style.configure('Small.TLabel', font=('Segoe UI', 9), foreground='#8b949e')
+
+# Code blocks, prompts, and raw logs
+style.configure('Code.TLabel', font=('Consolas', 9))
+
+# Dashboard tabs & notebook styling
+style.configure('TNotebook.Tab', font=('Segoe UI', 10, 'bold'), padding=[16, 6])
+style.configure('TNotebook', font=('Segoe UI', 10))
 
 # --- Global Tkinter Variables ---
 num_threads_var = tk.StringVar(value=str(global_config.get('threads', 10))) # Default from config or 10
@@ -5338,39 +5423,40 @@ valkey_active_var = tk.BooleanVar(value=False)
 db_status_widgets = {}
 
 # --- UI Controls Frame ---
-controls_frame = ttk.Frame(root); controls_frame.pack(pady=10, padx=10, fill="x")
+controls_frame = ttk.Frame(root); controls_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 # Threads input removed from main window - now configured per API in the config editor
 
 # --- Metrics Display Frame ---
-metrics_frame = ttk.Frame(root); metrics_frame.pack(pady=5, padx=10, fill="x")
-refusal_percent_label = ttk.Label(metrics_frame, text="Refusals encountered: 0 (0.0%)", foreground="lightgray"); refusal_percent_label.pack(side=tk.LEFT, padx=10)
-user_speaking_label = ttk.Label(metrics_frame, text="User Speak instances: 0 (0.0%)"); user_speaking_label.pack(side=tk.LEFT, padx=10)
-slop_label = ttk.Label(metrics_frame, text="Slop instances detected: 0 (0.0%)"); slop_label.pack(side=tk.LEFT, padx=10)
-error_percent_label = ttk.Label(metrics_frame, text="Total Errors logged: 0 (0.0%)"); error_percent_label.pack(side=tk.LEFT, padx=10)
 
-token_label = ttk.Label(metrics_frame, text="Tokens: 0"); token_label.pack(side=tk.LEFT, padx=10)
-cost_label = ttk.Label(metrics_frame, text="Est. Cost: $0.0000"); cost_label.pack(side=tk.LEFT, padx=10)
+metrics_frame = ttk.Frame(root); metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
+refusal_percent_label = ttk.Label(metrics_frame, text="Refusals encountered: 0 (0.0%)", style="Small.TLabel")
+user_speaking_label = ttk.Label(metrics_frame, text="User Speak instances: 0 (0.0%)", style="Small.TLabel")
+slop_label = ttk.Label(metrics_frame, text="Slop instances detected: 0 (0.0%)", style="Small.TLabel")
+error_percent_label = ttk.Label(metrics_frame, text="Total Errors logged: 0 (0.0%)", style="Small.TLabel")
+
+token_label = ttk.Label(metrics_frame, text="Tokens: 0"); token_label.pack(side=tk.LEFT, padx=SPACING)
+cost_label = ttk.Label(metrics_frame, text="Est. Cost: $0.0000"); cost_label.pack(side=tk.LEFT, padx=SPACING)
 
 budget_label = ttk.Label(metrics_frame, text="Budget: $0.00 / $0.00", foreground="lightgray")
-budget_label.pack(side=tk.LEFT, padx=10)
+budget_label.pack(side=tk.LEFT, padx=SPACING)
 
 thread_status_var = tk.StringVar(value="Threads: 0 spawned, 0 active")
 thread_status_label = ttk.Label(metrics_frame, textvariable=thread_status_var, foreground="lightgray")
-thread_status_label.pack(side=tk.LEFT, padx=10)
+thread_status_label.pack(side=tk.LEFT, padx=SPACING)
 
 # Rate Limit Status Labels
 rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)")
-rate_limit_frame.pack(pady=5, padx=10, fill="x")
+rate_limit_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 rate_limit_labels = {}
 for slot_idx in range(6):
     label = ttk.Label(rate_limit_frame, text=f"API {slot_idx+1}: --/--")
-    label.pack(side=tk.LEFT, padx=12, pady=4)
+    label.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
     rate_limit_labels[slot_idx] = label
 # --- End of Metrics Display Frame ---
 
 # --- Database Connection Status Frame ---
 db_status_frame = ttk.LabelFrame(root, text="🗄️ Database & Cache Status")
-db_status_frame.pack(pady=5, padx=10, fill="x")
+db_status_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 # Add refresh button to db_status_frame
 db_refresh_btn = ttk.Button(
@@ -5378,18 +5464,18 @@ db_refresh_btn = ttk.Button(
     text="🔄 Refresh Status",
     command=update_database_status
 )
-db_refresh_btn.pack(side=tk.RIGHT, padx=20, pady=5)
+db_refresh_btn.pack(side=tk.RIGHT, padx=SPACING, pady=SPACING)
 
 db_test_btn = ttk.Button(
     db_status_frame,
     text="🔍 Test Valkey",
     command=test_valkey_connection
 )
-db_test_btn.pack(side=tk.RIGHT, padx=10, pady=5)
+db_test_btn.pack(side=tk.RIGHT, padx=SPACING, pady=SPACING)
 
 # PostgreSQL Status
 postgres_status_frame = ttk.Frame(db_status_frame)
-postgres_status_frame.pack(side=tk.LEFT, padx=20, pady=5)
+postgres_status_frame.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
 
 postgres_icon_label = ttk.Label(
     postgres_status_frame,
@@ -5397,18 +5483,19 @@ postgres_icon_label = ttk.Label(
     font=('Segoe UI Emoji', 14),
     foreground="gray"
 )
-postgres_icon_label.pack(side=tk.LEFT, padx=5)
+postgres_icon_label.pack(side=tk.LEFT, padx=SPACING)
 
 postgres_status_label = ttk.Label(
     postgres_status_frame,
     text="PostgreSQL: Disconnected",
+    style="Header.TLabel",
     foreground="gray"
 )
-postgres_status_label.pack(side=tk.LEFT, padx=5)
+postgres_status_label.pack(side=tk.LEFT, padx=SPACING)
 
 # Valkey/Redis Status
 valkey_status_frame = ttk.Frame(db_status_frame)
-valkey_status_frame.pack(side=tk.LEFT, padx=20, pady=5)
+valkey_status_frame.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
 
 valkey_icon_label = ttk.Label(
     valkey_status_frame,
@@ -5416,14 +5503,15 @@ valkey_icon_label = ttk.Label(
     font=('Segoe UI Emoji', 14),
     foreground="gray"
 )
-valkey_icon_label.pack(side=tk.LEFT, padx=5)
+valkey_icon_label.pack(side=tk.LEFT, padx=SPACING)
 
 valkey_status_label = ttk.Label(
     valkey_status_frame,
     text="Valkey: Disconnected",
+    style="Header.TLabel",
     foreground="gray"
 )
-valkey_status_label.pack(side=tk.LEFT, padx=5)
+valkey_status_label.pack(side=tk.LEFT, padx=SPACING)
 
 # Store references for updates
 db_status_widgets = {
@@ -5434,19 +5522,19 @@ db_status_widgets = {
 }
 
 # --- API Response Time Display Frame ---
-api_response_times_frame = tk.LabelFrame(root, text="API Response Times"); api_response_times_frame.pack(pady=5, padx=10, fill="x")
+api_response_times_frame = tk.LabelFrame(root, text="API Response Times"); api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 for slot_idx in range(6):
     slot_label_name = f"api_response_time_label_{slot_idx+1}"
     slot_label = ttk.Label(api_response_times_frame, text=f"API {slot_idx+1}: No data yet", font=('TkDefaultFont', 8))
-    slot_label.pack(side=tk.LEFT, padx=10, pady=5)
+    slot_label.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
     globals()[slot_label_name] = slot_label  # Store reference in globals for update_dashboard to access
 # --- End of API Response Time Display Frame ---
 
 # --- Progress Bars Frame ---
-progress_frame = ttk.Frame(root); progress_frame.pack(pady=10, padx=10, fill=tk.X)
+progress_frame = ttk.Frame(root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 # --- Main Action Buttons Frame ---
-button_frame = ttk.Frame(root); button_frame.pack(pady=10)
+button_frame = ttk.Frame(root); button_frame.pack(pady=SPACING)
 
 start_button = ttk.Button(
     button_frame,
@@ -5454,7 +5542,7 @@ start_button = ttk.Button(
     command=start_processing,
     style="Accent.TButton"  # Optional: use custom style
 )
-start_button.pack(side=tk.LEFT, padx=10)
+start_button.pack(side=tk.LEFT, padx=SPACING)
 
 pause_button = ttk.Button(
     button_frame,
@@ -5462,7 +5550,10 @@ pause_button = ttk.Button(
     command=toggle_pause,
     state=tk.DISABLED
 )
-pause_button.pack(side=tk.LEFT, padx=10)
+pause_button.pack(side=tk.LEFT, padx=SPACING)
+
+dashboard_pause_var = tk.BooleanVar(value=False)
+ttk.Checkbutton(metrics_frame, text="⏸️ Pause UI Updates", variable=dashboard_pause_var).pack(side=tk.RIGHT, padx=SPACING)
 
 def toggle_debug_logging():
     # Update the flag in the logging module
@@ -5580,7 +5671,7 @@ stop_clear_button = ttk.Button(
     command=stop_and_clear_processing_job,
     state=tk.DISABLED
 )
-stop_clear_button.pack(side=tk.LEFT, padx=10)
+stop_clear_button.pack(side=tk.LEFT, padx=SPACING)
 # --- End of Stop and Clear Job Functionality ---
 
 config_button = ttk.Button(
@@ -5588,7 +5679,7 @@ config_button = ttk.Button(
     text="⚙️ Edit Config",
     command=open_config_editor
 )
-config_button.pack(side=tk.LEFT, padx=10)
+config_button.pack(side=tk.LEFT, padx=SPACING)
 
 debug_log_check = ttk.Checkbutton(
     button_frame,
@@ -5596,7 +5687,7 @@ debug_log_check = ttk.Checkbutton(
     variable=debug_logging_var,
     command=toggle_debug_logging
 )
-debug_log_check.pack(side=tk.LEFT, padx=10)
+debug_log_check.pack(side=tk.LEFT, padx=SPACING)
 
 def quit_application():
     """Handles graceful shutdown of the application when Quit button or window X is clicked."""
@@ -5656,11 +5747,11 @@ quit_button = ttk.Button(
     text="❌ Quit Application",
     command=quit_application
 )
-quit_button.pack(side=tk.LEFT, padx=10)
+quit_button.pack(side=tk.LEFT, padx=SPACING)
 root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
 status_bar = ttk.Label(root, text="Ready", foreground="lightgray", anchor="w")
-status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=2)
+status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=SPACING, pady=SPACING)
 
 def force_recovery():
     """Bypasses config checks and forces state reload + thread restart."""
@@ -5702,21 +5793,21 @@ export_button = ttk.Button(
     text="📤 Export DB → JSONL",
     command=trigger_export
 )
-export_button.pack(side=tk.LEFT, padx=10)
+export_button.pack(side=tk.LEFT, padx=SPACING)
 
 clear_db_button = ttk.Button(
     button_frame,
     text="🗑️ Clear Database",
     command=clear_database
 )
-clear_db_button.pack(side=tk.LEFT, padx=10)
+clear_db_button.pack(side=tk.LEFT, padx=SPACING)
 
 recovery_button = ttk.Button(
     button_frame,
     text="🔄 Force Recovery",
     command=force_recovery
 )
-recovery_button.pack(side=tk.LEFT, padx=10)
+recovery_button.pack(side=tk.LEFT, padx=SPACING)
 
 
 def clear_dashboard():
@@ -5751,12 +5842,12 @@ def clear_dashboard():
 # --- Dashboard Setup ---
 
 # --- Dashboard Setup ---
-dashboard_outer_frame = ttk.Frame(root); dashboard_outer_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+dashboard_outer_frame = ttk.Frame(root); dashboard_outer_frame.pack(pady=SPACING, padx=SPACING, fill=tk.BOTH, expand=True)
 
 dashboard_toolbar = ttk.Frame(dashboard_outer_frame)
 dashboard_toolbar.pack(fill=tk.X, pady=(0, 5))
 clear_dash_btn = ttk.Button(dashboard_toolbar, text="🧹 Clear Dashboard", command=clear_dashboard)
-clear_dash_btn.pack(side=tk.RIGHT, padx=5)
+clear_dash_btn.pack(side=tk.RIGHT, padx=SPACING)
 
 dashboard_notebook = ttk.Notebook(dashboard_outer_frame)
 dashboard_notebook.pack(fill=tk.BOTH, expand=True)
@@ -5778,8 +5869,9 @@ issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"] # Keys fo
 preview_tab = ttk.Frame(dashboard_notebook)
 dashboard_notebook.add(preview_tab, text="Live Prompt Preview")
 
-prompt_preview_text = scrolledtext.ScrolledText(preview_tab, wrap=tk.WORD, state=tk.NORMAL, font=('Consolas', 9))
-prompt_preview_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+prompt_preview_text = scrolledtext.ScrolledText(preview_tab, wrap=tk.WORD, state=tk.NORMAL)
+prompt_preview_text.config(font=('Consolas', 9))
+prompt_preview_text.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
 prompt_preview_text.insert(tk.END, "Waiting for prompt generation...\n\n(Prompts will appear here in real-time as they are queued for the API)")
 prompt_preview_text.config(state=tk.DISABLED)
 # --- End Preview Tab Setup ---
@@ -5796,16 +5888,16 @@ for tab_name in tab_names:
 
     # 1. Create Search Bar Frame (applies to ALL tabs)
     search_frame = ttk.Frame(tab_frame)
-    search_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(5, 2))
+    search_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=SPACING, pady=(5, 2))
 
     search_var = tk.StringVar()
     search_entry = ttk.Entry(search_frame, textvariable=search_var)
     search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
     search_entry.bind("<Return>", lambda e, t=tab_name: search_in_dashboard_tab(t))
 
-    ttk.Button(search_frame, text="🔍 Search", command=lambda t=tab_name: search_in_dashboard_tab(t)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(search_frame, text="❌ Clear", command=lambda t=tab_name: clear_dashboard_search(t)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(search_frame, text="📋 Copy All", command=lambda t=tab_name: copy_dashboard_tab(t)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(search_frame, text="🔍 Search", command=lambda t=tab_name: search_in_dashboard_tab(t)).pack(side=tk.LEFT, padx=SPACING)
+    ttk.Button(search_frame, text="❌ Clear", command=lambda t=tab_name: clear_dashboard_search(t)).pack(side=tk.LEFT, padx=SPACING)
+    ttk.Button(search_frame, text="📋 Copy All", command=lambda t=tab_name: copy_dashboard_tab(t)).pack(side=tk.LEFT, padx=SPACING)
 
     dashboard_notebook.tabs_widgets[tab_name]['search_var'] = search_var
     dashboard_notebook.tabs_widgets[tab_name]['search_entry'] = search_entry
@@ -5891,10 +5983,10 @@ for tab_name in tab_names:
         key = issue_keys[idx]
         panel = ttk.LabelFrame(parent_frame, text=f"Recent {issue_type_title}")
         base_row, col = divmod(idx, 2)
-        panel.grid(row=base_row + panel_row_offset, column=col, padx=5, pady=5, sticky="nsew")
+        panel.grid(row=base_row + panel_row_offset, column=col, padx=SPACING, pady=SPACING, sticky="nsew")
 
         text_area = scrolledtext.ScrolledText(panel, wrap=tk.WORD, height=6)
-        text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        text_area.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
         text_area.insert(tk.END, f"No recent {key}.")
         text_area.config(state=tk.DISABLED)
         dashboard_notebook.tabs_widgets[tab_name][key] = text_area
@@ -5905,10 +5997,10 @@ for tab_name in tab_names:
     # 4. Add Graph to Totals Tab
     if tab_name == "Totals":
         graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
-        graph_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(20, 5), sticky="nsew")
+        graph_frame.grid(row=2, column=0, columnspan=2, padx=SPACING, pady=(20, 5), sticky="nsew")
 
         graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')
-        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
         dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
         draw_issue_graph(graph_canvas_widget)
 
