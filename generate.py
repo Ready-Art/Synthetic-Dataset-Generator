@@ -3130,6 +3130,75 @@ def update_dashboard():
             except Exception as e_graph:
                 log_message(f"Error updating issue graph: {e_graph}", "ERROR")
 
+def update_database_status():
+    """Updates the PostgreSQL and Valkey connection status icons and labels."""
+    global db_pool, db_status_widgets, root
+
+    if not root.winfo_exists():
+        return
+
+    # --- PostgreSQL Status ---
+    postgres_connected = False
+    postgres_active = False
+
+    if db_pool:
+        try:
+            conn = db_pool.getconn()
+            if conn:
+                postgres_connected = True
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+                postgres_active = True
+                db_pool.putconn(conn)
+        except Exception as e:
+            postgres_connected = False
+            postgres_active = False
+            log_message(f"PostgreSQL status check failed: {e}", "DEBUG")
+
+    # Update PostgreSQL icon and label
+    if 'postgres_icon' in db_status_widgets and db_status_widgets['postgres_icon'].winfo_exists():
+        if postgres_connected and postgres_active:
+            db_status_widgets['postgres_icon'].config(text="✅", foreground="green")
+            db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected & Active", foreground="green")
+        elif postgres_connected:
+            db_status_widgets['postgres_icon'].config(text="⚠️", foreground="orange")
+            db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
+        else:
+            db_status_widgets['postgres_icon'].config(text="❌", foreground="gray")
+            db_status_widgets['postgres_status'].config(text="PostgreSQL: Disconnected", foreground="gray")
+
+    # --- Valkey/Redis Status ---
+    valkey_connected = False
+    valkey_active = False
+
+    # Check if valkey_client exists in api_handler module
+    if hasattr(api_handler, 'valkey_client') and api_handler.valkey_client is not None:
+        try:
+            ping_result = api_handler.valkey_client.ping()
+            log_message(f"Valkey status check PING result: {ping_result}", "DEBUG")
+            if ping_result:
+                valkey_connected = True
+                valkey_active = True
+        except Exception as e:
+            valkey_connected = False
+            valkey_active = False
+            log_message(f"Valkey status check failed: {e}", "DEBUG")
+    else:
+        log_message(f"Valkey client not available: hasattr={hasattr(api_handler, 'valkey_client')}, client={api_handler.valkey_client if hasattr(api_handler, 'valkey_client') else 'N/A'}", "DEBUG")
+
+    # Update Valkey icon and label
+    if 'valkey_icon' in db_status_widgets and db_status_widgets['valkey_icon'].winfo_exists():
+        if valkey_connected and valkey_active:
+            db_status_widgets['valkey_icon'].config(text="✅", foreground="green")
+            db_status_widgets['valkey_status'].config(text="Valkey: Connected & Active", foreground="green")
+        elif valkey_connected:
+            db_status_widgets['valkey_icon'].config(text="⚠️", foreground="orange")
+            db_status_widgets['valkey_status'].config(text="Valkey: Connected (Inactive)", foreground="orange")
+        else:
+            db_status_widgets['valkey_icon'].config(text="❌", foreground="gray")
+            db_status_widgets['valkey_status'].config(text="Valkey: Disconnected", foreground="gray")
+
 def update_live_prompt_preview(messages_list):
     """Thread-safe function to update the Live Prompt Preview widget from worker threads."""
     if not root.winfo_exists() or prompt_preview_text is None:
@@ -3162,25 +3231,54 @@ def start_processing():
     # --- Initialize Valkey Connection ---
     if global_config.get('valkey.enabled', True):
         try:
+            valkey_host = global_config.get('valkey.host', 'localhost')
+            valkey_port = global_config.get('valkey.port', 6379)
+            valkey_db = global_config.get('valkey.db', 0)
+            valkey_password = global_config.get('valkey.password')
+
+            log_message(f"Valkey config - Host: {valkey_host}, Port: {valkey_port}, DB: {valkey_db}", "DEBUG")
+
+            # Create the client and assign to api_handler module
             api_handler.valkey_client = redis.Redis(
-                host=global_config.get('valkey.host', 'localhost'),
-                port=global_config.get('valkey.port', 6379),
-                db=global_config.get('valkey.db', 0),
-                password=global_config.get('valkey.password'),
+                host=valkey_host,
+                port=valkey_port,
+                db=valkey_db,
+                password=valkey_password,
                 decode_responses=True,
                 socket_timeout=5,
                 socket_connect_timeout=5,
                 retry_on_timeout=True
             )
-            # Test connection
-            api_handler.valkey_client.ping()
-            log_message("Connected to Valkey successfully.", "INFO")
-        except redis.ConnectionError as e:
-            log_message(f"Failed to connect to Valkey: {e}. Caching will be disabled.", "WARNING")
+
+            # Test connection immediately
+            try:
+                ping_result = api_handler.valkey_client.ping()
+                log_message(f"Valkey PING result during init: {ping_result}", "INFO")
+                if ping_result:
+                    log_message("✅ Valkey connected successfully during initialization.", "INFO")
+                else:
+                    log_message("⚠️ Valkey PING returned False", "WARNING")
+                    api_handler.valkey_client = None
+            except redis.ConnectionError as ce:
+                log_message(f"Valkey connection error during init: {ce}", "ERROR")
+                api_handler.valkey_client = None
+            except redis.TimeoutError as te:
+                log_message(f"Valkey timeout error during init: {te}", "ERROR")
+                api_handler.valkey_client = None
+            except Exception as e:
+                log_message(f"Valkey unexpected error during init: {e}", "ERROR")
+                api_handler.valkey_client = None
+
+        except Exception as e:
+            log_message(f"Failed to initialize Valkey client: {e}. Caching will be disabled.", "WARNING")
             api_handler.valkey_client = None
     else:
         api_handler.valkey_client = None
         log_message("Valkey caching is disabled in config.", "INFO")
+
+    # Update status after Valkey initialization - give it time to complete
+    if root.winfo_exists():
+        root.after(500, update_database_status)  # Increased delay to 500ms
     # --- End Valkey Initialization ---
 
     should_resume = False # ✅ Correctly indented (function scope)
@@ -3693,13 +3791,14 @@ def start_processing():
                         task_queue.overall_time_label.config(text="Time Rem: No tasks")
                 
                 update_dashboard() # Refresh dashboard stats
+                update_database_status()
                 if root.winfo_exists():
                     # ADAPTIVE UPDATE FREQUENCY
                     is_active = processing_active and not stop_processing and not pause_processing
                     has_work = task_queue and hasattr(task_queue, 'qsize') and task_queue.qsize() > 0
 
                     delay = 500 if (is_active and has_work) else 2000
-                    root.after(delay, update_gui_progress) # Schedule next update
+                    root.after(delay, update_gui_progress)
             except Exception as e_gui: # Catch errors during GUI update
                 log_message(f"GUI update error: {str(e_gui)}", "ERROR")
                 if processing_active and not stop_processing and root.winfo_exists(): 
@@ -3826,6 +3925,82 @@ def open_config_editor():
     global_config.load() # Ensure config is fresh before opening editor
     editor = ConfigEditor(root) 
     editor.grab_set() # Make editor modal
+
+def test_valkey_connection():
+    """Test Valkey connection and show detailed results."""
+    if not root.winfo_exists():
+        return
+
+    valkey_enabled = global_config.get('valkey.enabled', True)
+    valkey_host = global_config.get('valkey.host', 'localhost')
+    valkey_port = global_config.get('valkey.port', 6379)
+    valkey_db = global_config.get('valkey.db', 0)
+    valkey_password = global_config.get('valkey.password')
+
+    log_message(f"=== Valkey Connection Test ===", "INFO")
+    log_message(f"Enabled: {valkey_enabled}", "DEBUG")
+    log_message(f"Host: {valkey_host}", "DEBUG")
+    log_message(f"Port: {valkey_port}", "DEBUG")
+    log_message(f"DB: {valkey_db}", "DEBUG")
+    log_message(f"Password set: {'Yes' if valkey_password else 'No'}", "DEBUG")
+
+    if not valkey_enabled:
+        log_message("Valkey is disabled in config.", "WARNING")
+        messagebox.showinfo("Valkey Test", "Valkey is disabled in config.yml")
+        return
+
+    try:
+        # Create test client
+        test_client = redis.Redis(
+            host=valkey_host,
+            port=valkey_port,
+            db=valkey_db,
+            password=valkey_password,
+            socket_timeout=5,
+            socket_connect_timeout=5
+        )
+
+        ping_result = test_client.ping()
+        log_message(f"Valkey PING successful: {ping_result}", "INFO")
+
+        # IMPORTANT: Update the global api_handler.valkey_client with working connection
+        api_handler.valkey_client = test_client
+        log_message("Updated api_handler.valkey_client with working connection", "DEBUG")
+
+        # Update GUI status immediately after successful test
+        if root.winfo_exists():
+            root.after(100, update_database_status)
+
+        # Try to get server info
+        try:
+            info = test_client.info()
+            log_message(f"Valkey version: {info.get('redis_version', 'Unknown')}", "INFO")
+            messagebox.showinfo(
+                "Valkey Test",
+                f"✅ Connection Successful!\n\n"
+                f"Host: {valkey_host}:{valkey_port}\n"
+                f"Version: {info.get('redis_version', 'Unknown')}\n"
+                f"Connected Clients: {info.get('connected_clients', 'N/A')}\n\n"
+                f"GUI status will update in 1 second."
+            )
+        except Exception as e:
+            log_message(f"Valkey INFO command failed: {e}", "WARNING")
+            messagebox.showinfo(
+                "Valkey Test",
+                f"✅ PING Successful!\n⚠️ INFO command failed: {e}"
+            )
+
+    except redis.ConnectionError as e:
+        log_message(f"Valkey Connection Error: {e}", "ERROR")
+        messagebox.showerror(
+            "Valkey Test Failed",
+            f"❌ Could not connect to Valkey/Redis\n\n"
+            f"Host: {valkey_host}:{valkey_port}\n"
+            f"Error: {e}"
+        )
+    except Exception as e:
+        log_message(f"Valkey Test Error: {e}", "ERROR")
+        messagebox.showerror("Valkey Test Failed", f"Error: {e}")
 
 # --- Configuration Editor Class ---
 class ConfigEditor(tk.Toplevel):
@@ -5079,7 +5254,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.3.1")
+root.title("ReadyArt Synthetic Dataset Generator v8.3.3")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
@@ -5104,7 +5279,14 @@ no_user_impersonation_var = tk.BooleanVar(value=global_config.get('detection.no_
 master_duplication_enabled_var = tk.BooleanVar(value=global_config.get('api.master_duplication_mode', False))
 debug_logging_var = tk.BooleanVar(value=False)
 
-log_message("Application started. UI initializing.", "INFO") 
+log_message("Application started. UI initializing.", "INFO")
+
+# --- Database Connection Status Variables ---
+postgres_connected_var = tk.BooleanVar(value=False)
+postgres_active_var = tk.BooleanVar(value=False)
+valkey_connected_var = tk.BooleanVar(value=False)
+valkey_active_var = tk.BooleanVar(value=False)
+db_status_widgets = {}
 
 # --- UI Controls Frame ---
 controls_frame = ttk.Frame(root); controls_frame.pack(pady=10, padx=10, fill="x")
@@ -5136,6 +5318,71 @@ for slot_idx in range(6):
     label.pack(side=tk.LEFT, padx=12, pady=4)
     rate_limit_labels[slot_idx] = label
 # --- End of Metrics Display Frame ---
+
+# --- Database Connection Status Frame ---
+db_status_frame = ttk.LabelFrame(root, text="🗄️ Database & Cache Status")
+db_status_frame.pack(pady=5, padx=10, fill="x")
+
+# Add refresh button to db_status_frame
+db_refresh_btn = ttk.Button(
+    db_status_frame,
+    text="🔄 Refresh Status",
+    command=update_database_status
+)
+db_refresh_btn.pack(side=tk.RIGHT, padx=20, pady=5)
+
+db_test_btn = ttk.Button(
+    db_status_frame,
+    text="🔍 Test Valkey",
+    command=test_valkey_connection
+)
+db_test_btn.pack(side=tk.RIGHT, padx=10, pady=5)
+
+# PostgreSQL Status
+postgres_status_frame = ttk.Frame(db_status_frame)
+postgres_status_frame.pack(side=tk.LEFT, padx=20, pady=5)
+
+postgres_icon_label = ttk.Label(
+    postgres_status_frame,
+    text="❌",
+    font=('Segoe UI Emoji', 14),
+    foreground="gray"
+)
+postgres_icon_label.pack(side=tk.LEFT, padx=5)
+
+postgres_status_label = ttk.Label(
+    postgres_status_frame,
+    text="PostgreSQL: Disconnected",
+    foreground="gray"
+)
+postgres_status_label.pack(side=tk.LEFT, padx=5)
+
+# Valkey/Redis Status
+valkey_status_frame = ttk.Frame(db_status_frame)
+valkey_status_frame.pack(side=tk.LEFT, padx=20, pady=5)
+
+valkey_icon_label = ttk.Label(
+    valkey_status_frame,
+    text="❌",
+    font=('Segoe UI Emoji', 14),
+    foreground="gray"
+)
+valkey_icon_label.pack(side=tk.LEFT, padx=5)
+
+valkey_status_label = ttk.Label(
+    valkey_status_frame,
+    text="Valkey: Disconnected",
+    foreground="gray"
+)
+valkey_status_label.pack(side=tk.LEFT, padx=5)
+
+# Store references for updates
+db_status_widgets = {
+    'postgres_icon': postgres_icon_label,
+    'postgres_status': postgres_status_label,
+    'valkey_icon': valkey_icon_label,
+    'valkey_status': valkey_status_label
+}
 
 # --- API Response Time Display Frame ---
 api_response_times_frame = tk.LabelFrame(root, text="API Response Times"); api_response_times_frame.pack(pady=5, padx=10, fill="x")
@@ -5692,13 +5939,25 @@ def init_database_pool():
                 password=global_config.get('database.password')
             )
             log_message("PostgreSQL connection pool initialized at startup.", "INFO")
+            # Update status after initialization
+            if root.winfo_exists():
+                root.after(100, update_database_status)
         except Exception as e:
             log_message(f"Failed to init DB pool at startup: {e}", "ERROR")
             db_pool = None
+            # Update status to show disconnected
+            if root.winfo_exists():
+                root.after(100, update_database_status)
+    else:
+        db_pool = None
+        log_message("PostgreSQL database disabled in config.", "INFO")
+        if root.winfo_exists():
+            root.after(100, update_database_status)
 
 reset_all_stats_and_history() # Initialize stats on startup
 update_dashboard() # Initial dashboard display
 init_database_pool() # <-- NEW: Initialize DB on launch
+update_database_status()  # NEW: Initial status update
 
 root.after(1000, update_thread_status_display)
 
