@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v8.3.3
+# ReadyArt Synthetic Dataset Generator v8.4.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
@@ -30,7 +30,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Stop & Clear Job](#stop--clear-job)
   - [Force Recovery](#force-recovery)
   - [Database Management](#database-management)
-- [Output Formats](#-output-formats)
+- [Output Formats](#output-formats)
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
 - [Troubleshooting](#-troubleshooting)
@@ -43,6 +43,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 ### Core Generation
 - **Multi-API Orchestration** — Configure up to 6 API slots (4 generation, 1 slop fixer, 1 anti-slop fixer) with independent endpoints, models, keys, and rate limits
 - **Per-API Thread Configuration** — Each API slot has its own configurable thread count for fine-grained throughput control
+- **Per-API Rate Limiting** — Configurable requests-per-minute (RPM) for each API slot with automatic wait and real-time color-coded status indicators (green/orange/red)
 - **Master Duplication Mode** — Generate the same conversation across multiple APIs simultaneously for dataset diversity
 - **Collaborative Mode** — Distribute tasks across enabled APIs for higher throughput
 - **Multi-Turn Conversations** — Generate conversations with configurable turn counts (Q/A pairs)
@@ -53,15 +54,16 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Refusal Detection** — Automatically detects and retries LLM refusals with configurable jailbreak prompts
 - **User Speaking Detection** — Detects when the assistant impersonates the user, with gender-specific phrase lists
 - **Slop Detection** — Identifies undesirable phrases/patterns in generated text
-- **Anti-Slop Detection** — Secondary detection layer for additional phrase filtering
+- **Anti-Slop Detection** — Secondary detection layer for additional phrase filtering with dedicated LLM rewriting
 - **Incomplete Quote Detection** — Catches unbalanced quotation marks (both straight `"` and curly `""` quotes) with programmatic auto-fix fallback
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
-- **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness
+- **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness and rotating fix instructions
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
 - **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds
 
 ### Character & Persona Engine
 - **Character Profiles** — Randomly inject character names, jobs, clothing, appearance, and backstories into system prompts
+- **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
 - **Top-Level System Prompt** — Prepend a universal instruction to all system prompts across all conversations
@@ -74,12 +76,13 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Remove all asterisks
 - Ensure spaces after line breaks
 - Strip markdown formatting to plain text
-- Normalize and balance quotation marks
+- Normalize and balance quotation marks (handles both straight and curly quotes)
 
 ### Infrastructure & UI
 - **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached
-- **Circuit Breaker** — Automatically disables API slots after consecutive failures and re-enables them after a cooldown period
+- **Circuit Breaker** — Automatically disables API slots after consecutive failures with exponential backoff cooldown (60s, 120s, 240s, 480s, max 600s) and re-enables after cooldown
 - **Per-API Rate Limiting** — Configurable RPM per API slot with automatic wait and real-time status display with color-coded indicators
+- **Task Requeue on Host Failure** — Tasks assigned to a downed API host are automatically requeued (up to 50 times) rather than discarded, ensuring no work is lost during outages
 - **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed) to avoid redundant API calls
 - **PostgreSQL Storage** — Optional database backend with connection pooling and JSONL export
 - **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings
@@ -200,7 +203,7 @@ tkinter (usually included with Python)
 
 ## ⚙ Configuration
 
-All configuration is managed through `config/config.yml` and can be edited via the built-in Configuration Editor (GUI). The editor provides a tabbed interface with validation.
+All configuration is managed through `config/config.yml` and can be edited via the built-in Configuration Editor (GUI). The editor provides a tabbed interface with validation and a search bar for quickly finding tabs and sections.
 
 ### API Setup
 
@@ -285,11 +288,14 @@ prompts:
 
   character:
     enabled: true
+    class_enabled: false          # Enable fantasy class selection
     name: ["Alice", "Bob", "Carol"]
     job: ["Software Engineer", "Teacher", "Doctor"]
     clothing: ["casual jeans and t-shirt", "business suit"]
     appearance: ["tall with brown hair", "short with glasses"]
     backstory: ["Grew up in a small town", "Traveled the world"]
+    setting: ["A standard indoor environment", "A bustling marketplace"]
+    class: ["mage", "warlock", "rogue", "paladin"]  # Fantasy classes (used when class_enabled: true)
 
   emotional_states:
     enabled: false
@@ -427,21 +433,22 @@ The budget status is displayed in the metrics bar at the top of the application,
 
 ### Circuit Breaker
 
-The application includes an automatic **circuit breaker** for each API slot that prevents cascading failures:
+The application includes an automatic **circuit breaker** for each API slot that prevents cascading failures with **exponential backoff**:
 
 ```python
 API_CIRCUIT_BREAKER = {
     "max_consecutive_failures": 5,   # Failures before circuit opens
-    "cooldown_seconds": 60,          # Seconds before retrying
+    "base_cooldown_seconds": 60,     # Initial cooldown (doubles each failure)
+    "max_cooldown_seconds": 600,    # Maximum cooldown cap
     ...
 }
 ```
 
-When an API slot experiences 5 consecutive failures (HTTP errors, timeouts, or exceptions), the circuit breaker **opens** and skips requests to that slot. After 60 seconds of cooldown, the circuit **closes** and requests resume. This prevents wasting time and resources on consistently failing endpoints.
+When an API slot experiences 5 consecutive failures (HTTP errors, timeouts, or exceptions), the circuit breaker **opens** and skips requests to that slot. The cooldown period uses exponential backoff: 60s → 120s → 240s → 480s → 600s (max). After the cooldown period, the circuit **closes** and requests resume. Successful requests reset the failure counter.
 
 Circuit breaker events are logged:
-- `API Slot X circuit OPEN after 5 consecutive failures. Cooling down...` (WARNING)
-- `API Slot X circuit closed. Resuming requests.` (INFO)
+- `API Slot X circuit OPEN after 5 consecutive failures. Backoff: 60s (exponential)` (WARNING)
+- `API Slot X circuit closed after 60s. Resuming requests with base cooldown.` (INFO)
 
 ---
 
@@ -707,12 +714,17 @@ Increment failure counter for this API slot
 Failure count >= max_consecutive_failures (5)?
     │
     ├── Yes → Open circuit (skip this API slot)
-    │         Log: "API Slot X circuit OPEN after 5 consecutive failures"
-    │         Wait for cooldown_seconds (60s)
+    │         Calculate exponential backoff: 60s → 120s → 240s → 480s → 600s (max)
+    │         Log: "API Slot X circuit OPEN after 5 consecutive failures. Backoff: Xs"
+    │         Wait for cooldown period
     │         Then: Close circuit, reset failure counter
-    │         Log: "API Slot X circuit closed. Resuming requests."
+    │         Log: "API Slot X circuit closed. Resuming requests with base cooldown."
     │
     └── No  → Continue using this API slot
+
+On Success:
+    Reset failure counter to 0
+    Reset cooldown to base_cooldown_seconds (60s)
 ```
 
 ### Task Requeue on Host Failure
@@ -759,7 +771,7 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL, model, and key |
 | **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
 | **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators in the UI |
-| **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers after 60s |
+| **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers with exponential backoff (60s–600s) |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
 | **Database connection failed** | Verify PostgreSQL is running and credentials are correct |
@@ -776,6 +788,8 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
 | **Reasoning models outputting thinking blocks** | Enable `enable_thinking: false` in samplers config to add `chat_template_kwargs` to API payload |
+| **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` list is populated |
+| **Anti-slop not triggering** | Verify `anti_slop.phrases` list is populated and API Slot 6 is configured |
 
 ### Environment Variables
 
@@ -813,6 +827,7 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Pause and adjust** rate limits mid-run — configuration is reloaded when you resume
 - **Monitor circuit breaker** — if an API slot's circuit opens frequently, the endpoint may be experiencing issues
 - **Use Force Recovery** if you need to resume with intentionally changed settings, but be aware of potential incompatibilities
+- **Configure anti-slop** — Set up API Slot 6 and populate `anti_slop.phrases` for secondary quality filtering
 
 ---
 
