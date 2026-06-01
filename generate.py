@@ -2978,32 +2978,42 @@ def update_issue_graph(canvas_widget):
     canvas_widget.graph_canvas.draw()
 
 def update_rate_limit_status():
-    """Updates the rate limit status labels in the dashboard."""
+    """Updates the rate limit status labels with progress-style visualization."""
     global rate_limit_labels
     if not rate_limit_labels:
         return
 
-    # Use the rate limiter's lock to safely access shared data
+    # Color constants matching the dark theme
+    ACCENT_GREEN = "#51cf66"
+    ACCENT_ORANGE = "#ff922b"
+    ACCENT_RED = "#ff6b6b"
+
     with global_rate_limiter.lock:
         for slot_idx in range(6):
             try:
                 limit = global_rate_limiter.rates_per_slot[slot_idx]
                 used = len(global_rate_limiter.requests_per_slot[slot_idx])
                 remaining = max(0, limit - used)
+                usage_percent = (used / limit) * 100 if limit > 0 else 0
 
-                # Update the label text
                 if slot_idx in rate_limit_labels:
-                    rate_limit_labels[slot_idx].config(text=f"API {slot_idx+1}: {remaining}/{limit}")
-
-                    # Color code the label based on usage
-                    usage_percent = (used / limit) * 100 if limit > 0 else 0
                     if usage_percent > 90:
-                        rate_limit_labels[slot_idx].config(foreground="#ff4d4d") # Softer red for dark theme
+                        icon = "🔴"
+                        color = ACCENT_RED
                     elif usage_percent > 70:
-                        rate_limit_labels[slot_idx].config(foreground="#ffaa00") # Softer orange
+                        icon = "🟡"
+                        color = ACCENT_ORANGE
+                    elif usage_percent > 40:
+                        icon = "🟠"
+                        color = ACCENT_ORANGE
                     else:
-                        # Remove explicit foreground so it inherits the theme's default text color
-                        rate_limit_labels[slot_idx].config(foreground="")
+                        icon = "🟢"
+                        color = ACCENT_GREEN
+
+                    rate_limit_labels[slot_idx].config(
+                        text=f"{icon} API {slot_idx+1}: {remaining}/{limit} ({usage_percent:.0f}% used)",
+                        foreground=color
+                    )
             except Exception as e:
                 log_message(f"Error updating rate limit status for slot {slot_idx}: {e}", "ERROR")
 
@@ -3647,13 +3657,23 @@ def start_processing():
         for api_idx, api_conf in enumerate(all_api_configs_runtime):
             if api_idx < 4 and api_conf.get('enabled', False) and api_conf.get('url'): 
                 active_api_count_for_progress_ui +=1
-                api_name_label = ttk.Label(progress_frame, text=f"API Slot {api_idx+1} ({api_conf.get('model', 'N/A')}):")
+                api_name_label = ttk.Label(progress_frame, text=f"API Slot {api_idx+1} ({api_conf.get('model', 'N/A')}):",
+                                           style='Header.TLabel')
                 api_name_label.pack(pady=(5,0), anchor='w')
-                bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate")
+                bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate",
+                                       style="Low.Horizontal.TProgressbar")
                 bar.pack(pady=SPACING, fill='x', expand=True)
+                percent_label = ttk.Label(progress_frame, text="0.0%", foreground='#868e96',
+                                         font=('Segoe UI', 9, 'bold'))
+                percent_label.pack(anchor='e', padx=(0, SPACING))
                 time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
                 time_label.pack(pady=(0,5), anchor='w')
-                task_queue.api_widgets[api_idx] = {'bar': bar, 'time_label': time_label, 'name_label': api_name_label}
+                task_queue.api_widgets[api_idx] = {
+                    'bar': bar,
+                    'time_label': time_label,
+                    'name_label': api_name_label,
+                    'percent_label': percent_label
+                }
                 
                 current_api_processed_turns = task_queue.api_processed_tasks.get(api_idx, 0)
                 if task_queue.total_tasks_for_progress > 0:
@@ -3666,12 +3686,17 @@ def start_processing():
             log_message("Duplication mode on, but no APIs 0-3 enabled/configured for UI progress bars.", "ERROR")
             processing_active = False; start_button.config(state=tk.NORMAL); return
     else: # Single overall progress bar for non-duplication mode
-        overall_progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate")
+        overall_progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate",
+                                                style="Low.Horizontal.TProgressbar")
         overall_progress_bar.pack(pady=SPACING, fill='x', expand=True)
+        overall_percent_label = ttk.Label(progress_frame, text="0.0%", foreground='#868e96',
+                                           font=('Segoe UI', 9, 'bold'))
+        overall_percent_label.pack(anchor='e', padx=(0, SPACING))
         overall_time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
         overall_time_label.pack(pady=SPACING)
         task_queue.overall_progress_bar = overall_progress_bar
         task_queue.overall_time_label = overall_time_label
+        task_queue.overall_percent_label = overall_percent_label
         # Initialize processed_tasks (turns)
         if should_resume and loaded_processed_tasks_snapshot is not None:
             task_queue.processed_tasks = loaded_processed_tasks_snapshot
@@ -3783,33 +3808,47 @@ def start_processing():
                 
                 if master_duplication_current and hasattr(task_queue, 'api_widgets'):
                     for api_idx, widgets in task_queue.api_widgets.items():
-                        if widgets['bar'].winfo_exists(): 
-                            with task_queue.processed_tasks_lock: 
+                        if widgets['bar'].winfo_exists():
+                            with task_queue.processed_tasks_lock:
                                 processed_count_api_turns = task_queue.api_processed_tasks.get(api_idx, 0)
                                 times_list_api = task_queue.api_start_times_list.get(api_idx, [])
-                            
+
                             if task_queue.total_tasks_for_progress > 0:
                                 progress_val = (processed_count_api_turns / task_queue.total_tasks_for_progress) * 100
-                                if progress_val > 100: progress_val = 100 
+                                if progress_val > 100: progress_val = 100
                                 widgets['bar']['value'] = progress_val
+                                # Animated progress bar: update style and percentage label
+                                update_progress_bar_style(widgets['bar'], progress_val)
+                                pulse_progress_bar(widgets['bar'], f"api_{api_idx}", root)
+                                if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
+                                    widgets['percent_label'].config(text=f"{progress_val:.1f}%")
                                 time_rem_str = estimate_time_remaining(processed_count_api_turns, task_queue.total_tasks_for_progress, times_list_api)
                                 widgets['time_label'].config(text=f"Time Rem: {time_rem_str} ({processed_count_api_turns}/{task_queue.total_tasks_for_progress} Turns)")
-                            else: 
+                            else:
                                 widgets['time_label'].config(text="Time Rem: No tasks")
+                                if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
+                                    widgets['percent_label'].config(text="N/A")
                 
                 elif hasattr(task_queue, 'overall_progress_bar') and task_queue.overall_progress_bar.winfo_exists():
-                    with task_queue.processed_tasks_lock: 
+                    with task_queue.processed_tasks_lock:
                         processed_count_overall_turns = task_queue.processed_tasks
                         times_list_overall = task_queue.start_times_list
-                    
+
                     if task_queue.total_tasks_for_progress > 0:
                         progress_val = (processed_count_overall_turns / task_queue.total_tasks_for_progress) * 100
-                        if progress_val > 100: progress_val = 100 
+                        if progress_val > 100: progress_val = 100
                         task_queue.overall_progress_bar['value'] = progress_val
+                        # Animated progress bar: update style and percentage label
+                        update_progress_bar_style(task_queue.overall_progress_bar, progress_val)
+                        pulse_progress_bar(task_queue.overall_progress_bar, "overall", root)
+                        if hasattr(task_queue, 'overall_percent_label') and task_queue.overall_percent_label.winfo_exists():
+                            task_queue.overall_percent_label.config(text=f"{progress_val:.1f}%")
                         time_rem_str = estimate_time_remaining(processed_count_overall_turns, task_queue.total_tasks_for_progress, times_list_overall)
                         task_queue.overall_time_label.config(text=f"Time Rem: {time_rem_str} ({processed_count_overall_turns}/{task_queue.total_tasks_for_progress} Turns)")
                     else:
                         task_queue.overall_time_label.config(text="Time Rem: No tasks")
+                        if hasattr(task_queue, 'overall_percent_label') and task_queue.overall_percent_label.winfo_exists():
+                            task_queue.overall_percent_label.config(text="N/A")
                 
                 update_dashboard() # Refresh dashboard stats
                 update_database_status()
@@ -3839,12 +3878,20 @@ def start_processing():
                                 processed_api_turns = task_queue.api_processed_tasks.get(api_idx,0)
                             if processed_api_turns >= task_queue.total_tasks_for_progress:
                                 widgets['bar']['value'] = 100
+                                # Animated: set to complete style
+                                update_progress_bar_style(widgets['bar'], 100)
+                                if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
+                                    widgets['percent_label'].config(text="100%", foreground='#51cf66')
                                 widgets['time_label'].config(text="Time Rem: Done!")
                 elif hasattr(task_queue, 'overall_progress_bar') and task_queue.overall_progress_bar.winfo_exists():
                     with task_queue.processed_tasks_lock:
                         processed_overall_turns = task_queue.processed_tasks
                     if processed_overall_turns >= task_queue.total_tasks_for_progress:
                         task_queue.overall_progress_bar['value'] = 100
+                        # Animated: set to complete style
+                        update_progress_bar_style(task_queue.overall_progress_bar, 100)
+                        if hasattr(task_queue, 'overall_percent_label') and task_queue.overall_percent_label.winfo_exists():
+                            task_queue.overall_percent_label.config(text="100%", foreground='#51cf66')
                         task_queue.overall_time_label.config(text="Time Remaining: Done!")
             save_generation_state() # Save final state
 
@@ -5367,8 +5414,12 @@ class ConfigEditor(tk.Toplevel):
 
 
 # --- Main UI Setup ---
+
+# --- Color Constants ---
+ACCENT_CYAN = '#17a2b8'  # Teal/cyan accent for superhero theme
+
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.4.0")
+root.title("Main UI")
 root.minsize(1100, 700)  # Prevents layout breakage on resize
 root.grid_columnconfigure(0, weight=1)
 root.grid_rowconfigure(0, weight=1)
@@ -5389,6 +5440,147 @@ try:
     log_message(f"Using theme: superhero", "INFO")
 except tk.TclError:
     log_message(f"Could not apply superhero theme. Using system default.", "WARNING")
+
+# --- Animated Progress Bar Styling ---
+def configure_animated_progress_styles(style_obj):
+    """Configure custom progress bar styles with color-coded stages and animation support."""
+    # Trough (background track) - dark theme consistent
+    trough_color = '#2a2a35'
+    border_color = '#1e1e24'
+
+    # Stage 1: Low progress (0-25%) - Cool Blue
+    style_obj.configure("Low.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#3498db',
+                        darkcolor='#2980b9',
+                        lightcolor='#5dade2',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    # Stage 2: Medium progress (25-50%) - Cyan / Teal
+    style_obj.configure("Medium.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#17a2b8',
+                        darkcolor='#138496',
+                        lightcolor='#4dc8e8',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    # Stage 3: Progressing (50-75%) - Green
+    style_obj.configure("Progressing.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#28a745',
+                        darkcolor='#1e7e34',
+                        lightcolor='#5cb85c',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    # Stage 4: High progress (75-90%) - Amber / Yellow
+    style_obj.configure("High.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#ffc107',
+                        darkcolor='#e0a800',
+                        lightcolor='#ffd54f',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    # Stage 5: Complete (90-100%) - Bright Green with pulse
+    style_obj.configure("Complete.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#51cf66',
+                        darkcolor='#40c057',
+                        lightcolor='#69db7c',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    # Pulse state (briefly flashes brighter when milestones are hit)
+    style_obj.configure("Pulse.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#74c0fc',
+                        darkcolor='#4dabf7',
+                        lightcolor='#a5d8ff',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    # Error / Stalled state - Red
+    style_obj.configure("Error.Horizontal.TProgressbar",
+                        troughcolor=trough_color,
+                        background='#ff6b6b',
+                        darkcolor='#fa5252',
+                        lightcolor='#ffa8a8',
+                        bordercolor=border_color,
+                        thickness=22)
+
+    log_message("Animated progress bar styles configured.", "DEBUG")
+
+
+def get_progress_style_name(progress_percent):
+    """Returns the appropriate style name based on progress percentage."""
+    if progress_percent < 0:
+        return "Low.Horizontal.TProgressbar"
+    elif progress_percent < 25:
+        return "Low.Horizontal.TProgressbar"
+    elif progress_percent < 50:
+        return "Medium.Horizontal.TProgressbar"
+    elif progress_percent < 75:
+        return "Progressing.Horizontal.TProgressbar"
+    elif progress_percent < 90:
+        return "High.Horizontal.TProgressbar"
+    else:
+        return "Complete.Horizontal.TProgressbar"
+
+
+def update_progress_bar_style(bar, progress_percent, error_state=False):
+    """Updates the style of a progress bar based on its current progress percentage."""
+    if not bar or not hasattr(bar, 'winfo_exists') or not bar.winfo_exists():
+        return
+    if error_state:
+        style_name = "Error.Horizontal.TProgressbar"
+    else:
+        style_name = get_progress_style_name(progress_percent)
+    try:
+        bar.configure(style=style_name)
+    except tk.TclError:
+        pass  # Style might not exist yet during early init
+
+
+# Track the previous progress percentage for each bar to detect milestone changes
+_previous_progress_values = {}
+
+
+def pulse_progress_bar(bar, bar_key, root_window):
+    """Briefly flashes a progress bar to a brighter color when a milestone is crossed,
+    then reverts it back after a short delay."""
+    global _previous_progress_values
+    if not bar or not hasattr(bar, 'winfo_exists') or not bar.winfo_exists():
+        return
+
+    current_value = bar['value']
+    previous_value = _previous_progress_values.get(bar_key, 0)
+
+    # Define milestones at which to pulse (every 25%)
+    milestones = [25, 50, 75, 90, 100]
+
+    for milestone in milestones:
+        if previous_value < milestone <= current_value:
+            # Milestone crossed! Apply pulse
+            try:
+                bar.configure(style="Pulse.Horizontal.TProgressbar")
+                # Schedule revert after 600ms
+                revert_style = get_progress_style_name(current_value)
+                root_window.after(600, lambda b=bar, s=revert_style: (
+                    b.configure(style=s) if b.winfo_exists() else None
+                ))
+            except tk.TclError:
+                pass
+            break
+
+    _previous_progress_values[bar_key] = current_value
+
+
+# Configure the styles on startup
+configure_animated_progress_styles(style)
+# --- End Animated Progress Bar Styling ---
 
 # 🎨 1. Set a Global Typography Hierarchy
 # Default body text for all standard widgets
@@ -5422,27 +5614,59 @@ valkey_connected_var = tk.BooleanVar(value=False)
 valkey_active_var = tk.BooleanVar(value=False)
 db_status_widgets = {}
 
+header_frame = ttk.Frame(root)
+header_frame.pack(pady=(10, 5), padx=SPACING, fill="x")
+
+title_label = ttk.Label(
+    header_frame,
+    text="🧠 ReadyArt Synthetic Dataset Generator",
+    font=('Segoe UI', 16, 'bold'),
+    foreground=ACCENT_CYAN
+)
+title_label.pack(side=tk.LEFT)
+
+version_label = ttk.Label(
+    header_frame,
+    text="v8.5.0",
+    font=('Segoe UI', 10),
+    foreground='#868e96'
+)
+version_label.pack(side=tk.LEFT, padx=(10, 0))
+
+ttk.Separator(root, orient='horizontal').pack(fill='x', padx=SPACING, pady=(0, SPACING))
+
 # --- UI Controls Frame ---
 controls_frame = ttk.Frame(root); controls_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 # Threads input removed from main window - now configured per API in the config editor
 
 # --- Metrics Display Frame ---
 
-metrics_frame = ttk.Frame(root); metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
-refusal_percent_label = ttk.Label(metrics_frame, text="Refusals encountered: 0 (0.0%)", style="Small.TLabel")
-user_speaking_label = ttk.Label(metrics_frame, text="User Speak instances: 0 (0.0%)", style="Small.TLabel")
-slop_label = ttk.Label(metrics_frame, text="Slop instances detected: 0 (0.0%)", style="Small.TLabel")
-error_percent_label = ttk.Label(metrics_frame, text="Total Errors logged: 0 (0.0%)", style="Small.TLabel")
+# Replace your current metrics_frame section with:
 
-token_label = ttk.Label(metrics_frame, text="Tokens: 0"); token_label.pack(side=tk.LEFT, padx=SPACING)
-cost_label = ttk.Label(metrics_frame, text="Est. Cost: $0.0000"); cost_label.pack(side=tk.LEFT, padx=SPACING)
+metrics_frame = ttk.Frame(root)
+metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
-budget_label = ttk.Label(metrics_frame, text="Budget: $0.00 / $0.00", foreground="lightgray")
-budget_label.pack(side=tk.LEFT, padx=SPACING)
+# Helper to create a metric card
+def create_metric_card(parent, title, icon, style_suffix=''):
+    card = ttk.LabelFrame(parent, text=f" {icon} {title}")
+    card.pack(side=tk.LEFT, padx=SPACING, fill="both", expand=True)
+    value_label = ttk.Label(card, text="0 (0.0%)", style=f'MetricValue{style_suffix}.TLabel')
+    value_label.pack(padx=SPACING, pady=(5, 2))
+    return value_label
 
-thread_status_var = tk.StringVar(value="Threads: 0 spawned, 0 active")
-thread_status_label = ttk.Label(metrics_frame, textvariable=thread_status_var, foreground="lightgray")
-thread_status_label.pack(side=tk.LEFT, padx=SPACING)
+refusal_percent_label = create_metric_card(metrics_frame, "Refusals", "🚫")
+user_speaking_label = create_metric_card(metrics_frame, "User Speak", "🗣️")
+slop_label = create_metric_card(metrics_frame, "Slop", "🧹")
+error_percent_label = create_metric_card(metrics_frame, "Errors", "⚠️")
+
+# Secondary metrics row
+metrics_row2 = ttk.Frame(root)
+metrics_row2.pack(pady=(0, SPACING), padx=SPACING, fill="x")
+
+token_label = create_metric_card(metrics_row2, "Tokens", "🔢")
+cost_label = create_metric_card(metrics_row2, "Est. Cost", "💰")
+budget_label = create_metric_card(metrics_row2, "Budget", "📊")
+thread_status_label = create_metric_card(metrics_row2, "Threads", "🧵")
 
 # Rate Limit Status Labels
 rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)")
@@ -5599,9 +5823,9 @@ def update_thread_status_display():
         # Safely count spawned and active threads
         spawned = len(threads) if 'threads' in globals() and threads else 0
         active = sum(1 for t in threads if t.is_alive()) if spawned > 0 else 0
-        thread_status_var.set(f"Threads: {spawned} spawned, {active} active")
+        thread_status_label.config(text=f"Threads: {spawned} spawned, {active} active")
     except Exception:
-        thread_status_var.set("Threads: 0 spawned, 0 active")
+        thread_status_label.config(text="Threads: 0 spawned, 0 active")
 
     # Schedule next update every 1 second
     if root.winfo_exists():
