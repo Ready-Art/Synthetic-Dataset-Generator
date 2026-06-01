@@ -3236,6 +3236,10 @@ def update_database_status():
 
 def update_live_prompt_preview(messages_list):
     """Thread-safe function to update the Live Prompt Preview widget from worker threads."""
+    # Check if paused - don't update preview if UI updates are paused
+    if dashboard_pause_var.get():
+        return
+
     if not root.winfo_exists() or prompt_preview_text is None:
         return
 
@@ -3244,6 +3248,9 @@ def update_live_prompt_preview(messages_list):
 
     def _apply_update():
         if not root.winfo_exists() or prompt_preview_text is None:
+            return
+        # Double-check pause state in main thread callback
+        if dashboard_pause_var.get():
             return
         prompt_preview_text.config(state=tk.NORMAL)
         prompt_preview_text.delete(1.0, tk.END)
@@ -6039,7 +6046,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.8.0",
+    text="v8.8.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
