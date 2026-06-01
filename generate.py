@@ -147,10 +147,12 @@ def check_budget_limit():
 
 API_CIRCUIT_BREAKER = {
     "max_consecutive_failures": 5,
-    "cooldown_seconds": 60,
+    "base_cooldown_seconds": 60,
+    "max_cooldown_seconds": 600,
     "failures": {i: 0 for i in range(6)},
     "last_failure_time": {i: 0.0 for i in range(6)},
-    "is_open": {i: False for i in range(6)}
+    "is_open": {i: False for i in range(6)},
+    "current_cooldown": {i: 60 for i in range(6)}
 }
 api_circuit_breaker_lock = threading.Lock()
 
@@ -159,21 +161,50 @@ def check_circuit_breaker(api_slot_idx):
     with api_circuit_breaker_lock:
         if API_CIRCUIT_BREAKER["is_open"][api_slot_idx]:
             elapsed = time.time() - API_CIRCUIT_BREAKER["last_failure_time"][api_slot_idx]
-            if elapsed >= API_CIRCUIT_BREAKER["cooldown_seconds"]:
+            # NEW: Use per-slot cooldown instead of global cooldown
+            current_cooldown = API_CIRCUIT_BREAKER["current_cooldown"].get(api_slot_idx, 60)
+
+            if elapsed >= current_cooldown:
                 API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = False
                 API_CIRCUIT_BREAKER["failures"][api_slot_idx] = 0
-                log_message(f"API Slot {api_slot_idx+1} circuit closed. Resuming requests.", "INFO")
+                API_CIRCUIT_BREAKER["current_cooldown"][api_slot_idx] = API_CIRCUIT_BREAKER["base_cooldown_seconds"]
+                log_message(
+                    f"API Slot {api_slot_idx+1} circuit closed after {elapsed:.0f}s. "
+                    f"Resuming requests with base cooldown.",
+                    "INFO"
+                )
                 return True
             return False
         return True
 
 def record_api_failure(api_slot_idx):
     with api_circuit_breaker_lock:
-        API_CIRCUIT_BREAKER["failures"][api_slot_idx] += 1
+        failures = API_CIRCUIT_BREAKER["failures"][api_slot_idx] + 1
+        API_CIRCUIT_BREAKER["failures"][api_slot_idx] = failures
         API_CIRCUIT_BREAKER["last_failure_time"][api_slot_idx] = time.time()
-        if API_CIRCUIT_BREAKER["failures"][api_slot_idx] >= API_CIRCUIT_BREAKER["max_consecutive_failures"]:
+
+        # NEW: Calculate exponential backoff (60s, 120s, 240s, 480s, max 600s)
+        backoff = min(
+            API_CIRCUIT_BREAKER["max_cooldown_seconds"],
+            API_CIRCUIT_BREAKER["base_cooldown_seconds"] * (2 ** (failures - 1))
+        )
+        API_CIRCUIT_BREAKER["current_cooldown"][api_slot_idx] = backoff
+
+        if failures >= API_CIRCUIT_BREAKER["max_consecutive_failures"]:
             API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = True
-            log_message(f"API Slot {api_slot_idx+1} circuit OPEN after {API_CIRCUIT_BREAKER['max_consecutive_failures']} consecutive failures. Cooling down...", "WARNING")
+            log_message(
+                f"API Slot {api_slot_idx+1} circuit OPEN after {failures} consecutive failures. "
+                f"Backoff: {backoff}s (exponential)",
+                "WARNING"
+            )
+
+def record_api_success(api_slot_idx):
+    """Reset failure count on successful API call."""
+    with api_circuit_breaker_lock:
+        if API_CIRCUIT_BREAKER["failures"][api_slot_idx] > 0:
+            API_CIRCUIT_BREAKER["failures"][api_slot_idx] = 0
+            API_CIRCUIT_BREAKER["current_cooldown"][api_slot_idx] = API_CIRCUIT_BREAKER["base_cooldown_seconds"]
+            log_message(f"API Slot {api_slot_idx+1} success - failure count reset.", "DEBUG")
 
 # --- Resilience: requeue tasks that fail while their API host is down ---
 # When a host goes down the circuit breaker (above) opens for that slot. Without
@@ -1253,6 +1284,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     api_response_times_per_slot[api_slot_idx] = api_response_times_per_slot[api_slot_idx][-MAX_RESPONSE_TIMES_TO_TRACK:]
 
             if response.status_code == 200:
+                record_api_success(api_slot_idx)
                 response_data = response.json()
                 content = response_data['choices'][0]['message'].get('content')
 
@@ -1486,6 +1518,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
             if response.status_code == 200:
                 # --- FIX START: Handle None content ---
+                record_api_success(api_slot_idx)
                 content = response.json()['choices'][0]['message'].get('content')
                 if content is None:
                     log_message(f"Thread {thread_id}: API returned None for user continuation content (API Slot {api_slot_idx+1}, Attempt {attempt_num+1})", "WARNING")
@@ -1718,6 +1751,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
 
             if response.status_code == 200:
                 # --- FIX START: Handle None content ---
+                record_api_success(api_slot_idx_slop_fixer)
                 response_data = response.json()
                 content = response_data['choices'][0]['message'].get('content')
 
@@ -1923,6 +1957,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     api_response_times_per_slot[api_slot_idx_anti_slop] = api_response_times_per_slot[api_slot_idx_anti_slop][-MAX_RESPONSE_TIMES_TO_TRACK:]
 
             if response.status_code == 200:
+                record_api_success(api_slot_idx_anti_slop)
                 response_data = response.json()
                 content = response_data['choices'][0]['message'].get('content')
                 usage = response_data.get('usage', {})
@@ -2201,6 +2236,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             break
 
                     if response.status_code == 200:
+                        record_api_success(api_slot_idx)
                         response_data = response.json()
                         content = response_data['choices'][0]['message'].get('content')
 
@@ -5043,7 +5079,7 @@ class ConfigEditor(tk.Toplevel):
 
 # --- Main UI Setup ---
 root = ttkbs.Window(themename="superhero")
-root.title("ReadyArt Synthetic Dataset Generator v8.3.0")
+root.title("ReadyArt Synthetic Dataset Generator v8.3.1")
 root.geometry("1400x850") # Main window size
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
