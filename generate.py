@@ -4904,13 +4904,21 @@ class ConfigEditor(tk.Toplevel):
 
     def _populate_profile_list(self):
         """Refreshes the list of available profiles in the combobox."""
-        profiles = global_config.list_profiles()
-        self.profile_combobox['values'] = profiles
-        if profiles:
-            self.profile_list_var.set(profiles[0]) # Default to first profile if list is not empty
-        else:
-            self.profile_list_var.set("") # Clear selection if no profiles
-        log_message("ConfigEditor: Profile list updated.", "DEBUG")
+        # Check if widget exists before accessing
+        if not hasattr(self, 'profile_combobox') or not hasattr(self.profile_combobox, 'winfo_exists') or not self.profile_combobox.winfo_exists():
+            log_message("ConfigEditor: profile_combobox not available, skipping populate.", "DEBUG")
+            return
+
+        try:
+            profiles = global_config.list_profiles()
+            self.profile_combobox['values'] = profiles
+            if profiles:
+                self.profile_list_var.set(profiles[0])  # Default to first profile if list is not empty
+            else:
+                self.profile_list_var.set("")  # Clear selection if no profiles
+            log_message("ConfigEditor: Profile list updated.", "DEBUG")
+        except Exception as e:
+            log_message(f"ConfigEditor: Error populating profile list: {e}", "ERROR")
 
     def _get_current_editor_config_data(self):
         """Gathers all configuration data currently entered in the editor fields into a dictionary suitable for YAML."""
@@ -5022,13 +5030,14 @@ class ConfigEditor(tk.Toplevel):
                             'job': sanitize_input(data['job'].get().strip()),
                             'clothing': sanitize_input(data['clothing'].get().strip()),
                             'appearance': sanitize_input(data['appearance'].get().strip()),
+                            'traits': sanitize_input(data['traits'].get().strip()),
                             'backstory': sanitize_input(data['backstory'].get().strip()),
                             'personality': sanitize_input(data['personality'].get().strip()),
                             'setting': sanitize_input(data['setting'].get().strip()),
                             'class': sanitize_input(data['class'].get().strip())
                         }
                         for data in self.character_entries
-                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'setting', 'class']) # Only save non-empty characters
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class'])
                     ]
                 },
                 'emotional_states': {
@@ -5352,14 +5361,15 @@ class ConfigEditor(tk.Toplevel):
                 old_clothing = character_conf.get('clothing', [])
                 old_appearance = character_conf.get('appearance', [])
                 old_backstory = character_conf.get('backstory', [])
-                old_personality = character_conf.get('personality', [])  # NEW
+                old_traits = character_conf.get('traits', [])
+                old_personality = character_conf.get('personality', [])
                 old_setting = character_conf.get('setting', [])
                 old_class = character_conf.get('class', [])
 
-                if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_setting, old_class]):  # NEW: added old_personality
+                if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class]):
                     max_len = max(
                         len(old_names), len(old_races), len(old_jobs), len(old_clothing),
-                        len(old_appearance), len(old_backstory), len(old_personality),  # NEW
+                        len(old_appearance), len(old_backstory), len(old_personality), len(old_traits),
                         len(old_setting), len(old_class)
                     )
                     for i in range(max_len):
@@ -5370,7 +5380,8 @@ class ConfigEditor(tk.Toplevel):
                             'clothing': old_clothing[i] if i < len(old_clothing) else '',
                             'appearance': old_appearance[i] if i < len(old_appearance) else '',
                             'backstory': old_backstory[i] if i < len(old_backstory) else '',
-                            'personality': old_personality[i] if i < len(old_personality) else '',  # NEW
+                            'personality': old_personality[i] if i < len(old_personality) else '',
+                            'traits': old_traits[i] if i < len(old_traits) else '',
                             'setting': old_setting[i] if i < len(old_setting) else '',
                             'class': old_class[i] if i < len(old_class) else ''
                         })
@@ -5550,15 +5561,13 @@ class ConfigEditor(tk.Toplevel):
             log_message(f"Error updating canvas scrollregion: {e}", "ERROR")
 
     def _add_character_row(self, character_data=None):
-        """Adds a new character card to the table."""
-        # Prevent unlimited card creation with GUI crashes
-        # Handle empty StringVar during initialization with default value of 10
+        """Adds a new character card with a clean, organized layout."""
         max_cards_str = self.max_character_cards_var.get()
         max_cards = int(max_cards_str) if max_cards_str and max_cards_str.strip() else 10
 
         if len(self.character_entries) >= max_cards:
             messagebox.showwarning("Limit Reached",
-                f"Maximum {max_cards} character cards allowed. Configure this limit in the Generation tab of the Config Editor.")
+                f"Maximum {max_cards} character cards allowed.")
             return
 
         if character_data is None:
@@ -5566,131 +5575,182 @@ class ConfigEditor(tk.Toplevel):
 
         row_index = len(self.character_entries)
 
-        # Create a card frame for this character
+        # === Card Container ===
         card_frame = ttk.LabelFrame(
             self.character_cards_frame,
-            text=f"Character {row_index + 1}"
+            text=f"  ✦ Character {row_index + 1}  ",
+            padding=10
         )
-        card_frame.pack(fill=tk.X, pady=SPACING, padx=SPACING)
+        card_frame.pack(fill=tk.X, pady=10, padx=10)
 
         entry_vars = {}
-        r = 0
 
-        # Row 1: Name, Race, Job
-        ttk.Label(card_frame, text="Name:").grid(
-            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        name_var = tk.StringVar(value=character_data.get('name', ''))
-        name_entry = ttk.Entry(card_frame, textvariable=name_var, width=20)
-        name_entry.grid(row=r, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        entry_vars['name'] = name_var
-        entry_vars['name_entry'] = name_entry
+        # === Styling Constants ===
+        LABEL_FONT = ('Segoe UI', 10, 'bold')
+        ENTRY_FONT = ('Segoe UI', 10)
+        LABEL_FG = '#f8f9fa'  # Light gray/white for high contrast on dark themes
+        ENTRY_BG = '#ffffff'
+        GRIP_FG = '#adb5bd'  # Lighter gray for better visibility
+        GRIP_FG_HOVER = '#ffffff'
 
-        ttk.Label(card_frame, text="Race:").grid(
-            row=r, column=2, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        race_var = tk.StringVar(value=character_data.get('race', ''))
-        race_entry = ttk.Entry(card_frame, textvariable=race_var, width=15)
-        race_entry.grid(row=r, column=3, padx=SPACING, pady=SPACING, sticky="w")
-        entry_vars['race'] = race_var
-        entry_vars['race_entry'] = race_entry
+        # === Helper: Create a labeled resizable text field ===
+        def create_field(parent, label_text, var_key, row, col, colspan=2,
+                         init_width=30, init_height=2, max_width=60, max_height=10,
+                         is_multiline=True):
 
-        ttk.Label(card_frame, text="Job:").grid(
-            row=r, column=4, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        job_var = tk.StringVar(value=character_data.get('job', ''))
-        job_entry = ttk.Entry(card_frame, textvariable=job_var, width=15)
-        job_entry.grid(row=r, column=5, padx=SPACING, pady=SPACING, sticky="w")
-        entry_vars['job'] = job_var
-        entry_vars['job_entry'] = job_entry
+            # Label
+            lbl = ttk.Label(parent, text=label_text, font=LABEL_FONT, foreground=LABEL_FG)
+            lbl.grid(row=row, column=col, padx=(0, 5), pady=5, sticky="ne")
 
-        r += 1
+            var = tk.StringVar(value=character_data.get(var_key, ''))
 
-        # Row 2: Clothing, Appearance
-        ttk.Label(card_frame, text="Clothing:").grid(
-            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        clothing_var = tk.StringVar(value=character_data.get('clothing', ''))
-        clothing_entry = ttk.Entry(card_frame, textvariable=clothing_var, width=40)
-        clothing_entry.grid(row=r, column=1, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
-        entry_vars['clothing'] = clothing_var
-        entry_vars['clothing_entry'] = clothing_entry
+            if is_multiline:
+                # Multi-line Text widget
+                widget = tk.Text(parent, width=init_width, height=init_height,
+                                font=ENTRY_FONT, bg=ENTRY_BG, wrap=tk.WORD,
+                                relief=tk.SOLID, borderwidth=1)
+                widget.insert("1.0", character_data.get(var_key, ''))
+                widget.grid(row=row, column=col+1, columnspan=colspan, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(card_frame, text="Appearance:").grid(
-            row=r, column=4, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        appearance_var = tk.StringVar(value=character_data.get('appearance', ''))
-        appearance_entry = ttk.Entry(card_frame, textvariable=appearance_var, width=40)
-        appearance_entry.grid(row=r, column=5, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
-        entry_vars['appearance'] = appearance_var
-        entry_vars['appearance_entry'] = appearance_entry
+                # Sync to StringVar
+                def on_change(e=None):
+                    var.set(widget.get("1.0", tk.END).strip())
+                widget.bind("<KeyRelease>", on_change)
+                widget.bind("<FocusOut>", on_change)
 
-        r += 1
+                # Resize grips container
+                grip_frame = ttk.Frame(parent)
+                grip_frame.grid(row=row, column=col+1+colspan, padx=(2, 0), pady=5, sticky="nsew")
 
-        # Row 3: Backstory (full width)
-        ttk.Label(card_frame, text="Backstory:").grid(
-            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        backstory_var = tk.StringVar(value=character_data.get('backstory', ''))
-        backstory_entry = ttk.Entry(card_frame, textvariable=backstory_var, width=80)
-        backstory_entry.grid(row=r, column=1, columnspan=7, padx=SPACING, pady=SPACING, sticky="ew")
-        entry_vars['backstory'] = backstory_var
-        entry_vars['backstory_entry'] = backstory_entry
+                # Horizontal grip
+                h_grip = tk.Label(grip_frame, text="⋮", cursor="sb_h_double_arrow",
+                                 foreground=GRIP_FG, font=('Segoe UI', 8))
+                h_grip.pack(side=tk.TOP, pady=2)
 
-        r += 1
+                # Vertical grip
+                v_grip = tk.Label(grip_frame, text="⤦", cursor="sb_v_double_arrow",
+                                 foreground=GRIP_FG, font=('Segoe UI', 8))
+                v_grip.pack(side=tk.BOTTOM, pady=2)
 
-        # --- NEW: Row for Personality (full width) ---
-        ttk.Label(card_frame, text="Personality:").grid(
-            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        personality_var = tk.StringVar(value=character_data.get('personality', ''))
-        personality_entry = ttk.Entry(card_frame, textvariable=personality_var, width=80)
-        personality_entry.grid(row=r, column=1, columnspan=7, padx=SPACING, pady=SPACING, sticky="ew")
-        entry_vars['personality'] = personality_var
-        entry_vars['personality_entry'] = personality_entry
+                # Drag state
+                state = {'width': init_width, 'height': init_height}
 
-        r += 1
+                def h_drag(e):
+                    delta = (e.x_root - state.get('start_x', e.x_root)) // 7
+                    new_w = max(5, min(state['width'] + delta, max_width))
+                    widget.config(width=int(new_w))
+                def h_press(e):
+                    state['start_x'] = e.x_root
+                    state['width'] = widget.cget("width")
+                h_grip.bind("<Button-1>", h_press)
+                h_grip.bind("<B1-Motion>", h_drag)
+                h_grip.bind("<Enter>", lambda e: h_grip.config(foreground=GRIP_FG_HOVER))
+                h_grip.bind("<Leave>", lambda e: h_grip.config(foreground=GRIP_FG))
 
-        # Row 4: Setting, Class, Delete button
-        ttk.Label(card_frame, text="Setting:").grid(
-            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        setting_var = tk.StringVar(value=character_data.get('setting', ''))
-        setting_entry = ttk.Entry(card_frame, textvariable=setting_var, width=40)
-        setting_entry.grid(row=r, column=1, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
-        entry_vars['setting'] = setting_var
-        entry_vars['setting_entry'] = setting_entry
+                def v_drag(e):
+                    delta = (e.y_root - state.get('start_y', e.y_root)) // 12
+                    new_h = max(1, min(state['height'] + delta, max_height))
+                    widget.config(height=int(new_h))
+                def v_press(e):
+                    state['start_y'] = e.y_root
+                    state['height'] = widget.cget("height")
+                v_grip.bind("<Button-1>", v_press)
+                v_grip.bind("<B1-Motion>", v_drag)
+                v_grip.bind("<Enter>", lambda e: v_grip.config(foreground=GRIP_FG_HOVER))
+                v_grip.bind("<Leave>", lambda e: v_grip.config(foreground=GRIP_FG))
 
-        # Class field (conditionally visible based on checkbox)
-        class_label = ttk.Label(card_frame, text="Class:")
-        class_label.grid(row=r, column=4, padx=SPACING, pady=SPACING, sticky="e")
+            else:
+                # Single-line Entry
+                widget = tk.Entry(parent, textvariable=var, width=init_width,
+                                 font=ENTRY_FONT, bg=ENTRY_BG, relief=tk.SOLID, borderwidth=1)
+                widget.grid(row=row, column=col+1, columnspan=colspan, padx=5, pady=5, sticky="ew")
+
+                # Horizontal grip only
+                h_grip = tk.Label(parent, text="⋮", cursor="sb_h_double_arrow",
+                                 foreground=GRIP_FG, font=('Segoe UI', 8))
+                h_grip.grid(row=row, column=col+1+colspan, padx=(2, 0), pady=5, sticky="w")
+
+                state = {'width': init_width}
+                def h_drag(e):
+                    delta = (e.x_root - state.get('start_x', e.x_root)) // 7
+                    new_w = max(5, min(state['width'] + delta, max_width))
+                    widget.config(width=int(new_w))
+                def h_press(e):
+                    state['start_x'] = e.x_root
+                    state['width'] = widget.cget("width")
+                h_grip.bind("<Button-1>", h_press)
+                h_grip.bind("<B1-Motion>", h_drag)
+                h_grip.bind("<Enter>", lambda e: h_grip.config(foreground=GRIP_FG_HOVER))
+                h_grip.bind("<Leave>", lambda e: h_grip.config(foreground=GRIP_FG))
+
+            entry_vars[var_key] = var
+            entry_vars[f'{var_key}_widget'] = widget
+            return widget
+
+        # === Row 1: Basic Info (3 columns) ===
+        create_field(card_frame, "Name:", 'name', row=0, col=0, colspan=1,
+                    init_width=15, max_width=30, is_multiline=False)
+        create_field(card_frame, "Race:", 'race', row=0, col=2, colspan=1,
+                    init_width=10, max_width=20, is_multiline=False)
+        create_field(card_frame, "Job:", 'job', row=0, col=4, colspan=1,
+                    init_width=10, max_width=20, is_multiline=False)
+
+        # === Row 2: Visual Details (2 columns) ===
+        create_field(card_frame, "Clothing:", 'clothing', row=1, col=0, colspan=2,
+                    init_width=25, init_height=2, max_width=50, max_height=6)
+        create_field(card_frame, "Appearance:", 'appearance', row=1, col=3, colspan=2,
+                    init_width=25, init_height=2, max_width=50, max_height=6)
+
+        # === Row 3: Character Depth (full width) ===
+        create_field(card_frame, "Backstory:", 'backstory', row=2, col=0, colspan=5,
+                    init_width=40, init_height=3, max_width=80, max_height=10)
+
+        # === Row 4: Personality (full width) ===
+        create_field(card_frame, "Personality:", 'personality', row=3, col=0, colspan=5,
+                    init_width=40, init_height=3, max_width=80, max_height=10)
+
+        # === Row 5: Traits & Setting (2 columns) ===
+        create_field(card_frame, "Traits:", 'traits', row=4, col=0, colspan=2,
+                    init_width=30, init_height=3, max_width=60, max_height=8)
+        create_field(card_frame, "Setting:", 'setting', row=4, col=3, colspan=2,
+                    init_width=30, init_height=3, max_width=60, max_height=8)
+
+        # === Row 6: Class & Actions ===
+        action_frame = ttk.Frame(card_frame)
+        action_frame.grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
+
+        class_lbl = ttk.Label(action_frame, text="⚔ Class:", font=LABEL_FONT, foreground=LABEL_FG)
+        class_lbl.grid(row=0, column=0, padx=(0, 5), sticky="w")
+
         class_var = tk.StringVar(value=character_data.get('class', ''))
-        class_entry = ttk.Entry(card_frame, textvariable=class_var, width=15)
-        class_entry.grid(row=r, column=5, padx=SPACING, pady=SPACING, sticky="w")
+        class_entry = tk.Entry(action_frame, textvariable=class_var, width=15,
+                              font=ENTRY_FONT, bg=ENTRY_BG, relief=tk.SOLID, borderwidth=1)
+        class_entry.grid(row=0, column=1, padx=5, sticky="w")
+
+        # Store references for visibility toggle
         entry_vars['class'] = class_var
         entry_vars['class_entry'] = class_entry
-        entry_vars['class_label'] = class_label
+        entry_vars['class_label'] = class_lbl
+        entry_vars['class_frame'] = action_frame
 
-        # Delete button
+        # Delete button with styling
         delete_btn = ttk.Button(
-            card_frame, text="✕ Remove",
-            command=lambda idx=row_index: self._remove_character_row(idx)
+            action_frame, text="✕ Remove Character",
+            command=lambda idx=row_index: self._remove_character_row(idx),
+            style='Danger.TButton'
         )
-        delete_btn.grid(row=r, column=7, padx=SPACING, pady=SPACING)
+        delete_btn.grid(row=0, column=2, padx=(10, 0), sticky="e")
         entry_vars['delete_btn'] = delete_btn
 
-        # Make card frame expandable
-        card_frame.columnconfigure(1, weight=1)
-        card_frame.columnconfigure(5, weight=1)
+        # Configure grid weights for responsive layout
+        for i in range(6):
+            card_frame.columnconfigure(i, weight=1 if i % 2 == 1 else 0)
 
         entry_vars['frame'] = card_frame
         self.character_entries.append(entry_vars)
 
-        # Update card labels and class visibility
         self._update_character_card_labels()
         self._update_class_column_visibility()
-
-        # Update scroll region (with safety check)
         self._update_canvas_scrollregion(self.character_engine_canvas)
 
     def _remove_character_row(self, row_index):
@@ -5714,17 +5774,6 @@ class ConfigEditor(tk.Toplevel):
         """Updates the text on each character card frame to match its index."""
         for i, data in enumerate(self.character_entries):
             data['frame'].config(text=f"Character {i + 1}")
-
-    def _update_class_column_visibility(self):
-        """Shows or hides the 'Class' fields based on the Enable Class checkbox."""
-        is_enabled = self.enable_class_selection_var_editor.get()
-        for data in self.character_entries:
-            if is_enabled:
-                data['class_label'].grid()
-                data['class_entry'].grid()
-            else:
-                data['class_label'].grid_remove()
-                data['class_entry'].grid_remove()
 
     def _toggle_character_engine_fields(self):
         """Enables/disables character engine text fields based on checkbox state."""
@@ -5750,6 +5799,28 @@ class ConfigEditor(tk.Toplevel):
         # Simply toggle visibility, as the main engine toggle handles enable/disable state
         self._update_class_column_visibility()
         log_message(f"Class Selection fields visibility updated", "DEBUG")
+
+    def _update_class_column_visibility(self):
+        """Shows or hides the 'Class' fields based on the Enable Class checkbox."""
+        is_enabled = self.enable_class_selection_var_editor.get()
+        for data in self.character_entries:
+            if is_enabled:
+                if 'class_frame' in data:
+                    data['class_frame'].grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
+                if 'class_label' in data:
+                    data['class_label'].grid(row=0, column=0, padx=(0, 5), sticky="w")
+                if 'class_entry' in data:
+                    data['class_entry'].grid(row=0, column=1, padx=5, sticky="w")
+            else:
+                if 'class_frame' in data:
+                    data['class_frame'].grid_remove()
+                if 'class_label' in data:
+                    data['class_label'].grid_remove()
+                if 'class_entry' in data:
+                    data['class_entry'].grid_remove()
+
+        log_message(f"Class Selection fields visibility updated", "DEBUG")
+
 # --- End of ConfigEditor Class ---
 
 
@@ -5968,7 +6039,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.7.5",
+    text="v8.8.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
