@@ -577,8 +577,8 @@ def clear_database():
 # --- Core Worker Logic ---
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
            use_variable_system_local,
-           all_api_configs_local, # Full list of all 5 API slot configs
-           active_enabled_api_configs_for_worker, # List of {config, original_slot_idx} for active/enabled APIs (Slots 1-4) for non-duplication mode
+           all_api_configs_local,
+           active_enabled_api_configs_for_worker,
            current_question_prompt, current_answer_prompt, current_user_continuation_prompt,
            current_num_turns,
            current_system_prompts_for_worker,
@@ -594,7 +594,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_ensure_space_after_line_break,
            current_remove_markdown,
            current_output_format,
-           slop_fixer_api_config, # Slop Fixer API details (Slot 5 / index 4)
+           slop_fixer_api_config,
            anti_slop_fixer_api_config_runtime,
            anti_slop_fixer_api_config_param,
            current_slop_fixes_for_rotation_worker,
@@ -602,16 +602,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            master_duplication_enabled_local,
            enable_character_engine_local,
            enable_class_selection_local,
-           character_name_list,
-           character_race_list,
-           character_job_list,
-           character_clothing_list,
-           character_appearance_list,
-           character_backstory_list,
-           character_setting_list,
-           character_class_list,
+           character_list,
            enable_emotional_states_local,
            emotional_states_list_local,
+           num_characters_local,
            no_user_impersonation_local,
            current_api_request_timeout):
     """
@@ -728,45 +722,62 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 current_system_prompt_for_task = current_top_level_system_prompt + "\n\n" + current_system_prompt_for_task
                 log_message(f"Thread {thread_id}: Prepending Top Level System Prompt for task {task_id}", "DEBUG")
 
-            # Handle character injection
             character_injection = ""
-            if enable_character_engine_local and character_job_list and character_clothing_list and character_appearance_list and character_backstory_list:
-                random_age = random.randint(18, 50)
-                random_name = random.choice(character_name_list)
-                random_race = random.choice(character_race_list)
-                random_job = random.choice(character_job_list)
-                random_clothing = random.choice(character_clothing_list)
-                random_appearance = random.choice(character_appearance_list)
-                random_backstory = random.choice(character_backstory_list)
-                random_setting = random.choice(character_setting_list) if character_setting_list else "A standard indoor environment."
+            if enable_character_engine_local and character_list:
+                # Select multiple random characters based on num_characters_local
+                num_chars_to_select = min(num_characters_local, len(character_list))
+                selected_chars = random.sample(character_list, num_chars_to_select)
 
-                random_class = ""
-                if enable_class_selection_local and character_class_list:
-                    random_class = random.choice(character_class_list)
-                    class_injection = f"\nClass: {random_class}\n"
-                else:
-                    class_injection = ""
+                character_profiles = []
+                for idx, selected_char in enumerate(selected_chars):
+                    # Extract attributes with defaults
+                    random_name = selected_char.get('name', f'Character{idx+1}')
+                    random_race = selected_char.get('race', 'Unknown')
+                    random_job = selected_char.get('job', 'Unknown')
+                    random_clothing = selected_char.get('clothing', 'Unknown')
+                    random_appearance = selected_char.get('appearance', 'Unknown')
+                    random_backstory = selected_char.get('backstory', 'Unknown')
+                    random_personality = selected_char.get('personality', 'Unknown')
+                    random_setting = selected_char.get('setting', 'A standard indoor environment.')
+                    random_class = selected_char.get('class', '')
 
-                character_injection = (
-                    f"\n\nCHARACTER PROFILE:\n"
-                    f"Name: {random_name}\n"
-                    f"Race: {random_race}\n"
-                    f"Age: {random_age}\n"
-                    f"Class: {random_class}\n"  # NEW: Add Class to profile
-                    f"Job: {random_job}\n"
-                    f"Clothing: {random_clothing}\n"
-                    f"Appearance: {random_appearance}\n"
-                    f"Backstory: {random_backstory}\n"
-                    f"Setting: {random_setting}\n"
-                    f"Maintain this persona throughout the conversation."
-                    f"{class_injection}"  # NEW: Add class injection
-                )
-                log_message(f"Thread {thread_id}: Adding character profile to system prompt for task {task_id}", "DEBUG")
-            else:
-                if enable_character_engine_local:
-                    log_message(f"Thread {thread_id}: Character engine enabled but missing character data. Skipping character injection for task {task_id}", "WARNING")
+                    # Ensure at least name is present to make it valid
+                    if random_name and random_name != 'Unknown':
+                        random_age = random.randint(18, 50)
+
+                        class_injection = ""
+                        if enable_class_selection_local and random_class:
+                            class_injection = f"\nClass: {random_class}\n"
+
+                        personality_injection = ""
+                        if random_personality and random_personality != 'Unknown':
+                            personality_injection = f"\nPersonality: {random_personality}\n"
+
+                        character_profile = (
+                            f"\n--- CHARACTER {idx+1} PROFILE ---\n"
+                            f"Name: {random_name}\n"
+                            f"Race: {random_race}\n"
+                            f"Age: {random_age}\n"
+                            f"Job: {random_job}\n"
+                            f"Clothing: {random_clothing}\n"
+                            f"Appearance: {random_appearance}\n"
+                            f"Backstory: {random_backstory}\n"
+                            f"{personality_injection}"
+                            f"Setting: {random_setting}\n"
+                            f"{class_injection}"
+                            f"--- END CHARACTER {idx+1} PROFILE ---\n"
+                        )
+                        character_profiles.append(character_profile)
+                    else:
+                        log_message(f"Thread {thread_id}: Character engine enabled, but selected character lacked a valid name. Skipping this character.", "WARNING")
+
+                if character_profiles:
+                    character_injection = "\n\nMULTI-CHARACTER CONVERSATION MODE:\n" + "\n".join(character_profiles)
+                    character_injection += "\nMaintain all character personas throughout the conversation. Each character should have distinct voices and personalities.\n"
+                    log_message(f"Thread {thread_id}: Adding {len(character_profiles)} character profiles to system prompt for task {task_id}", "DEBUG")
                 else:
-                    log_message(f"Thread {thread_id}: Character engine disabled. No character injection for task {task_id}", "DEBUG")
+                    if enable_character_engine_local:
+                        log_message(f"Thread {thread_id}: Character engine enabled but no valid characters selected. Skipping character injection.", "WARNING")
 
             current_system_prompt_for_task += character_injection
 
@@ -3434,14 +3445,45 @@ def start_processing():
     character_config = global_config.get('prompts.character', {})
     enable_character_engine_local = character_config.get('enabled', True)
     enable_class_selection_local = character_config.get('class_enabled', False)
-    character_class_list = character_config.get('class', [])
-    character_name_list = character_config.get('name', [])
-    character_race_list = character_config.get('race', [])
-    character_job_list = character_config.get('job', [])
-    character_clothing_list = character_config.get('clothing', [])
-    character_appearance_list = character_config.get('appearance', [])
-    character_backstory_list = character_config.get('backstory', [])
-    character_setting_list = character_config.get('setting', [])
+
+    num_characters_local = character_config.get('num_characters', 1)  # Default to 1 for backward compatibility
+    if num_characters_local < 1:
+        num_characters_local = 1
+
+    # Load the new list-of-dicts format
+    character_list = character_config.get('characters', [])
+
+    # Fallback for old config format (separate lists)
+    if not character_list:
+        old_names = character_config.get('name', [])
+        old_races = character_config.get('race', [])
+        old_jobs = character_config.get('job', [])
+        old_clothing = character_config.get('clothing', [])
+        old_appearance = character_config.get('appearance', [])
+        old_backstory = character_config.get('backstory', [])
+        old_personality = character_config.get('personality', [])  # NEW
+        old_setting = character_config.get('setting', [])
+        old_class = character_config.get('class', [])
+
+        if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_setting, old_class]):  # NEW
+            max_len = max(
+                len(old_names), len(old_races), len(old_jobs), len(old_clothing),
+                len(old_appearance), len(old_backstory), len(old_personality),  # NEW
+                len(old_setting), len(old_class)
+            )
+            for i in range(max_len):
+                character_list.append({
+                    'name': old_names[i] if i < len(old_names) else '',
+                    'race': old_races[i] if i < len(old_races) else '',
+                    'job': old_jobs[i] if i < len(old_jobs) else '',
+                    'clothing': old_clothing[i] if i < len(old_clothing) else '',
+                    'appearance': old_appearance[i] if i < len(old_appearance) else '',
+                    'backstory': old_backstory[i] if i < len(old_backstory) else '',
+                    'personality': old_personality[i] if i < len(old_personality) else '',  # NEW
+                    'setting': old_setting[i] if i < len(old_setting) else '',
+                    'class': old_class[i] if i < len(old_class) else ''
+                })
+            log_message(f"Converted old character config format ({max_len} characters) to new format.", "INFO")
     current_user_continuation_prompt = global_config.get('prompts.user_continuation_prompt', "Continue the conversation naturally based on the assistant's last response: {last_assistant_message}")
     # --- NEW: Load Top Level System Prompt ---
     current_top_level_system_prompt = global_config.get('prompts.system.top_level_system_prompt', '')
@@ -3770,14 +3812,7 @@ def start_processing():
             master_duplication_enabled,
             enable_character_engine_local,
             enable_class_selection_local,
-            character_name_list,
-            character_race_list,
-            character_job_list,
-            character_clothing_list,
-            character_appearance_list,
-            character_backstory_list,
-            character_setting_list,
-            character_class_list,
+            character_list,
             enable_emotional_states,
             emotional_states_list,
             no_user_impersonation_var.get(),
@@ -3989,10 +4024,15 @@ def read_txt(file_path):
             return [sanitize_input(line.strip(), max_length=max_len) for line in f if line.strip()]
 
 def open_config_editor():
-    """Opens the configuration editor window."""
-    global_config.load() # Ensure config is fresh before opening editor
-    editor = ConfigEditor(root) 
-    editor.grab_set() # Make editor modal
+    global_config.load()
+    try:
+        editor = ConfigEditor(root)
+        editor.grab_set()
+    except Exception as e:
+        log_message(f"ConfigEditor failed to initialize: {e}", "ERROR")
+        import traceback
+        log_message(traceback.format_exc(), "ERROR")
+        messagebox.showerror("Editor Error", f"Failed to open config editor:\n{e}")
 
 def test_valkey_connection():
     """Test Valkey connection and show detailed results."""
@@ -4077,7 +4117,6 @@ class ConfigEditor(tk.Toplevel):
         super().__init__(parent)
         self.title("Configuration Editor")
         self.geometry("1400x1000") # Adjusted for potentially more content
-
         self.user_speaking_phrases_data = {"male": [], "female": [], "neutral": []} 
         self.user_speaking_fixes_data = {"male": [], "female": [], "neutral": []}
         self.active_display_gender = "female" 
@@ -4298,6 +4337,7 @@ class ConfigEditor(tk.Toplevel):
         add_gen_setting("API Request Timeout (seconds):", 'api_request_timeout_var', "(For connect and read timeout, e.g., 300)")
         add_gen_setting("Max Newlines (Malformed):", 'max_newlines_malformed_var', "(Max newlines in a reply before it's considered malformed)")
         add_gen_setting("Max Text Length (Malformed):", 'max_text_length_malformed_var', "(Max length in chars before reply is considered malformed)")
+        add_gen_setting("Max Character Cards:", 'max_character_cards_var', "(Maximum character profiles in Character Engine)")
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
         ttk.Checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
@@ -4397,6 +4437,18 @@ class ConfigEditor(tk.Toplevel):
 
         character_engine_row_idx = 0
 
+        # Add number of characters setting
+        ttk.Label(self.character_engine_content_frame, text="Number of Characters per Conversation:").grid(
+            row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        self.num_characters_var_editor = tk.StringVar(value="1")
+        num_chars_entry = ttk.Entry(self.character_engine_content_frame, width=10, textvariable=self.num_characters_var_editor)
+        num_chars_entry.grid(row=character_engine_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(self.character_engine_content_frame, text="(1-10, requires enough character cards)").grid(
+            row=character_engine_row_idx, column=2, padx=SPACING, pady=SPACING, sticky="w"
+        )
+        character_engine_row_idx += 1
+
         def add_character_engine_text_area(label_text, var_name, height=4):
             nonlocal character_engine_row_idx
             ttk.Label(self.character_engine_content_frame, text=label_text).grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
@@ -4422,6 +4474,13 @@ class ConfigEditor(tk.Toplevel):
                 variable=self.enable_emotional_states_var_editor, command=self._toggle_emotional_states_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
+        # Add emotional states text area
+        ttk.Label(self.character_engine_content_frame, text="Emotional States (one per line):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        emotional_states_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=130, undo=True)
+        emotional_states_text.grid(row=character_engine_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+        setattr(self, 'emotional_states_text', emotional_states_text)
+        character_engine_row_idx += 1
+
         self.enable_class_selection_var_editor = tk.BooleanVar()
         ttk.Checkbutton(self.character_engine_content_frame,
                         text="Enable Class Selection (fantasy classes like mage, warlock, rogue, etc.)",
@@ -4429,23 +4488,40 @@ class ConfigEditor(tk.Toplevel):
                         command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
-        # Add text area for class options
-        add_character_engine_text_area("Character Class (one per line, e.g., mage, warlock, rogue, paladin):",
-                                    'character_class_text', height=12)
+        # --- Character Table (Card-based layout) ---
+        self.character_entries = []  # List of dicts with StringVar per field per character
 
-        # Move character fields to Character Engine tab
-        add_character_engine_text_area("Character Names (one per line):", 'character_name_text', height=12)
-        add_character_engine_text_area("Character Race (one per line):", 'character_race_text', height=12)
-        add_character_engine_text_area("Character Job (one per line):", 'character_job_text', height=12)
-        add_character_engine_text_area("Character Clothing (one per line):", 'character_clothing_text', height=12)
-        add_character_engine_text_area("Character Appearance (one per line):", 'character_appearance_text', height=12)
-        add_character_engine_text_area("Character Backstory (one per line):", 'character_backstory_text', height=12)
-        add_character_engine_text_area("Scene Setting/Background (location, items, atmosphere):", 'character_setting_text', height=12)
+        character_table_lf = ttk.LabelFrame(
+            self.character_engine_content_frame,
+            text="Character Profiles (Each card is one complete character)"
+        )
+        character_table_lf.grid(
+            row=character_engine_row_idx, column=0, columnspan=2,
+            padx=SPACING, pady=SPACING, sticky="nsew"
+        )
+        character_engine_row_idx += 1
 
-        # NEW: Add Emotional State configuration
-        add_character_engine_text_area("Emotional States (one per line, e.g., happy, sad, angry, neutral):", 'emotional_states_text', height=12)
+        # Container for character cards (NO nested canvas, outer tab canvas handles scrolling)
+        self.character_cards_frame = ttk.Frame(character_table_lf)
+        self.character_cards_frame.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
 
-        self.character_engine_content_frame.grid_columnconfigure(1, weight=1) # Make text areas expand
+        # Add Character button
+        self.add_char_btn = ttk.Button(
+            self.character_engine_content_frame,
+            text="➕ Add Character",
+            command=self._add_character_row
+        )
+        self.add_char_btn.grid(
+            row=character_engine_row_idx, column=0, columnspan=2,
+            padx=SPACING, pady=SPACING, sticky="w"
+        )
+        character_engine_row_idx += 1
+
+        # Add 3 default empty character slots
+        for _ in range(3):
+            self._add_character_row()
+
+        self.character_engine_content_frame.grid_columnconfigure(1, weight=1)
 
         # --- Detection Tab ---
         self.detection_tab = ttk.Frame(self.notebook)
@@ -4688,31 +4764,13 @@ class ConfigEditor(tk.Toplevel):
 
     def test_api_connection(self, slot_index):
         """Tests the connection for a specific API slot in a separate thread."""
-        # Disable the button during the test
         btn = getattr(self, f'api_test_btn_{slot_index+1}')
+        # Guard: check widget exists before disabling
+        if not (hasattr(btn, 'winfo_exists') and btn.winfo_exists()):
+            return
         btn.config(state=tk.DISABLED)
         status_var = getattr(self, f'api_status_var_{slot_index+1}')
         status_var.set("Testing...")
-
-        # Get the status_label widget BEFORE defining run_test
-        status_label = None
-        for widget in self.api_tab.winfo_children():
-            if isinstance(widget, ttk.LabelFrame):
-                for child in widget.winfo_children():
-                    if isinstance(child, ttk.Label) and hasattr(child, 'cget'):
-                        if child.cget('textvariable') == str(status_var):
-                            status_label = child
-                            break
-            if status_label:
-                break
-
-        if not status_label:
-            # Fallback: create a new label if we can't find the existing one
-            status_label = getattr(self, f'api_status_label_{slot_index+1}', None)
-            if not status_label:
-                status_label = ttk.Label(self.api_tab, text="", foreground="gray")
-                status_label.grid(row=slot_index + 2, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
-                setattr(self, f'api_status_label_{slot_index+1}', status_label)
 
         def run_test(self):
             try:
@@ -4725,7 +4783,6 @@ class ConfigEditor(tk.Toplevel):
                 if not validate_url(api_url):
                     raise ValueError("Invalid URL format")
 
-                # Prepare a minimal test request payload similar to generation requests [1]
                 payload = {
                     "model": model_name,
                     "messages": [
@@ -4753,17 +4810,19 @@ class ConfigEditor(tk.Toplevel):
                 result_text = f"Error: {str(e)[:30]}"
                 result_color = "red"
 
-            # Update UI in the main thread using after
+            # Guard: only update if the editor window still exists
             if hasattr(self, 'winfo_exists') and self.winfo_exists():
-                # Use closures to capture the result_text and result_color values
                 def update_status():
-                    status_var.set(result_text)
-                    status_label.config(foreground=result_color)
+                    if hasattr(self, 'winfo_exists') and self.winfo_exists():
+                        status_var.set(result_text)
+                        status_label = getattr(self, f'api_status_label_{slot_index+1}', None)
+                        if status_label and hasattr(status_label, 'winfo_exists') and status_label.winfo_exists():
+                            status_label.config(foreground=result_color)
+                        if hasattr(btn, 'winfo_exists') and btn.winfo_exists():
+                            btn.config(state=tk.NORMAL)
 
                 self.after(0, update_status)
-                self.after(0, lambda: btn.config(state=tk.NORMAL))
 
-        # Start the test in a new thread (MOVE THIS INSIDE run_test or keep it here)
         threading.Thread(target=run_test, args=(self,), daemon=True).start()
 
     def save_config_handler(self, silent=False):
@@ -4837,8 +4896,11 @@ class ConfigEditor(tk.Toplevel):
     def on_close_editor(self):
         """Handles saving config when editor is closed via 'X' button."""
         log_message("ConfigEditor: Close button clicked. Saving configuration automatically.", "INFO")
-        self.save_config_handler(silent=True) # Automatically save without asking or showing popup
-        self.destroy() # Close the window
+        try:
+            self.save_config_handler(silent=True)
+        except Exception as e:
+            log_message(f"ConfigEditor: Error during auto-save on close: {e}", "ERROR")
+        self.destroy()
 
     def _populate_profile_list(self):
         """Refreshes the list of available profiles in the combobox."""
@@ -4918,6 +4980,7 @@ class ConfigEditor(tk.Toplevel):
                 'pool_size': int(self.db_pool_size_var.get() or 10)
             },
             'generation': {
+                'max_character_cards': int(self.max_character_cards_var.get()),
                 'subject_size': int(self.subject_size_var.get()), 'context_size': int(self.context_size_var.get()),
                 'max_attempts': int(self.max_attempts_var.get()),
                 'num_turns': int(self.num_turns_var.get()),
@@ -4951,16 +5014,23 @@ class ConfigEditor(tk.Toplevel):
                 'character': {
                     'enabled': self.enable_character_engine_var_editor.get(),
                     'class_enabled': self.enable_class_selection_var_editor.get(),
-                    'name': [sanitize_input(line.strip()) for line in self.character_name_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'race': [sanitize_input(line.strip()) for line in self.character_race_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'job': [sanitize_input(line.strip()) for line in self.character_job_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'clothing': [sanitize_input(line.strip()) for line in self.character_clothing_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'appearance': [sanitize_input(line.strip()) for line in self.character_appearance_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'backstory': [sanitize_input(line.strip()) for line in self.character_backstory_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'setting': [sanitize_input(line.strip()) for line in self.character_setting_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'class': [sanitize_input(line.strip()) for line in self.character_class_text.get("1.0", tk.END).split('\n') if line.strip()]
+                    'num_characters': int(self.num_characters_var_editor.get()),
+                    'characters': [
+                        {
+                            'name': sanitize_input(data['name'].get().strip()),
+                            'race': sanitize_input(data['race'].get().strip()),
+                            'job': sanitize_input(data['job'].get().strip()),
+                            'clothing': sanitize_input(data['clothing'].get().strip()),
+                            'appearance': sanitize_input(data['appearance'].get().strip()),
+                            'backstory': sanitize_input(data['backstory'].get().strip()),
+                            'personality': sanitize_input(data['personality'].get().strip()),
+                            'setting': sanitize_input(data['setting'].get().strip()),
+                            'class': sanitize_input(data['class'].get().strip())
+                        }
+                        for data in self.character_entries
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'setting', 'class']) # Only save non-empty characters
+                    ]
                 },
-                        # NEW: Add emotional states configuration
                 'emotional_states': {
                     'enabled': self.enable_emotional_states_var_editor.get(),
                     'states': [sanitize_input(line.strip()) for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()]
@@ -5109,6 +5179,7 @@ class ConfigEditor(tk.Toplevel):
             'character_clothing_text',
             'character_appearance_text',
             'character_backstory_text',
+            'character_personality_text',
             'character_setting_text'
         ]
 
@@ -5214,6 +5285,8 @@ class ConfigEditor(tk.Toplevel):
                     getattr(self, f'api_rate_limit_var_{i+1}').set(str(api_details_yml.get('rate_limit_rpm', 60)))
 
             gen_config = config.get('generation', {})
+            if hasattr(self, 'max_character_cards_var'):
+                self.max_character_cards_var.set(str(gen_config.get('max_character_cards', 10)))
             self.subject_size_var.set(str(gen_config.get('subject_size', 1000)))
             self.context_size_var.set(str(gen_config.get('context_size', 3000)))
             self.num_random_chunks_var.set(str(gen_config.get('num_random_chunks', 12000)))
@@ -5249,38 +5322,75 @@ class ConfigEditor(tk.Toplevel):
             self.answer_prompt_text.delete(1.0, tk.END); self.answer_prompt_text.insert(tk.END, prompts_config.get('answer', 'Answer the question.'))
             self.user_continuation_prompt_text.delete(1.0, tk.END); self.user_continuation_prompt_text.insert(tk.END, prompts_config.get('user_continuation_prompt', 'Continue based on: {last_assistant_message}'))
 
+            if hasattr(self, 'max_character_cards_var'):
+                self.max_character_cards_var.set(str(gen_config.get('max_character_cards', 10)))
+            else:
+                self.max_character_cards_var = tk.StringVar(value=str(gen_config.get('max_character_cards', 10)))
             character_conf = prompts_config.get('character', {})
-            # Load character engine enabled state
             self.enable_character_engine_var_editor.set(character_conf.get('enabled', True))
             self.enable_class_selection_var_editor.set(character_conf.get('class_enabled', False))
+            self.num_characters_var_editor.set(str(character_conf.get('num_characters', 1)))
 
-            # Load character data
-            self.character_name_text.delete(1.0, tk.END)
-            self.character_name_text.insert(tk.END, "\n".join(character_conf.get('name', [])))
+            # Clear existing entries first
+            for data in self.character_entries[:]:
+                try:
+                    for widget in data['frame'].winfo_children():
+                        widget.destroy()
+                    data['frame'].destroy()
+                except:
+                    pass
+            self.character_entries.clear()
 
-            self.character_race_text.delete(1.0, tk.END)
-            self.character_race_text.insert(tk.END, "\n".join(character_conf.get('race', [])))
+            # Load characters (new format)
+            characters_list = character_conf.get('characters', [])
 
-            self.character_job_text.delete(1.0, tk.END)
-            self.character_job_text.insert(tk.END, "\n".join(character_conf.get('job', [])))
+            # Fallback for old config format (separate lists)
+            if not characters_list:
+                old_names = character_conf.get('name', [])
+                old_races = character_conf.get('race', [])
+                old_jobs = character_conf.get('job', [])
+                old_clothing = character_conf.get('clothing', [])
+                old_appearance = character_conf.get('appearance', [])
+                old_backstory = character_conf.get('backstory', [])
+                old_personality = character_conf.get('personality', [])  # NEW
+                old_setting = character_conf.get('setting', [])
+                old_class = character_conf.get('class', [])
 
-            self.character_clothing_text.delete(1.0, tk.END)
-            self.character_clothing_text.insert(tk.END, "\n".join(character_conf.get('clothing', [])))
+                if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_setting, old_class]):  # NEW: added old_personality
+                    max_len = max(
+                        len(old_names), len(old_races), len(old_jobs), len(old_clothing),
+                        len(old_appearance), len(old_backstory), len(old_personality),  # NEW
+                        len(old_setting), len(old_class)
+                    )
+                    for i in range(max_len):
+                        characters_list.append({
+                            'name': old_names[i] if i < len(old_names) else '',
+                            'race': old_races[i] if i < len(old_races) else '',
+                            'job': old_jobs[i] if i < len(old_jobs) else '',
+                            'clothing': old_clothing[i] if i < len(old_clothing) else '',
+                            'appearance': old_appearance[i] if i < len(old_appearance) else '',
+                            'backstory': old_backstory[i] if i < len(old_backstory) else '',
+                            'personality': old_personality[i] if i < len(old_personality) else '',  # NEW
+                            'setting': old_setting[i] if i < len(old_setting) else '',
+                            'class': old_class[i] if i < len(old_class) else ''
+                        })
 
-            self.character_appearance_text.delete(1.0, tk.END)
-            self.character_appearance_text.insert(tk.END, "\n".join(character_conf.get('appearance', [])))
+            # Populate UI with loaded data (limit to MAX_CHARACTER_CARDS)
+            if characters_list:
+                for i, char_data in enumerate(characters_list):
+                    if i >= int(self.max_character_cards_var.get()):
+                        log_message(f"Skipping character {i+1} - limit reached", "WARNING")
+                        break
+                    self._add_character_row(character_data=char_data)
+            else:
+                # Add 3 empty rows if config is empty
+                default_empty_rows = min(3, self.max_character_cards)
+                for _ in range(default_empty_rows):
+                    self._add_character_row()
 
-            self.character_backstory_text.delete(1.0, tk.END)
-            self.character_backstory_text.insert(tk.END, "\n".join(character_conf.get('backstory', [])))
-
-            self.character_setting_text.delete(1.0, tk.END)
-            self.character_setting_text.insert(tk.END, "\n".join(character_conf.get('setting', [])))
-
-            self.character_class_text.delete(1.0, tk.END)
-            self.character_class_text.insert(tk.END, "\n".join(character_conf.get('class', [])))
-
-            # Apply the enabled/disabled state to the text fields
+            # Apply the enabled/disabled state and class visibility
             self._toggle_character_engine_fields()
+            self._update_class_column_visibility()
 
             # NEW: Load emotional states
             emotional_states_conf = prompts_config.get('emotional_states', {})
@@ -5352,7 +5462,8 @@ class ConfigEditor(tk.Toplevel):
             messagebox.showerror("Error", f"Failed to load config into editor: {str(e)}")
             log_message(f"Failed to load config into editor: {str(e)}", "ERROR")
             import traceback; log_message(traceback.format_exc(), "ERROR")
-            self.status.config(text=f"Failed to load config: {str(e)}", foreground="red")
+            if hasattr(self.status, 'winfo_exists') and self.status.winfo_exists():
+                self.status.config(text=f"Failed to load config: {str(e)}", foreground="red")
 
     def validate_config_handler(self, event=None, show_success_message=True): 
         """Performs basic validation of numeric and list fields in the editor."""
@@ -5364,7 +5475,9 @@ class ConfigEditor(tk.Toplevel):
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())
             float(self.temperature_var.get()); float(self.top_p_var.get()); float(self.min_p_var.get()); int(self.top_k_var.get())
             float(self.repetition_penalty_var.get());
-            int(self.max_tokens_question_var.get()); int(self.max_tokens_answer_var.get()); int(self.max_tokens_user_reply_var.get()) 
+            int(self.max_tokens_question_var.get()); int(self.max_tokens_answer_var.get()); int(self.max_tokens_user_reply_var.get())
+            num_chars_val = int(self.num_characters_var_editor.get())
+            assert 1 <= num_chars_val <= 10, "Number of characters must be between 1 and 10"
             if self.slop_fixer_temp_var.get(): float(self.slop_fixer_temp_var.get())
             if self.slop_fixer_top_p_var.get(): float(self.slop_fixer_top_p_var.get())
             if self.slop_fixer_min_p_var.get(): float(self.slop_fixer_min_p_var.get())
@@ -5396,6 +5509,10 @@ class ConfigEditor(tk.Toplevel):
             if self.enable_emotional_states_var_editor.get():
                 get_text_as_list(self.emotional_states_text)
             
+            max_cards_val = int(self.max_character_cards_var.get())
+            assert max_cards_val > 0, "Max character cards must be > 0"
+            assert max_cards_val <= 100, "Max character cards should not exceed 100"
+
             if show_success_message:
                 self.status.config(text="Validation successful (basic checks).", foreground="green")
             log_message("ConfigEditor: Validation successful.", "DEBUG")
@@ -5409,7 +5526,230 @@ class ConfigEditor(tk.Toplevel):
         except Exception as e_other: # Other unexpected errors
             self.status.config(text=f"Validation Error: {str(e_other)}", foreground="red")
             log_message(f"ConfigEditor Validation (OtherError): {str(e_other)}", "WARNING")
-        return False 
+        return False
+
+    def _update_canvas_scrollregion(self, canvas_widget):
+        """Safely update canvas scrollregion with bounds checking."""
+        try:
+            canvas_widget.update_idletasks()
+            bbox = canvas_widget.bbox("all")
+
+            if bbox and len(bbox) == 4:
+                x1, y1, x2, y2 = bbox
+
+                # Sanity check - reject unreasonably large values
+                MAX_CANVAS_SIZE = 50000  # pixels
+                if all(0 <= val <= MAX_CANVAS_SIZE for val in bbox):
+                    # Add small padding
+                    padding = 10
+                    canvas_widget.configure(scrollregion=(x1 - padding, y1 - padding,
+                                                           x2 + padding, y2 + padding))
+                else:
+                    log_message(f"Canvas bbox out of bounds: {bbox}", "WARNING")
+        except Exception as e:
+            log_message(f"Error updating canvas scrollregion: {e}", "ERROR")
+
+    def _add_character_row(self, character_data=None):
+        """Adds a new character card to the table."""
+        # Prevent unlimited card creation with GUI crashes
+        # Handle empty StringVar during initialization with default value of 10
+        max_cards_str = self.max_character_cards_var.get()
+        max_cards = int(max_cards_str) if max_cards_str and max_cards_str.strip() else 10
+
+        if len(self.character_entries) >= max_cards:
+            messagebox.showwarning("Limit Reached",
+                f"Maximum {max_cards} character cards allowed. Configure this limit in the Generation tab of the Config Editor.")
+            return
+
+        if character_data is None:
+            character_data = {}
+
+        row_index = len(self.character_entries)
+
+        # Create a card frame for this character
+        card_frame = ttk.LabelFrame(
+            self.character_cards_frame,
+            text=f"Character {row_index + 1}"
+        )
+        card_frame.pack(fill=tk.X, pady=SPACING, padx=SPACING)
+
+        entry_vars = {}
+        r = 0
+
+        # Row 1: Name, Race, Job
+        ttk.Label(card_frame, text="Name:").grid(
+            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        name_var = tk.StringVar(value=character_data.get('name', ''))
+        name_entry = ttk.Entry(card_frame, textvariable=name_var, width=20)
+        name_entry.grid(row=r, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['name'] = name_var
+        entry_vars['name_entry'] = name_entry
+
+        ttk.Label(card_frame, text="Race:").grid(
+            row=r, column=2, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        race_var = tk.StringVar(value=character_data.get('race', ''))
+        race_entry = ttk.Entry(card_frame, textvariable=race_var, width=15)
+        race_entry.grid(row=r, column=3, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['race'] = race_var
+        entry_vars['race_entry'] = race_entry
+
+        ttk.Label(card_frame, text="Job:").grid(
+            row=r, column=4, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        job_var = tk.StringVar(value=character_data.get('job', ''))
+        job_entry = ttk.Entry(card_frame, textvariable=job_var, width=15)
+        job_entry.grid(row=r, column=5, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['job'] = job_var
+        entry_vars['job_entry'] = job_entry
+
+        r += 1
+
+        # Row 2: Clothing, Appearance
+        ttk.Label(card_frame, text="Clothing:").grid(
+            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        clothing_var = tk.StringVar(value=character_data.get('clothing', ''))
+        clothing_entry = ttk.Entry(card_frame, textvariable=clothing_var, width=40)
+        clothing_entry.grid(row=r, column=1, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['clothing'] = clothing_var
+        entry_vars['clothing_entry'] = clothing_entry
+
+        ttk.Label(card_frame, text="Appearance:").grid(
+            row=r, column=4, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        appearance_var = tk.StringVar(value=character_data.get('appearance', ''))
+        appearance_entry = ttk.Entry(card_frame, textvariable=appearance_var, width=40)
+        appearance_entry.grid(row=r, column=5, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['appearance'] = appearance_var
+        entry_vars['appearance_entry'] = appearance_entry
+
+        r += 1
+
+        # Row 3: Backstory (full width)
+        ttk.Label(card_frame, text="Backstory:").grid(
+            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        backstory_var = tk.StringVar(value=character_data.get('backstory', ''))
+        backstory_entry = ttk.Entry(card_frame, textvariable=backstory_var, width=80)
+        backstory_entry.grid(row=r, column=1, columnspan=7, padx=SPACING, pady=SPACING, sticky="ew")
+        entry_vars['backstory'] = backstory_var
+        entry_vars['backstory_entry'] = backstory_entry
+
+        r += 1
+
+        # --- NEW: Row for Personality (full width) ---
+        ttk.Label(card_frame, text="Personality:").grid(
+            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        personality_var = tk.StringVar(value=character_data.get('personality', ''))
+        personality_entry = ttk.Entry(card_frame, textvariable=personality_var, width=80)
+        personality_entry.grid(row=r, column=1, columnspan=7, padx=SPACING, pady=SPACING, sticky="ew")
+        entry_vars['personality'] = personality_var
+        entry_vars['personality_entry'] = personality_entry
+
+        r += 1
+
+        # Row 4: Setting, Class, Delete button
+        ttk.Label(card_frame, text="Setting:").grid(
+            row=r, column=0, padx=SPACING, pady=SPACING, sticky="e"
+        )
+        setting_var = tk.StringVar(value=character_data.get('setting', ''))
+        setting_entry = ttk.Entry(card_frame, textvariable=setting_var, width=40)
+        setting_entry.grid(row=r, column=1, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['setting'] = setting_var
+        entry_vars['setting_entry'] = setting_entry
+
+        # Class field (conditionally visible based on checkbox)
+        class_label = ttk.Label(card_frame, text="Class:")
+        class_label.grid(row=r, column=4, padx=SPACING, pady=SPACING, sticky="e")
+        class_var = tk.StringVar(value=character_data.get('class', ''))
+        class_entry = ttk.Entry(card_frame, textvariable=class_var, width=15)
+        class_entry.grid(row=r, column=5, padx=SPACING, pady=SPACING, sticky="w")
+        entry_vars['class'] = class_var
+        entry_vars['class_entry'] = class_entry
+        entry_vars['class_label'] = class_label
+
+        # Delete button
+        delete_btn = ttk.Button(
+            card_frame, text="✕ Remove",
+            command=lambda idx=row_index: self._remove_character_row(idx)
+        )
+        delete_btn.grid(row=r, column=7, padx=SPACING, pady=SPACING)
+        entry_vars['delete_btn'] = delete_btn
+
+        # Make card frame expandable
+        card_frame.columnconfigure(1, weight=1)
+        card_frame.columnconfigure(5, weight=1)
+
+        entry_vars['frame'] = card_frame
+        self.character_entries.append(entry_vars)
+
+        # Update card labels and class visibility
+        self._update_character_card_labels()
+        self._update_class_column_visibility()
+
+        # Update scroll region (with safety check)
+        self._update_canvas_scrollregion(self.character_engine_canvas)
+
+    def _remove_character_row(self, row_index):
+        """Removes a character card from the table."""
+        if 0 <= row_index < len(self.character_entries):
+            entry_data = self.character_entries[row_index]
+            entry_data['frame'].destroy()
+            self.character_entries.pop(row_index)
+
+            # Update delete button commands for remaining rows
+            for i, data in enumerate(self.character_entries):
+                data['delete_btn'].config(
+                    command=lambda idx=i: self._remove_character_row(idx)
+                )
+
+            self._update_character_card_labels()
+            # Update scroll region (with safety check)
+            self._update_canvas_scrollregion(self.character_engine_canvas)
+
+    def _update_character_card_labels(self):
+        """Updates the text on each character card frame to match its index."""
+        for i, data in enumerate(self.character_entries):
+            data['frame'].config(text=f"Character {i + 1}")
+
+    def _update_class_column_visibility(self):
+        """Shows or hides the 'Class' fields based on the Enable Class checkbox."""
+        is_enabled = self.enable_class_selection_var_editor.get()
+        for data in self.character_entries:
+            if is_enabled:
+                data['class_label'].grid()
+                data['class_entry'].grid()
+            else:
+                data['class_label'].grid_remove()
+                data['class_entry'].grid_remove()
+
+    def _toggle_character_engine_fields(self):
+        """Enables/disables character engine text fields based on checkbox state."""
+        is_enabled = self.enable_character_engine_var_editor.get()
+
+        # Enable/disable the Add Character button
+        if hasattr(self, 'add_char_btn'):
+            self.add_char_btn.config(state='normal' if is_enabled else 'disabled')
+
+        # Enable/disable all entry fields inside the character cards
+        for data in self.character_entries:
+            state = 'normal' if is_enabled else 'disabled'
+            for key, widget in data.items():
+                if isinstance(widget, (ttk.Entry, tk.Entry)):
+                    widget.config(state=state)
+                elif isinstance(widget, ttk.Button) and key == 'delete_btn':
+                    widget.config(state='normal' if is_enabled else 'disabled')
+
+        log_message(f"Character Engine fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
+
+    def _toggle_class_fields(self):
+        """Enables/disables class selection text field based on checkbox state."""
+        # Simply toggle visibility, as the main engine toggle handles enable/disable state
+        self._update_class_column_visibility()
+        log_message(f"Class Selection fields visibility updated", "DEBUG")
 # --- End of ConfigEditor Class ---
 
 
@@ -5427,7 +5767,8 @@ icon_path = "taskbar.png"
 if os.path.exists(icon_path):
     try:
         icon_img = tk.PhotoImage(file=icon_path)
-        root.iconphoto(True, icon_img)  # True applies it to all child windows/dialogs
+        # False = apply only to root window. True forces it on all children (causes X11 crashes)
+        root.iconphoto(False, icon_img)  # True applies it to all child windows/dialogs
     except Exception as e:
         log_message(f"Failed to load taskbar icon: {e}", "WARNING")
 else:
@@ -5627,7 +5968,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.5.0",
+    text="v8.7.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

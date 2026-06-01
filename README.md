@@ -1,6 +1,10 @@
-# ReadyArt Synthetic Dataset Generator v8.5.0
+# ReadyArt Synthetic Dataset Generator v8.7.5
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
+
+NOTE: The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.5.0-STABLE branch.
+
+v8.7.5 is entirely untested and likely has breaking bugs.
 
 ---
 
@@ -62,7 +66,8 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds
 
 ### Character & Persona Engine
-- **Character Profiles** — Randomly inject character names, jobs, clothing, appearance, and backstories into system prompts
+- **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues
+- **Character Profiles** — Randomly inject character names, races, jobs, clothing, appearance, backstories, and personalities into system prompts
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
@@ -83,11 +88,12 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Circuit Breaker** — Automatically disables API slots after consecutive failures with exponential backoff cooldown (60s, 120s, 240s, 480s, max 600s) and re-enables after cooldown
 - **Per-API Rate Limiting** — Configurable RPM per API slot with automatic wait and real-time status display with color-coded indicators
 - **Task Requeue on Host Failure** — Tasks assigned to a downed API host are automatically requeued (up to 50 times) rather than discarded, ensuring no work is lost during outages
-- **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed) to avoid redundant API calls
-- **PostgreSQL Storage** — Optional database backend with connection pooling and JSONL export
+- **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed per API slot) to avoid redundant API calls
+- **PostgreSQL Storage** — Optional database backend with connection pooling, automatic initialization at startup, and JSONL export
 - **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings
 - **Configuration Profiles** — Save, load, and delete named configuration profiles
 - **API Connection Testing** — Test API connectivity directly from the configuration editor
+- **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
 - **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
 - **Live Prompt Preview** — View prompts being sent to APIs in real-time as JSON
 - **Token & Cost Tracking** — Track input/output tokens and estimate API costs with budget enforcement
@@ -104,6 +110,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Dashboard Search** — Case-insensitive search across all issue panels within a dashboard tab with auto-scroll to first match
 - **Dashboard Copy All** — Copy all issue text from a dashboard tab to clipboard
 - **Clear Dashboard** — Reset all recent issue lists and graph data with a single button
+- **Config Editor Search** — Search bar in the configuration editor for quickly finding tabs and LabelFrame sections by name
 
 ---
 
@@ -256,6 +263,7 @@ generation:
   max_text_length_malformed: 5000 # Max text length before considering response malformed
   max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing
   max_anti_slop_fix_iterations: 3      # Iterations for sentence-level anti-slop fixing
+  max_character_cards: 10        # Maximum character profile cards in the editor
   output_format: "sharegpt"       # "sharegpt" or "openai"
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
 
@@ -289,18 +297,40 @@ prompts:
   character:
     enabled: true
     class_enabled: false          # Enable fantasy class selection
-    name: ["Alice", "Bob", "Carol"]
-    job: ["Software Engineer", "Teacher", "Doctor"]
-    clothing: ["casual jeans and t-shirt", "business suit"]
-    appearance: ["tall with brown hair", "short with glasses"]
-    backstory: ["Grew up in a small town", "Traveled the world"]
-    setting: ["A standard indoor environment", "A bustling marketplace"]
-    class: ["mage", "warlock", "rogue", "paladin"]  # Fantasy classes (used when class_enabled: true)
+    num_characters: 1             # Number of characters per conversation (1-10)
+    characters:                  # List-of-dicts format (recommended)
+      - name: "Alice"
+        race: "Human"
+        job: "Software Engineer"
+        clothing: "casual jeans and t-shirt"
+        appearance: "tall with brown hair"
+        backstory: "Grew up in a small town"
+        personality: "curious and analytical"
+        setting: "A standard indoor environment"
+        class: "mage"
+      - name: "Bob"
+        race: "Elf"
+        job: "Teacher"
+        clothing: "business suit"
+        appearance: "short with glasses"
+        backstory: "Traveled the world"
+        personality: "patient and wise"
+        setting: "A bustling marketplace"
+        class: "rogue"
 
   emotional_states:
     enabled: false
     states: ["happy", "sad", "angry", "neutral", "excited", "contemplative"]
 ```
+
+**Character Configuration Notes:**
+
+- **New format (recommended):** Use the `characters` list with dicts containing `name`, `race`, `job`, `clothing`, `appearance`, `backstory`, `personality`, `setting`, and `class` fields. This allows full control over each character's attributes.
+- **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
+- **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
+- **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10).
+- **`personality`:** Optional field that adds a personality description to the character's system prompt injection.
+- **`race`:** Optional field for the character's species/race.
 
 **Template Variables:**
 - `{recent_questions}` — Recent question history to avoid repetition
@@ -401,7 +431,7 @@ database:
   pool_size: 10
 ```
 
-When PostgreSQL is enabled, conversations are stored in the `generated_conversations` table and file writing is skipped entirely. Use the **Export DB → JSONL** button to export.
+When PostgreSQL is enabled, the application initializes a connection pool at startup and stores conversations in the `generated_conversations` table. File writing is skipped entirely when the database is enabled. Use the **Export DB → JSONL** button to export.
 
 **Valkey/Redis Caching:**
 ```yaml
@@ -413,7 +443,7 @@ valkey:
   password: null
 ```
 
-When caching is enabled, identical prompts are cached using an MD5 hash of the message content with a 1-hour TTL, avoiding redundant API calls. Cache keys include the API slot index to allow different models to produce different cached responses.
+When caching is enabled, identical prompts are cached using an MD5 hash of the message content with a 1-hour TTL, avoiding redundant API calls. Cache keys include the API slot index to allow different models to produce different cached responses. The **Test Valkey** button in the main UI allows you to verify connectivity and see server information.
 
 ### Budget & Cost Control
 
@@ -539,6 +569,15 @@ The Configuration Editor includes a **Test Connection** button for each API slot
 
 Results are displayed next to the button with color-coded status (green for success, red for failure with error details).
 
+### Valkey Connection Testing
+
+The main UI includes a **Test Valkey** button that verifies Valkey/Redis connectivity. It:
+
+- Tests the connection with a PING command
+- Displays server version and connected client information on success
+- Shows detailed error messages on failure
+- Automatically updates the connection status indicator in the UI
+
 ### Stop & Clear Job
 
 The **Stop & Clear Job** button stops the current generation, clears all progress, removes the state file, and resets all statistics. This allows you to start a completely fresh generation run. Output files are not deleted by this action (they are backed up on the next fresh start).
@@ -647,6 +686,10 @@ readyart-dataset-generator/
 6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, etc.)
 7. **Output** — Write to JSONL file or PostgreSQL database
 8. **State Save** — Update crash recovery state
+
+### Multi-Character Conversation Mode
+
+When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, appearance, backstory, personality, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
 
 ### Slop Fixing Flow
 
@@ -774,8 +817,8 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers with exponential backoff (60s–600s) |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
-| **Database connection failed** | Verify PostgreSQL is running and credentials are correct |
-| **Valkey connection failed** | Caching will be disabled automatically; check host/port |
+| **Database connection failed** | Verify PostgreSQL is running and credentials are correct; check that the database exists |
+| **Valkey connection failed** | Click **Test Valkey** to diagnose; caching will be disabled automatically if unavailable |
 | **Open file limit warning** | Reduce number of threads or increase system ulimit (`ulimit -n`) |
 | **Queue size warning** | Large queue sizes are normal for high thread counts; reduce threads if memory is constrained |
 | **Config validation errors** | Check that all numeric fields contain valid numbers |
@@ -788,8 +831,11 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
 | **Reasoning models outputting thinking blocks** | Enable `enable_thinking: false` in samplers config to add `chat_template_kwargs` to API payload |
-| **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` list is populated |
+| **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` field is populated in character entries |
+| **Characters not getting personalities** | Add the `personality` field to character entries in the config |
+| **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
 | **Anti-slop not triggering** | Verify `anti_slop.phrases` list is populated and API Slot 6 is configured |
+| **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
 
 ### Environment Variables
 
@@ -823,11 +869,14 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Use duplication mode** when you need diverse responses from different models for the same prompts
 - **Set a budget limit** to prevent unexpected API costs during long runs
 - **Test API connections** in the config editor before starting a generation run
+- **Test Valkey connectivity** from the main UI to ensure caching is working
 - **Use the Live Prompt Preview** to verify your prompt templates are working correctly before committing to a full run
 - **Pause and adjust** rate limits mid-run — configuration is reloaded when you resume
 - **Monitor circuit breaker** — if an API slot's circuit opens frequently, the endpoint may be experiencing issues
 - **Use Force Recovery** if you need to resume with intentionally changed settings, but be aware of potential incompatibilities
 - **Configure anti-slop** — Set up API Slot 6 and populate `anti_slop.phrases` for secondary quality filtering
+- **Use multi-character mode** — Set `num_characters` > 1 for richer, multi-party dialogues
+- **Use emotional states** — Enable `emotional_states` to add tonal variety to conversations
 
 ---
 
