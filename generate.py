@@ -1246,8 +1246,12 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     payload_dict['logit_bias'] = json.loads(logit_bias_str)
                 except json.JSONDecodeError:
                     log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
-            if sampler_settings_local.get('enable_thinking', False):
+            thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+            if thinking_mode == 'enable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
+            elif thinking_mode == 'disable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
+            # else 'default': do not send the parameter
 
             payload = json.dumps(payload_dict)
             headers = {
@@ -1507,8 +1511,12 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     payload_dict['logit_bias'] = json.loads(logit_bias_str)
                 except json.JSONDecodeError:
                     log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
-            if sampler_settings_local.get('enable_thinking', False):
+            thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+            if thinking_mode == 'enable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
+            elif thinking_mode == 'disable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
+            # else 'default': do not send the parameter
 
             payload = json.dumps(payload_dict)
             headers = {
@@ -2203,8 +2211,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     except json.JSONDecodeError:
                         log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
 
-                if sampler_settings_local.get('enable_thinking', False):
-                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
+            thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+            if thinking_mode == 'enable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
+            elif thinking_mode == 'disable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
+            # else 'default': do not send the parameter
 
                 payload = json.dumps(payload_dict_ans)
                 headers = {
@@ -4636,7 +4648,7 @@ class ConfigEditor(tk.Toplevel):
         self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=50, undo=True)
         self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         sampler_row += 1
-        self.enable_thinking_var_editor = tk.BooleanVar(value=False)
+        self.enable_thinking_mode_var = tk.StringVar(value="default")
         slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Slop Fixer LLM Sampler Overrides (API Slot 5 - Optional)")
         slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
         sf_sampler_row = 0 
@@ -4670,14 +4682,16 @@ class ConfigEditor(tk.Toplevel):
         add_anti_slop_fixer_param("Max Tokens (Anti-Slop):", 'anti_slop_fixer_max_tokens_var', "(Auto-calculated if blank, e.g. 200)")
         add_anti_slop_fixer_param("Top K (Anti-Slop):", 'anti_slop_fixer_top_k_var', "(E.g., 40, uses main if blank)")
         add_anti_slop_fixer_param("Repetition Penalty (Anti-Slop):", 'anti_slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
-        enable_thinking_check = ttk.Checkbutton(
+        ttk.Label(sampler_params_frame, text="Thinking Mode:").grid(row=sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        enable_thinking_combo = ttk.Combobox(
             sampler_params_frame,
-            text="Enable chat_template_kwargs {'enable_thinking': False}",
-            variable=self.enable_thinking_var_editor
+            textvariable=self.enable_thinking_mode_var,
+            values=["default", "enable", "disable"],
+            state="readonly",
+            width=20
         )
-
-        #DEBUG LATER enable_thinking_check = ttk.Checkbutton(sampler_params_frame, text="Enable chat_template_kwargs {'enable_thinking': False}", variable=self.enable_thinking_var_editor)
-        enable_thinking_check.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        enable_thinking_combo.grid(row=sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(sampler_params_frame, text="(Controls chat_template_kwargs enable_thinking)").grid(row=sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
         sampler_row += 1
 
 
@@ -5082,7 +5096,7 @@ class ConfigEditor(tk.Toplevel):
                 'max_tokens_question': int(self.max_tokens_question_var.get()),
                 'max_tokens_answer': int(self.max_tokens_answer_var.get()),
                 'max_tokens_user_reply': int(self.max_tokens_user_reply_var.get()),
-                'enable_thinking': self.enable_thinking_var_editor.get(),
+                'enable_thinking': self.enable_thinking_mode_var.get(),
                 'logit_bias': self.logit_bias_text.get("1.0", tk.END).strip(),
                 'slop_fixer_params': slop_fixer_params_to_save,
                 'anti_slop_params': anti_slop_fixer_params_to_save
@@ -5310,7 +5324,14 @@ class ConfigEditor(tk.Toplevel):
             self.num_random_chunks_var.set(str(gen_config.get('num_random_chunks', 12000)))
             self.sanitize_input_max_length_var.set(str(gen_config.get('sanitize_input_max_length', 100000000)))
             samplers_config_load = config.get('samplers', {})
-            self.enable_thinking_var_editor.set(samplers_config_load.get('enable_thinking', False))
+            # Handle legacy boolean vs new string format
+            legacy_val = samplers_config_load.get('enable_thinking', False)
+            if isinstance(legacy_val, bool):
+                # Legacy True meant "Send Disable Command", Legacy False meant "Don't Send"
+                new_val = "disable" if legacy_val else "default"
+            else:
+                new_val = legacy_val if legacy_val in ["default", "enable", "disable"] else "default"
+            self.enable_thinking_mode_var.set(new_val)
             self.max_attempts_var.set(str(gen_config.get('max_attempts', samplers_config_load.get('max_attempts',5))))
             self.num_turns_var.set(str(gen_config.get('num_turns', 1)))
             self.history_size_var.set(str(gen_config.get('history_size', samplers_config_load.get('history_size',10))))
@@ -6056,7 +6077,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.8.6",
+    text="v8.8.7",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
