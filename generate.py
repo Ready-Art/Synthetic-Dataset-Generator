@@ -1248,9 +1248,9 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
             thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
             if thinking_mode == 'enable':
-                payload_dict['chat_template_kwargs'] = {"enable_thinking": true}
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
             elif thinking_mode == 'disable':
-                payload_dict['chat_template_kwargs'] = {"enable_thinking": false}
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
 
             payload = json.dumps(payload_dict)
@@ -1513,9 +1513,9 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
             thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
             if thinking_mode == 'enable':
-                payload_dict['chat_template_kwargs'] = {"enable_thinking": true}
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
             elif thinking_mode == 'disable':
-                payload_dict['chat_template_kwargs'] = {"enable_thinking": false}
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
 
             payload = json.dumps(payload_dict)
@@ -2213,9 +2213,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
                 if thinking_mode == 'enable':
-                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": true}
+                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": True}
                 elif thinking_mode == 'disable':
-                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": false}
+                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
                 # else 'default': do not send the parameter
 
                 payload = json.dumps(payload_dict_ans)
