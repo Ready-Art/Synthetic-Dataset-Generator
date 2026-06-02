@@ -695,7 +695,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             q.task_done()
             log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down (circuit open); "
                         f"requeued task {task_id} and backing off.", "DEBUG")
-            time.sleep(min(5.0, max(1.0, API_CIRCUIT_BREAKER['cooldown_seconds'] / 4.0)))
+            time.sleep(min(5.0, max(1.0, API_CIRCUIT_BREAKER['base_cooldown_seconds'] / 4.0)))
             continue
 
         try:
@@ -6056,7 +6056,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.8.5",
+    text="v8.8.6",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
