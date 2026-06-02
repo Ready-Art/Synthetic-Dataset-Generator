@@ -2592,7 +2592,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 # Try to fix using anti-slop LLM - fix individual SENTENCES (like regular slop)
                 if slop_fixer_api_config_param and slop_fixer_api_config_param.get('url'):
                     current_answer_being_fixed = answer
-                    MAX_ANTI_SLOP_FIX_ITERATIONS = global_config.get('generation.max_anti_slop_fix_iterations', 3)
+                    MAX_ANTI_SLOP_FIX_ITERATIONS = global_config.get('generation.max_anti_slop_fix_iterations', 10)
                     # anti_slop_fully_resolved = False  # REMOVED - already initialized above
                     anti_slop_fix_instruction_rotation_idx = 0
 
