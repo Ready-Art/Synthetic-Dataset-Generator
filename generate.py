@@ -3822,6 +3822,7 @@ def start_processing():
             character_list,
             enable_emotional_states,
             emotional_states_list,
+            num_characters_local,
             no_user_impersonation_var.get(),
             current_api_request_timeout
         ), name=f"Worker-{i}")
@@ -4123,7 +4124,8 @@ class ConfigEditor(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Configuration Editor")
-        self.geometry("1400x1000") # Adjusted for potentially more content
+        self.geometry("1600x1000") # Adjusted for potentially more content
+        self.minsize(1600, 1000)
         self.user_speaking_phrases_data = {"male": [], "female": [], "neutral": []} 
         self.user_speaking_fixes_data = {"male": [], "female": [], "neutral": []}
         self.active_display_gender = "female" 
@@ -5812,22 +5814,30 @@ class ConfigEditor(tk.Toplevel):
         is_enabled = self.enable_class_selection_var_editor.get()
         for data in self.character_entries:
             if is_enabled:
+                # Show class frame and widgets
                 if 'class_frame' in data:
                     data['class_frame'].grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
                 if 'class_label' in data:
                     data['class_label'].grid(row=0, column=0, padx=(0, 5), sticky="w")
                 if 'class_entry' in data:
                     data['class_entry'].grid(row=0, column=1, padx=5, sticky="w")
+                # Reset delete button to original column when class is enabled
+                if 'delete_btn' in data:
+                    data['delete_btn'].grid(row=0, column=2, padx=(10, 0), sticky="e")
             else:
+                # Keep class_frame visible so delete_btn remains accessible
                 if 'class_frame' in data:
-                    data['class_frame'].grid_remove()
+                    data['class_frame'].grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
+                # Hide only the class-specific widgets
                 if 'class_label' in data:
                     data['class_label'].grid_remove()
                 if 'class_entry' in data:
                     data['class_entry'].grid_remove()
+                # Move delete button to column 0 for better alignment when class is hidden
+                if 'delete_btn' in data:
+                    data['delete_btn'].grid(row=0, column=0, padx=(10, 0), sticky="w")
 
         log_message(f"Class Selection fields visibility updated", "DEBUG")
-
 # --- End of ConfigEditor Class ---
 
 
@@ -6046,7 +6056,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.8.1",
+    text="v8.8.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
