@@ -2211,12 +2211,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     except json.JSONDecodeError:
                         log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
 
-            thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
-            if thinking_mode == 'enable':
-                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
-            elif thinking_mode == 'disable':
-                payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
-            # else 'default': do not send the parameter
+                thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+                if thinking_mode == 'enable':
+                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": True}
+                elif thinking_mode == 'disable':
+                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
+                # else 'default': do not send the parameter
 
                 payload = json.dumps(payload_dict_ans)
                 headers = {
@@ -6077,7 +6077,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.8.7",
+    text="v8.8.6",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
