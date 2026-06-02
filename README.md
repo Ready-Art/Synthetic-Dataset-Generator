@@ -2,7 +2,7 @@
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
-NOTE: The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.8.5-STABLE branch.
+NOTE: The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.8.6-STABLE branch.
 
 ---
 
