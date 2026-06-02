@@ -2,9 +2,7 @@
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
-NOTE: The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.5.0-STABLE branch.
-
-v8.7.5 is entirely untested and likely has breaking bugs.
+NOTE: The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.8.5-STABLE branch.
 
 ---
 
@@ -34,7 +32,7 @@ v8.7.5 is entirely untested and likely has breaking bugs.
   - [Stop & Clear Job](#stop--clear-job)
   - [Force Recovery](#force-recovery)
   - [Database Management](#database-management)
-- [Output Formats](#output-formats)
+- [Output Formats](#-output-formats)
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
 - [Troubleshooting](#-troubleshooting)
@@ -67,7 +65,7 @@ v8.7.5 is entirely untested and likely has breaking bugs.
 
 ### Character & Persona Engine
 - **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues
-- **Character Profiles** — Randomly inject character names, races, jobs, clothing, appearance, backstories, and personalities into system prompts
+- **Character Profiles** — Randomly inject character names, races, jobs, clothing, appearance, backstories, personalities, traits, and settings into system prompts
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
@@ -100,6 +98,7 @@ v8.7.5 is entirely untested and likely has breaking bugs.
 - **Debug Logging Toggle** — Enable/disable verbose debug logging from the UI with a single checkbox
 - **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
 - **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting
+- **Animated Progress Bars** — Color-coded progress bars that change style based on completion percentage (blue → cyan → green → amber → bright green) with pulse animations at milestones
 - **Stop & Clear Job** — Stop the current generation job, clear all progress, and reset for a fresh start
 - **Force Recovery** — Bypass configuration compatibility checks and force-load a previous generation state
 - **Clear Database** — Clear the PostgreSQL `generated_conversations` table from the UI with confirmation dialog
@@ -306,6 +305,7 @@ prompts:
         appearance: "tall with brown hair"
         backstory: "Grew up in a small town"
         personality: "curious and analytical"
+        traits: "quick-witted, detail-oriented"
         setting: "A standard indoor environment"
         class: "mage"
       - name: "Bob"
@@ -315,6 +315,7 @@ prompts:
         appearance: "short with glasses"
         backstory: "Traveled the world"
         personality: "patient and wise"
+        traits: "diplomatic, well-read"
         setting: "A bustling marketplace"
         class: "rogue"
 
@@ -325,11 +326,12 @@ prompts:
 
 **Character Configuration Notes:**
 
-- **New format (recommended):** Use the `characters` list with dicts containing `name`, `race`, `job`, `clothing`, `appearance`, `backstory`, `personality`, `setting`, and `class` fields. This allows full control over each character's attributes.
+- **New format (recommended):** Use the `characters` list with dicts containing `name`, `race`, `job`, `clothing`, `appearance`, `backstory`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
 - **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
 - **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
-- **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10).
+- **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10, max: 100).
 - **`personality`:** Optional field that adds a personality description to the character's system prompt injection.
+- **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
 - **`race`:** Optional field for the character's species/race.
 
 **Template Variables:**
@@ -538,6 +540,20 @@ The real-time dashboard provides:
 - **Clear Dashboard** button — Resets all recent issue lists and graph data
 - **Live Prompt Preview** tab — Shows exact JSON payloads being sent to APIs in real-time
 
+### Animated Progress Bars
+
+Progress bars use color-coded styles that change based on completion percentage:
+
+| Stage | Percentage | Color | Description |
+|-------|-----------|-------|-------------|
+| Low | 0-25% | Blue | Just starting |
+| Medium | 25-50% | Cyan/Teal | Progressing steadily |
+| Progressing | 50-75% | Green | Over halfway |
+| High | 75-90% | Amber/Yellow | Almost done |
+| Complete | 90-100% | Bright Green | Finished |
+
+When a milestone (25%, 50%, 75%, 90%, 100%) is crossed, the progress bar briefly pulses to a brighter color before reverting. Error states are shown in red.
+
 ### Live Prompt Preview
 
 A dedicated **Live Prompt Preview** tab in the dashboard shows the exact JSON payload (messages array) being sent to the API in real-time. This is useful for:
@@ -689,7 +705,7 @@ readyart-dataset-generator/
 
 ### Multi-Character Conversation Mode
 
-When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, appearance, backstory, personality, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
+When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, appearance, backstory, personality, traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
 
 ### Slop Fixing Flow
 
@@ -833,9 +849,12 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Reasoning models outputting thinking blocks** | Enable `enable_thinking: false` in samplers config to add `chat_template_kwargs` to API payload |
 | **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` field is populated in character entries |
 | **Characters not getting personalities** | Add the `personality` field to character entries in the config |
+| **Characters not getting traits** | Add the `traits` field to character entries in the config (e.g., `"quick-witted, detail-oriented"`) |
 | **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
 | **Anti-slop not triggering** | Verify `anti_slop.phrases` list is populated and API Slot 6 is configured |
 | **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
+| **Progress bars not animating** | Ensure ttkbootstrap is installed; progress bars use color-coded styles that change with completion percentage |
+| **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
 
 ### Environment Variables
 
@@ -877,6 +896,7 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Configure anti-slop** — Set up API Slot 6 and populate `anti_slop.phrases` for secondary quality filtering
 - **Use multi-character mode** — Set `num_characters` > 1 for richer, multi-party dialogues
 - **Use emotional states** — Enable `emotional_states` to add tonal variety to conversations
+- **Add character traits** — Use the `traits` field in character entries to add more depth to character personas
 
 ---
 
