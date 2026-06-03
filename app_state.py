@@ -92,6 +92,22 @@ task_retry_lock = threading.Lock()
 master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
 live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
 
+# --- dashboard widget handles (step 4) ---
+
+slot_widgets = {}        # per-API response-time labels, keyed by name (was generate.py globals())
+budget_label = None
+cost_label = None
+dashboard_notebook = None
+error_percent_label = None
+refusal_percent_label = None
+slop_label = None
+status_bar = None
+thread_status_label = None
+token_label = None
+user_speaking_label = None
+# ^ dashboard widget handles — assigned in generate.py when the main window is built
+
+
 # --- GUI-runtime handles: constructed in generate.py once the main window exists; None until then ---
 root = None              # ttkbs.Window(...) — assigned in generate.py
 db_status_widgets = None # dict of DB/Valkey status widgets — assigned in generate.py after the widgets exist
