@@ -90,6 +90,7 @@ MAX_TASK_REQUEUES = 50
 task_retry_counts = {}
 task_retry_lock = threading.Lock()
 master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
+live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
 
 # --- GUI-runtime handles: constructed in generate.py once the main window exists; None until then ---
 root = None              # ttkbs.Window(...) — assigned in generate.py
