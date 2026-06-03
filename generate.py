@@ -27,6 +27,7 @@ import psutil
 import matplotlib
 import matplotlib.ticker as ticker
 import api_handler
+import app_state
 from config_editor import ConfigEditor
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -38,7 +39,6 @@ from logging_config import log_message, LOG_FILE_PATH
 
 init()
 
-db_pool = None
 
 # --- Global Constants and Setup ---
 from logging_config import log_message, LOG_FILE_PATH  # Import shared logger AND log file path
@@ -55,16 +55,6 @@ QUESTIONS_FILE_PATH = os.path.join(INPUT_DIR, 'questions.txt') # Optional file f
 os.makedirs(INPUT_DIR, exist_ok=True) # Ensure input directory exists
 
 # --- Global Variables for Application State ---
-stop_processing = False # Flag to signal threads to stop processing
-pause_processing = False # Flag to signal threads to pause
-processing_active = False # Flag indicating if a generation job is currently running
-num_threads = 10 # Default number of worker threads, configurable via UI
-questions_list = [] # List of questions if using questions.txt
-system_prompts_list = [] # List of system prompts (base or variations)
-system_prompt_counter = 0 # Counter for cycling through variable system prompts
-system_prompt_lock = Lock() # Lock for thread-safe access to system_prompt_counter
-stats_lock = Lock()  # For counters (attempts, errors, tokens, refusals, slop, etc.)
-question_history_lock = Lock()  # For question_history list
 system_prompt_counter_lock = Lock()  # For system_prompt_counter
 
 # --- UI Spacing System ---
@@ -72,80 +62,41 @@ SPACING = 8  # Unified padding constant for all frames, widgets, and separators
 
 # --- Statistics Counters ---
 # These track various events during generation for monitoring and analysis.
-refusal_count_total = 0
-user_speaking_count_total = 0
-slop_count_total = 0
-error_count_total = 0
-total_attempts_global = 0 # Total LLM calls made across all APIs for generation tasks
 
 # NEW: Token tracking variables
-total_input_tokens = 0
-total_output_tokens = 0
 estimated_cost = 0.0
 
 # Per-API statistics (API slots 0-4, where 0-3 are main generation, 4 is slop fixer)
-refusal_counts_per_api = {i: 0 for i in range(6)}
-user_speaking_counts_per_api = {i: 0 for i in range(6)}
-slop_counts_per_api = {i: 0 for i in range(6)}
-error_counts_per_api = {i: 0 for i in range(6)}
-total_attempts_per_api = {i: 0 for i in range(6)} # Total LLM calls per specific API slot
 
 # Lists to store recent occurrences of issues for display in the dashboard
 MAX_RECENT = 10 # Max number of recent issues to store and display
-recent_refusals_total = []
-recent_user_speaking_total = []
-recent_slop_total = []
-recent_errors_total = []
 
 # Per-API recent issues (for APIs 0-3, the main generation slots)
-recent_refusals_per_api = {i: [] for i in range(6)}
-recent_user_speaking_per_api = {i: [] for i in range(6)}
-recent_slop_per_api = {i: [] for i in range(6)}
-recent_errors_per_api = {i: [] for i in range(6)}
 
 # Anti-Slop Statistics
-anti_slop_count_total = 0
 anti_slop_counts_per_api = {i: 0 for i in range(6)}
-recent_anti_slop_total = []
-recent_anti_slop_per_api = {i: [] for i in range(6)}
 
 # NEW: Add these timestamp tracking variables
-issue_timestamps = {
-    'refusals': [],
-    'user_speaking': [],
-    'slop': [],
-    'errors': [],
-    'anti_slop': [],
-    'incomplete_quotes': []
-}
-issue_timestamps_lock = Lock()
 # Share these with detection.py module
-detection.issue_timestamps = issue_timestamps
-detection.issue_timestamps_lock = issue_timestamps_lock
-question_history = [] # Stores recently generated initial questions to avoid repetition
-threads = [] # List to hold active worker thread objects
-task_queue = None # Queue for distributing tasks to worker threads
-completed_task_ids = set() # Set of IDs for tasks that have been successfully processed
-loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded from state file
-state_file_lock = Lock() # Lock for thread-safe access to the generation_state.json file
+detection.issue_timestamps = app_state.issue_timestamps
+detection.issue_timestamps_lock = app_state.issue_timestamps_lock
 prompt_preview_text = None
 
 def check_budget_limit():
-    global stop_processing, total_input_tokens, total_output_tokens
-    if stop_processing:
+    if app_state.stop_processing:
         return False
 
     budget_limit = global_config.get('api.pricing.budget_limit', 0.0)
     if budget_limit <= 0:
         return False  # Budget disabled
 
-    with stats_lock:  # 🔒 Safer concurrent read
+    with app_state.stats_lock:  # 🔒 Safer concurrent read
         price_per_1k = global_config.get('api.pricing.cost_per_1k_tokens', 0)
-        current_cost = (total_input_tokens + total_output_tokens) * (price_per_1k / 1000.0)
+        current_cost = (app_state.total_input_tokens + app_state.total_output_tokens) * (price_per_1k / 1000.0)
 
     if current_cost >= budget_limit:
         log_message(f"API budget limit of ${budget_limit:.2f} reached. Current cost: ${current_cost:.2f}. Stopping generation.", "WARNING")
-        stop_processing = True
+        app_state.stop_processing = True
         return True
     return False
 
@@ -242,31 +193,28 @@ def requeue_task(q, task, task_id):
 # --- Crash Recovery Functions ---
 def save_generation_state():
     """Saves the current generation state to a JSON file for potential recovery."""
-    global system_prompt_counter, question_history, completed_task_ids, state_file_lock
-    global total_attempts_global, refusal_count_total, user_speaking_count_total, slop_count_total, error_count_total
-    global refusal_counts_per_api, user_speaking_counts_per_api, slop_counts_per_api, error_counts_per_api, total_attempts_per_api
     global api_response_times_per_slot
 
-    with state_file_lock: # Ensure thread-safe file writing
+    with app_state.state_file_lock: # Ensure thread-safe file writing
         try:
             state_data = {
-                'completed_task_ids': list(completed_task_ids), # Convert set to list for JSON
-                'system_prompt_counter': system_prompt_counter,
-                'question_history': question_history,
-                'total_attempts_global': total_attempts_global,
-                'refusal_count_total': refusal_count_total,
-                'user_speaking_count_total': user_speaking_count_total,
-                'slop_count_total': slop_count_total,
-                'error_count_total': error_count_total,
-                'refusal_counts_per_api': refusal_counts_per_api,
-                'total_input_tokens': total_input_tokens,
-                'total_output_tokens': total_output_tokens,
+                'completed_task_ids': list(app_state.completed_task_ids), # Convert set to list for JSON
+                'system_prompt_counter': app_state.system_prompt_counter,
+                'question_history': app_state.question_history,
+                'total_attempts_global': app_state.total_attempts_global,
+                'refusal_count_total': app_state.refusal_count_total,
+                'user_speaking_count_total': app_state.user_speaking_count_total,
+                'slop_count_total': app_state.slop_count_total,
+                'error_count_total': app_state.error_count_total,
+                'refusal_counts_per_api': app_state.refusal_counts_per_api,
+                'total_input_tokens': app_state.total_input_tokens,
+                'total_output_tokens': app_state.total_output_tokens,
                 'estimated_cost': estimated_cost,
-                'user_speaking_counts_per_api': user_speaking_counts_per_api,
-                'slop_counts_per_api': slop_counts_per_api,
-                'error_counts_per_api': error_counts_per_api,
-                'total_attempts_per_api': total_attempts_per_api,
-                'anti_slop_count_total': anti_slop_count_total,
+                'user_speaking_counts_per_api': app_state.user_speaking_counts_per_api,
+                'slop_counts_per_api': app_state.slop_counts_per_api,
+                'error_counts_per_api': app_state.error_counts_per_api,
+                'total_attempts_per_api': app_state.total_attempts_per_api,
+                'anti_slop_count_total': app_state.anti_slop_count_total,
                 'anti_slop_counts_per_api': anti_slop_counts_per_api,
                 # Snapshot of critical config settings at the time of saving state
                 'config_snapshot': {
@@ -279,11 +227,11 @@ def save_generation_state():
             }
             # If in master duplication mode and task queue has per-API progress, save it
             # Also save overall progress if not in duplication mode
-            if task_queue:
-                if global_config.get('api.master_duplication_mode', False) and hasattr(task_queue, 'api_processed_tasks'):
-                    state_data['api_processed_tasks_snapshot'] = dict(task_queue.api_processed_tasks)
-                elif not global_config.get('api.master_duplication_mode', False) and hasattr(task_queue, 'processed_tasks'):
-                    state_data['processed_tasks_snapshot'] = task_queue.processed_tasks
+            if app_state.task_queue:
+                if global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'api_processed_tasks'):
+                    state_data['api_processed_tasks_snapshot'] = dict(app_state.task_queue.api_processed_tasks)
+                elif not global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'processed_tasks'):
+                    state_data['processed_tasks_snapshot'] = app_state.task_queue.processed_tasks
 
 
             with open(STATE_FILE_PATH, 'w', encoding='utf-8') as f:
@@ -298,10 +246,7 @@ def load_generation_state():
     Prompts the user if critical configuration settings have changed since the state was saved.
     Returns True if state was successfully loaded (and user agreed to resume if incompatible), False otherwise.
     """
-    global completed_task_ids, system_prompt_counter, question_history, state_file_lock
-    global total_attempts_global, refusal_count_total, user_speaking_count_total, slop_count_total, error_count_total
-    global refusal_counts_per_api, user_speaking_counts_per_api, slop_counts_per_api, error_counts_per_api, total_attempts_per_api
-    global loaded_api_processed_tasks_snapshot, loaded_processed_tasks_snapshot # Added for non-duplication
+    global loaded_processed_tasks_snapshot
     global api_response_times_per_slot
 
     loaded_processed_tasks_snapshot = None # Initialize for non-duplication mode
@@ -311,7 +256,7 @@ def load_generation_state():
         loaded_stat_str_keys = state_data.get(stat_name, {str(i): default_val_constructor() for i in range(5)})
         return {int(k): v for k, v in loaded_stat_str_keys.items()}
 
-    with state_file_lock: # Ensure thread-safe file reading
+    with app_state.state_file_lock: # Ensure thread-safe file reading
         try:
             if os.path.exists(STATE_FILE_PATH):
                 with open(STATE_FILE_PATH, 'r', encoding='utf-8') as f:
@@ -354,34 +299,34 @@ def load_generation_state():
                         return False # Do not load state
 
                 # Load state data into global variables
-                completed_task_ids = set(state_data.get('completed_task_ids', []))
-                system_prompt_counter = state_data.get('system_prompt_counter', 0)
-                question_history = state_data.get('question_history', [])
+                app_state.completed_task_ids = set(state_data.get('completed_task_ids', []))
+                app_state.system_prompt_counter = state_data.get('system_prompt_counter', 0)
+                app_state.question_history = state_data.get('question_history', [])
                 
-                total_attempts_global = state_data.get('total_attempts_global', 0)
-                refusal_count_total = state_data.get('refusal_count_total', 0)
-                user_speaking_count_total = state_data.get('user_speaking_count_total', 0)
-                slop_count_total = state_data.get('slop_count_total', 0)
-                error_count_total = state_data.get('error_count_total', 0)
+                app_state.total_attempts_global = state_data.get('total_attempts_global', 0)
+                app_state.refusal_count_total = state_data.get('refusal_count_total', 0)
+                app_state.user_speaking_count_total = state_data.get('user_speaking_count_total', 0)
+                app_state.slop_count_total = state_data.get('slop_count_total', 0)
+                app_state.error_count_total = state_data.get('error_count_total', 0)
                 anti_slop_count_total = state_data.get('anti_slop_count_total', 0)
                 anti_slop_counts_per_api = load_per_api_stat('anti_slop_counts_per_api', lambda: 0)
 
-                refusal_counts_per_api = load_per_api_stat('refusal_counts_per_api', lambda: 0)
-                user_speaking_counts_per_api = load_per_api_stat('user_speaking_counts_per_api', lambda: 0)
-                slop_counts_per_api = load_per_api_stat('slop_counts_per_api', lambda: 0)
-                error_counts_per_api = load_per_api_stat('error_counts_per_api', lambda: 0)
-                total_attempts_per_api = load_per_api_stat('total_attempts_per_api', lambda: 0)
+                app_state.refusal_counts_per_api = load_per_api_stat('refusal_counts_per_api', lambda: 0)
+                app_state.user_speaking_counts_per_api = load_per_api_stat('user_speaking_counts_per_api', lambda: 0)
+                app_state.slop_counts_per_api = load_per_api_stat('slop_counts_per_api', lambda: 0)
+                app_state.error_counts_per_api = load_per_api_stat('error_counts_per_api', lambda: 0)
+                app_state.total_attempts_per_api = load_per_api_stat('total_attempts_per_api', lambda: 0)
 
                 if current_master_duplication_mode and 'api_processed_tasks_snapshot' in state_data:
                     # Convert string keys from JSON snapshot back to int for API indices
-                    loaded_api_processed_tasks_snapshot = {int(k): v for k, v in state_data['api_processed_tasks_snapshot'].items()}
+                    app_state.loaded_api_processed_tasks_snapshot = {int(k): v for k, v in state_data['api_processed_tasks_snapshot'].items()}
                 elif not current_master_duplication_mode and 'processed_tasks_snapshot' in state_data:
                     loaded_processed_tasks_snapshot = state_data['processed_tasks_snapshot']
                 else:
-                    loaded_api_processed_tasks_snapshot = None
+                    app_state.loaded_api_processed_tasks_snapshot = None
                     loaded_processed_tasks_snapshot = None
                 
-                log_message(f"Generation state loaded. {len(completed_task_ids)} unique tasks previously completed.", "INFO")
+                log_message(f"Generation state loaded. {len(app_state.completed_task_ids)} unique tasks previously completed.", "INFO")
                 return True # State loaded successfully
             return False # State file does not exist
         except Exception as e:
@@ -395,51 +340,46 @@ def load_generation_state():
 def reset_all_stats_and_history():
 
     """Resets all global statistics, history, and progress trackers to their initial states."""
-    global completed_task_ids, system_prompt_counter, question_history
-    global total_attempts_global, refusal_count_total, user_speaking_count_total, slop_count_total, error_count_total
-    global refusal_counts_per_api, user_speaking_counts_per_api, slop_counts_per_api, error_counts_per_api, total_attempts_per_api
-    global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total
-    global recent_refusals_per_api, recent_user_speaking_per_api, recent_slop_per_api, recent_errors_per_api
-    global loaded_api_processed_tasks_snapshot, loaded_processed_tasks_snapshot # Added
+    global loaded_processed_tasks_snapshot
     global api_response_times_per_slot
 
-    completed_task_ids = set()
-    system_prompt_counter = 0
-    question_history = []
+    app_state.completed_task_ids = set()
+    app_state.system_prompt_counter = 0
+    app_state.question_history = []
 
     with api_response_times_lock:
         for i in range(6):
             api_response_times_per_slot[i] = []
 
-    total_attempts_global = 0
-    refusal_count_total = 0
-    user_speaking_count_total = 0
-    slop_count_total = 0
-    error_count_total = 0
+    app_state.total_attempts_global = 0
+    app_state.refusal_count_total = 0
+    app_state.user_speaking_count_total = 0
+    app_state.slop_count_total = 0
+    app_state.error_count_total = 0
     anti_slop_count_total = 0
 
     for i in range(6): # For all 6 API slots
-        refusal_counts_per_api[i] = 0
-        user_speaking_counts_per_api[i] = 0
-        slop_counts_per_api[i] = 0
-        error_counts_per_api[i] = 0
+        app_state.refusal_counts_per_api[i] = 0
+        app_state.user_speaking_counts_per_api[i] = 0
+        app_state.slop_counts_per_api[i] = 0
+        app_state.error_counts_per_api[i] = 0
         anti_slop_counts_per_api[i] = 0
-        total_attempts_per_api[i] = 0
+        app_state.total_attempts_per_api[i] = 0
     
     for i in range(4): # For API slots 0-3 (main generation)
-        recent_refusals_per_api[i] = []
-        recent_user_speaking_per_api[i] = []
-        recent_slop_per_api[i] = []
-        recent_errors_per_api[i] = []
-        recent_anti_slop_per_api[i] = []
+        app_state.recent_refusals_per_api[i] = []
+        app_state.recent_user_speaking_per_api[i] = []
+        app_state.recent_slop_per_api[i] = []
+        app_state.recent_errors_per_api[i] = []
+        app_state.recent_anti_slop_per_api[i] = []
 
-    recent_refusals_total = []
-    recent_user_speaking_total = []
-    recent_slop_total = []
+    app_state.recent_refusals_total = []
+    app_state.recent_user_speaking_total = []
+    app_state.recent_slop_total = []
     recent_anti_slop_total = []
-    recent_errors_total = []
+    app_state.recent_errors_total = []
     
-    loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
+    app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
     log_message("All global statistics, history, and progress trackers have been reset.", "INFO")
 
@@ -451,8 +391,7 @@ def cleanup_old_files_and_backup_output():
     into a single timestamped zip archive, then deletes the original .jsonl files.
     This is typically called when starting a completely fresh generation run.
     """
-    global completed_task_ids
-    completed_task_ids = set() # Ensure this is reset as part of cleanup
+    app_state.completed_task_ids = set() # Ensure this is reset as part of cleanup
 
     # Files to remove directly without backup (log and state are transient)
     files_to_remove_directly = [STATE_FILE_PATH, LOG_FILE_PATH] 
@@ -505,10 +444,9 @@ def cleanup_old_files_and_backup_output():
 
 def update_question_history(question, current_history_size):
     """Adds a question to the history and ensures it doesn't exceed the configured size."""
-    global question_history
-    question_history.append(question)
-    if len(question_history) > current_history_size:
-        question_history.pop(0) # Remove the oldest question
+    app_state.question_history.append(question)
+    if len(app_state.question_history) > current_history_size:
+        app_state.question_history.pop(0) # Remove the oldest question
 
 def estimate_time_remaining(processed_items, total_items, times_list):
     """Estimates the time remaining using a robust trimmed mean for stability."""
@@ -544,30 +482,29 @@ def estimate_time_remaining(processed_items, total_items, times_list):
 
 def clear_database():
     """Clears all data from the PostgreSQL generated_conversations table."""
-    global db_pool
 
     # Confirmation dialog: returns True for "Yes", False for "No"
     if not messagebox.askyesno("Confirm Clear Database", "Are you sure you want to clear the database? This action cannot be undone."):
         return  # User selected "No", so exit without doing anything
 
-    if not db_pool:
+    if not app_state.db_pool:
         messagebox.showwarning("Database Error", "Database pool is not initialized.")
         log_message("Database pool not initialized.", "ERROR")
         return
 
     try:
-        conn = db_pool.getconn()
+        conn = app_state.db_pool.getconn()
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE generated_conversations RESTART IDENTITY;")
             conn.commit()
-        db_pool.putconn(conn)
+        app_state.db_pool.putconn(conn)
         messagebox.showinfo("Success", "Database cleared successfully!")
         log_message("Database cleared successfully.", "INFO")
     except Exception as e:
         log_message(f"Failed to clear database: {e}", "ERROR")
         messagebox.showerror("Database Error", f"Failed to clear database: {e}")
         if conn:
-            db_pool.putconn(conn)
+            app_state.db_pool.putconn(conn)
 
 # --- Core Worker Logic ---
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
@@ -609,7 +546,6 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
     (handling duplication or collaborative API use based on settings),
     and manages retries, issue detection (refusals, user speaking, slop), and output writing.
     """
-    global stop_processing, pause_processing, completed_task_ids, root 
 
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
 
@@ -621,43 +557,43 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         worker_api_slot = active_enabled_api_configs_for_worker[
             thread_id % len(active_enabled_api_configs_for_worker)]['original_slot_idx']
 
-    while not stop_processing:
+    while not app_state.stop_processing:
         if check_budget_limit():
             log_message(f"Thread {thread_id}: Budget limit reached. Exiting worker.", "INFO")
             break
         # Enhanced pause check: threads sleep briefly while paused, allowing GUI to remain responsive
-        while pause_processing and not stop_processing:
+        while app_state.pause_processing and not app_state.stop_processing:
             time.sleep(0.1) 
-            if hasattr(root, 'update') and root.winfo_exists(): # Keep Tkinter main loop alive if paused
-                try: root.update()
+            if hasattr(app_state.root, 'update') and app_state.root.winfo_exists(): # Keep Tkinter main loop alive if paused
+                try: app_state.root.update()
                 except tk.TclError: log_message(f"Thread {thread_id}: Root window closed during pause.", "DEBUG"); pass
-            if stop_processing: break
+            if app_state.stop_processing: break
 
-        if stop_processing: break # Exit if stop signal received during pause
+        if app_state.stop_processing: break # Exit if stop signal received during pause
 
         try:
             task = q.get(timeout=0.05) # Fetch a task from the queue with a short timeout
         except Empty:
             # If queue is empty and all tasks have been added, and processing_active is false (e.g. due to stop signal)
-            if q.empty() and getattr(q, 'all_tasks_queued', False) and not processing_active:
+            if q.empty() and getattr(q, 'all_tasks_queued', False) and not app_state.processing_active:
                 log_message(f"Thread {thread_id}: Queue empty, all tasks queued, processing not active. Exiting.", "DEBUG")
                 break 
             continue # Continue to next iteration if queue is temporarily empty
 
-        log_message(f"Thread {thread_id}: pause_processing={pause_processing}, stop_processing={stop_processing}", "DEBUG")
+        log_message(f"Thread {thread_id}: pause_processing={app_state.pause_processing}, stop_processing={app_state.stop_processing}", "DEBUG")
 
         if task is None: # Sentinel value received, indicating thread should terminate
             q.task_done()
             log_message(f"Thread {thread_id}: Sentinel received. Exiting.", "DEBUG")
             break 
-        if stop_processing: 
+        if app_state.stop_processing: 
             q.task_done(); break # Exit if stop signal received after fetching a task
 
         task_id, file_name, *_ = task # Unpack task data
         start_time_task_overall = time.time() # For timing the whole task processing
 
         with output_data_lock:
-            if task_id in completed_task_ids: # Skip if task was already completed (e.g., from a resumed session)
+            if task_id in app_state.completed_task_ids: # Skip if task was already completed (e.g., from a resumed session)
                 log_message(f"Thread {thread_id}: Skipping already completed task {task_id}.", "INFO")
                 q.task_done()
                 # If resuming, need to update progress bars for skipped tasks
@@ -694,7 +630,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             continue
 
         try:
-            if stop_processing: q.task_done(); continue # Check again before intensive processing
+            if app_state.stop_processing: q.task_done(); continue # Check again before intensive processing
 
             # Determine system prompt for this task
             current_system_prompt_for_task = ""
@@ -819,7 +755,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 question_as_segment = task[3] # The question text is part of the task tuple
                 initial_user_question = question_as_segment 
             else: # Generate question from subject/context
-                if stop_processing: q.task_done(); continue
+                if app_state.stop_processing: q.task_done(); continue
                 subject_content_for_task = task[3]
                 context_content_for_task = task[4]
                 raw_subject_content_for_debug = subject_content_for_task 
@@ -853,7 +789,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             # --- Multi-Turn Conversation Loop ---
             for turn_num in range(current_num_turns):
-                if stop_processing or pause_processing: break # Check before starting a new turn
+                if app_state.stop_processing or app_state.pause_processing: break # Check before starting a new turn
 
                 assistant_answer = None # This will hold the assistant's response for the current turn
 
@@ -865,7 +801,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     # Iterate through enabled APIs (Slots 1-4, indices 0-3) for duplication
                     for dup_api_idx, dup_api_conf_item in enumerate(all_api_configs_local):
                         if dup_api_idx < 4 and dup_api_conf_item.get('enabled', False): 
-                            if stop_processing or pause_processing: break
+                            if app_state.stop_processing or app_state.pause_processing: break
                             log_message(f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: Duplicating with API Slot {dup_api_idx+1}", "DEBUG")
                             start_time_api_task = time.time()
                             
@@ -934,7 +870,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     primary_api_answer_for_conv_flow = duplicated_answer_text
                             else:
                                 log_message(f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: API Slot {dup_api_idx+1} failed to generate answer.", "WARNING")
-                        if stop_processing or pause_processing: break # Check inside duplication loop
+                        if app_state.stop_processing or app_state.pause_processing: break # Check inside duplication loop
                     
                     assistant_answer = primary_api_answer_for_conv_flow # Use this for the main conversation flow
 
@@ -964,7 +900,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
                 
                 else: # --- Non-Duplication Mode: Single API call for answer ---
-                    if stop_processing or pause_processing: break
+                    if app_state.stop_processing or app_state.pause_processing: break
                     start_time_api_task = time.time()
                     answer_result = generate_answer_with_retries(
                         base_system_prompt=current_system_prompt_for_task,
@@ -1036,7 +972,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                 if turn_num == current_num_turns - 1: # If this was the last turn
                     break 
-                if stop_processing or pause_processing: break
+                if app_state.stop_processing or app_state.pause_processing: break
 
                 # --- User Continuation Generation (if not the last turn) ---
                 if not current_user_continuation_prompt: 
@@ -1071,7 +1007,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     conversation_history_for_output.append({"role": "user", "content": user_continuation_reply})
             
             # --- End of Multi-Turn Loop ---
-            if stop_processing: q.task_done(); continue 
+            if app_state.stop_processing: q.task_done(); continue 
 
             # --- Write Completed Conversation (Non-Duplication Mode) or Mark Task Complete (Duplication Mode) ---
             if not master_duplication_enabled_local:
@@ -1102,7 +1038,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 current_remove_markdown,
                                 current_output_format, task_id,
                                 api_slot_idx_for_output_file=None)
-                        completed_task_ids.add(task_id)
+                        app_state.completed_task_ids.add(task_id)
 
                     save_generation_state()
                     log_message(f"Thread {thread_id}: Processed task {task_id} (API Slot {api_slot_idx_for_this_task+1}) from file {file_name}. Turns: {len(conversation_history_for_output)//2}", "INFO")
@@ -1125,7 +1061,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         # Do NOT add to completed_task_ids
                     else:
                         with output_data_lock: # Lock for completed_task_ids and save_generation_state
-                            completed_task_ids.add(task_id)
+                            app_state.completed_task_ids.add(task_id)
                             save_generation_state()
                         log_message(f"Thread {thread_id}: Completed processing (duplication mode) for task {task_id} from file {file_name}. Individual API outputs handled per turn.", "INFO")
 
@@ -1136,13 +1072,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             log_message(traceback.format_exc(), "ERROR") 
             # Record this as a general error for the task
             with output_data_lock: # Use the lock for modifying global error counters
-                global error_count_total
-                error_count_total +=1 
+                app_state.error_count_total +=1 
                 # For general task errors, we don't assign to a specific API unless the error originated there.
                 # Here, it's a task-level error, so log it for the "Totals" dashboard.
                 err_summary = f"T{thread_id} TaskErr: {str(e)[:30]}" # Short summary
-                if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                recent_errors_total.append((err_summary, -1)) # -1 indicates a general task error not tied to a specific API call error
+                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                app_state.recent_errors_total.append((err_summary, -1)) # -1 indicates a general task error not tied to a specific API call error
         
         end_time_task_overall = time.time()
         task_duration_overall = end_time_task_overall - start_time_task_overall
@@ -1172,40 +1107,37 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       raw_subject_chunk, raw_context_chunk,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param):
     """Generates an initial question using the LLM, with retries for API call failures."""
-    global question_history, question_history_lock, stats_lock
-    global error_count_total, error_counts_per_api, recent_errors_total, recent_errors_per_api, total_attempts_per_api, total_attempts_global
-    global total_input_tokens, total_output_tokens
 
     if not api_url_local:
         log_message(f"Thread {thread_id}: API URL missing for question generation (API Slot {api_slot_idx+1}). Cannot proceed.", "ERROR")
         return None
 
     for attempt_num in range(current_max_attempts_param):
-        if stop_processing or pause_processing:
+        if app_state.stop_processing or app_state.pause_processing:
             return None
             MAX_TOTAL_RETRY_WAIT = 20
             current_attempt_wait = 0
 
         # FIX: Use stats_lock instead of system_prompt_lock, with timeout
-        lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
         if lock_acquired:
             try:
-                total_attempts_global += 1
-                total_attempts_per_api[api_slot_idx] += 1
+                app_state.total_attempts_global += 1
+                app_state.total_attempts_per_api[api_slot_idx] += 1
             finally:
-                system_prompt_lock.release()
+                app_state.system_prompt_lock.release()
         else:
             log_message(f"Thread {thread_id}: Skipped stat update (system_prompt_lock busy)", "DEBUG")
 
         try:
             # FIX: Use question_history_lock with timeout
             recent_questions_str = ""
-            lock_acquired_qh = question_history_lock.acquire(timeout=0.05)
+            lock_acquired_qh = app_state.question_history_lock.acquire(timeout=0.05)
             if lock_acquired_qh:
                 try:
-                    recent_questions_str = "\n- ".join(question_history[-history_size_local_param:]) if question_history else "None"
+                    recent_questions_str = "\n- ".join(app_state.question_history[-history_size_local_param:]) if app_state.question_history else "None"
                 finally:
-                    question_history_lock.release()
+                    app_state.question_history_lock.release()
             else:
                 log_message(f"Thread {thread_id}: WARNING - Could not acquire question_history_lock. Using empty history.", "WARNING")
                 recent_questions_str = "None"
@@ -1289,12 +1221,12 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             if is_cached:
                 generated_question_text = cached_response
                 # Update question history if cached
-                lock_acquired_qh_update = question_history_lock.acquire(timeout=7.0)
+                lock_acquired_qh_update = app_state.question_history_lock.acquire(timeout=7.0)
                 if lock_acquired_qh_update:
                     try:
                         update_question_history(generated_question_text, history_size_local_param)
                     finally:
-                        question_history_lock.release()
+                        app_state.question_history_lock.release()
                 return generated_question_text
 
             response = requests.post(api_url_local, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))
@@ -1318,13 +1250,13 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 output_tokens = usage.get('completion_tokens', 0)
 
                 # Update global counters with timeout
-                lock_acquired_tokens = stats_lock.acquire(timeout=7.0)
+                lock_acquired_tokens = app_state.stats_lock.acquire(timeout=7.0)
                 if lock_acquired_tokens:
                     try:
-                        total_input_tokens += input_tokens
-                        total_output_tokens += output_tokens
+                        app_state.total_input_tokens += input_tokens
+                        app_state.total_output_tokens += output_tokens
                     finally:
-                        stats_lock.release()
+                        app_state.stats_lock.release()
                 else:
                     log_message(f"Thread {thread_id}: WARNING - Could not acquire stats_lock for token update.", "WARNING")
 
@@ -1364,37 +1296,37 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                         return None
 
                 # Update question history with timeout
-                lock_acquired_qh_update = question_history_lock.acquire(timeout=7.0)
+                lock_acquired_qh_update = app_state.question_history_lock.acquire(timeout=7.0)
                 if lock_acquired_qh_update:
                     try:
                         update_question_history(generated_question_text, history_size_local_param)
                         set_cached_response(prompt_hash, api_slot_idx, generated_question_text)
                         log_message(f"Thread {thread_id}: Cache SET for API Slot {api_slot_idx+1}.", "DEBUG")
                     finally:
-                        question_history_lock.release()
+                        app_state.question_history_lock.release()
                 return generated_question_text
             else: # API call failed
                 error_message = f"Thread {thread_id}: Error generating question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
                 record_api_failure(api_slot_idx)
                 # Update error counters with timeout
-                lock_acquired_err = stats_lock.acquire(timeout=7.0)
+                lock_acquired_err = app_state.stats_lock.acquire(timeout=7.0)
                 if lock_acquired_err:
                     try:
-                        error_count_total += 1
-                        error_counts_per_api[api_slot_idx] += 1
+                        app_state.error_count_total += 1
+                        app_state.error_counts_per_api[api_slot_idx] += 1
                         err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
-                        if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                        recent_errors_total.append((err_summary, api_slot_idx))
-                        with issue_timestamps_lock:
-                            issue_timestamps['errors'].append(time.time())
+                        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                        app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                        with app_state.issue_timestamps_lock:
+                            app_state.issue_timestamps['errors'].append(time.time())
                             cutoff = time.time() - 3600
-                            issue_timestamps['errors'] = [t for t in issue_timestamps['errors'] if t > cutoff]
+                            app_state.issue_timestamps['errors'] = [t for t in app_state.issue_timestamps['errors'] if t > cutoff]
                         if api_slot_idx < 6 :
-                            if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                            recent_errors_per_api[api_slot_idx].append(err_summary)
+                            if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                            app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                     finally:
-                        stats_lock.release()
+                        app_state.stats_lock.release()
                 if attempt_num < current_max_attempts_param - 1:
                     time.sleep(random.uniform(0.5, 1.5))
                     continue
@@ -1404,19 +1336,19 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             error_message = f"Thread {thread_id}: Timeout generating question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx)
-            lock_acquired_err = stats_lock.acquire(timeout=7.0)
+            lock_acquired_err = app_state.stats_lock.acquire(timeout=7.0)
             if lock_acquired_err:
                 try:
-                    error_count_total += 1
-                    error_counts_per_api[api_slot_idx] += 1
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} Q-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
-                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
                     if api_slot_idx < 4:
-                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                 finally:
-                    stats_lock.release()
+                    app_state.stats_lock.release()
             if attempt_num < current_max_attempts_param - 1:
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
@@ -1428,19 +1360,19 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             import traceback
             log_message(traceback.format_exc(), "ERROR")
             record_api_failure(api_slot_idx)
-            lock_acquired_err = stats_lock.acquire(timeout=7.0)
+            lock_acquired_err = app_state.stats_lock.acquire(timeout=7.0)
             if lock_acquired_err:
                 try:
-                    error_count_total += 1
-                    error_counts_per_api[api_slot_idx] += 1
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} Q-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
-                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
                     if api_slot_idx < 4:
-                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                 finally:
-                    stats_lock.release()
+                    app_state.stats_lock.release()
             if attempt_num < current_max_attempts_param - 1:
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
@@ -1452,9 +1384,6 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param): # API slot index and max_attempts
     """Generates the user's continuation reply, with retries for API call failures."""
-    global system_prompt_lock 
-    global error_count_total, error_counts_per_api, recent_errors_total, recent_errors_per_api, total_attempts_per_api, total_attempts_global
-    global total_input_tokens, total_output_tokens
 
 
     if not api_url_local:
@@ -1462,17 +1391,17 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
         return None
 
     for attempt_num in range(current_max_attempts_param):
-        if stop_processing or pause_processing: return None
+        if app_state.stop_processing or app_state.pause_processing: return None
         MAX_TOTAL_RETRY_WAIT = 20
         current_attempt_wait = 0
 
-        lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
         if lock_acquired:
             try:
-                total_attempts_global += 1
-                total_attempts_per_api[api_slot_idx] += 1
+                app_state.total_attempts_global += 1
+                app_state.total_attempts_per_api[api_slot_idx] += 1
             finally:
-                system_prompt_lock.release()
+                app_state.system_prompt_lock.release()
 
         try:
             # Get the last assistant message for the prompt template
@@ -1594,27 +1523,27 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 record_api_failure(api_slot_idx)
                 error_message = f"Thread {thread_id}: Error generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
-                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
-                        error_count_total += 1
-                        error_counts_per_api[api_slot_idx] += 1
+                        app_state.error_count_total += 1
+                        app_state.error_counts_per_api[api_slot_idx] += 1
                         err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
-                        if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                        recent_errors_total.append((err_summary, api_slot_idx))
+                        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                        app_state.recent_errors_total.append((err_summary, api_slot_idx))
                         if api_slot_idx < 6:
-                            if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                            recent_errors_per_api[api_slot_idx].append(err_summary)
+                            if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                            app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
 
-                with issue_timestamps_lock:
-                    issue_timestamps['errors'].append(time.time())
+                with app_state.issue_timestamps_lock:
+                    app_state.issue_timestamps['errors'].append(time.time())
                     cutoff = time.time() - 3600
-                    issue_timestamps['errors'] = [t for t in issue_timestamps['errors'] if t > cutoff]
+                    app_state.issue_timestamps['errors'] = [t for t in app_state.issue_timestamps['errors'] if t > cutoff]
                     if api_slot_idx < 4:
-                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                 sleep_dur = random.uniform(0.5, 1.5)
                 if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
                     time.sleep(sleep_dur)
@@ -1626,19 +1555,19 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             error_message = f"Thread {thread_id}: Timeout generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx)
-            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
-                    error_count_total += 1
-                    error_counts_per_api[api_slot_idx] += 1
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} UserCont-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
-                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
                     if api_slot_idx < 4:
-                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                 finally:
-                    system_prompt_lock.release()
+                    app_state.system_prompt_lock.release()
             sleep_dur = random.uniform(0.5, 1.5)
             if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
                 time.sleep(sleep_dur)
@@ -1652,19 +1581,19 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             import traceback
             log_message(traceback.format_exc(), "ERROR")
             record_api_failure(api_slot_idx)
-            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
-                    error_count_total += 1
-                    error_counts_per_api[api_slot_idx] += 1
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} UserCont-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
-                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
                     if api_slot_idx < 4:
-                        if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                        recent_errors_per_api[api_slot_idx].append(err_summary)
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                 finally:
-                    system_prompt_lock.release()
+                    app_state.system_prompt_lock.release()
             sleep_dur = random.uniform(0.5, 1.5)
             if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
                 time.sleep(sleep_dur)
@@ -1679,9 +1608,6 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                         main_sampler_settings, thread_id, additional_fix_instructions="",
                         current_max_attempts_param=5, api_request_timeout_param=300):
     """Calls a dedicated LLM (API Slot 5, index 4) to rewrite a sentence containing "slop", with retries."""
-    global system_prompt_lock
-    global error_count_total, error_counts_per_api, recent_errors_total, total_attempts_per_api, total_attempts_global
-    global total_input_tokens, total_output_tokens
 
     api_slot_idx_slop_fixer = 4 # Slop fixer is always API slot 5 (index 4)
 
@@ -1700,11 +1626,11 @@ def call_slop_fixer_llm(text_context, slop_phrase,
         return None, text_context
 
     for attempt_num in range(current_max_attempts_param):
-        if stop_processing or pause_processing: return None, text_context
+        if app_state.stop_processing or app_state.pause_processing: return None, text_context
 
-        with system_prompt_lock:
-            total_attempts_global +=1
-            total_attempts_per_api[api_slot_idx_slop_fixer] +=1
+        with app_state.system_prompt_lock:
+            app_state.total_attempts_global +=1
+            app_state.total_attempts_per_api[api_slot_idx_slop_fixer] +=1
 
         try:
             # UPDATED PROMPT: Explicitly instruct to preserve quotes & provide paragraph context
@@ -1789,9 +1715,9 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 output_tokens = usage.get('completion_tokens', 0)
 
                 # Update global counters safely using the lock
-                with system_prompt_lock:
-                    total_input_tokens += input_tokens
-                    total_output_tokens += output_tokens
+                with app_state.system_prompt_lock:
+                    app_state.total_input_tokens += input_tokens
+                    app_state.total_output_tokens += output_tokens
 
                 if content is None:
                     log_message(f"Thread {thread_id}: API returned None for content (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1})", "WARNING")
@@ -1833,12 +1759,12 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 error_message = f"Thread {thread_id}: Slop Fixer LLM Error (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
                 record_api_failure(api_slot_idx_slop_fixer)
-                with system_prompt_lock:
-                    error_count_total +=1
-                    error_counts_per_api[api_slot_idx_slop_fixer] += 1
+                with app_state.system_prompt_lock:
+                    app_state.error_count_total +=1
+                    app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
                     err_summary = f"T{thread_id} SlopFix-API (API{api_slot_idx_slop_fixer+1}): S{response.status_code} A{attempt_num+1}"
-                    if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
                 if attempt_num < current_max_attempts_param - 1:
                     time.sleep(random.uniform(0.5, 1.5))
                     continue
@@ -1848,12 +1774,12 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             error_message = f"Thread {thread_id}: Slop Fixer LLM request timed out (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx_slop_fixer)
-            with system_prompt_lock:
-                error_count_total +=1
-                error_counts_per_api[api_slot_idx_slop_fixer] += 1
+            with app_state.system_prompt_lock:
+                app_state.error_count_total +=1
+                app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
                 err_summary = f"T{thread_id} SlopFix-Timeout (API{api_slot_idx_slop_fixer+1}) A{attempt_num+1}"
-                if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
             if attempt_num < current_max_attempts_param - 1:
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
@@ -1863,12 +1789,12 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             error_message = f"Thread {thread_id}: Exception in call_slop_fixer_llm (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx_slop_fixer)
-            with system_prompt_lock:
-                error_count_total +=1
-                error_counts_per_api[api_slot_idx_slop_fixer] += 1
+            with app_state.system_prompt_lock:
+                app_state.error_count_total +=1
+                app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
                 err_summary = f"T{thread_id} SlopFix-Exc (API{api_slot_idx_slop_fixer+1}) A{attempt_num+1}: {str(e)[:20]}"
-                if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
             if attempt_num < current_max_attempts_param - 1:
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
@@ -1883,9 +1809,6 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                        master_duplication_enabled=False,
                        api_request_timeout_param=300):
     """Calls a dedicated LLM to rewrite a sentence containing anti-slop phrases."""
-    global system_prompt_lock
-    global error_count_total, error_counts_per_api, recent_errors_total, total_attempts_per_api, total_attempts_global
-    global total_input_tokens, total_output_tokens
     api_slot_idx_anti_slop = 5
 
     if not anti_slop_api_config or not anti_slop_api_config.get('url') or \
@@ -1898,7 +1821,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
     api_key = anti_slop_api_config['key']
 
     for attempt_num in range(current_max_attempts_param):
-        if stop_processing or pause_processing: return None, text_context
+        if app_state.stop_processing or app_state.pause_processing: return None, text_context
 
         # FIX 2 & 3: Move rate limiter BEFORE lock, and add timeout to lock acquisition
         global_rate_limiter.wait_if_needed(api_slot_idx_anti_slop)
@@ -1908,13 +1831,13 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             log_message(f"Thread {thread_id}: API Slot {api_slot_idx_anti_slop+1} circuit open. Skipping anti-slop fixer.", "DEBUG")
             return None, text_context
 
-        lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
         if lock_acquired:
             try:
-                total_attempts_global += 1
-                total_attempts_per_api[api_slot_idx_anti_slop] += 1
+                app_state.total_attempts_global += 1
+                app_state.total_attempts_per_api[api_slot_idx_anti_slop] += 1
             finally:
-                system_prompt_lock.release()
+                app_state.system_prompt_lock.release()
         else:
             log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock", "WARNING")
             return None, text_context
@@ -1992,20 +1915,20 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 input_tokens = usage.get('prompt_tokens', 0)
                 output_tokens = usage.get('completion_tokens', 0)
 
-                lock_acquired_tokens = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired_tokens = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired_tokens:
                     try:
-                        total_input_tokens += input_tokens
-                        total_output_tokens += output_tokens
+                        app_state.total_input_tokens += input_tokens
+                        app_state.total_output_tokens += output_tokens
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
                 else:
                     log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock for token update.", "WARNING")
 
                 if content is None:
                     log_message(f"Thread {thread_id}: API returned None for anti-slop content (Attempt {attempt_num+1})", "WARNING")
                     if attempt_num < current_max_attempts_param - 1:
-                        if stop_processing or pause_processing: return None, text_context
+                        if app_state.stop_processing or app_state.pause_processing: return None, text_context
                         time.sleep(random.uniform(0.5, 1.5))
                         continue
                     else:
@@ -2042,20 +1965,20 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 error_message = f"Thread {thread_id}: Anti-Slop LLM Error (Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
                 record_api_failure(api_slot_idx_anti_slop)
-                lock_acquired_err = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired_err = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired_err:
                     try:
-                        error_count_total += 1
-                        error_counts_per_api[api_slot_idx_anti_slop] += 1
+                        app_state.error_count_total += 1
+                        app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
                         err_summary = f"T{thread_id} AntiSlop-API: S{response.status_code} A{attempt_num+1}"
-                        if len(recent_errors_total) >= MAX_RECENT:
-                            recent_errors_total.pop(0)
-                        recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                        if len(app_state.recent_errors_total) >= MAX_RECENT:
+                            app_state.recent_errors_total.pop(0)
+                        app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
 
                 if attempt_num < current_max_attempts_param - 1:
-                    if stop_processing or pause_processing: return None, text_context
+                    if app_state.stop_processing or app_state.pause_processing: return None, text_context
                     time.sleep(random.uniform(0.5, 1.5))
                     continue
                 else:
@@ -2065,20 +1988,20 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             error_message = f"Thread {thread_id}: Anti-Slop LLM request timed out (Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx_anti_slop)
-            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
-                    error_count_total += 1
-                    error_counts_per_api[api_slot_idx_anti_slop] += 1
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
                     err_summary = f"T{thread_id} AntiSlop-Timeout A{attempt_num+1}"
-                    if len(recent_errors_total) >= MAX_RECENT:
-                        recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT:
+                        app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
                 finally:
-                    system_prompt_lock.release()
+                    app_state.system_prompt_lock.release()
 
             if attempt_num < current_max_attempts_param - 1:
-                if stop_processing or pause_processing: return None, text_context
+                if app_state.stop_processing or app_state.pause_processing: return None, text_context
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
             else:
@@ -2088,20 +2011,20 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             error_message = f"Thread {thread_id}: Exception in call_anti_slop_llm (Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx_anti_slop)
-            lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
             if lock_acquired:
                 try:
-                    error_count_total += 1
-                    error_counts_per_api[api_slot_idx_anti_slop] += 1
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
                     err_summary = f"T{thread_id} AntiSlop-Exc A{attempt_num+1}: {str(e)[:20]}"
-                    if len(recent_errors_total) >= MAX_RECENT:
-                        recent_errors_total.pop(0)
-                    recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                    if len(app_state.recent_errors_total) >= MAX_RECENT:
+                        app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
                 finally:
-                    system_prompt_lock.release()
+                    app_state.system_prompt_lock.release()
 
             if attempt_num < current_max_attempts_param - 1:
-                if stop_processing or pause_processing: return None, text_context
+                if app_state.stop_processing or app_state.pause_processing: return None, text_context
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
             else:
@@ -2129,12 +2052,6 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     Applies jailbreaks, speaking fixes, and slop fixes (system prompt or dedicated LLM).
     Returns the generated answer or None if all attempts fail.
     """
-    global total_attempts_global, total_attempts_per_api, system_prompt_lock
-    global refusal_count_total, user_speaking_count_total, slop_count_total, error_count_total, anti_slop_count_total
-    global refusal_counts_per_api, user_speaking_counts_per_api, slop_counts_per_api, error_counts_per_api
-    global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total
-    global recent_refusals_per_api, recent_user_speaking_per_api, recent_slop_per_api, recent_errors_per_api
-    global total_input_tokens, total_output_tokens
 
     refusal_detected_this_main_api_call = False
     issue_ever_detected_this_task = False
@@ -2147,14 +2064,14 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     current_system_prompt_iter = base_system_prompt
 
     for attempt in range(max_attempts_local):
-        if stop_processing or pause_processing: return None
+        if app_state.stop_processing or app_state.pause_processing: return None
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0}
         issue_detected_this_main_api_call = False
 
         while True:
-            if stop_processing or pause_processing: return None
+            if app_state.stop_processing or app_state.pause_processing: return None
 
             # --- API Call with Retries for API Failures ---
             answer = None
@@ -2162,18 +2079,18 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
             response_status_code = -1
 
             for api_call_attempt_num in range(api_call_retries_for_this_iteration):
-                if stop_processing or pause_processing: return None
+                if app_state.stop_processing or app_state.pause_processing: return None
                 MAX_TOTAL_RETRY_WAIT = 30  # Cap total sleep per outer attempt
                 current_attempt_wait = 0
 
                 # FIX 3: Add timeout to lock acquisition
-                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
-                        total_attempts_global += 1
-                        total_attempts_per_api[api_slot_idx] += 1
+                        app_state.total_attempts_global += 1
+                        app_state.total_attempts_per_api[api_slot_idx] += 1
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
                 else:
                     log_message(f"Thread {thread_id}: Skipped stat update (system_prompt_lock busy)", "DEBUG")
 
@@ -2276,13 +2193,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         input_tokens = usage.get('prompt_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0)
 
-                        lock_acquired_tokens = system_prompt_lock.acquire(timeout=0.05)
+                        lock_acquired_tokens = app_state.system_prompt_lock.acquire(timeout=0.05)
                         if lock_acquired_tokens:
                             try:
-                                total_input_tokens += input_tokens
-                                total_output_tokens += output_tokens
+                                app_state.total_input_tokens += input_tokens
+                                app_state.total_output_tokens += output_tokens
                             finally:
-                                system_prompt_lock.release()
+                                app_state.system_prompt_lock.release()
                         else:
                             log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock for token update.", "WARNING")
 
@@ -2333,23 +2250,23 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     else:
                         log_message(f"Thread {thread_id}: Error generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}), Status {response_status_code}: {response_text_content[:200]}", "ERROR")
                         record_api_failure(api_slot_idx)
-                        lock_acquired_err = system_prompt_lock.acquire(timeout=0.05)
+                        lock_acquired_err = app_state.system_prompt_lock.acquire(timeout=0.05)
                         if lock_acquired_err:
                             try:
-                                error_count_total += 1
-                                error_counts_per_api[api_slot_idx] += 1
+                                app_state.error_count_total += 1
+                                app_state.error_counts_per_api[api_slot_idx] += 1
                                 err_summary = f"T{thread_id} Ans-Err (API{api_slot_idx+1}): S{response_status_code} A{api_call_attempt_num+1}"
-                                if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                                recent_errors_total.append((err_summary, api_slot_idx))
-                                with issue_timestamps_lock:
-                                    issue_timestamps['errors'].append(time.time())
+                                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                                app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                                with app_state.issue_timestamps_lock:
+                                    app_state.issue_timestamps['errors'].append(time.time())
                                     cutoff = time.time() - 3600
-                                    issue_timestamps['errors'] = [t for t in issue_timestamps['errors'] if t > cutoff]
+                                    app_state.issue_timestamps['errors'] = [t for t in app_state.issue_timestamps['errors'] if t > cutoff]
                                 if api_slot_idx < 6:
-                                    if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                                    recent_errors_per_api[api_slot_idx].append(err_summary)
+                                    if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                             finally:
-                                system_prompt_lock.release()
+                                app_state.system_prompt_lock.release()
                         if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
                             sleep_dur = random.uniform(0.5, 1.5)
                             if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
@@ -2362,36 +2279,36 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 except requests.exceptions.Timeout:
                     log_message(f"Thread {thread_id}: API Timeout generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}).", "ERROR")
                     record_api_failure(api_slot_idx)
-                    lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
-                            error_count_total += 1; error_counts_per_api[api_slot_idx] += 1
+                            app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
                             err_summary = f"T{thread_id} Ans-Timeout (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
-                            if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                            recent_errors_total.append((err_summary, api_slot_idx))
+                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
                             if api_slot_idx < 6:
-                                if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                                recent_errors_per_api[api_slot_idx].append(err_summary)
+                                if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                         finally:
-                            system_prompt_lock.release()
+                            app_state.system_prompt_lock.release()
                     if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
                         time.sleep(random.uniform(0.5, 1.5)); continue
                     else: break
                 except requests.exceptions.RequestException as e_req:
                     log_message(f"Thread {thread_id}: RequestException generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_req)}", "ERROR")
                     record_api_failure(api_slot_idx)
-                    lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
-                            error_count_total += 1; error_counts_per_api[api_slot_idx] += 1
+                            app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
                             err_summary = f"T{thread_id} Ans-ReqExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
-                            if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                            recent_errors_total.append((err_summary, api_slot_idx))
+                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
                             if api_slot_idx < 6:
-                                if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                                recent_errors_per_api[api_slot_idx].append(err_summary)
+                                if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                         finally:
-                            system_prompt_lock.release()
+                            app_state.system_prompt_lock.release()
                     if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
                         time.sleep(random.uniform(0.5, 1.5)); continue
                     else: break
@@ -2399,18 +2316,18 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     log_message(f"Thread {thread_id}: Exception in answer generation (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_gen)}", "ERROR")
                     import traceback; log_message(traceback.format_exc(), "ERROR")
                     record_api_failure(api_slot_idx)
-                    lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                     if lock_acquired:
                         try:
-                            error_count_total += 1; error_counts_per_api[api_slot_idx] += 1
+                            app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
                             err_summary = f"T{thread_id} Ans-GenExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}: {str(e_gen)[:20]}"
-                            if len(recent_errors_total) >= MAX_RECENT: recent_errors_total.pop(0)
-                            recent_errors_total.append((err_summary, api_slot_idx))
+                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
                             if api_slot_idx < 6:
-                                if len(recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: recent_errors_per_api[api_slot_idx].pop(0)
-                                recent_errors_per_api[api_slot_idx].append(err_summary)
+                                if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
                         finally:
-                            system_prompt_lock.release()
+                            app_state.system_prompt_lock.release()
                     if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
                         time.sleep(random.uniform(0.5, 1.5)); continue
                     else: break
@@ -2432,20 +2349,20 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 issue_ever_detected_this_task = True
                 refusal_detected_this_main_api_call = True
                 refusal_ever_detected_this_task = True
-                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
-                        refusal_count_total += 1
-                        refusal_counts_per_api[api_slot_idx] += 1
+                        app_state.refusal_count_total += 1
+                        app_state.refusal_counts_per_api[api_slot_idx] += 1
                         if refusal_info:
                             detected_phrase, detected_sentence = refusal_info[0]
-                            if len(recent_refusals_total) >= MAX_RECENT: recent_refusals_total.pop(0)
-                            recent_refusals_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if len(app_state.recent_refusals_total) >= MAX_RECENT: app_state.recent_refusals_total.pop(0)
+                            app_state.recent_refusals_total.append((detected_phrase, detected_sentence, api_slot_idx))
                             if api_slot_idx < 6:
-                                if len(recent_refusals_per_api[api_slot_idx]) >= MAX_RECENT: recent_refusals_per_api[api_slot_idx].pop(0)
-                                recent_refusals_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                                if len(app_state.recent_refusals_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_refusals_per_api[api_slot_idx].pop(0)
+                                app_state.recent_refusals_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
                 if fix_attempts_specific['refusal'] < len(jailbreaks_local):
                     current_system_prompt_iter += f" {jailbreaks_local[fix_attempts_specific['refusal']]}"
                     fix_attempts_specific['refusal'] += 1
@@ -2457,20 +2374,20 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
             if user_speaking_detected:
                 issue_detected_this_main_api_call = True
-                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
-                        user_speaking_count_total += 1
-                        user_speaking_counts_per_api[api_slot_idx] += 1
+                        app_state.user_speaking_count_total += 1
+                        app_state.user_speaking_counts_per_api[api_slot_idx] += 1
                         if user_speaking_info:
                             detected_phrase, detected_sentence = user_speaking_info[0]
-                            if len(recent_user_speaking_total) >= MAX_RECENT: recent_user_speaking_total.pop(0)
-                            recent_user_speaking_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if len(app_state.recent_user_speaking_total) >= MAX_RECENT: app_state.recent_user_speaking_total.pop(0)
+                            app_state.recent_user_speaking_total.append((detected_phrase, detected_sentence, api_slot_idx))
                             if api_slot_idx < 6:
-                                if len(recent_user_speaking_per_api[api_slot_idx]) >= MAX_RECENT: recent_user_speaking_per_api[api_slot_idx].pop(0)
-                                recent_user_speaking_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                                if len(app_state.recent_user_speaking_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_user_speaking_per_api[api_slot_idx].pop(0)
+                                app_state.recent_user_speaking_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
                 if fix_attempts_specific['user_speaking'] < len(speaking_fixes_local):
                     current_system_prompt_iter += f" {speaking_fixes_local[fix_attempts_specific['user_speaking']]}"
                     fix_attempts_specific['user_speaking'] += 1
@@ -2484,20 +2401,20 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 issue_detected_this_main_api_call = True
                 log_message(f"Thread {thread_id}: Initial slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
 
-                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
-                        slop_count_total += 1
-                        slop_counts_per_api[api_slot_idx] += 1
+                        app_state.slop_count_total += 1
+                        app_state.slop_counts_per_api[api_slot_idx] += 1
                         if slop_info:
                             detected_phrase, detected_sentence = slop_info[0]
-                            if len(recent_slop_total) >= MAX_RECENT: recent_slop_total.pop(0)
-                            recent_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if len(app_state.recent_slop_total) >= MAX_RECENT: app_state.recent_slop_total.pop(0)
+                            app_state.recent_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
                             if api_slot_idx < 6:
-                                if len(recent_slop_per_api[api_slot_idx]) >= MAX_RECENT: recent_slop_per_api[api_slot_idx].pop(0)
-                                recent_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                                if len(app_state.recent_slop_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_slop_per_api[api_slot_idx].pop(0)
+                                app_state.recent_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
 
                 if slop_fixer_api_config_param and slop_fixer_api_config_param.get('url'):
                     current_answer_being_fixed = answer
@@ -2506,7 +2423,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     slop_fix_instruction_rotation_idx = 0
 
                     for slop_iter_num in range(MAX_SENTENCE_FIX_ITERATIONS):
-                        if stop_processing or pause_processing: return None
+                        if app_state.stop_processing or app_state.pause_processing: return None
                         current_slop_check_needed, current_slop_details_iter = detection.is_slop(current_answer_being_fixed, slop_phrases_local)
                         if not current_slop_check_needed:
                             log_message(f"Thread {thread_id}: Slop paragraph fully resolved after {slop_iter_num} iterations.", "INFO")
@@ -2579,22 +2496,22 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 issue_detected_this_main_api_call = True
                 log_message(f"Thread {thread_id}: Anti-slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
 
-                lock_acquired = system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
                     try:
-                        anti_slop_count_total += 1
+                        app_state.anti_slop_count_total += 1
                         anti_slop_counts_per_api[api_slot_idx] += 1
                         if anti_slop_info:
                             detected_phrase, detected_sentence = anti_slop_info[0]
-                            if len(recent_anti_slop_total) >= MAX_RECENT:
-                                recent_anti_slop_total.pop(0)
-                            recent_anti_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if len(app_state.recent_anti_slop_total) >= MAX_RECENT:
+                                app_state.recent_anti_slop_total.pop(0)
+                            app_state.recent_anti_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
                             if api_slot_idx < 4:
-                                if len(recent_anti_slop_per_api[api_slot_idx]) >= MAX_RECENT:
-                                    recent_anti_slop_per_api[api_slot_idx].pop(0)
-                                    recent_anti_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                                if len(app_state.recent_anti_slop_per_api[api_slot_idx]) >= MAX_RECENT:
+                                    app_state.recent_anti_slop_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_anti_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
                     finally:
-                        system_prompt_lock.release()
+                        app_state.system_prompt_lock.release()
 
                 # Try to fix using anti-slop LLM - fix individual SENTENCES (like regular slop)
                 if slop_fixer_api_config_param and slop_fixer_api_config_param.get('url'):
@@ -2604,7 +2521,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     anti_slop_fix_instruction_rotation_idx = 0
 
                     for anti_slop_iter_num in range(MAX_ANTI_SLOP_FIX_ITERATIONS):
-                        if stop_processing or pause_processing:
+                        if app_state.stop_processing or app_state.pause_processing:
                             return None
 
                         current_anti_slop_check, current_anti_slop_details = detection.is_anti_slop(current_answer_being_fixed, current_anti_slop_phrases_param)
@@ -2771,9 +2688,9 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
 
     use_db = global_config.get('database.enabled', False)
 
-    if use_db and db_pool:
+    if use_db and app_state.db_pool:
         try:
-            conn = db_pool.getconn()
+            conn = app_state.db_pool.getconn()
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO generated_conversations (task_id, conversation_data, api_slot_idx)
@@ -2781,11 +2698,11 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
                     ON CONFLICT (task_id) DO NOTHING
                 """, (output_data_id, json.dumps(output_data), api_slot_idx_for_output_file))
                 conn.commit()
-            db_pool.putconn(conn)
+            app_state.db_pool.putconn(conn)
             log_message(f"Saved task {task_id_for_output} to PostgreSQL.", "DEBUG")
         except Exception as e:
             log_message(f"DB insert failed for {task_id_for_output}: {e}", "ERROR")
-            if 'conn' in locals(): db_pool.putconn(conn)
+            if 'conn' in locals(): app_state.db_pool.putconn(conn)
 
         # 🔑 CRITICAL: Exit function immediately after DB save.
         # This guarantees the file-writing code below NEVER runs when DB is enabled.
@@ -2812,12 +2729,12 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         log_message(traceback.format_exc(), "ERROR")
 
 def export_db_to_jsonl(output_path):
-    if not db_pool:
+    if not app_state.db_pool:
         messagebox.showerror("Export Error", "Database pool not initialized.")
         return False
 
     try:
-        conn = db_pool.getconn()
+        conn = app_state.db_pool.getconn()
         with conn.cursor(name='export_cursor') as cur: # Server-side cursor for large datasets
             cur.itersize = 1000
             cur.execute("SELECT conversation_data FROM generated_conversations ORDER BY created_at")
@@ -2826,16 +2743,15 @@ def export_db_to_jsonl(output_path):
                 for row in cur:
                     f.write(json.dumps(row[0]) + '\n')
         conn.commit()
-        db_pool.putconn(conn)
+        app_state.db_pool.putconn(conn)
         return True
     except Exception as e:
         log_message(f"Export failed: {e}", "ERROR")
-        if conn: db_pool.putconn(conn)
+        if conn: app_state.db_pool.putconn(conn)
         return False
 
 def draw_issue_graph(canvas_widget, height=400):
     """Draws a modern, detailed time-series graph showing issue counts over the last 60 minutes."""
-    global issue_timestamps
     canvas_widget.delete("all")
 
     # Modern dark theme setup
@@ -2854,9 +2770,9 @@ def draw_issue_graph(canvas_widget, height=400):
     counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
               'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins}
 
-    with issue_timestamps_lock:
+    with app_state.issue_timestamps_lock:
         for key in counts.keys():
-            for ts in issue_timestamps.get(key, []):
+            for ts in app_state.issue_timestamps.get(key, []):
                 if sixty_minutes_ago <= ts <= now:
                     idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
                     counts[key][idx] += 1
@@ -2942,9 +2858,9 @@ def update_issue_graph(canvas_widget):
     counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
               'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins}
 
-    with issue_timestamps_lock:
+    with app_state.issue_timestamps_lock:
         for key in counts.keys():
-            for ts in issue_timestamps.get(key, []):
+            for ts in app_state.issue_timestamps.get(key, []):
                 if sixty_minutes_ago <= ts <= now:
                     idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
                     counts[key][idx] += 1
@@ -2997,8 +2913,7 @@ def update_issue_graph(canvas_widget):
 
 def update_rate_limit_status():
     """Updates the rate limit status labels with progress-style visualization."""
-    global rate_limit_labels
-    if not rate_limit_labels:
+    if not app_state.rate_limit_labels:
         return
 
     # Color constants matching the dark theme
@@ -3014,7 +2929,7 @@ def update_rate_limit_status():
                 remaining = max(0, limit - used)
                 usage_percent = (used / limit) * 100 if limit > 0 else 0
 
-                if slot_idx in rate_limit_labels:
+                if slot_idx in app_state.rate_limit_labels:
                     if usage_percent > 90:
                         icon = "🔴"
                         color = ACCENT_RED
@@ -3028,7 +2943,7 @@ def update_rate_limit_status():
                         icon = "🟢"
                         color = ACCENT_GREEN
 
-                    rate_limit_labels[slot_idx].config(
+                    app_state.rate_limit_labels[slot_idx].config(
                         text=f"{icon} API {slot_idx+1}: {remaining}/{limit} ({usage_percent:.0f}% used)",
                         foreground=color
                     )
@@ -3038,23 +2953,20 @@ def update_rate_limit_status():
 # --- Tkinter UI Update and Control Functions ---
 def update_dashboard():
     """Updates the dashboard labels and text areas with current statistics and recent issues."""
-    global total_attempts_global, refusal_count_total, user_speaking_count_total, slop_count_total, error_count_total
-    global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total
-    global recent_refusals_per_api, recent_user_speaking_per_api, recent_slop_per_api, recent_errors_per_api
 
     # NEW: Update rate limit status
     update_rate_limit_status()
 
-    total_attempts_for_calc = total_attempts_global if total_attempts_global > 0 else 1 
+    total_attempts_for_calc = app_state.total_attempts_global if app_state.total_attempts_global > 0 else 1 
     
-    refusal_percent = (refusal_count_total / total_attempts_for_calc) * 100
-    user_speaking_percent = (user_speaking_count_total / total_attempts_for_calc) * 100
-    slop_percent = (slop_count_total / total_attempts_for_calc) * 100 
-    error_percent = (error_count_total / total_attempts_for_calc) * 100
+    refusal_percent = (app_state.refusal_count_total / total_attempts_for_calc) * 100
+    user_speaking_percent = (app_state.user_speaking_count_total / total_attempts_for_calc) * 100
+    slop_percent = (app_state.slop_count_total / total_attempts_for_calc) * 100 
+    error_percent = (app_state.error_count_total / total_attempts_for_calc) * 100
 
     # Calculate cost (ensure you have the price per 1k tokens from config)
     price_per_token = global_config.get('api.pricing.cost_per_1k_tokens', 0) / 1000
-    estimated_cost = (total_input_tokens + total_output_tokens) * price_per_token
+    estimated_cost = (app_state.total_input_tokens + app_state.total_output_tokens) * price_per_token
 
     budget_limit = global_config.get('api.pricing.budget_limit', 0.0)
     if budget_label.winfo_exists():
@@ -3066,20 +2978,20 @@ def update_dashboard():
 
     if api_handler.valkey_client:
         try:
-            api_handler.valkey_client.set("stats:refusal_count", refusal_count_total)
-            api_handler.valkey_client.set("stats:total_attempts", total_attempts_global)
+            api_handler.valkey_client.set("stats:refusal_count", app_state.refusal_count_total)
+            api_handler.valkey_client.set("stats:total_attempts", app_state.total_attempts_global)
         except Exception as e:
             # Log the error but don't stop the dashboard from updating
             log_message(f"Error updating stats in Valkey: {e}", "WARNING")
 
     if hasattr(refusal_percent_label, 'winfo_exists') and refusal_percent_label.winfo_exists():
-        refusal_percent_label.config(text=f"{refusal_count_total} Refusals encountered ({refusal_percent:.1f}%)")
-        user_speaking_label.config(text=f"{user_speaking_count_total} User Speak instances ({user_speaking_percent:.1f}%)")
-        slop_label.config(text=f"{slop_count_total} Slop instances detected ({slop_percent:.1f}%)")
-        error_percent_label.config(text=f"{error_count_total} Total Errors logged ({error_percent:.1f}%)")
+        refusal_percent_label.config(text=f"{app_state.refusal_count_total} Refusals encountered ({refusal_percent:.1f}%)")
+        user_speaking_label.config(text=f"{app_state.user_speaking_count_total} User Speak instances ({user_speaking_percent:.1f}%)")
+        slop_label.config(text=f"{app_state.slop_count_total} Slop instances detected ({slop_percent:.1f}%)")
+        error_percent_label.config(text=f"{app_state.error_count_total} Total Errors logged ({error_percent:.1f}%)")
 
         # NEW: Update token and cost labels (you need to create these labels in the UI first)
-        token_label.config(text=f"Tokens: {total_input_tokens + total_output_tokens}")
+        token_label.config(text=f"Tokens: {app_state.total_input_tokens + app_state.total_output_tokens}")
         cost_label.config(text=f"Est. Cost: ${estimated_cost:.4f}")
         # NEW: Update API response time labels
         for slot_idx in range(6):
@@ -3149,19 +3061,19 @@ def update_dashboard():
         text_widget.config(state=tk.DISABLED)
         text_widget.yview(tk.END)
 
-    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["refusals"], recent_refusals_total, "highlight_refusal", is_total_tab_list=True)
-    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["user_speak"], recent_user_speaking_total, "highlight_user_speak", is_total_tab_list=True)
-    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["slop"], recent_slop_total, "highlight_slop", is_total_tab_list=True)
-    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], recent_anti_slop_total, "highlight_anti_slop", is_total_tab_list=True)
+    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["refusals"], app_state.recent_refusals_total, "highlight_refusal", is_total_tab_list=True)
+    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["user_speak"], app_state.recent_user_speaking_total, "highlight_user_speak", is_total_tab_list=True)
+    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, "highlight_slop", is_total_tab_list=True)
+    update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, "highlight_anti_slop", is_total_tab_list=True)
 
     for i in range(6):
         api_tab_name = f"API {i+1}"
         if api_tab_name in dashboard_notebook.tabs_widgets:
-            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["refusals"], recent_refusals_per_api.get(i,[]), "highlight_refusal")
-            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["user_speak"], recent_user_speaking_per_api.get(i,[]), "highlight_user_speak")
-            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["slop"], recent_slop_per_api.get(i,[]), "highlight_slop")
-            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], recent_anti_slop_per_api.get(i,[]), "highlight_anti_slop")
-            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["errors"], recent_errors_per_api.get(i,[]), "highlight_error")
+            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["refusals"], app_state.recent_refusals_per_api.get(i,[]), "highlight_refusal")
+            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["user_speak"], app_state.recent_user_speaking_per_api.get(i,[]), "highlight_user_speak")
+            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]), "highlight_slop")
+            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]), "highlight_anti_slop")
+            update_scrolled_text_widget_content(dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]), "highlight_error")
 
     # NEW: Update the graph on the Totals tab
     if "Totals" in dashboard_notebook.tabs_widgets:
@@ -3174,41 +3086,40 @@ def update_dashboard():
 
 def update_database_status():
     """Updates the PostgreSQL and Valkey connection status icons and labels."""
-    global db_pool, db_status_widgets, root
 
-    if not root.winfo_exists():
+    if not app_state.root.winfo_exists():
         return
 
     # --- PostgreSQL Status ---
     postgres_connected = False
     postgres_active = False
 
-    if db_pool:
+    if app_state.db_pool:
         try:
-            conn = db_pool.getconn()
+            conn = app_state.db_pool.getconn()
             if conn:
                 postgres_connected = True
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
                     cur.fetchone()
                 postgres_active = True
-                db_pool.putconn(conn)
+                app_state.db_pool.putconn(conn)
         except Exception as e:
             postgres_connected = False
             postgres_active = False
             log_message(f"PostgreSQL status check failed: {e}", "DEBUG")
 
     # Update PostgreSQL icon and label
-    if 'postgres_icon' in db_status_widgets and db_status_widgets['postgres_icon'].winfo_exists():
+    if 'postgres_icon' in app_state.db_status_widgets and app_state.db_status_widgets['postgres_icon'].winfo_exists():
         if postgres_connected and postgres_active:
-            db_status_widgets['postgres_icon'].config(text="✅", foreground="green")
-            db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected & Active", foreground="green")
+            app_state.db_status_widgets['postgres_icon'].config(text="✅", foreground="green")
+            app_state.db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected & Active", foreground="green")
         elif postgres_connected:
-            db_status_widgets['postgres_icon'].config(text="⚠️", foreground="orange")
-            db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
+            app_state.db_status_widgets['postgres_icon'].config(text="⚠️", foreground="orange")
+            app_state.db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
         else:
-            db_status_widgets['postgres_icon'].config(text="❌", foreground="gray")
-            db_status_widgets['postgres_status'].config(text="PostgreSQL: Disconnected", foreground="gray")
+            app_state.db_status_widgets['postgres_icon'].config(text="❌", foreground="gray")
+            app_state.db_status_widgets['postgres_status'].config(text="PostgreSQL: Disconnected", foreground="gray")
 
     # --- Valkey/Redis Status ---
     valkey_connected = False
@@ -3230,16 +3141,16 @@ def update_database_status():
         log_message(f"Valkey client not available: hasattr={hasattr(api_handler, 'valkey_client')}, client={api_handler.valkey_client if hasattr(api_handler, 'valkey_client') else 'N/A'}", "DEBUG")
 
     # Update Valkey icon and label
-    if 'valkey_icon' in db_status_widgets and db_status_widgets['valkey_icon'].winfo_exists():
+    if 'valkey_icon' in app_state.db_status_widgets and app_state.db_status_widgets['valkey_icon'].winfo_exists():
         if valkey_connected and valkey_active:
-            db_status_widgets['valkey_icon'].config(text="✅", foreground="green")
-            db_status_widgets['valkey_status'].config(text="Valkey: Connected & Active", foreground="green")
+            app_state.db_status_widgets['valkey_icon'].config(text="✅", foreground="green")
+            app_state.db_status_widgets['valkey_status'].config(text="Valkey: Connected & Active", foreground="green")
         elif valkey_connected:
-            db_status_widgets['valkey_icon'].config(text="⚠️", foreground="orange")
-            db_status_widgets['valkey_status'].config(text="Valkey: Connected (Inactive)", foreground="orange")
+            app_state.db_status_widgets['valkey_icon'].config(text="⚠️", foreground="orange")
+            app_state.db_status_widgets['valkey_status'].config(text="Valkey: Connected (Inactive)", foreground="orange")
         else:
-            db_status_widgets['valkey_icon'].config(text="❌", foreground="gray")
-            db_status_widgets['valkey_status'].config(text="Valkey: Disconnected", foreground="gray")
+            app_state.db_status_widgets['valkey_icon'].config(text="❌", foreground="gray")
+            app_state.db_status_widgets['valkey_status'].config(text="Valkey: Disconnected", foreground="gray")
 
 def update_live_prompt_preview(messages_list):
     """Thread-safe function to update the Live Prompt Preview widget from worker threads."""
@@ -3247,14 +3158,14 @@ def update_live_prompt_preview(messages_list):
     if dashboard_pause_var.get():
         return
 
-    if not root.winfo_exists() or prompt_preview_text is None:
+    if not app_state.root.winfo_exists() or prompt_preview_text is None:
         return
 
     # Format payload for clean JSON readability
     preview_json = json.dumps({"messages": messages_list}, indent=2, ensure_ascii=False)
 
     def _apply_update():
-        if not root.winfo_exists() or prompt_preview_text is None:
+        if not app_state.root.winfo_exists() or prompt_preview_text is None:
             return
         # Double-check pause state in main thread callback
         if dashboard_pause_var.get():
@@ -3266,13 +3177,11 @@ def update_live_prompt_preview(messages_list):
         prompt_preview_text.see(tk.END)  # Auto-scroll to bottom
 
     # Schedule UI update on the main Tkinter thread
-    root.after(0, _apply_update)
+    app_state.root.after(0, _apply_update)
 
 def start_processing():
     """Initiates the data generation process based on current configurations."""
-    global stop_processing, pause_processing, processing_active, num_threads, questions_list, \
-           system_prompts_list, threads, task_queue, completed_task_ids, \
-           loaded_api_processed_tasks_snapshot, loaded_processed_tasks_snapshot, db_pool
+    global loaded_processed_tasks_snapshot
 
     global_config.load() # Ensure latest config.yml is loaded
     log_message("DEBUG: start_processing() function has been called.", "INFO")
@@ -3326,8 +3235,8 @@ def start_processing():
         log_message("Valkey caching is disabled in config.", "INFO")
 
     # Update status after Valkey initialization - give it time to complete
-    if root.winfo_exists():
-        root.after(500, update_database_status)  # Increased delay to 500ms
+    if app_state.root.winfo_exists():
+        app_state.root.after(500, update_database_status)  # Increased delay to 500ms
     # --- End Valkey Initialization ---
 
     should_resume = False # ✅ Correctly indented (function scope)
@@ -3420,12 +3329,12 @@ def start_processing():
         # Get threads from config if available, otherwise use UI value
         config_threads = global_config.get('api.threads')
         if config_threads is not None:
-            num_threads = config_threads
-            num_threads_var.set(str(num_threads))  # Update UI to match config
+            app_state.num_threads = config_threads
+            num_threads_var.set(str(app_state.num_threads))  # Update UI to match config
         else:
-            num_threads = int(num_threads_var.get())
+            app_state.num_threads = int(num_threads_var.get())
         
-        if num_threads <=0: raise ValueError("Number of threads must be positive.")
+        if app_state.num_threads <=0: raise ValueError("Number of threads must be positive.")
     except ValueError:
         messagebox.showerror("Config Error", "Invalid number of threads specified in UI.")
         log_message(f"Invalid number of threads in UI: {num_threads_var.get()}", "ERROR"); return
@@ -3515,19 +3424,19 @@ def start_processing():
     log_message(f"Emotional states enabled: {enable_emotional_states}, States: {emotional_states_list}", "INFO")
 
     base_sys_prompt = global_config.get('prompts.system.base', "You are a helpful assistant.")
-    system_prompts_list = []
+    app_state.system_prompts_list = []
     if current_use_variable_system:
-        system_prompts_list = global_config.get('prompts.system.variations', [])
-    if not system_prompts_list:
+        app_state.system_prompts_list = global_config.get('prompts.system.variations', [])
+    if not app_state.system_prompts_list:
         log_message("Warning: Use variable system prompts ON, but no variations in config. Using base system prompt.", "WARNING")
-        system_prompts_list = [base_sys_prompt]
+        app_state.system_prompts_list = [base_sys_prompt]
     # Fixed: Removed the else block that was overwriting variations with the base prompt
     # Optional: Uncomment the line below if you want the base prompt to also be an option in the random selection pool
     # system_prompts_list.append(base_sys_prompt)
 
-    if not any(p.strip() for p in system_prompts_list):
+    if not any(p.strip() for p in app_state.system_prompts_list):
         log_message("Warning: No valid system prompts loaded (all empty). Using a default.", "WARNING")
-        system_prompts_list = ["You are a helpful assistant."]
+        app_state.system_prompts_list = ["You are a helpful assistant."]
 
     # --- Load Detection Configurations ---
     current_refusal_phrases = global_config.get('detection.refusal.phrases', [])
@@ -3544,18 +3453,18 @@ def start_processing():
     current_slop_fixes_for_rotation = global_config.get('detection.slop.fixes', []) 
 
     # --- Initialize Processing State ---
-    stop_processing = False 
-    pause_processing = False 
-    processing_active = True 
+    app_state.stop_processing = False 
+    app_state.pause_processing = False 
+    app_state.processing_active = True 
     update_dashboard() 
 
-    log_message(f"Start processing: {num_threads} threads. Output: {current_output_format}. Turns: {current_num_turns}. Remove Reasoning: {current_remove_reasoning}. Gender: {active_gender}. Use QFile: {current_use_questions_file}. Use VarSys: {current_use_variable_system}", "INFO")
-    if should_resume: log_message(f"Resuming with {len(completed_task_ids)} previously completed unique tasks.", "INFO")
+    log_message(f"Start processing: {app_state.num_threads} threads. Output: {current_output_format}. Turns: {current_num_turns}. Remove Reasoning: {current_remove_reasoning}. Gender: {active_gender}. Use QFile: {current_use_questions_file}. Use VarSys: {current_use_variable_system}", "INFO")
+    if should_resume: log_message(f"Resuming with {len(app_state.completed_task_ids)} previously completed unique tasks.", "INFO")
 
     for widget in progress_frame.winfo_children(): 
         widget.destroy()
-    task_queue = Queue() 
-    task_queue.api_widgets = {} 
+    app_state.task_queue = Queue() 
+    app_state.task_queue.api_widgets = {} 
 
     # --- Define Number of Tasks to Generate (New) ---
     NUM_RANDOM_CHUNKS = global_config.get('generation.num_random_chunks', 12000) # Change this number to generate more or fewer tasks per run
@@ -3563,30 +3472,30 @@ def start_processing():
     # --- Populate Task Queue ---
     if current_use_questions_file:
         try:
-            questions_list = read_txt(QUESTIONS_FILE_PATH)
-            if not questions_list:
+            app_state.questions_list = read_txt(QUESTIONS_FILE_PATH)
+            if not app_state.questions_list:
                 messagebox.showwarning("Input Error", f"{QUESTIONS_FILE_PATH} is enabled but empty/not found.")
                 log_message(f"{QUESTIONS_FILE_PATH} enabled but empty/not found.", "WARNING")
-                processing_active = False; start_button.config(state=tk.NORMAL); return
+                app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
         except Exception as e:
             messagebox.showerror("File Error", f"Error reading {QUESTIONS_FILE_PATH}: {e}")
             log_message(f"Error reading {QUESTIONS_FILE_PATH}: {e}", "ERROR")
-            processing_active = False; start_button.config(state=tk.NORMAL); return
+            app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
     else: 
-        questions_list = [] 
+        app_state.questions_list = [] 
 
     input_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('.txt') and f != os.path.basename(QUESTIONS_FILE_PATH)]
     if not current_use_questions_file and not input_files:
         messagebox.showwarning("Input Error", "No input .txt files found in 'input' folder (and not using questions.txt).")
         log_message("No input .txt files found for chunking.", "WARNING")
-        processing_active = False; start_button.config(state=tk.NORMAL); return
+        app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
 
     total_tasks_to_queue = 0
     if current_use_questions_file:
-        for i, q_text in enumerate(questions_list):
+        for i, q_text in enumerate(app_state.questions_list):
             task_id = f"q_{i}" 
-            if task_id not in completed_task_ids: 
-                task_queue.put((task_id, os.path.basename(QUESTIONS_FILE_PATH), i, q_text))
+            if task_id not in app_state.completed_task_ids: 
+                app_state.task_queue.put((task_id, os.path.basename(QUESTIONS_FILE_PATH), i, q_text))
                 total_tasks_to_queue += 1
     else: # Chunk input files (Randomized)
         subject_size = subject_size_conf
@@ -3630,7 +3539,7 @@ def start_processing():
                 task_id = f"{random_file_name}_chunk_at_{random_start_index}"
 
                 # 5. Check if this specific chunk has already been completed (e.g., from a previous run)
-                if task_id not in completed_task_ids:
+                if task_id not in app_state.completed_task_ids:
 
                     # --- Perform the Chunking ---
                     subject_actual_end = min(random_start_index + subject_size, file_content_len)
@@ -3660,7 +3569,7 @@ def start_processing():
                     current_context_text = full_file_content[context_start_index:context_end_index]
 
                     # 6. Add the task to the queue
-                    task_queue.put((task_id, random_file_name, random_start_index, current_subject_content, current_context_text))
+                    app_state.task_queue.put((task_id, random_file_name, random_start_index, current_subject_content, current_context_text))
                     tasks_queued_count += 1
                     total_tasks_to_queue += 1 # Update the global counter used for progress bars
                 else:
@@ -3673,41 +3582,41 @@ def start_processing():
 
         log_message(f"Attempted to queue {NUM_RANDOM_CHUNKS} random tasks. Successfully queued {tasks_queued_count} new unique tasks.", "INFO")
 
-    if total_tasks_to_queue == 0 and not completed_task_ids: 
+    if total_tasks_to_queue == 0 and not app_state.completed_task_ids: 
         messagebox.showwarning("Processing Error", "No tasks to process (all inputs might be empty, or no new tasks found).")
-        log_message("No tasks to queue.", "WARNING"); processing_active = False; start_button.config(state=tk.NORMAL); return
-    elif total_tasks_to_queue == 0 and completed_task_ids: # All tasks were already done
+        log_message("No tasks to queue.", "WARNING"); app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
+    elif total_tasks_to_queue == 0 and app_state.completed_task_ids: # All tasks were already done
         messagebox.showinfo("Processing Complete", "All tasks were already completed in a previous session.")
-        log_message("All tasks already completed. Nothing new to queue.", "INFO"); processing_active = False; start_button.config(state=tk.NORMAL); return
+        log_message("All tasks already completed. Nothing new to queue.", "INFO"); app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
 
-    task_queue.all_tasks_queued = True 
+    app_state.task_queue.all_tasks_queued = True 
     
     # **FIX ISSUE 1**: Adjust total_tasks_for_progress to account for turns
-    num_unique_tasks_for_run = total_tasks_to_queue + len(completed_task_ids)
+    num_unique_tasks_for_run = total_tasks_to_queue + len(app_state.completed_task_ids)
     # current_num_turns is already loaded from config
     actual_total_for_progress_bars = num_unique_tasks_for_run * current_num_turns
     
     log_message(f"Queued {total_tasks_to_queue} new unique tasks. Total unique tasks for run: {num_unique_tasks_for_run}. Effective total for progress bars (considering {current_num_turns} turns): {actual_total_for_progress_bars}", "INFO")
 
-    task_queue.total_tasks_for_progress = actual_total_for_progress_bars # This is Y in X/Y
-    task_queue.processed_tasks_lock = Lock() 
+    app_state.task_queue.total_tasks_for_progress = actual_total_for_progress_bars # This is Y in X/Y
+    app_state.task_queue.processed_tasks_lock = Lock() 
 
     # --- Setup Progress Bars ---
     if master_duplication_enabled:
-        task_queue.api_processed_tasks = {i: 0 for i in range(4)} 
-        task_queue.api_start_times_list = {i: [] for i in range(4)} 
+        app_state.task_queue.api_processed_tasks = {i: 0 for i in range(4)} 
+        app_state.task_queue.api_start_times_list = {i: [] for i in range(4)} 
         active_api_count_for_progress_ui = 0
 
-        if should_resume and loaded_api_processed_tasks_snapshot is not None:
+        if should_resume and app_state.loaded_api_processed_tasks_snapshot is not None:
             for api_idx_resume in range(4): 
-                if api_idx_resume in loaded_api_processed_tasks_snapshot:
+                if api_idx_resume in app_state.loaded_api_processed_tasks_snapshot:
                     # Snapshot stores turns processed, which is correct for the new total
-                    task_queue.api_processed_tasks[api_idx_resume] = loaded_api_processed_tasks_snapshot[api_idx_resume]
+                    app_state.task_queue.api_processed_tasks[api_idx_resume] = app_state.loaded_api_processed_tasks_snapshot[api_idx_resume]
         elif should_resume: 
              for api_idx_resume in range(4):
                 if api_idx_resume < len(all_api_configs_runtime) and all_api_configs_runtime[api_idx_resume].get('enabled'):
                     # Each completed unique task means current_num_turns were processed by this API
-                    task_queue.api_processed_tasks[api_idx_resume] = len(completed_task_ids) * current_num_turns
+                    app_state.task_queue.api_processed_tasks[api_idx_resume] = len(app_state.completed_task_ids) * current_num_turns
 
 
         for api_idx, api_conf in enumerate(all_api_configs_runtime):
@@ -3724,23 +3633,23 @@ def start_processing():
                 percent_label.pack(anchor='e', padx=(0, SPACING))
                 time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
                 time_label.pack(pady=(0,5), anchor='w')
-                task_queue.api_widgets[api_idx] = {
+                app_state.task_queue.api_widgets[api_idx] = {
                     'bar': bar,
                     'time_label': time_label,
                     'name_label': api_name_label,
                     'percent_label': percent_label
                 }
                 
-                current_api_processed_turns = task_queue.api_processed_tasks.get(api_idx, 0)
-                if task_queue.total_tasks_for_progress > 0:
-                    bar['value'] = (current_api_processed_turns / task_queue.total_tasks_for_progress) * 100
+                current_api_processed_turns = app_state.task_queue.api_processed_tasks.get(api_idx, 0)
+                if app_state.task_queue.total_tasks_for_progress > 0:
+                    bar['value'] = (current_api_processed_turns / app_state.task_queue.total_tasks_for_progress) * 100
                 else:
                     bar['value'] = 0
         
         if active_api_count_for_progress_ui == 0 and master_duplication_enabled :
             messagebox.showerror("Config Error", "Master Duplication Mode is ON, but no APIs (Slots 1-4) are enabled or fully configured.")
             log_message("Duplication mode on, but no APIs 0-3 enabled/configured for UI progress bars.", "ERROR")
-            processing_active = False; start_button.config(state=tk.NORMAL); return
+            app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
     else: # Single overall progress bar for non-duplication mode
         overall_progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate",
                                                 style="Low.Horizontal.TProgressbar")
@@ -3750,21 +3659,21 @@ def start_processing():
         overall_percent_label.pack(anchor='e', padx=(0, SPACING))
         overall_time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
         overall_time_label.pack(pady=SPACING)
-        task_queue.overall_progress_bar = overall_progress_bar
-        task_queue.overall_time_label = overall_time_label
-        task_queue.overall_percent_label = overall_percent_label
+        app_state.task_queue.overall_progress_bar = overall_progress_bar
+        app_state.task_queue.overall_time_label = overall_time_label
+        app_state.task_queue.overall_percent_label = overall_percent_label
         # Initialize processed_tasks (turns)
         if should_resume and loaded_processed_tasks_snapshot is not None:
-            task_queue.processed_tasks = loaded_processed_tasks_snapshot
+            app_state.task_queue.processed_tasks = loaded_processed_tasks_snapshot
         elif should_resume:
-            task_queue.processed_tasks = len(completed_task_ids) * current_num_turns
+            app_state.task_queue.processed_tasks = len(app_state.completed_task_ids) * current_num_turns
         else:
-            task_queue.processed_tasks = 0
+            app_state.task_queue.processed_tasks = 0
         
-        task_queue.start_times_list = [] 
-        if task_queue.total_tasks_for_progress > 0: 
-            overall_progress_bar['value'] = (task_queue.processed_tasks / task_queue.total_tasks_for_progress) * 100
-        elif task_queue.total_tasks_for_progress == 0: 
+        app_state.task_queue.start_times_list = [] 
+        if app_state.task_queue.total_tasks_for_progress > 0: 
+            overall_progress_bar['value'] = (app_state.task_queue.processed_tasks / app_state.task_queue.total_tasks_for_progress) * 100
+        elif app_state.task_queue.total_tasks_for_progress == 0: 
             overall_progress_bar['value'] = 0
 
 
@@ -3774,7 +3683,7 @@ def start_processing():
     quit_button.config(state=tk.NORMAL)
 
     # --- Start Worker Threads ---
-    threads = []
+    app_state.threads = []
     output_data_lock = Lock()
     
     # Determine total number of threads based on API configurations
@@ -3798,14 +3707,14 @@ def start_processing():
     
     for i in range(total_threads):
         thread = threading.Thread(target=worker, args=(
-            i, task_queue, output_data_lock,
+            i, app_state.task_queue, output_data_lock,
             current_use_questions_file,
             current_use_variable_system,
             all_api_configs_runtime,
             active_enabled_api_configs_for_worker_list,
             current_question_prompt, current_answer_prompt, current_user_continuation_prompt,
             current_num_turns,
-            system_prompts_list,
+            app_state.system_prompts_list,
             current_refusal_phrases, current_user_speaking_phrases, current_slop_phrases,
             current_anti_slop_phrases,
             current_anti_slop_fixes,
@@ -3833,7 +3742,7 @@ def start_processing():
             no_user_impersonation_var.get(),
             current_api_request_timeout
         ), name=f"Worker-{i}")
-        threads.append(thread)
+        app_state.threads.append(thread)
         thread.start()
 
     log_message(f"Started {total_threads} worker threads.", "INFO")
@@ -3841,9 +3750,9 @@ def start_processing():
     # --- GUI Progress Update Loop ---
     def update_gui_progress():
         if dashboard_pause_var.get():
-            root.after(1000, update_gui_progress) # Check again in 1s
+            app_state.root.after(1000, update_gui_progress) # Check again in 1s
             return
-        if processing_active and not stop_processing: 
+        if app_state.processing_active and not app_state.stop_processing: 
             check_budget_limit()
             try:
                 process = psutil.Process()
@@ -3852,67 +3761,67 @@ def start_processing():
                     log_message(f"Warning: {len(open_files)} open files", "WARNING")
                 master_duplication_current = master_duplication_enabled_var.get()
 
-                if task_queue and hasattr(task_queue, 'qsize'):
-                    if task_queue.qsize() > 30000:
-                        log_message(f"Queue size: {task_queue.qsize()}", "WARNING")
+                if app_state.task_queue and hasattr(app_state.task_queue, 'qsize'):
+                    if app_state.task_queue.qsize() > 30000:
+                        log_message(f"Queue size: {app_state.task_queue.qsize()}", "WARNING")
                 
-                if master_duplication_current and hasattr(task_queue, 'api_widgets'):
-                    for api_idx, widgets in task_queue.api_widgets.items():
+                if master_duplication_current and hasattr(app_state.task_queue, 'api_widgets'):
+                    for api_idx, widgets in app_state.task_queue.api_widgets.items():
                         if widgets['bar'].winfo_exists():
-                            with task_queue.processed_tasks_lock:
-                                processed_count_api_turns = task_queue.api_processed_tasks.get(api_idx, 0)
-                                times_list_api = task_queue.api_start_times_list.get(api_idx, [])
+                            with app_state.task_queue.processed_tasks_lock:
+                                processed_count_api_turns = app_state.task_queue.api_processed_tasks.get(api_idx, 0)
+                                times_list_api = app_state.task_queue.api_start_times_list.get(api_idx, [])
 
-                            if task_queue.total_tasks_for_progress > 0:
-                                progress_val = (processed_count_api_turns / task_queue.total_tasks_for_progress) * 100
+                            if app_state.task_queue.total_tasks_for_progress > 0:
+                                progress_val = (processed_count_api_turns / app_state.task_queue.total_tasks_for_progress) * 100
                                 if progress_val > 100: progress_val = 100
                                 widgets['bar']['value'] = progress_val
                                 # Animated progress bar: update style and percentage label
                                 update_progress_bar_style(widgets['bar'], progress_val)
-                                pulse_progress_bar(widgets['bar'], f"api_{api_idx}", root)
+                                pulse_progress_bar(widgets['bar'], f"api_{api_idx}", app_state.root)
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
                                     widgets['percent_label'].config(text=f"{progress_val:.1f}%")
-                                time_rem_str = estimate_time_remaining(processed_count_api_turns, task_queue.total_tasks_for_progress, times_list_api)
-                                widgets['time_label'].config(text=f"Time Rem: {time_rem_str} ({processed_count_api_turns}/{task_queue.total_tasks_for_progress} Turns)")
+                                time_rem_str = estimate_time_remaining(processed_count_api_turns, app_state.task_queue.total_tasks_for_progress, times_list_api)
+                                widgets['time_label'].config(text=f"Time Rem: {time_rem_str} ({processed_count_api_turns}/{app_state.task_queue.total_tasks_for_progress} Turns)")
                             else:
                                 widgets['time_label'].config(text="Time Rem: No tasks")
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
                                     widgets['percent_label'].config(text="N/A")
                 
-                elif hasattr(task_queue, 'overall_progress_bar') and task_queue.overall_progress_bar.winfo_exists():
-                    with task_queue.processed_tasks_lock:
-                        processed_count_overall_turns = task_queue.processed_tasks
-                        times_list_overall = task_queue.start_times_list
+                elif hasattr(app_state.task_queue, 'overall_progress_bar') and app_state.task_queue.overall_progress_bar.winfo_exists():
+                    with app_state.task_queue.processed_tasks_lock:
+                        processed_count_overall_turns = app_state.task_queue.processed_tasks
+                        times_list_overall = app_state.task_queue.start_times_list
 
-                    if task_queue.total_tasks_for_progress > 0:
-                        progress_val = (processed_count_overall_turns / task_queue.total_tasks_for_progress) * 100
+                    if app_state.task_queue.total_tasks_for_progress > 0:
+                        progress_val = (processed_count_overall_turns / app_state.task_queue.total_tasks_for_progress) * 100
                         if progress_val > 100: progress_val = 100
-                        task_queue.overall_progress_bar['value'] = progress_val
+                        app_state.task_queue.overall_progress_bar['value'] = progress_val
                         # Animated progress bar: update style and percentage label
-                        update_progress_bar_style(task_queue.overall_progress_bar, progress_val)
-                        pulse_progress_bar(task_queue.overall_progress_bar, "overall", root)
-                        if hasattr(task_queue, 'overall_percent_label') and task_queue.overall_percent_label.winfo_exists():
-                            task_queue.overall_percent_label.config(text=f"{progress_val:.1f}%")
-                        time_rem_str = estimate_time_remaining(processed_count_overall_turns, task_queue.total_tasks_for_progress, times_list_overall)
-                        task_queue.overall_time_label.config(text=f"Time Rem: {time_rem_str} ({processed_count_overall_turns}/{task_queue.total_tasks_for_progress} Turns)")
+                        update_progress_bar_style(app_state.task_queue.overall_progress_bar, progress_val)
+                        pulse_progress_bar(app_state.task_queue.overall_progress_bar, "overall", app_state.root)
+                        if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
+                            app_state.task_queue.overall_percent_label.config(text=f"{progress_val:.1f}%")
+                        time_rem_str = estimate_time_remaining(processed_count_overall_turns, app_state.task_queue.total_tasks_for_progress, times_list_overall)
+                        app_state.task_queue.overall_time_label.config(text=f"Time Rem: {time_rem_str} ({processed_count_overall_turns}/{app_state.task_queue.total_tasks_for_progress} Turns)")
                     else:
-                        task_queue.overall_time_label.config(text="Time Rem: No tasks")
-                        if hasattr(task_queue, 'overall_percent_label') and task_queue.overall_percent_label.winfo_exists():
-                            task_queue.overall_percent_label.config(text="N/A")
+                        app_state.task_queue.overall_time_label.config(text="Time Rem: No tasks")
+                        if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
+                            app_state.task_queue.overall_percent_label.config(text="N/A")
                 
                 update_dashboard() # Refresh dashboard stats
                 update_database_status()
-                if root.winfo_exists():
+                if app_state.root.winfo_exists():
                     # ADAPTIVE UPDATE FREQUENCY
-                    is_active = processing_active and not stop_processing and not pause_processing
-                    has_work = task_queue and hasattr(task_queue, 'qsize') and task_queue.qsize() > 0
+                    is_active = app_state.processing_active and not app_state.stop_processing and not app_state.pause_processing
+                    has_work = app_state.task_queue and hasattr(app_state.task_queue, 'qsize') and app_state.task_queue.qsize() > 0
 
                     delay = 500 if (is_active and has_work) else 2000
-                    root.after(delay, update_gui_progress)
+                    app_state.root.after(delay, update_gui_progress)
             except Exception as e_gui: # Catch errors during GUI update
                 log_message(f"GUI update error: {str(e_gui)}", "ERROR")
-                if processing_active and not stop_processing and root.winfo_exists(): 
-                    root.after(1000, update_gui_progress) 
+                if app_state.processing_active and not app_state.stop_processing and app_state.root.winfo_exists(): 
+                    app_state.root.after(1000, update_gui_progress) 
         else: # Processing stopped or completed
             start_button.config(state=tk.NORMAL)
             pause_button.config(state=tk.DISABLED); pause_button.config(text="Pause")
@@ -3920,69 +3829,68 @@ def start_processing():
             log_message("Processing stopped/completed. GUI updates halted.", "INFO")
             update_dashboard() # Final dashboard update
             master_duplication_final_check = master_duplication_enabled_var.get()
-            if hasattr(task_queue, 'total_tasks_for_progress') and task_queue.total_tasks_for_progress > 0:
-                if master_duplication_final_check and hasattr(task_queue, 'api_widgets'):
-                    for api_idx, widgets in task_queue.api_widgets.items():
+            if hasattr(app_state.task_queue, 'total_tasks_for_progress') and app_state.task_queue.total_tasks_for_progress > 0:
+                if master_duplication_final_check and hasattr(app_state.task_queue, 'api_widgets'):
+                    for api_idx, widgets in app_state.task_queue.api_widgets.items():
                         if widgets['bar'].winfo_exists():
-                            with task_queue.processed_tasks_lock:
-                                processed_api_turns = task_queue.api_processed_tasks.get(api_idx,0)
-                            if processed_api_turns >= task_queue.total_tasks_for_progress:
+                            with app_state.task_queue.processed_tasks_lock:
+                                processed_api_turns = app_state.task_queue.api_processed_tasks.get(api_idx,0)
+                            if processed_api_turns >= app_state.task_queue.total_tasks_for_progress:
                                 widgets['bar']['value'] = 100
                                 # Animated: set to complete style
                                 update_progress_bar_style(widgets['bar'], 100)
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
                                     widgets['percent_label'].config(text="100%", foreground='#51cf66')
                                 widgets['time_label'].config(text="Time Rem: Done!")
-                elif hasattr(task_queue, 'overall_progress_bar') and task_queue.overall_progress_bar.winfo_exists():
-                    with task_queue.processed_tasks_lock:
-                        processed_overall_turns = task_queue.processed_tasks
-                    if processed_overall_turns >= task_queue.total_tasks_for_progress:
-                        task_queue.overall_progress_bar['value'] = 100
+                elif hasattr(app_state.task_queue, 'overall_progress_bar') and app_state.task_queue.overall_progress_bar.winfo_exists():
+                    with app_state.task_queue.processed_tasks_lock:
+                        processed_overall_turns = app_state.task_queue.processed_tasks
+                    if processed_overall_turns >= app_state.task_queue.total_tasks_for_progress:
+                        app_state.task_queue.overall_progress_bar['value'] = 100
                         # Animated: set to complete style
-                        update_progress_bar_style(task_queue.overall_progress_bar, 100)
-                        if hasattr(task_queue, 'overall_percent_label') and task_queue.overall_percent_label.winfo_exists():
-                            task_queue.overall_percent_label.config(text="100%", foreground='#51cf66')
-                        task_queue.overall_time_label.config(text="Time Remaining: Done!")
+                        update_progress_bar_style(app_state.task_queue.overall_progress_bar, 100)
+                        if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
+                            app_state.task_queue.overall_percent_label.config(text="100%", foreground='#51cf66')
+                        app_state.task_queue.overall_time_label.config(text="Time Remaining: Done!")
             save_generation_state() # Save final state
 
-    if root.winfo_exists(): 
-        root.after(100, update_gui_progress) # Start the GUI update loop
+    if app_state.root.winfo_exists(): 
+        app_state.root.after(100, update_gui_progress) # Start the GUI update loop
 
     # --- Wait for Threads Completion (in a separate thread to not block UI) ---
     def wait_for_completion():
-        global processing_active, stop_processing 
-        for t_item in threads: 
+        for t_item in app_state.threads: 
             if t_item.is_alive(): 
                 t_item.join() # Wait for each worker thread to finish
 
-        if task_queue: 
-            task_queue.join() # Wait for all tasks in the queue to be processed
+        if app_state.task_queue: 
+            app_state.task_queue.join() # Wait for all tasks in the queue to be processed
 
         log_message("All tasks completed or processing stopped. All threads joined.", "INFO")
-        processing_active = False 
+        app_state.processing_active = False 
         
-        if not stop_processing: 
+        if not app_state.stop_processing: 
             all_done = False 
             master_duplication_at_end = master_duplication_enabled_var.get()
-            if hasattr(task_queue, 'total_tasks_for_progress') and task_queue.total_tasks_for_progress > 0:
-                if master_duplication_at_end and hasattr(task_queue, 'api_processed_tasks'):
+            if hasattr(app_state.task_queue, 'total_tasks_for_progress') and app_state.task_queue.total_tasks_for_progress > 0:
+                if master_duplication_at_end and hasattr(app_state.task_queue, 'api_processed_tasks'):
                     all_apis_finished = True
                     for api_idx_check, api_conf_check in enumerate(all_api_configs_runtime):
                         if api_idx_check < 4 and api_conf_check.get('enabled') and api_conf_check.get('url') and api_conf_check.get('key'):
-                            if task_queue.api_processed_tasks.get(api_idx_check, 0) < task_queue.total_tasks_for_progress:
+                            if app_state.task_queue.api_processed_tasks.get(api_idx_check, 0) < app_state.task_queue.total_tasks_for_progress:
                                 all_apis_finished = False; break
                     if all_apis_finished : all_done = True
-                elif not master_duplication_at_end and hasattr(task_queue, 'processed_tasks'):
-                    if task_queue.processed_tasks >= task_queue.total_tasks_for_progress:
+                elif not master_duplication_at_end and hasattr(app_state.task_queue, 'processed_tasks'):
+                    if app_state.task_queue.processed_tasks >= app_state.task_queue.total_tasks_for_progress:
                         all_done = True
-            elif hasattr(task_queue, 'total_tasks_for_progress') and task_queue.total_tasks_for_progress == 0: 
+            elif hasattr(app_state.task_queue, 'total_tasks_for_progress') and app_state.task_queue.total_tasks_for_progress == 0: 
                 all_done = True # No tasks were queued, so technically "done"
 
-            if root.winfo_exists(): 
+            if app_state.root.winfo_exists(): 
                 if all_done:
-                    root.after(0, lambda: messagebox.showinfo("Processing Complete", "All tasks have been processed successfully!"))
+                    app_state.root.after(0, lambda: messagebox.showinfo("Processing Complete", "All tasks have been processed successfully!"))
                 else: 
-                    root.after(0, lambda: messagebox.showinfo("Processing Finished", "Processing has finished. Some tasks may not have completed fully. Check logs."))
+                    app_state.root.after(0, lambda: messagebox.showinfo("Processing Finished", "Processing has finished. Some tasks may not have completed fully. Check logs."))
         # If stop_processing was true, the quit_application or stop_and_clear_job will handle messages.
 
     completion_thread = threading.Thread(target=wait_for_completion, name="CompletionWaiter")
@@ -3991,9 +3899,8 @@ def start_processing():
 
 def toggle_pause():
     """Toggles the pause state of the generation process."""
-    global pause_processing
-    pause_processing = not pause_processing
-    if pause_processing:
+    app_state.pause_processing = not app_state.pause_processing
+    if app_state.pause_processing:
         pause_button.config(text="Resume")
         log_message("Processing paused.", "INFO")
     else:
@@ -4014,15 +3921,14 @@ def toggle_pause():
 
 def update_num_threads(event=None): 
     """Updates the number of worker threads based on UI input, effective on next 'Start'."""
-    global num_threads
     try:
         new_num = int(num_threads_var.get())
         if new_num <= 0: raise ValueError("Threads must be > 0.")
-        num_threads = new_num # This will be used when start_processing is next called
+        app_state.num_threads = new_num # This will be used when start_processing is next called
         log_message(f"Number of threads set to {new_num} (effective on next Start).", "INFO")
     except ValueError as e:
         log_message(f"Invalid num_threads value entered: {num_threads_var.get()}. Error: {e}", "ERROR")
-        num_threads_var.set(str(num_threads)) # Revert to last valid number
+        num_threads_var.set(str(app_state.num_threads)) # Revert to last valid number
 
 def read_book(file_path):
     """Reads the entire content of a text file."""
@@ -4041,7 +3947,7 @@ def read_txt(file_path):
 def open_config_editor():
     global_config.load()
     try:
-        editor = ConfigEditor(root, global_config, master_duplication_enabled_var, no_user_impersonation_var, on_config_saved=update_dashboard)
+        editor = ConfigEditor(app_state.root, global_config, master_duplication_enabled_var, no_user_impersonation_var, on_config_saved=update_dashboard)
         editor.grab_set()
     except Exception as e:
         log_message(f"ConfigEditor failed to initialize: {e}", "ERROR")
@@ -4051,7 +3957,7 @@ def open_config_editor():
 
 def test_valkey_connection():
     """Test Valkey connection and show detailed results."""
-    if not root.winfo_exists():
+    if not app_state.root.winfo_exists():
         return
 
     valkey_enabled = global_config.get('valkey.enabled', True)
@@ -4091,8 +3997,8 @@ def test_valkey_connection():
         log_message("Updated api_handler.valkey_client with working connection", "DEBUG")
 
         # Update GUI status immediately after successful test
-        if root.winfo_exists():
-            root.after(100, update_database_status)
+        if app_state.root.winfo_exists():
+            app_state.root.after(100, update_database_status)
 
         # Try to get server info
         try:
@@ -4128,17 +4034,17 @@ def test_valkey_connection():
 # --- Color Constants ---
 ACCENT_CYAN = '#17a2b8'  # Teal/cyan accent for superhero theme
 
-root = ttkbs.Window(themename="superhero")
-root.title("Main UI")
-root.minsize(1100, 700)  # Prevents layout breakage on resize
-root.grid_columnconfigure(0, weight=1)
-root.grid_rowconfigure(0, weight=1)
+app_state.root = ttkbs.Window(themename="superhero")
+app_state.root.title("Main UI")
+app_state.root.minsize(1100, 700)  # Prevents layout breakage on resize
+app_state.root.grid_columnconfigure(0, weight=1)
+app_state.root.grid_rowconfigure(0, weight=1)
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
     try:
         icon_img = tk.PhotoImage(file=icon_path)
         # False = apply only to root window. True forces it on all children (causes X11 crashes)
-        root.iconphoto(False, icon_img)  # True applies it to all child windows/dialogs
+        app_state.root.iconphoto(False, icon_img)  # True applies it to all child windows/dialogs
     except Exception as e:
         log_message(f"Failed to load taskbar icon: {e}", "WARNING")
 else:
@@ -4256,18 +4162,16 @@ def update_progress_bar_style(bar, progress_percent, error_state=False):
 
 
 # Track the previous progress percentage for each bar to detect milestone changes
-_previous_progress_values = {}
 
 
 def pulse_progress_bar(bar, bar_key, root_window):
     """Briefly flashes a progress bar to a brighter color when a milestone is crossed,
     then reverts it back after a short delay."""
-    global _previous_progress_values
     if not bar or not hasattr(bar, 'winfo_exists') or not bar.winfo_exists():
         return
 
     current_value = bar['value']
-    previous_value = _previous_progress_values.get(bar_key, 0)
+    previous_value = app_state._previous_progress_values.get(bar_key, 0)
 
     # Define milestones at which to pulse (every 25%)
     milestones = [25, 50, 75, 90, 100]
@@ -4286,7 +4190,7 @@ def pulse_progress_bar(bar, bar_key, root_window):
                 pass
             break
 
-    _previous_progress_values[bar_key] = current_value
+    app_state._previous_progress_values[bar_key] = current_value
 
 
 # Configure the styles on startup
@@ -4323,9 +4227,9 @@ postgres_connected_var = tk.BooleanVar(value=False)
 postgres_active_var = tk.BooleanVar(value=False)
 valkey_connected_var = tk.BooleanVar(value=False)
 valkey_active_var = tk.BooleanVar(value=False)
-db_status_widgets = {}
+app_state.db_status_widgets = {}
 
-header_frame = ttk.Frame(root)
+header_frame = ttk.Frame(app_state.root)
 header_frame.pack(pady=(10, 5), padx=SPACING, fill="x")
 
 title_label = ttk.Label(
@@ -4344,17 +4248,17 @@ version_label = ttk.Label(
 )
 version_label.pack(side=tk.LEFT, padx=(10, 0))
 
-ttk.Separator(root, orient='horizontal').pack(fill='x', padx=SPACING, pady=(0, SPACING))
+ttk.Separator(app_state.root, orient='horizontal').pack(fill='x', padx=SPACING, pady=(0, SPACING))
 
 # --- UI Controls Frame ---
-controls_frame = ttk.Frame(root); controls_frame.pack(pady=SPACING, padx=SPACING, fill="x")
+controls_frame = ttk.Frame(app_state.root); controls_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 # Threads input removed from main window - now configured per API in the config editor
 
 # --- Metrics Display Frame ---
 
 # Replace your current metrics_frame section with:
 
-metrics_frame = ttk.Frame(root)
+metrics_frame = ttk.Frame(app_state.root)
 metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 # Helper to create a metric card
@@ -4371,7 +4275,7 @@ slop_label = create_metric_card(metrics_frame, "Slop", "🧹")
 error_percent_label = create_metric_card(metrics_frame, "Errors", "⚠️")
 
 # Secondary metrics row
-metrics_row2 = ttk.Frame(root)
+metrics_row2 = ttk.Frame(app_state.root)
 metrics_row2.pack(pady=(0, SPACING), padx=SPACING, fill="x")
 
 token_label = create_metric_card(metrics_row2, "Tokens", "🔢")
@@ -4380,17 +4284,16 @@ budget_label = create_metric_card(metrics_row2, "Budget", "📊")
 thread_status_label = create_metric_card(metrics_row2, "Threads", "🧵")
 
 # Rate Limit Status Labels
-rate_limit_frame = ttk.LabelFrame(root, text="Rate Limit Status (Requests/Min)")
+rate_limit_frame = ttk.LabelFrame(app_state.root, text="Rate Limit Status (Requests/Min)")
 rate_limit_frame.pack(pady=SPACING, padx=SPACING, fill="x")
-rate_limit_labels = {}
 for slot_idx in range(6):
     label = ttk.Label(rate_limit_frame, text=f"API {slot_idx+1}: --/--")
     label.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
-    rate_limit_labels[slot_idx] = label
+    app_state.rate_limit_labels[slot_idx] = label
 # --- End of Metrics Display Frame ---
 
 # --- Database Connection Status Frame ---
-db_status_frame = ttk.LabelFrame(root, text="🗄️ Database & Cache Status")
+db_status_frame = ttk.LabelFrame(app_state.root, text="🗄️ Database & Cache Status")
 db_status_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 # Add refresh button to db_status_frame
@@ -4449,7 +4352,7 @@ valkey_status_label = ttk.Label(
 valkey_status_label.pack(side=tk.LEFT, padx=SPACING)
 
 # Store references for updates
-db_status_widgets = {
+app_state.db_status_widgets = {
     'postgres_icon': postgres_icon_label,
     'postgres_status': postgres_status_label,
     'valkey_icon': valkey_icon_label,
@@ -4457,7 +4360,7 @@ db_status_widgets = {
 }
 
 # --- API Response Time Display Frame ---
-api_response_times_frame = tk.LabelFrame(root, text="API Response Times"); api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
+api_response_times_frame = tk.LabelFrame(app_state.root, text="API Response Times"); api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 for slot_idx in range(6):
     slot_label_name = f"api_response_time_label_{slot_idx+1}"
     slot_label = ttk.Label(api_response_times_frame, text=f"API {slot_idx+1}: No data yet", font=('TkDefaultFont', 8))
@@ -4466,10 +4369,10 @@ for slot_idx in range(6):
 # --- End of API Response Time Display Frame ---
 
 # --- Progress Bars Frame ---
-progress_frame = ttk.Frame(root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
+progress_frame = ttk.Frame(app_state.root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 # --- Main Action Buttons Frame ---
-button_frame = ttk.Frame(root); button_frame.pack(pady=SPACING)
+button_frame = ttk.Frame(app_state.root); button_frame.pack(pady=SPACING)
 
 start_button = ttk.Button(
     button_frame,
@@ -4498,9 +4401,8 @@ def toggle_debug_logging():
 # --- Stop and Clear Job Functionality ---
 def stop_and_clear_processing_job():
     """Stops the current job, clears its progress, and resets UI for a new start."""
-    global stop_processing, processing_active, threads, task_queue, root
 
-    if not processing_active and (not threads or not any(t.is_alive() for t in threads if t)):
+    if not app_state.processing_active and (not app_state.threads or not any(t.is_alive() for t in app_state.threads if t)):
         log_message("No active processing job to stop and clear. Resetting for fresh start.", "INFO")
         if os.path.exists(STATE_FILE_PATH):
             try: os.remove(STATE_FILE_PATH); log_message(f"Removed state file: {STATE_FILE_PATH}", "INFO")
@@ -4517,7 +4419,7 @@ def stop_and_clear_processing_job():
 
     if messagebox.askokcancel("Stop & Clear Job", "Stop current job and clear its progress? This allows starting a new job fresh. Output files won't be deleted by this action."):
         log_message("Stop & Clear Job pressed. Initiating stop and clear.", "INFO")
-        stop_processing = True # Signal threads to stop
+        app_state.stop_processing = True # Signal threads to stop
 
         start_button.config(state=tk.DISABLED)
         pause_button.config(text="Pause", state=tk.DISABLED)
@@ -4529,51 +4431,49 @@ def stop_and_clear_processing_job():
 
 def update_thread_status_display():
     """Periodically updates the thread count label in the GUI."""
-    global threads
     try:
         # Safely count spawned and active threads
-        spawned = len(threads) if 'threads' in globals() and threads else 0
-        active = sum(1 for t in threads if t.is_alive()) if spawned > 0 else 0
+        spawned = len(app_state.threads) if 'threads' in globals() and app_state.threads else 0
+        active = sum(1 for t in app_state.threads if t.is_alive()) if spawned > 0 else 0
         thread_status_label.config(text=f"Threads: {spawned} spawned, {active} active")
     except Exception:
         thread_status_label.config(text="Threads: 0 spawned, 0 active")
 
     # Schedule next update every 1 second
-    if root.winfo_exists():
-        root.after(1000, update_thread_status_display)
+    if app_state.root.winfo_exists():
+        app_state.root.after(1000, update_thread_status_display)
 
 def wait_for_threads_to_stop_for_clear():
     """Helper function to join threads and clear state after stop_and_clear_job is initiated."""
-    global processing_active, threads, task_queue
 
-    if task_queue and threads: # Send sentinels to worker threads
-        active_thread_count = sum(1 for t in threads if t.is_alive())
-        num_sentinels = active_thread_count if active_thread_count > 0 else len(threads)
+    if app_state.task_queue and app_state.threads: # Send sentinels to worker threads
+        active_thread_count = sum(1 for t in app_state.threads if t.is_alive())
+        num_sentinels = active_thread_count if active_thread_count > 0 else len(app_state.threads)
         log_message(f"Stop & Clear: Attempting to stop threads by queueing {num_sentinels} sentinels.", "DEBUG")
         for _ in range(num_sentinels):
             try:
-                if task_queue: task_queue.put(None, block=False, timeout=0.05)
+                if app_state.task_queue: app_state.task_queue.put(None, block=False, timeout=0.05)
             except Full: log_message("Stop & Clear: Queue full while putting sentinel.", "WARNING"); break
             except Exception as e: log_message(f"Stop & Clear: Error putting sentinel: {e}", "WARNING")
 
-    if threads: # Join threads
-        log_message(f"Stop & Clear: Waiting for {len(threads)} worker threads to join...", "INFO")
-        for t in threads:
+    if app_state.threads: # Join threads
+        log_message(f"Stop & Clear: Waiting for {len(app_state.threads)} worker threads to join...", "INFO")
+        for t in app_state.threads:
             if t.is_alive():
                 try:
                     t.join(timeout=1.0) 
                     if t.is_alive(): log_message(f"Stop & Clear: Thread {t.name} did not join in time.", "WARNING")
                 except Exception as e: log_message(f"Stop & Clear: Error joining thread {t.name}: {e}", "WARNING")
         log_message("Stop & Clear: All worker threads joined or timed out.", "INFO")
-        threads = [] # Clear the list of threads
+        app_state.threads = [] # Clear the list of threads
 
-    processing_active = False # Mark processing as fully stopped
+    app_state.processing_active = False # Mark processing as fully stopped
 
-    if task_queue: # Clear and reinitialize the task queue
-        while not task_queue.empty():
-            try: task_queue.get_nowait()
+    if app_state.task_queue: # Clear and reinitialize the task queue
+        while not app_state.task_queue.empty():
+            try: app_state.task_queue.get_nowait()
             except Empty: break
-        task_queue = Queue() 
+        app_state.task_queue = Queue() 
         log_message("Stop & Clear: Task queue cleared and reinitialized.", "INFO")
 
     if os.path.exists(STATE_FILE_PATH): # Remove the state file for a fresh start next time
@@ -4583,8 +4483,8 @@ def wait_for_threads_to_stop_for_clear():
     reset_all_stats_and_history() # Reset all counters, completed_task_ids, etc.
     log_message("Stop & Clear: All statistics and in-memory progress reset.", "INFO")
 
-    if root.winfo_exists(): # Schedule UI finalization on the main thread
-        root.after(0, finalize_stop_and_clear_ui)
+    if app_state.root.winfo_exists(): # Schedule UI finalization on the main thread
+        app_state.root.after(0, finalize_stop_and_clear_ui)
 
 def finalize_stop_and_clear_ui():
     """Finalizes UI updates after a 'Stop & Clear Job' operation."""
@@ -4626,10 +4526,9 @@ debug_log_check.pack(side=tk.LEFT, padx=SPACING)
 
 def quit_application():
     """Handles graceful shutdown of the application when Quit button or window X is clicked."""
-    global stop_processing, processing_active, threads, task_queue, root
     if messagebox.askokcancel("Quit", "Are you sure you want to quit? This will stop any ongoing generation and save progress."):
         log_message("Quit button pressed. Initiating shutdown.", "INFO")
-        stop_processing = True # Signal threads to stop
+        app_state.stop_processing = True # Signal threads to stop
 
         start_button.config(state=tk.DISABLED)
         pause_button.config(state=tk.DISABLED)
@@ -4638,22 +4537,22 @@ def quit_application():
         quit_button.config(state=tk.DISABLED)
 
 
-        if task_queue and threads and any(t.is_alive() for t in threads): 
-            active_thread_count = sum(1 for t in threads if t.is_alive())
-            num_sentinels = active_thread_count if active_thread_count > 0 else len(threads) 
+        if app_state.task_queue and app_state.threads and any(t.is_alive() for t in app_state.threads): 
+            active_thread_count = sum(1 for t in app_state.threads if t.is_alive())
+            num_sentinels = active_thread_count if active_thread_count > 0 else len(app_state.threads) 
             log_message(f"Quit: Attempting to stop threads by queueing {num_sentinels} sentinels.", "DEBUG")
             for _ in range(num_sentinels): 
                 try:
-                    if task_queue: task_queue.put(None, block=False, timeout=0.05)
+                    if app_state.task_queue: app_state.task_queue.put(None, block=False, timeout=0.05)
                 except Full: 
                     log_message("Quit: Queue full while trying to put sentinel. Threads might be stuck.", "WARNING")
                     break 
                 except Exception as e: 
                     log_message(f"Quit: Error putting sentinel in queue: {e}", "WARNING")
         
-        if threads:
-            log_message(f"Quit: Waiting for {len(threads)} worker threads to join...", "INFO")
-            for t in threads:
+        if app_state.threads:
+            log_message(f"Quit: Waiting for {len(app_state.threads)} worker threads to join...", "INFO")
+            for t in app_state.threads:
                 if t.is_alive():
                     try:
                         t.join(timeout=1.0) # Short timeout for joining
@@ -4663,16 +4562,16 @@ def quit_application():
                         log_message(f"Quit: Error joining thread {t.name}: {e}", "WARNING")
             log_message("Quit: All worker threads joined or timed out.", "INFO")
         
-        processing_active = False # Mark processing as fully stopped
+        app_state.processing_active = False # Mark processing as fully stopped
 
         log_message("Quit: Saving generation state before exiting...", "INFO")
         save_generation_state() # Save final progress
 
         log_message("Quit: Destroying Tkinter root window...", "INFO")
-        if root and hasattr(root, 'winfo_exists') and root.winfo_exists(): 
-            root.destroy() 
-        if db_pool:
-            db_pool.closeall()
+        if app_state.root and hasattr(app_state.root, 'winfo_exists') and app_state.root.winfo_exists(): 
+            app_state.root.destroy() 
+        if app_state.db_pool:
+            app_state.db_pool.closeall()
             log_message("PostgreSQL pool closed.", "INFO")
         log_message("Application shutdown sequence complete. Exiting process.", "INFO")
         sys.exit(0) # Terminate the script
@@ -4683,14 +4582,14 @@ quit_button = ttk.Button(
     command=quit_application
 )
 quit_button.pack(side=tk.LEFT, padx=SPACING)
-root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
+app_state.root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
-status_bar = ttk.Label(root, text="Ready", foreground="lightgray", anchor="w")
+status_bar = ttk.Label(app_state.root, text="Ready", foreground="lightgray", anchor="w")
 status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=SPACING, pady=SPACING)
 
 def force_recovery():
     """Bypasses config checks and forces state reload + thread restart."""
-    if not processing_active and not any(t.is_alive() for t in threads):
+    if not app_state.processing_active and not any(t.is_alive() for t in app_state.threads):
         if os.path.exists(STATE_FILE_PATH):
             if load_generation_state():
                 log_message("Force recovery: State loaded. Ready to resume.", "INFO")
@@ -4717,9 +4616,9 @@ def trigger_export():
         start_button.config(state=tk.DISABLED)
         status_bar.config(text="Exporting from PostgreSQL...", foreground="blue")
         success = export_db_to_jsonl(file_path)
-        root.after(0, lambda: status_bar.config(text="Export complete!" if success else "Export failed.",
+        app_state.root.after(0, lambda: status_bar.config(text="Export complete!" if success else "Export failed.",
                                                 foreground="green" if success else "red"))
-        root.after(0, lambda: start_button.config(state=tk.NORMAL))
+        app_state.root.after(0, lambda: start_button.config(state=tk.NORMAL))
 
     threading.Thread(target=run_export, daemon=True).start()
 
@@ -4746,29 +4645,26 @@ recovery_button.pack(side=tk.LEFT, padx=SPACING)
 
 
 def clear_dashboard():
-    global recent_refusals_total, recent_user_speaking_total, recent_slop_total, recent_errors_total, recent_anti_slop_total
-    global recent_refusals_per_api, recent_user_speaking_per_api, recent_slop_per_api, recent_errors_per_api, recent_anti_slop_per_api
-    global issue_timestamps, issue_timestamps_lock
 
     # Clear total recent lists
-    recent_refusals_total = []
-    recent_user_speaking_total = []
-    recent_slop_total = []
-    recent_anti_slop_total = []
-    recent_errors_total = []
+    app_state.recent_refusals_total = []
+    app_state.recent_user_speaking_total = []
+    app_state.recent_slop_total = []
+    app_state.recent_anti_slop_total = []
+    app_state.recent_errors_total = []
 
     # Clear per-API recent lists
     for i in range(6):
-        recent_refusals_per_api[i] = []
-        recent_user_speaking_per_api[i] = []
-        recent_slop_per_api[i] = []
-        recent_anti_slop_per_api[i] = []
-        recent_errors_per_api[i] = []
+        app_state.recent_refusals_per_api[i] = []
+        app_state.recent_user_speaking_per_api[i] = []
+        app_state.recent_slop_per_api[i] = []
+        app_state.recent_anti_slop_per_api[i] = []
+        app_state.recent_errors_per_api[i] = []
 
     # Clear graph timestamps safely
-    with issue_timestamps_lock:
-        for key in issue_timestamps:
-            issue_timestamps[key] = []
+    with app_state.issue_timestamps_lock:
+        for key in app_state.issue_timestamps:
+            app_state.issue_timestamps[key] = []
 
     # Refresh the UI
     update_dashboard()
@@ -4777,7 +4673,7 @@ def clear_dashboard():
 # --- Dashboard Setup ---
 
 # --- Dashboard Setup ---
-dashboard_outer_frame = ttk.Frame(root); dashboard_outer_frame.pack(pady=SPACING, padx=SPACING, fill=tk.BOTH, expand=True)
+dashboard_outer_frame = ttk.Frame(app_state.root); dashboard_outer_frame.pack(pady=SPACING, padx=SPACING, fill=tk.BOTH, expand=True)
 
 dashboard_toolbar = ttk.Frame(dashboard_outer_frame)
 dashboard_toolbar.pack(fill=tk.X, pady=(0, 5))
@@ -4989,26 +4885,25 @@ def copy_dashboard_tab(tab_name):
                 clipboard_text.append(f"--- {key.upper()} ---\n{content}\n")
 
     if clipboard_text:
-        root.clipboard_clear()
-        root.clipboard_append("\n".join(clipboard_text))
-        root.update()
+        app_state.root.clipboard_clear()
+        app_state.root.clipboard_append("\n".join(clipboard_text))
+        app_state.root.update()
         status_bar.config(text="Dashboard text copied to clipboard!", foreground="green")
     else:
         status_bar.config(text="No data to copy.", foreground="orange")
 
 def update_dashboard_safe(): 
     """Safely updates the dashboard, checking if the root window still exists. Called from ConfigEditor."""
-    if root.winfo_exists(): 
+    if app_state.root.winfo_exists(): 
         update_dashboard()
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 
 def init_database_pool():
     """Initializes PostgreSQL connection pool at app startup."""
-    global db_pool
     if global_config.get('database.enabled', False):
         try:
             from psycopg2 import pool
-            db_pool = pool.ThreadedConnectionPool(
+            app_state.db_pool = pool.ThreadedConnectionPool(
                 minconn=2, maxconn=global_config.get('database.pool_size', 10),
                 host=global_config.get('database.host'), port=global_config.get('database.port'),
                 dbname=global_config.get('database.dbname'), user=global_config.get('database.user'),
@@ -5016,30 +4911,30 @@ def init_database_pool():
             )
             log_message("PostgreSQL connection pool initialized at startup.", "INFO")
             # Update status after initialization
-            if root.winfo_exists():
-                root.after(100, update_database_status)
+            if app_state.root.winfo_exists():
+                app_state.root.after(100, update_database_status)
         except Exception as e:
             log_message(f"Failed to init DB pool at startup: {e}", "ERROR")
-            db_pool = None
+            app_state.db_pool = None
             # Update status to show disconnected
-            if root.winfo_exists():
-                root.after(100, update_database_status)
+            if app_state.root.winfo_exists():
+                app_state.root.after(100, update_database_status)
     else:
-        db_pool = None
+        app_state.db_pool = None
         log_message("PostgreSQL database disabled in config.", "INFO")
-        if root.winfo_exists():
-            root.after(100, update_database_status)
+        if app_state.root.winfo_exists():
+            app_state.root.after(100, update_database_status)
 
 reset_all_stats_and_history() # Initialize stats on startup
 update_dashboard() # Initial dashboard display
 init_database_pool() # <-- NEW: Initialize DB on launch
 update_database_status()  # NEW: Initial status update
 
-root.after(1000, update_thread_status_display)
+app_state.root.after(1000, update_thread_status_display)
 
 if __name__ == "__main__":
     try:
-        root.mainloop() # Start the Tkinter event loop
+        app_state.root.mainloop() # Start the Tkinter event loop
     except Exception as e: 
         error_message = f"Critical error in main execution: {str(e)}"
         log_message(error_message, "CRITICAL")
@@ -5049,12 +4944,12 @@ if __name__ == "__main__":
             traceback.print_exc(file=f_err)
     finally: 
         log_message("Application exiting via main finally block.", "INFO")
-        if not stop_processing: # If not already stopped (e.g., by Quit button)
-            stop_processing = True # Signal threads to stop
-            if task_queue and threads:
-                for _ in range(len(threads)): 
+        if not app_state.stop_processing: # If not already stopped (e.g., by Quit button)
+            app_state.stop_processing = True # Signal threads to stop
+            if app_state.task_queue and app_state.threads:
+                for _ in range(len(app_state.threads)): 
                     try:
-                        if task_queue: task_queue.put(None, block=False, timeout=0.05)
+                        if app_state.task_queue: app_state.task_queue.put(None, block=False, timeout=0.05)
                     except: pass # Ignore errors here, best effort to stop threads
         
         log_message("Main finally block attempting to save state.", "INFO")
