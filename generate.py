@@ -28,6 +28,9 @@ import matplotlib
 import matplotlib.ticker as ticker
 import api_handler
 import app_state
+from app_state import (
+    global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
+)
 from config_editor import ConfigEditor
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -42,15 +45,9 @@ init()
 
 # --- Global Constants and Setup ---
 from logging_config import log_message, LOG_FILE_PATH  # Import shared logger AND log file path
-STATE_FILE_PATH = os.path.join('output', 'generation_state.json')
 
-global_config = ConfigLoader() # Instantiate the config loader globally
 
-INPUT_DIR = 'input' # Directory for input text files
-OUTPUT_DIR = 'output' # Directory for output files (dataset, logs, state)
 # Base paths for output files; actual filenames will be constructed with suffixes (e.g., _api_slot_X)
-BASE_OUTPUT_FILE_PATH = os.path.join(OUTPUT_DIR, 'output') 
-BASE_DEBUG_LOG_PATH = os.path.join(OUTPUT_DIR, 'debug_prompt')
 QUESTIONS_FILE_PATH = os.path.join(INPUT_DIR, 'questions.txt') # Optional file for predefined questions
 os.makedirs(INPUT_DIR, exist_ok=True) # Ensure input directory exists
 
@@ -64,17 +61,14 @@ SPACING = 8  # Unified padding constant for all frames, widgets, and separators
 # These track various events during generation for monitoring and analysis.
 
 # NEW: Token tracking variables
-estimated_cost = 0.0
 
 # Per-API statistics (API slots 0-4, where 0-3 are main generation, 4 is slop fixer)
 
 # Lists to store recent occurrences of issues for display in the dashboard
-MAX_RECENT = 10 # Max number of recent issues to store and display
 
 # Per-API recent issues (for APIs 0-3, the main generation slots)
 
 # Anti-Slop Statistics
-anti_slop_counts_per_api = {i: 0 for i in range(6)}
 
 # NEW: Add these timestamp tracking variables
 # Share these with detection.py module
@@ -100,16 +94,6 @@ def check_budget_limit():
         return True
     return False
 
-API_CIRCUIT_BREAKER = {
-    "max_consecutive_failures": 5,
-    "base_cooldown_seconds": 60,
-    "max_cooldown_seconds": 600,
-    "failures": {i: 0 for i in range(6)},
-    "last_failure_time": {i: 0.0 for i in range(6)},
-    "is_open": {i: False for i in range(6)},
-    "current_cooldown": {i: 60 for i in range(6)}
-}
-api_circuit_breaker_lock = threading.Lock()
 
 def check_circuit_breaker(api_slot_idx):
     """Returns True if API slot is allowed to make requests, False if circuit is open."""
@@ -167,9 +151,6 @@ def record_api_success(api_slot_idx):
 # draining the queue so nothing is left to process when the host recovers. These
 # helpers let the worker put such tasks back, bounded so a genuinely-bad task
 # (one that fails for content reasons while the host is up) can't loop forever.
-MAX_TASK_REQUEUES = 50
-task_retry_counts = {}
-task_retry_lock = threading.Lock()
 
 def api_host_is_down(api_slot_idx):
     """Read-only: True if this slot's circuit is currently open (host down).
@@ -1187,7 +1168,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             if api_key_local:
                 headers['Authorization'] = f"Bearer {api_key_local}"
 
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
 
             debug_log_entry = {
                 "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "question_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1,
@@ -1450,7 +1431,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             if api_key_local:
                 headers['Authorization'] = f"Bearer {api_key_local}"
             
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
             with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
                 debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict}) + '\n')
 
@@ -1684,7 +1665,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             if api_key:
                 headers['Authorization'] = f"Bearer {api_key}"
 
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
 
             with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
                 debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
@@ -2138,7 +2119,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 if api_key_local:
                     headers['Authorization'] = f"Bearer {api_key_local}"
 
-                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
                 with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
                     debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans}) + '\n')
 
@@ -2678,7 +2659,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         processed_conversation_turns.append({"from": sg_role, "value": processed_content})
 
     output_data_id = task_id_for_output
-    if is_duplication_turn and master_duplication_enabled_var.get(): # Check global var for safety
+    if is_duplication_turn and app_state.master_duplication_enabled_var.get(): # Check global var for safety
         output_data_id = f"{task_id_for_output}_api{api_slot_idx_for_output_file}_turn{turn_number_for_duplication}"
 
     output_data = {
@@ -2710,7 +2691,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
 
     # --- FILE WRITING (Only reached if DB is DISABLED or pool failed to init) ---
     actual_output_file_path = ""
-    if api_slot_idx_for_output_file is not None and master_duplication_enabled_var.get():
+    if api_slot_idx_for_output_file is not None and app_state.master_duplication_enabled_var.get():
         actual_output_file_path = f"{BASE_OUTPUT_FILE_PATH}_api_slot_{api_slot_idx_for_output_file}.jsonl"
     else:
         actual_output_file_path = BASE_OUTPUT_FILE_PATH + ".jsonl"
@@ -3288,7 +3269,7 @@ def start_processing():
     while len(all_api_configs_runtime) < 6:
         all_api_configs_runtime.append({'enabled': False, 'url':'', 'model':'', 'key':'', 'sampler_settings':{}})
 
-    master_duplication_enabled = master_duplication_enabled_var.get() 
+    master_duplication_enabled = app_state.master_duplication_enabled_var.get() 
 
     if not master_duplication_enabled and not active_enabled_api_configs_for_worker_list:
         messagebox.showerror("Config Error", "Non-Duplication mode is selected, but no APIs (Slots 1-4) are enabled or configured (URL needed).")
@@ -3759,7 +3740,7 @@ def start_processing():
                 open_files = process.open_files()
                 if len(open_files) > 300:  # Threshold
                     log_message(f"Warning: {len(open_files)} open files", "WARNING")
-                master_duplication_current = master_duplication_enabled_var.get()
+                master_duplication_current = app_state.master_duplication_enabled_var.get()
 
                 if app_state.task_queue and hasattr(app_state.task_queue, 'qsize'):
                     if app_state.task_queue.qsize() > 30000:
@@ -3828,7 +3809,7 @@ def start_processing():
             stop_clear_button.config(state=tk.NORMAL)
             log_message("Processing stopped/completed. GUI updates halted.", "INFO")
             update_dashboard() # Final dashboard update
-            master_duplication_final_check = master_duplication_enabled_var.get()
+            master_duplication_final_check = app_state.master_duplication_enabled_var.get()
             if hasattr(app_state.task_queue, 'total_tasks_for_progress') and app_state.task_queue.total_tasks_for_progress > 0:
                 if master_duplication_final_check and hasattr(app_state.task_queue, 'api_widgets'):
                     for api_idx, widgets in app_state.task_queue.api_widgets.items():
@@ -3871,7 +3852,7 @@ def start_processing():
         
         if not app_state.stop_processing: 
             all_done = False 
-            master_duplication_at_end = master_duplication_enabled_var.get()
+            master_duplication_at_end = app_state.master_duplication_enabled_var.get()
             if hasattr(app_state.task_queue, 'total_tasks_for_progress') and app_state.task_queue.total_tasks_for_progress > 0:
                 if master_duplication_at_end and hasattr(app_state.task_queue, 'api_processed_tasks'):
                     all_apis_finished = True
@@ -3947,7 +3928,7 @@ def read_txt(file_path):
 def open_config_editor():
     global_config.load()
     try:
-        editor = ConfigEditor(app_state.root, global_config, master_duplication_enabled_var, no_user_impersonation_var, on_config_saved=update_dashboard)
+        editor = ConfigEditor(app_state.root, global_config, app_state.master_duplication_enabled_var, no_user_impersonation_var, on_config_saved=update_dashboard)
         editor.grab_set()
     except Exception as e:
         log_message(f"ConfigEditor failed to initialize: {e}", "ERROR")
@@ -4217,7 +4198,7 @@ style.configure('TNotebook', font=('Segoe UI', 10))
 # --- Global Tkinter Variables ---
 num_threads_var = tk.StringVar(value=str(global_config.get('threads', 10))) # Default from config or 10
 no_user_impersonation_var = tk.BooleanVar(value=global_config.get('detection.no_user_impersonation', False))
-master_duplication_enabled_var = tk.BooleanVar(value=global_config.get('api.master_duplication_mode', False))
+app_state.master_duplication_enabled_var = tk.BooleanVar(value=global_config.get('api.master_duplication_mode', False))
 debug_logging_var = tk.BooleanVar(value=False)
 
 log_message("Application started. UI initializing.", "INFO")

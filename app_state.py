@@ -7,7 +7,10 @@ so mutations are visible app-wide; do NOT ``from app_state import x`` for the sc
 binding and breaks cross-module updates). This module imports nothing project-local, to stay a leaf in the
 dependency graph (generate.py / generation.py / dashboard.py import it, never the reverse).
 """
+import os
+import threading
 from threading import Lock
+from config_loader import ConfigLoader
 
 _previous_progress_values = {}
 anti_slop_count_total = 0
@@ -60,6 +63,33 @@ total_input_tokens = 0
 total_output_tokens = 0
 user_speaking_count_total = 0
 user_speaking_counts_per_api = {i: 0 for i in range(6)}
+
+
+
+# --- engine-shared config / constants / per-API state (step 3a; read-only or item-mutated only) ---
+STATE_FILE_PATH = os.path.join('output', 'generation_state.json')
+global_config = ConfigLoader() # Instantiate the config loader globally
+INPUT_DIR = 'input' # Directory for input text files
+OUTPUT_DIR = 'output' # Directory for output files (dataset, logs, state)
+BASE_OUTPUT_FILE_PATH = os.path.join(OUTPUT_DIR, 'output') 
+BASE_DEBUG_LOG_PATH = os.path.join(OUTPUT_DIR, 'debug_prompt')
+estimated_cost = 0.0
+MAX_RECENT = 10 # Max number of recent issues to store and display
+anti_slop_counts_per_api = {i: 0 for i in range(6)}
+API_CIRCUIT_BREAKER = {
+    "max_consecutive_failures": 5,
+    "base_cooldown_seconds": 60,
+    "max_cooldown_seconds": 600,
+    "failures": {i: 0 for i in range(6)},
+    "last_failure_time": {i: 0.0 for i in range(6)},
+    "is_open": {i: False for i in range(6)},
+    "current_cooldown": {i: 60 for i in range(6)}
+}
+api_circuit_breaker_lock = threading.Lock()
+MAX_TASK_REQUEUES = 50
+task_retry_counts = {}
+task_retry_lock = threading.Lock()
+master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
 
 # --- GUI-runtime handles: constructed in generate.py once the main window exists; None until then ---
 root = None              # ttkbs.Window(...) — assigned in generate.py
