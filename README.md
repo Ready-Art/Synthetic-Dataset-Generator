@@ -2,7 +2,7 @@
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
-NOTE: The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.8.6-STABLE branch.
+**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v8.8.6-STABLE branch.
 
 ---
 
@@ -191,13 +191,21 @@ tkinter (usually included with Python)
    cd readyart-dataset-generator
    ```
 
-2. Create and use a python venv
+2. **Create and activate a virtual environment:**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 
 3. **Install dependencies:**
    ```bash
    pip install requests redis psycopg2-binary PyYAML colorama ttkbootstrap matplotlib psutil
    ```
-4. run python generate.py to launch the generator
+
+4. **Run the application:**
+   ```bash
+   python generate.py
+   ```
 
 5. **Set up directories:**
    The application automatically creates `input/` and `output/` directories on first run.
@@ -666,6 +674,10 @@ readyart-dataset-generator/
 ├── config_loader.py         # Configuration management & profiles
 ├── api_handler.py           # Rate limiting, circuit breaker & Valkey caching
 ├── logging_config.py        # Centralized logging with colorama
+├── config_editor.py         # Configuration editor window
+├── generation.py            # Generation engine with worker logic
+├── dashboard.py             # Dashboard/presentation layer
+├── app_state.py             # Shared runtime state
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   └── profiles/            # Saved configuration profiles
