@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v8.8.7
+# ReadyArt Synthetic Dataset Generator v8.8.8
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
 
@@ -191,18 +191,21 @@ tkinter (usually included with Python)
    cd readyart-dataset-generator
    ```
 
-2. **Install dependencies:**
+2. Create and use a python venv
+
+3. **Install dependencies:**
    ```bash
    pip install requests redis psycopg2-binary PyYAML colorama ttkbootstrap matplotlib psutil
    ```
+4. run python generate.py to launc the generator
 
-3. **Set up directories:**
+5. **Set up directories:**
    The application automatically creates `input/` and `output/` directories on first run.
 
-4. **Prepare input files:**
+6. **Prepare input files:**
    Place `.txt` files in the `input/` directory. These will be used as source material for generating questions and context.
 
-5. **Configure the application:**
+7. **Configure the application:**
    Launch the app and click **Edit Config**, or manually edit `config/config.yml`.
 
 ---
