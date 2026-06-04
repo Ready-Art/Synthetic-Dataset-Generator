@@ -308,31 +308,38 @@ prompts:
     enabled: true
     class_enabled: false          # Enable fantasy class selection
     num_characters: 1             # Number of characters per conversation (1-10)
-    characters:                  # List-of-dicts format (recommended)
-      - name: "Alice"
+    characters:                   # List-of-dicts format (recommended)
+      - name: "Melody"
         race: "Human"
-        job: "Software Engineer"
-        clothing: "casual jeans and t-shirt"
-        appearance: "tall with brown hair"
-        backstory: "Grew up in a small town"
-        personality: "curious and analytical"
-        traits: "quick-witted, detail-oriented"
-        setting: "A standard indoor environment"
-        class: "mage"
+        job: "Horologist and Pawn Shop Manager"
+        clothing: "Heavyweight flannel button-down, faded rust color, straight-leg cargo pants dark olive green"
+        appearance: "59, broad-shouldered and sturdy with a soft midsection, weathered olive skin, steel-gray and dark brown hair in choppy jaw-length bob"
+        backstory: "Estranged from religious parents, lives alone above the shop, drives a 2004 Subaru Outback, goal is to restore an 18th-century marine chronometer"
+        personality: "Fundamentally stoic and introverted, copes with stress by disassembling cheap mechanical watches, curt with strangers but nurturing with friends"
+        traits: "Meticulous, cynical, resilient, stubborn; taps thumb against index finger rhythmically when thinking, refuses hot beverages without lids"
+        setting: "Cluttered repair counter in dimly lit pawn shop, 6:45 PM Tuesday, heavy rain lashing windows, smells of brass polish and damp wool"
+        class: ""
       - name: "Bob"
         race: "Elf"
         job: "Teacher"
-        clothing: "business suit"
-        appearance: "short with glasses"
+        clothing: "Business suit"
+        appearance: "Short with glasses"
         backstory: "Traveled the world"
-        personality: "patient and wise"
-        traits: "diplomatic, well-read"
+        personality: "Patient and wise"
+        traits: "Diplomatic, well-read"
         setting: "A bustling marketplace"
         class: "rogue"
 
   emotional_states:
-    enabled: false
-    states: ["happy", "sad", "angry", "neutral", "excited", "contemplative"]
+    enabled: true
+    states:
+      - "happy"
+      - "sad"
+      - "anxious"
+      - "angry"
+      - "neutral"
+      - "excited"
+      - "contemplative"
 ```
 
 **Character Configuration Notes:**
