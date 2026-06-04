@@ -43,7 +43,8 @@ class ConfigEditor(tk.Toplevel):
         self.minsize(1600, 1000)
         self.user_speaking_phrases_data = {"male": [], "female": [], "neutral": []} 
         self.user_speaking_fixes_data = {"male": [], "female": [], "neutral": []}
-        self.active_display_gender = "female" 
+        self.active_display_gender = "female"
+        self.max_character_cards_var = tk.StringVar(value=str(self.global_config.get('generation.max_character_cards', 10)))
         
         # Initialize num_threads_var_editor
         self.num_threads_var_editor = tk.StringVar(value=str(self.global_config.get('api.threads', 10)))
