@@ -197,7 +197,7 @@ tkinter (usually included with Python)
    ```bash
    pip install requests redis psycopg2-binary PyYAML colorama ttkbootstrap matplotlib psutil
    ```
-4. run python generate.py to launc the generator
+4. run python generate.py to launch the generator
 
 5. **Set up directories:**
    The application automatically creates `input/` and `output/` directories on first run.
