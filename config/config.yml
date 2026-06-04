@@ -1,53 +1,63 @@
 api:
   master_duplication_mode: false
   apis:
-  - url: https://api.host.com/v1/chat/completions
+  - url: ''
     model: ''
     key: ''
     enabled: true
-    threads: 2
-    rate_limit_rpm: 400
+    threads: 10
+    rate_limit_rpm: 60
   - url: ''
     model: ''
     key: ''
     enabled: false
     threads: 10
-    rate_limit_rpm: 1
+    rate_limit_rpm: 60
   - url: ''
     model: ''
     key: ''
     enabled: false
     threads: 10
-    rate_limit_rpm: 1
+    rate_limit_rpm: 60
   - url: ''
     model: ''
     key: ''
     enabled: false
     threads: 10
-    rate_limit_rpm: 1
-  - url: https://api.host.com/v1/chat/completions
+    rate_limit_rpm: 60
+  - url: ''
     model: ''
     key: ''
     threads: 10
-    rate_limit_rpm: 400
-  - url: https://api.host.com/v1/chat/completions
+    rate_limit_rpm: 60
+  - url: ''
     model: ''
     key: ''
     threads: 10
     rate_limit_rpm: 60
   threads: 10
   pricing:
-    cost_per_1k_tokens: 0.01
+    cost_per_1k_tokens: 0.0
+    budget_limit: 0.0
 valkey:
   host: localhost
   port: 6379
   db: 0
   password: null
   enabled: true
+database:
+  enabled: false
+  host: localhost
+  port: 5432
+  dbname: ''
+  user: ''
+  password: ''
+  pool_size: 10
 generation:
-  subject_size: 2048
-  context_size: 4096
-  max_attempts: 8
+  max_character_cards: 10
+  subject_size: 1000
+  context_size: 3000
+  max_attempts: 5
   num_turns: 1
   history_size: 10
   num_random_chunks: 12000
@@ -58,31 +68,87 @@ generation:
   remove_asterisk_space_asterisk: false
   remove_all_asterisks: false
   ensure_space_after_line_break: false
-  max_slop_sentence_fix_iterations: 20
+  remove_markdown: false
+  max_slop_sentence_fix_iterations: 5
   output_format: sharegpt
   api_request_timeout: 300
   max_newlines_malformed: 16
   max_text_length_malformed: 5000
 prompts:
   system:
-    base: ''
-    variable: true
+    base: You are a helpful AI assistant.
+    variable: false
     variations: []
     top_level_system_prompt: ''
-  question: ''
-  answer: ''
-  user_continuation_prompt: ''
+  question: Generate a question... {subject} ... {context} ... {recent_questions}
+  answer: Answer the question.
+  user_continuation_prompt: 'Continue based on: {last_assistant_message}'
   use_questions_file: false
   character:
     enabled: true
-    name: []
-    job: []
-    clothing: []
-    appearance: []
-    backstory: []
+    class_enabled: false
+    num_characters: 1
+    characters:
+    - name: Melody
+      race: Human
+      job: Horologist and Pawn Shop Manager, working in the vintage goods and resale
+        industry, she has been in this specific position for 12 years, and she feels
+        a profound mix of melancholic attachment and exhausting resentment toward
+        the relentless decay of the items she fixes and the financial precarity of
+        the shop.
+      clothing: Shirt is a heavyweight flannel button-down, faded rust color, brushed
+        cotton, loose fit, subtle plaid pattern, collar neckline, worn thin at the
+        elbows and slightly frayed at the cuffs, Pants are straight-leg cargo pants,
+        dark olive green, thick cotton twill, relaxed fit, mid-rise, hem slightly
+        mud-stained, good condition, Panties are high-waisted briefs, cotton, heather
+        gray, no pattern, slightly stretched elastic, Bra is a full-coverage underwire
+        bra, nylon-spandex blend, beige, strong structural support, straps slightly
+        twisted and worn, Shoes are lace-up steel-toe work boots, oiled leather, dark
+        brown, soles heavily worn down at the heels, scuffed but well-maintained,
+        Socks are mid-calf crew socks, merino wool blend, thick, heathered forest
+        green, pilled at the heel.
+      appearance: 59, broad-shouldered and sturdy with a soft midsection, weathered
+        olive skin, hair is steel-gray and dark brown, cut into a choppy jaw-length
+        bob with frayed ends, eyes are deep-set and hazel with a slight droop, prominent
+        nose with a slight bump, thin lips, a faded burn scar on her left forearm,
+        three lobe piercings in each ear with mismatched silver studs, slight rosacea
+        on her cheeks, default expression is a skeptical squint, posture is slightly
+        hunched forward from years of desk work.
+      traits: 'Meticulous, cynical, resilient, stubborn; Quirk 1: constantly taps
+        her left thumb against her index finger in a steady rhythm to mimic the ticking
+        of a clock when she is thinking, Quirk 2: refuses to drink hot beverages from
+        any container that does not have a tightly fitting lid because she despises
+        the smell of cooling steam.'
+      backstory: Estranged from her highly religious parents and only communicates
+        with her younger brother who is currently in rehab, she lives alone in a cluttered
+        one-bedroom apartment above the shop that she rents from the buildings absent
+        landlord, she drives a 2004 Subaru Outback with a rusted passenger door and
+        a broken AC, and her ultimate goal is to restore a specific 18th-century marine
+        chronometer she found in the estate of a deceased hoarder to prove to herself
+        that anything truly broken can be made to run again.
+      personality: Fundamentally stoic and introverted, she copes with stress by disassembling
+        cheap mechanical watches into their component parts and organizing them into
+        tiny glass jars, around strangers she is curt and defensively sarcastic but
+        with close friends she becomes unexpectedly nurturing and fiercely loyal,
+        and her biggest moral boundary is an absolute refusal to exploit another persons
+        desperation or ignorance for personal gain, even when financially desperate
+        herself.
+      setting: Standing at the cluttered repair counter in the back of her dimly lit
+        pawn shop, it is 6:45 PM on a Tuesday, heavy rain is lashing against the front
+        windows, illuminated by the harsh yellow glow of a single adjustable desk
+        lamp and the green hue of the vintage radio dial, ambient sounds include the
+        synchronized ticking of fifty clocks and the drumming of rain on the tin awning,
+        the air smells faintly of brass polish and damp wool, she is currently holding
+        a tiny pair of brass tweezers and carefully attempting to extract a bent hairspring
+        from a pocket watch while waiting for a late customer who called about pawning
+        a wedding ring.
+      class: ''
   emotional_states:
     enabled: true
-    states: []
+    states:
+    - happy
+    - sad
+    - anxious
 detection:
   no_user_impersonation: false
   refusal:
@@ -93,18 +159,14 @@ detection:
     fixes: []
   user_speaking:
     male:
-      phrases:
-      - test2
-      fixes:
-      - tester2
+      phrases: []
+      fixes: []
     female:
       phrases: []
       fixes: []
     neutral:
-      phrases:
-      - test3
-      fixes:
-      - tester3
+      phrases: []
+      fixes: []
   slop:
     phrases: []
     fixes: []
@@ -113,30 +175,18 @@ samplers:
   - repetition_penalty
   - top_p
   - top_k
-  - min_p
   - temperature
-  - max_tokens
-  temperature: 0.6
+  - max_tokens_answer
+  temperature: 0.5
   top_p: 0.9
-  min_p: 0.02
-  top_k: 40
+  min_p: 0.0
+  top_k: 50
   repetition_penalty: 1.1
-  max_tokens_question: 768
-  max_tokens_answer: 768
-  max_tokens_user_reply: 768
-  enable_thinking: true
-  slop_fixer_params:
-    temperature: 0.5
-    top_p: 0.9
-    min_p: 0.02
-    max_tokens: 768
-    top_k: 40
-    repetition_penalty: 1.1
-  anti_slop_params:
-    temperature: 0.5
-    top_p: 0.9
-    min_p: 0.02
-    max_tokens: 768
-    top_k: 40
-    repetition_penalty: 1.1
+  max_tokens_question: 256
+  max_tokens_answer: 1024
+  max_tokens_user_reply: 256
+  enable_thinking: default
+  logit_bias: ''
+  slop_fixer_params: {}
+  anti_slop_params: {}
 gender: female
