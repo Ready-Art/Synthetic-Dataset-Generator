@@ -1,0 +1,2447 @@
+"""Generation engine for the Synthetic Dataset Generator (refactor step 3b).
+
+The worker loop and all LLM-call/answer-generation logic, extracted from generate.py. Shares runtime
+state through app_state (counters, circuit breaker, config, path constants) and calls the existing helper
+modules (api_handler / detection / text_utils / logging_config). The only call back toward the GUI — the
+live prompt preview — is routed through app_state.live_prompt_preview_hook (registered by generate.py),
+so this module never imports generate.py: the dependency is one-way (generate.py imports generation).
+"""
+import hashlib
+import json
+import random
+import requests
+import time
+import tkinter as tk
+
+import app_state
+import detection
+import text_utils
+from queue import Queue, Empty, Full
+from logging_config import log_message, LOG_FILE_PATH
+from api_handler import (
+    RateLimiter, global_rate_limiter, get_cached_response, set_cached_response,
+    api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK,
+)
+from app_state import (
+    API_CIRCUIT_BREAKER, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES,
+    STATE_FILE_PATH, anti_slop_counts_per_api, api_circuit_breaker_lock, estimated_cost,
+    global_config, task_retry_counts, task_retry_lock,
+)
+
+
+def update_live_prompt_preview(messages_list):
+    """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
+    hook = app_state.live_prompt_preview_hook
+    if hook:
+        hook(messages_list)
+
+
+def check_budget_limit():
+    if app_state.stop_processing:
+        return False
+
+    budget_limit = global_config.get('api.pricing.budget_limit', 0.0)
+    if budget_limit <= 0:
+        return False  # Budget disabled
+
+    with app_state.stats_lock:  # 🔒 Safer concurrent read
+        price_per_1k = global_config.get('api.pricing.cost_per_1k_tokens', 0)
+        current_cost = (app_state.total_input_tokens + app_state.total_output_tokens) * (price_per_1k / 1000.0)
+
+    if current_cost >= budget_limit:
+        log_message(f"API budget limit of ${budget_limit:.2f} reached. Current cost: ${current_cost:.2f}. Stopping generation.", "WARNING")
+        app_state.stop_processing = True
+        return True
+    return False
+
+
+def check_circuit_breaker(api_slot_idx):
+    """Returns True if API slot is allowed to make requests, False if circuit is open."""
+    with api_circuit_breaker_lock:
+        if API_CIRCUIT_BREAKER["is_open"][api_slot_idx]:
+            elapsed = time.time() - API_CIRCUIT_BREAKER["last_failure_time"][api_slot_idx]
+            # NEW: Use per-slot cooldown instead of global cooldown
+            current_cooldown = API_CIRCUIT_BREAKER["current_cooldown"].get(api_slot_idx, 60)
+
+            if elapsed >= current_cooldown:
+                API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = False
+                API_CIRCUIT_BREAKER["failures"][api_slot_idx] = 0
+                API_CIRCUIT_BREAKER["current_cooldown"][api_slot_idx] = API_CIRCUIT_BREAKER["base_cooldown_seconds"]
+                log_message(
+                    f"API Slot {api_slot_idx+1} circuit closed after {elapsed:.0f}s. "
+                    f"Resuming requests with base cooldown.",
+                    "INFO"
+                )
+                return True
+            return False
+        return True
+
+
+def record_api_failure(api_slot_idx):
+    with api_circuit_breaker_lock:
+        failures = API_CIRCUIT_BREAKER["failures"][api_slot_idx] + 1
+        API_CIRCUIT_BREAKER["failures"][api_slot_idx] = failures
+        API_CIRCUIT_BREAKER["last_failure_time"][api_slot_idx] = time.time()
+
+        # NEW: Calculate exponential backoff (60s, 120s, 240s, 480s, max 600s)
+        backoff = min(
+            API_CIRCUIT_BREAKER["max_cooldown_seconds"],
+            API_CIRCUIT_BREAKER["base_cooldown_seconds"] * (2 ** (failures - 1))
+        )
+        API_CIRCUIT_BREAKER["current_cooldown"][api_slot_idx] = backoff
+
+        if failures >= API_CIRCUIT_BREAKER["max_consecutive_failures"]:
+            API_CIRCUIT_BREAKER["is_open"][api_slot_idx] = True
+            log_message(
+                f"API Slot {api_slot_idx+1} circuit OPEN after {failures} consecutive failures. "
+                f"Backoff: {backoff}s (exponential)",
+                "WARNING"
+            )
+
+
+def record_api_success(api_slot_idx):
+    """Reset failure count on successful API call."""
+    with api_circuit_breaker_lock:
+        if API_CIRCUIT_BREAKER["failures"][api_slot_idx] > 0:
+            API_CIRCUIT_BREAKER["failures"][api_slot_idx] = 0
+            API_CIRCUIT_BREAKER["current_cooldown"][api_slot_idx] = API_CIRCUIT_BREAKER["base_cooldown_seconds"]
+            log_message(f"API Slot {api_slot_idx+1} success - failure count reset.", "DEBUG")
+
+
+def api_host_is_down(api_slot_idx):
+    """Read-only: True if this slot's circuit is currently open (host down).
+    Unlike check_circuit_breaker(), this does NOT close the circuit on cooldown."""
+    if api_slot_idx is None or api_slot_idx < 0:
+        return False
+    with api_circuit_breaker_lock:
+        return bool(API_CIRCUIT_BREAKER["is_open"].get(api_slot_idx, False))
+
+
+def requeue_task(q, task, task_id):
+    """Put a task back on the queue for a later retry (host-outage recovery).
+    Returns True if requeued, False once it has exhausted MAX_TASK_REQUEUES."""
+    with task_retry_lock:
+        n = task_retry_counts.get(task_id, 0) + 1
+        task_retry_counts[task_id] = n
+        if n > MAX_TASK_REQUEUES:
+            return False
+    q.put(task)
+    return True
+
+
+def save_generation_state():
+    """Saves the current generation state to a JSON file for potential recovery."""
+    global api_response_times_per_slot
+
+    with app_state.state_file_lock: # Ensure thread-safe file writing
+        try:
+            state_data = {
+                'completed_task_ids': list(app_state.completed_task_ids), # Convert set to list for JSON
+                'system_prompt_counter': app_state.system_prompt_counter,
+                'question_history': app_state.question_history,
+                'total_attempts_global': app_state.total_attempts_global,
+                'refusal_count_total': app_state.refusal_count_total,
+                'user_speaking_count_total': app_state.user_speaking_count_total,
+                'slop_count_total': app_state.slop_count_total,
+                'error_count_total': app_state.error_count_total,
+                'refusal_counts_per_api': app_state.refusal_counts_per_api,
+                'total_input_tokens': app_state.total_input_tokens,
+                'total_output_tokens': app_state.total_output_tokens,
+                'estimated_cost': estimated_cost,
+                'user_speaking_counts_per_api': app_state.user_speaking_counts_per_api,
+                'slop_counts_per_api': app_state.slop_counts_per_api,
+                'error_counts_per_api': app_state.error_counts_per_api,
+                'total_attempts_per_api': app_state.total_attempts_per_api,
+                'anti_slop_count_total': app_state.anti_slop_count_total,
+                'anti_slop_counts_per_api': anti_slop_counts_per_api,
+                # Snapshot of critical config settings at the time of saving state
+                'config_snapshot': {
+                    'prompts.use_questions_file': global_config.get('prompts.use_questions_file'),
+                    'generation.num_turns': global_config.get('generation.num_turns', 1),
+                    'generation.subject_size': global_config.get('generation.subject_size', 1000),
+                    'generation.context_size': global_config.get('generation.context_size', 3000),
+                    'api.master_duplication_mode': global_config.get('api.master_duplication_mode', False)
+                }
+            }
+            # If in master duplication mode and task queue has per-API progress, save it
+            # Also save overall progress if not in duplication mode
+            if app_state.task_queue:
+                if global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'api_processed_tasks'):
+                    state_data['api_processed_tasks_snapshot'] = dict(app_state.task_queue.api_processed_tasks)
+                elif not global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'processed_tasks'):
+                    state_data['processed_tasks_snapshot'] = app_state.task_queue.processed_tasks
+
+
+            with open(STATE_FILE_PATH, 'w', encoding='utf-8') as f:
+                json.dump(state_data, f, indent=4)
+            log_message("Generation state saved.", "INFO")
+        except Exception as e:
+            log_message(f"Error saving generation state: {e}", "ERROR")
+
+
+def update_question_history(question, current_history_size):
+    """Adds a question to the history and ensures it doesn't exceed the configured size."""
+    app_state.question_history.append(question)
+    if len(app_state.question_history) > current_history_size:
+        app_state.question_history.pop(0) # Remove the oldest question
+
+
+def estimate_time_remaining(processed_items, total_items, times_list):
+    """Estimates the time remaining using a robust trimmed mean for stability."""
+    if not times_list or processed_items < 1 or total_items == 0:
+        return "Estimating..."
+
+    # Require a minimum number of samples for a reliable estimate
+    if len(times_list) < 3:
+        return "Estimating..."
+
+    # 1. Filter out extreme outliers to prevent "wonky" jumps
+    # We keep only values within 0.5x to 3.0x the median
+    sorted_times = sorted(times_list)
+    median = sorted_times[len(sorted_times) // 2]
+    filtered_times = [t for t in times_list if 0.5 * median <= t <= 3.0 * median]
+
+    # Fallback to original list if filtering accidentally removes everything
+    if not filtered_times:
+        filtered_times = times_list
+
+    # 2. Use a simple average of the filtered times
+    # A filtered mean is significantly smoother for ETAs than a raw EMA
+    avg_time_per_item = sum(filtered_times) / len(filtered_times)
+
+    remaining_items = total_items - processed_items
+    if remaining_items <= 0:
+        return "Done!"
+
+    remaining_time_seconds = remaining_items * avg_time_per_item
+
+    # Format as H:M:S
+    return time.strftime('%H:%M:%S', time.gmtime(remaining_time_seconds))
+
+
+def worker(thread_id, q, output_data_lock, use_questions_file_local,
+           use_variable_system_local,
+           all_api_configs_local,
+           active_enabled_api_configs_for_worker,
+           current_question_prompt, current_answer_prompt, current_user_continuation_prompt,
+           current_num_turns,
+           current_system_prompts_for_worker,
+           current_refusal_phrases, current_user_speaking_phrases, current_slop_phrases,
+           current_anti_slop_phrases,
+           current_anti_slop_fixes,
+           current_jailbreaks, current_speaking_fixes, current_slop_fixes_fallback,
+           current_max_attempts, current_history_size_local, current_remove_reasoning,
+           current_remove_em_dash,
+           current_remove_asterisks,
+           current_remove_asterisk_space_asterisk,
+           current_remove_all_asterisks,
+           current_ensure_space_after_line_break,
+           current_remove_markdown,
+           current_output_format,
+           slop_fixer_api_config,
+           anti_slop_fixer_api_config_runtime,
+           anti_slop_fixer_api_config_param,
+           current_slop_fixes_for_rotation_worker,
+           current_top_level_system_prompt,
+           master_duplication_enabled_local,
+           enable_character_engine_local,
+           enable_class_selection_local,
+           character_list,
+           enable_emotional_states_local,
+           emotional_states_list_local,
+           num_characters_local,
+           no_user_impersonation_local,
+           current_api_request_timeout):
+    """
+    The main function executed by each worker thread.
+    It fetches tasks from the queue, processes them by interacting with LLMs 
+    (handling duplication or collaborative API use based on settings),
+    and manages retries, issue detection (refusals, user speaking, slop), and output writing.
+    """
+
+    log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
+
+    # Resilience: in non-duplication mode each worker is pinned to one API slot
+    # (thread_id % num_active_apis). Capture it up-front so we can pause -- not
+    # drain -- the queue when that host's circuit is open. -1 = duplication/unknown.
+    worker_api_slot = -1
+    if not master_duplication_enabled_local and active_enabled_api_configs_for_worker:
+        worker_api_slot = active_enabled_api_configs_for_worker[
+            thread_id % len(active_enabled_api_configs_for_worker)]['original_slot_idx']
+
+    while not app_state.stop_processing:
+        if check_budget_limit():
+            log_message(f"Thread {thread_id}: Budget limit reached. Exiting worker.", "INFO")
+            break
+        # Enhanced pause check: threads sleep briefly while paused, allowing GUI to remain responsive
+        while app_state.pause_processing and not app_state.stop_processing:
+            time.sleep(0.1) 
+            if hasattr(app_state.root, 'update') and app_state.root.winfo_exists(): # Keep Tkinter main loop alive if paused
+                try: app_state.root.update()
+                except tk.TclError: log_message(f"Thread {thread_id}: Root window closed during pause.", "DEBUG"); pass
+            if app_state.stop_processing: break
+
+        if app_state.stop_processing: break # Exit if stop signal received during pause
+
+        try:
+            task = q.get(timeout=0.05) # Fetch a task from the queue with a short timeout
+        except Empty:
+            # If queue is empty and all tasks have been added, and processing_active is false (e.g. due to stop signal)
+            if q.empty() and getattr(q, 'all_tasks_queued', False) and not app_state.processing_active:
+                log_message(f"Thread {thread_id}: Queue empty, all tasks queued, processing not active. Exiting.", "DEBUG")
+                break 
+            continue # Continue to next iteration if queue is temporarily empty
+
+        log_message(f"Thread {thread_id}: pause_processing={app_state.pause_processing}, stop_processing={app_state.stop_processing}", "DEBUG")
+
+        if task is None: # Sentinel value received, indicating thread should terminate
+            q.task_done()
+            log_message(f"Thread {thread_id}: Sentinel received. Exiting.", "DEBUG")
+            break 
+        if app_state.stop_processing: 
+            q.task_done(); break # Exit if stop signal received after fetching a task
+
+        task_id, file_name, *_ = task # Unpack task data
+        start_time_task_overall = time.time() # For timing the whole task processing
+
+        with output_data_lock:
+            if task_id in app_state.completed_task_ids: # Skip if task was already completed (e.g., from a resumed session)
+                log_message(f"Thread {thread_id}: Skipping already completed task {task_id}.", "INFO")
+                q.task_done()
+                # If resuming, need to update progress bars for skipped tasks
+                if hasattr(q, 'processed_tasks_lock'):
+                    with q.processed_tasks_lock:
+                        # A completed task means all its turns are done.
+                        # current_num_turns is passed to worker and available here.
+                        increment_amount = current_num_turns
+                        if master_duplication_enabled_local:
+                            # In duplication mode, increment progress for each enabled API (0-3)
+                            for api_idx_skip, api_conf_skip in enumerate(all_api_configs_local):
+                                if api_idx_skip < 4 and api_conf_skip.get('enabled', False): # Only for enabled generation APIs
+                                    if api_idx_skip not in q.api_processed_tasks: q.api_processed_tasks[api_idx_skip] = 0
+                                    # Increment by num_turns, ensuring not to over-increment against the new total_tasks_for_progress
+                                    target_processed_for_this_api = q.api_processed_tasks[api_idx_skip] + increment_amount
+                                    q.api_processed_tasks[api_idx_skip] = min(target_processed_for_this_api, q.total_tasks_for_progress)
+                        else:
+                            # In non-duplication mode, increment overall progress
+                            if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
+                            target_processed_overall = q.processed_tasks + increment_amount
+                            q.processed_tasks = min(target_processed_overall, q.total_tasks_for_progress)
+                continue
+
+        # --- Resilience gate: if this worker's API host is down (circuit open),
+        # put the task back and back off instead of consuming it. This pauses the
+        # queue during an outage so the run resumes automatically when the host
+        # returns, rather than draining (and discarding) tasks while it's down. ---
+        if worker_api_slot >= 0 and not check_circuit_breaker(worker_api_slot):
+            q.put(task)
+            q.task_done()
+            log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down (circuit open); "
+                        f"requeued task {task_id} and backing off.", "DEBUG")
+            time.sleep(min(5.0, max(1.0, API_CIRCUIT_BREAKER['base_cooldown_seconds'] / 4.0)))
+            continue
+
+        try:
+            if app_state.stop_processing: q.task_done(); continue # Check again before intensive processing
+
+            # Determine system prompt for this task
+            current_system_prompt_for_task = ""
+
+            # FIXED: Properly handle system prompt selection with character engine
+            if use_variable_system_local and current_system_prompts_for_worker:
+                # Use a random system prompt variation
+                current_system_prompt_for_task = get_next_system_prompt(current_system_prompts_for_worker)
+                log_message(f"Thread {thread_id}: Selected random system prompt variation for task {task_id}", "DEBUG")
+            elif current_system_prompts_for_worker and len(current_system_prompts_for_worker) > 0:
+                # Use the base system prompt (first in list)
+                current_system_prompt_for_task = current_system_prompts_for_worker[0]
+                log_message(f"Thread {thread_id}: Using base system prompt for task {task_id}", "DEBUG")
+            else: # Fallback if no system prompts are configured
+                current_system_prompt_for_task = "You are a helpful assistant."
+                log_message(f"Thread {thread_id}: Using fallback system prompt for task {task_id}", "DEBUG")
+
+            # --- NEW: Prepend Top Level System Prompt ---
+            if current_top_level_system_prompt:
+                current_system_prompt_for_task = current_top_level_system_prompt + "\n\n" + current_system_prompt_for_task
+                log_message(f"Thread {thread_id}: Prepending Top Level System Prompt for task {task_id}", "DEBUG")
+
+            character_injection = ""
+            if enable_character_engine_local and character_list:
+                # Select multiple random characters based on num_characters_local
+                num_chars_to_select = min(num_characters_local, len(character_list))
+                selected_chars = random.sample(character_list, num_chars_to_select)
+
+                character_profiles = []
+                for idx, selected_char in enumerate(selected_chars):
+                    # Extract attributes with defaults
+                    random_name = selected_char.get('name', f'Character{idx+1}')
+                    random_race = selected_char.get('race', 'Unknown')
+                    random_job = selected_char.get('job', 'Unknown')
+                    random_clothing = selected_char.get('clothing', 'Unknown')
+                    random_appearance = selected_char.get('appearance', 'Unknown')
+                    random_backstory = selected_char.get('backstory', 'Unknown')
+                    random_personality = selected_char.get('personality', 'Unknown')
+                    random_setting = selected_char.get('setting', 'A standard indoor environment.')
+                    random_class = selected_char.get('class', '')
+
+                    # Ensure at least name is present to make it valid
+                    if random_name and random_name != 'Unknown':
+                        random_age = random.randint(18, 50)
+
+                        class_injection = ""
+                        if enable_class_selection_local and random_class:
+                            class_injection = f"\nClass: {random_class}\n"
+
+                        personality_injection = ""
+                        if random_personality and random_personality != 'Unknown':
+                            personality_injection = f"\nPersonality: {random_personality}\n"
+
+                        character_profile = (
+                            f"\n--- CHARACTER {idx+1} PROFILE ---\n"
+                            f"Name: {random_name}\n"
+                            f"Race: {random_race}\n"
+                            f"Age: {random_age}\n"
+                            f"Job: {random_job}\n"
+                            f"Clothing: {random_clothing}\n"
+                            f"Appearance: {random_appearance}\n"
+                            f"Backstory: {random_backstory}\n"
+                            f"{personality_injection}"
+                            f"Setting: {random_setting}\n"
+                            f"{class_injection}"
+                            f"--- END CHARACTER {idx+1} PROFILE ---\n"
+                        )
+                        character_profiles.append(character_profile)
+                    else:
+                        log_message(f"Thread {thread_id}: Character engine enabled, but selected character lacked a valid name. Skipping this character.", "WARNING")
+
+                if character_profiles:
+                    character_injection = "\n\nMULTI-CHARACTER CONVERSATION MODE:\n" + "\n".join(character_profiles)
+                    character_injection += "\nMaintain all character personas throughout the conversation. Each character should have distinct voices and personalities.\n"
+                    log_message(f"Thread {thread_id}: Adding {len(character_profiles)} character profiles to system prompt for task {task_id}", "DEBUG")
+                else:
+                    if enable_character_engine_local:
+                        log_message(f"Thread {thread_id}: Character engine enabled but no valid characters selected. Skipping character injection.", "WARNING")
+
+            current_system_prompt_for_task += character_injection
+
+            # Handle emotional states
+            current_emotional_state = ""
+            if enable_emotional_states_local and emotional_states_list_local:
+                current_emotional_state = random.choice(emotional_states_list_local)
+                emotional_state_injection = (
+                    f"\n\nEMOTIONAL STATE: {current_emotional_state.upper()}\n"
+                    f"Express this emotional state throughout your responses. "
+                    f"Use appropriate tone, word choice, and emotional expression that reflects {current_emotional_state} feelings.\n"
+                )
+                current_system_prompt_for_task += emotional_state_injection
+                log_message(f"Thread {thread_id}: Assigned emotional state '{current_emotional_state}' for task {task_id}", "DEBUG")
+
+            conversation_history_for_output = [] # Stores the full conversation for writing (mainly for non-duplication mode)
+            current_llm_conversation_context = [] # Stores the conversation history passed to the LLM for context
+            refusal_detected_in_task = False
+
+            initial_user_question = None
+            raw_subject_content_for_debug = "" # For debug logging
+            raw_context_content_for_debug = "" # For debug logging
+
+            # --- API Selection Logic ---
+            api_config_for_this_task = None # Holds the config for the API used by this task/thread in non-duplication
+            api_slot_idx_for_this_task = -1 # Original slot index of the API used in non-duplication
+
+            if not master_duplication_enabled_local:
+                # Non-duplication mode: assign an API to this thread for this task based on thread_id
+                if active_enabled_api_configs_for_worker: # List of {config, original_slot_idx}
+                    selected_api_details = active_enabled_api_configs_for_worker[thread_id % len(active_enabled_api_configs_for_worker)]
+                    api_config_for_this_task = selected_api_details['config']
+                    api_slot_idx_for_this_task = selected_api_details['original_slot_idx']
+                    log_message(f"Thread {thread_id} (Non-Duplication): Assigned API Slot {api_slot_idx_for_this_task+1} for task {task_id}", "DEBUG")
+                else: # Should not happen if start_processing validates correctly
+                    log_message(f"Thread {thread_id}: CRITICAL - No active/enabled APIs for non-duplication mode. Skipping task.", "ERROR")
+                    q.task_done(); continue
+            # In Duplication mode, api_config_for_this_task and api_slot_idx_for_this_task are not used directly for answers.
+            # Instead, the answer generation loop iterates through all_api_configs_local.
+            # Question/Continuation generation in duplication mode uses the primary API (slot 0).
+
+            # --- Initial Question Generation ---
+            if use_questions_file_local:
+                question_as_segment = task[3] # The question text is part of the task tuple
+                initial_user_question = question_as_segment 
+            else: # Generate question from subject/context
+                if app_state.stop_processing: q.task_done(); continue
+                subject_content_for_task = task[3]
+                context_content_for_task = task[4]
+                raw_subject_content_for_debug = subject_content_for_task 
+                raw_context_content_for_debug = context_content_for_task 
+                
+                # Determine API for question generation: primary (slot 0) in duplication, or assigned API in non-duplication
+                q_gen_api_conf = all_api_configs_local[0] if master_duplication_enabled_local else api_config_for_this_task
+                q_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
+
+                initial_user_question = generate_question(
+                    current_system_prompt_for_task, current_question_prompt, 
+                    subject_content_for_task, context_content_for_task,
+                    thread_id, q_gen_api_conf.get('sampler_settings', {}), 
+                    q_gen_api_conf.get('url'), q_gen_api_conf.get('model'), q_gen_api_conf.get('key'),
+                    current_history_size_local,
+                    raw_subject_content_for_debug, raw_context_content_for_debug, 
+                    api_slot_idx=q_gen_api_slot_idx, # Pass the correct API slot index for stats/logging
+                    current_max_attempts_param=current_max_attempts, # Pass max attempts for retries
+                    api_request_timeout_param=current_api_request_timeout
+                )
+            
+            if not initial_user_question:
+                log_message(f"Thread {thread_id}: Failed to generate initial question for task {task_id}. Skipping.", "ERROR")
+                q.task_done(); continue
+
+            current_llm_conversation_context.append({"role": "user", "content": initial_user_question})
+            # For non-duplication mode, this will be part of the final output history
+            if not master_duplication_enabled_local:
+                conversation_history_for_output.append({"role": "user", "content": initial_user_question})
+
+
+            # --- Multi-Turn Conversation Loop ---
+            for turn_num in range(current_num_turns):
+                if app_state.stop_processing or app_state.pause_processing: break # Check before starting a new turn
+
+                assistant_answer = None # This will hold the assistant's response for the current turn
+
+                # --- Assistant Answer Generation ---
+                if master_duplication_enabled_local:
+                    primary_api_answer_for_conv_flow = None # Answer from primary/first successful API to drive conversation flow
+                    all_duplicated_answers_for_output = [] # Stores (answer_text, original_api_slot_idx) for writing
+
+                    # Iterate through enabled APIs (Slots 1-4, indices 0-3) for duplication
+                    for dup_api_idx, dup_api_conf_item in enumerate(all_api_configs_local):
+                        if dup_api_idx < 4 and dup_api_conf_item.get('enabled', False): 
+                            if app_state.stop_processing or app_state.pause_processing: break
+                            log_message(f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: Duplicating with API Slot {dup_api_idx+1}", "DEBUG")
+                            start_time_api_task = time.time()
+                            
+                            answer_result = generate_answer_with_retries(
+                                base_system_prompt=current_system_prompt_for_task,
+                                conversation_history_for_llm=list(current_llm_conversation_context), # Pass a copy
+                                answer_prompt_template=current_answer_prompt,
+                                thread_id=thread_id, q=q,
+                                sampler_settings_local=dup_api_conf_item.get('sampler_settings', {}),
+                                api_url_local=dup_api_conf_item.get('url'),
+                                model_name_local=dup_api_conf_item.get('model'),
+                                api_key_local=dup_api_conf_item.get('key'),
+                                refusal_phrases_local=current_refusal_phrases,
+                                user_speaking_phrases_local=current_user_speaking_phrases,
+                                slop_phrases_local=current_slop_phrases,
+                                jailbreaks_local=current_jailbreaks,
+                                speaking_fixes_local=current_speaking_fixes,
+                                slop_fixes_fallback_local=current_slop_fixes_fallback,
+                                max_attempts_local=current_max_attempts, # This is for main answer generation logic
+                                slop_fixer_api_config_param=slop_fixer_api_config,
+                                current_slop_fixes_for_rotation_param=current_slop_fixes_for_rotation_worker,
+                                api_slot_idx=dup_api_idx, # Pass the specific API slot index being used
+                                current_max_attempts_for_slop_fixer_call=current_max_attempts, # Pass for slop_fixer's own API call retries
+                                master_duplication_enabled_local=master_duplication_enabled_local,
+                                current_anti_slop_phrases_param=current_anti_slop_phrases, # (Prevents future error)
+                                anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
+                                api_request_timeout_param=current_api_request_timeout,
+                            )
+                            if answer_result and answer_result[0]:  # Check if answer is not None
+                                duplicated_answer_text = answer_result[0]
+                                issue_in_this_call = answer_result[1] if len(answer_result) > 1 else False
+                                refusal_in_this_call = answer_result[2] if len(answer_result) > 2 else False
+
+                                # Track if issue was detected in this task
+                                if issue_in_this_call:
+                                    any_issue_detected_in_task = True
+                                if refusal_in_this_call:
+                                    refusal_detected_in_task = True
+                                    log_message(f"Thread {thread_id}: Task {task_id}, Turn {turn_num+1}: Issue detected (refusal/user_speak/slop). Setting refusal_detected_in_task=True", "WARNING")
+                            end_time_api_task = time.time()
+                            api_task_duration = end_time_api_task - start_time_api_task
+
+                            if answer_result and answer_result[0]:  # Check if answer is not None
+                                duplicated_answer_text = answer_result[0]
+                                refusal_in_this_call = answer_result[1] if len(answer_result) > 1 else False
+
+                                # Track if refusal was detected in this task
+                                if refusal_in_this_call:
+                                    refusal_detected_in_task = True
+                                all_duplicated_answers_for_output.append((duplicated_answer_text, dup_api_idx))
+                                # Update progress for this specific API in duplication mode
+                                with q.processed_tasks_lock:
+                                    if dup_api_idx not in q.api_processed_tasks: q.api_processed_tasks[dup_api_idx] = 0
+                                    # Increment per successful turn generation
+                                    # Ensure not to exceed total_tasks_for_progress for this API
+                                    if q.api_processed_tasks[dup_api_idx] < q.total_tasks_for_progress:
+                                        q.api_processed_tasks[dup_api_idx] += 1 
+                                    if dup_api_idx not in q.api_start_times_list: q.api_start_times_list[dup_api_idx] = []
+                                    q.api_start_times_list[dup_api_idx].append(api_task_duration)
+                                    if len(q.api_start_times_list[dup_api_idx]) > 50: q.api_start_times_list[dup_api_idx].pop(0)
+                                
+                                # Determine which answer drives the conversation flow (primary or first successful)
+                                if dup_api_idx == 0 and duplicated_answer_text: # Primary API (Slot 1) successful
+                                    primary_api_answer_for_conv_flow = duplicated_answer_text
+                                elif not primary_api_answer_for_conv_flow and duplicated_answer_text: # Fallback to first other successful API
+                                    primary_api_answer_for_conv_flow = duplicated_answer_text
+                            else:
+                                log_message(f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: API Slot {dup_api_idx+1} failed to generate answer.", "WARNING")
+                        if app_state.stop_processing or app_state.pause_processing: break # Check inside duplication loop
+                    
+                    assistant_answer = primary_api_answer_for_conv_flow # Use this for the main conversation flow
+
+                    # Write all successful duplicated answers to their respective per-API files for this turn
+                    if assistant_answer: # Only proceed if at least one API gave an answer to continue the flow
+                        for ans_text, original_slot_idx_for_file in all_duplicated_answers_for_output:
+                            # CRITICAL FIX: Check if this specific answer had a refusal
+                            # We need to track refusals per API call, not just overall
+                            # For now, skip writing if any refusal was detected in this task
+                            if not refusal_detected_in_task:
+                                # Create a temporary history for this specific API's output for this turn
+                                temp_conv_history_for_api_output_turn = list(current_llm_conversation_context) # Contains user's current message
+                                temp_conv_history_for_api_output_turn.append({"role": "assistant", "content": ans_text})
+                                with output_data_lock:
+                                    write_conversation(None, temp_conv_history_for_api_output_turn, current_remove_reasoning,
+                                                    current_remove_em_dash,
+                                                    current_remove_asterisks, # NEW
+                                                    current_remove_asterisk_space_asterisk,  # NEW ADDITION
+                                                    current_remove_all_asterisks,  # NEW ADDITION
+                                                    current_ensure_space_after_line_break, # NEW
+                                                    current_remove_markdown,
+                                                    current_output_format, task_id,
+                                                    api_slot_idx_for_output_file=original_slot_idx_for_file, # Write to specific API's file
+                                                    is_duplication_turn=True, turn_number_for_duplication=turn_num + 1) # Mark as duplication turn
+                            else:
+                                log_message(f"Thread {thread_id}: Skipping turn {turn_num+1} output for API Slot {original_slot_idx_for_file+1} due to previous refusal in task {task_id}", "DEBUG")
+                    # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
+                
+                else: # --- Non-Duplication Mode: Single API call for answer ---
+                    if app_state.stop_processing or app_state.pause_processing: break
+                    start_time_api_task = time.time()
+                    answer_result = generate_answer_with_retries(
+                        base_system_prompt=current_system_prompt_for_task,
+                        conversation_history_for_llm=list(current_llm_conversation_context),
+                        answer_prompt_template=current_answer_prompt,
+                        thread_id=thread_id, q=q,
+                        sampler_settings_local=api_config_for_this_task.get('sampler_settings', {}),
+                        api_url_local=api_config_for_this_task.get('url'),
+                        model_name_local=api_config_for_this_task.get('model'),
+                        api_key_local=api_config_for_this_task.get('key'),
+                        refusal_phrases_local=current_refusal_phrases,
+                        user_speaking_phrases_local=current_user_speaking_phrases,
+                        slop_phrases_local=current_slop_phrases,
+                        current_anti_slop_phrases_param=current_anti_slop_phrases,
+                        jailbreaks_local=current_jailbreaks,
+                        speaking_fixes_local=current_speaking_fixes,
+                        slop_fixes_fallback_local=current_slop_fixes_fallback,
+                        max_attempts_local=current_max_attempts,
+                        slop_fixer_api_config_param=slop_fixer_api_config,
+                        current_slop_fixes_for_rotation_param=current_slop_fixes_for_rotation_worker,
+                        api_slot_idx=api_slot_idx_for_this_task, # API slot used by this worker
+                        current_max_attempts_for_slop_fixer_call=current_max_attempts, # Pass for slop_fixer's own API call retries
+                        no_user_impersonation_local=no_user_impersonation_local,
+                        master_duplication_enabled_local=master_duplication_enabled_local,
+                        anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
+                        api_request_timeout_param=current_api_request_timeout,
+                    )
+                    if answer_result and answer_result[0]:  # Check if answer is not None
+                        assistant_answer = answer_result[0]
+                        issue_in_this_call = answer_result[1] if len(answer_result) > 1 else False
+                        refusal_in_this_call = answer_result[2] if len(answer_result) > 2 else False
+
+                        # Track if issue was detected in this task (refusal, user speaking, slop, OR anti-slop)
+                        if issue_in_this_call:
+                            any_issue_detected_in_task = True
+                        if refusal_in_this_call:
+                            refusal_detected_in_task = True
+                            log_message(f"Thread {thread_id}: Task {task_id}, Turn {turn_num+1}: Issue detected (refusal/user_speak/slop). Setting refusal_detected_in_task=True", "WARNING")
+                    end_time_api_task = time.time()
+                    api_task_duration = end_time_api_task - start_time_api_task
+
+                    if answer_result and answer_result[0]:  # Check if answer is not None
+                        assistant_answer = answer_result[0]
+                        refusal_in_this_call = answer_result[1] if len(answer_result) > 1 else False
+
+                        # Track if refusal was detected in this task
+                        if refusal_in_this_call:
+                            refusal_detected_in_task = True
+                        # Update overall progress for non-duplication mode (per turn)
+                        with q.processed_tasks_lock:
+                            if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
+                            if q.processed_tasks < q.total_tasks_for_progress: # Check against total expected turns
+                                q.processed_tasks += 1 
+                            if not hasattr(q, 'start_times_list'): q.start_times_list = []
+                            q.start_times_list.append(api_task_duration)
+                            if len(q.start_times_list) > 50: q.start_times_list.pop(0)
+                        
+                        # In non-duplication, add the assistant's answer to the main conversation history for output
+                        conversation_history_for_output.append({"role": "assistant", "content": assistant_answer})
+
+                # --- End of Assistant Answer Generation for the turn ---
+
+                if not assistant_answer: # If no answer (primary failed in dup, or single API failed in non-dup)
+                    log_message(f"Thread {thread_id}: Failed to get any assistant answer for turn {turn_num + 1} of task {task_id}. Ending this conversation.", "ERROR")
+                    break # End this task's conversation
+
+                current_llm_conversation_context.append({"role": "assistant", "content": assistant_answer})
+                # conversation_history_for_output is handled above based on duplication mode for this turn's assistant answer.
+
+                if turn_num == current_num_turns - 1: # If this was the last turn
+                    break 
+                if app_state.stop_processing or app_state.pause_processing: break
+
+                # --- User Continuation Generation (if not the last turn) ---
+                if not current_user_continuation_prompt: 
+                    log_message(f"Thread {thread_id}: No user continuation prompt set. Ending conversation after assistant's turn {turn_num + 1}.", "INFO")
+                    break
+                
+                # Determine API for user continuation: primary (slot 0) in duplication, or assigned API in non-duplication
+                cont_gen_api_conf = all_api_configs_local[0] if master_duplication_enabled_local else api_config_for_this_task
+                cont_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
+
+                user_continuation_reply = generate_user_continuation(
+                    system_prompt=current_system_prompt_for_task, 
+                    conversation_history_for_llm=list(current_llm_conversation_context), 
+                    user_continuation_prompt_template=current_user_continuation_prompt,
+                    thread_id=thread_id, 
+                    sampler_settings_local=cont_gen_api_conf.get('sampler_settings', {}),
+                    api_url_local=cont_gen_api_conf.get('url'), 
+                    model_name_local=cont_gen_api_conf.get('model'), 
+                    api_key_local=cont_gen_api_conf.get('key'),
+                    api_slot_idx=cont_gen_api_slot_idx, # Pass correct API slot for stats/logging
+                    current_max_attempts_param=current_max_attempts, # Pass max attempts for retries
+                    api_request_timeout_param=current_api_request_timeout
+                )
+
+                if not user_continuation_reply:
+                    log_message(f"Thread {thread_id}: Failed to get user continuation for turn {turn_num + 1} of task {task_id}. Ending this conversation.", "ERROR")
+                    break 
+                
+                current_llm_conversation_context.append({"role": "user", "content": user_continuation_reply})
+                # In non-duplication, add user's continuation to the main history for final output
+                if not master_duplication_enabled_local:
+                    conversation_history_for_output.append({"role": "user", "content": user_continuation_reply})
+            
+            # --- End of Multi-Turn Loop ---
+            if app_state.stop_processing: q.task_done(); continue 
+
+            # --- Write Completed Conversation (Non-Duplication Mode) or Mark Task Complete (Duplication Mode) ---
+            if not master_duplication_enabled_local:
+                # In non-duplication mode, conversation_history_for_output contains the full conversation.
+                if conversation_history_for_output and len(conversation_history_for_output) >= 2: # Ensure at least one Q/A pair
+                    # CRITICAL FIX: Don't save if a refusal was detected at any point
+                    if refusal_detected_in_task:
+                        log_message(f"Thread {thread_id}: Task {task_id} contained a refusal. NOT saving to output.jsonl.", "WARNING")
+                        # Do NOT add to completed_task_ids - this task should not be marked complete
+                    elif len(conversation_history_for_output) < (current_num_turns * 2):
+                        log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {current_num_turns * 2} messages, got {len(conversation_history_for_output)}. NOT saving to output.jsonl.", "WARNING")
+                        # Do NOT add to completed_task_ids - this task should be retried.
+                        # If the host is down, requeue it so it's retried once the host recovers
+                        # (otherwise it would just be discarded and lost).
+                        if api_host_is_down(worker_api_slot):
+                            if requeue_task(q, task, task_id):
+                                log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued incomplete task {task_id} for retry.", "WARNING")
+                            else:
+                                log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
+                    else:
+                        with output_data_lock:
+                            write_conversation(None, conversation_history_for_output, current_remove_reasoning,
+                                current_remove_em_dash,
+                                current_remove_asterisks,
+                                current_remove_asterisk_space_asterisk,
+                                current_remove_all_asterisks,
+                                current_ensure_space_after_line_break,
+                                current_remove_markdown,
+                                current_output_format, task_id,
+                                api_slot_idx_for_output_file=None)
+                        app_state.completed_task_ids.add(task_id)
+
+                    save_generation_state()
+                    log_message(f"Thread {thread_id}: Processed task {task_id} (API Slot {api_slot_idx_for_this_task+1}) from file {file_name}. Turns: {len(conversation_history_for_output)//2}", "INFO")
+                else:
+                    log_message(f"Thread {thread_id}: No valid conversation generated for task {task_id} (API Slot {api_slot_idx_for_this_task+1}). Not writing to output.", "WARNING")
+                    # If this failed because the host is down (circuit open), requeue it so
+                    # it's retried after the host recovers instead of being silently dropped.
+                    if api_host_is_down(worker_api_slot):
+                        if requeue_task(q, task, task_id):
+                            log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued task {task_id} for retry.", "WARNING")
+                        else:
+                            log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
+            else: # Master duplication mode - mark task complete if it went through turns
+                # Individual API outputs were already handled per turn inside the loop.
+                if conversation_history_for_output or current_llm_conversation_context: # Check if at least initial question was made
+                    # CRITICAL FIX: Don't save if a refusal was detected at any point
+                    if refusal_detected_in_task:
+                        log_message(f"Thread {thread_id}: Task {task_id} contained a refusal (duplication mode). NOT saving to output.jsonl. refusal_detected_in_task={refusal_detected_in_task}", "WARNING")
+                        log_message(f"Thread {thread_id}: Skipping task {task_id} (duplication mode) - refusal detected during generation", "INFO")
+                        # Do NOT add to completed_task_ids
+                    else:
+                        with output_data_lock: # Lock for completed_task_ids and save_generation_state
+                            app_state.completed_task_ids.add(task_id)
+                            save_generation_state()
+                        log_message(f"Thread {thread_id}: Completed processing (duplication mode) for task {task_id} from file {file_name}. Individual API outputs handled per turn.", "INFO")
+
+        except Exception as e: # Catch-all for errors during task processing
+            error_message_gen = f"Thread {thread_id}: Error processing task {task_id} from {file_name}: {str(e)}"
+            log_message(error_message_gen, "ERROR")
+            import traceback
+            log_message(traceback.format_exc(), "ERROR") 
+            # Record this as a general error for the task
+            with output_data_lock: # Use the lock for modifying global error counters
+                app_state.error_count_total +=1 
+                # For general task errors, we don't assign to a specific API unless the error originated there.
+                # Here, it's a task-level error, so log it for the "Totals" dashboard.
+                err_summary = f"T{thread_id} TaskErr: {str(e)[:30]}" # Short summary
+                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                app_state.recent_errors_total.append((err_summary, -1)) # -1 indicates a general task error not tied to a specific API call error
+        
+        end_time_task_overall = time.time()
+        task_duration_overall = end_time_task_overall - start_time_task_overall
+
+        # In duplication mode, we track overall task time for a general estimate,
+        # though per-API times are more granular for progress bars.
+        if master_duplication_enabled_local:
+             with q.processed_tasks_lock: # This lock is also used for overall_task_times_list
+                if not hasattr(q, 'overall_task_times_list'): q.overall_task_times_list = []
+                q.overall_task_times_list.append(task_duration_overall)
+                if len(q.overall_task_times_list) > 50 : q.overall_task_times_list.pop(0)
+                # This doesn't directly update a progress bar but could be used for overall ETA if needed.
+
+        q.task_done() # Signal that this task is complete
+
+    log_message(f"Thread {thread_id} completed its run.", "INFO")
+
+
+def get_next_system_prompt(prompts_list_local):
+    """Randomly selects a system prompt from the list if variable system prompts are enabled."""
+    if not prompts_list_local:
+        return "You are a helpful assistant."  # Fallback
+    return random.choice(prompts_list_local)
+
+
+def generate_question(system_prompt, question_prompt_template, subject, context, thread_id,
+                      sampler_settings_local, api_url_local, model_name_local, api_key_local,
+                      history_size_local_param,
+                      raw_subject_chunk, raw_context_chunk,
+                      api_slot_idx, current_max_attempts_param, api_request_timeout_param):
+    """Generates an initial question using the LLM, with retries for API call failures."""
+
+    if not api_url_local:
+        log_message(f"Thread {thread_id}: API URL missing for question generation (API Slot {api_slot_idx+1}). Cannot proceed.", "ERROR")
+        return None
+
+    for attempt_num in range(current_max_attempts_param):
+        if app_state.stop_processing or app_state.pause_processing:
+            return None
+            MAX_TOTAL_RETRY_WAIT = 20
+            current_attempt_wait = 0
+
+        # FIX: Use stats_lock instead of system_prompt_lock, with timeout
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+        if lock_acquired:
+            try:
+                app_state.total_attempts_global += 1
+                app_state.total_attempts_per_api[api_slot_idx] += 1
+            finally:
+                app_state.system_prompt_lock.release()
+        else:
+            log_message(f"Thread {thread_id}: Skipped stat update (system_prompt_lock busy)", "DEBUG")
+
+        try:
+            # FIX: Use question_history_lock with timeout
+            recent_questions_str = ""
+            lock_acquired_qh = app_state.question_history_lock.acquire(timeout=0.05)
+            if lock_acquired_qh:
+                try:
+                    recent_questions_str = "\n- ".join(app_state.question_history[-history_size_local_param:]) if app_state.question_history else "None"
+                finally:
+                    app_state.question_history_lock.release()
+            else:
+                log_message(f"Thread {thread_id}: WARNING - Could not acquire question_history_lock. Using empty history.", "WARNING")
+                recent_questions_str = "None"
+
+            # Format the question prompt with placeholders
+            final_formatted_user_prompt = question_prompt_template.replace("{recent_questions}", recent_questions_str)
+            final_formatted_user_prompt = final_formatted_user_prompt.replace("{subject}", subject if subject else "N/A")
+            final_formatted_user_prompt = final_formatted_user_prompt.replace("{context}", context if context else "N/A")
+
+            messages_for_llm = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": final_formatted_user_prompt}
+            ]
+
+            update_live_prompt_preview(messages_for_llm)
+
+            # Prepare payload for LLM API
+            payload_dict = {
+                "model": model_name_local,
+                "messages": messages_for_llm,
+                **sampler_settings_local.get("generation_params", {
+                    "temperature": sampler_settings_local.get("temperature",0.7),
+                    "top_p": sampler_settings_local.get("top_p",0.9),
+                    "top_k": sampler_settings_local.get("top_k",50),
+                    "repetition_penalty": sampler_settings_local.get("repetition_penalty",1.1),
+                    "max_tokens": sampler_settings_local.get("max_tokens_question", global_config.get('samplers.max_tokens_question', 256))
+                }),
+                "stream": False
+            }
+            logit_bias_str = sampler_settings_local.get('logit_bias', '')
+            if logit_bias_str:
+                try:
+                    payload_dict['logit_bias'] = json.loads(logit_bias_str)
+                except json.JSONDecodeError:
+                    log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
+            thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+            if thinking_mode == 'enable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
+            elif thinking_mode == 'disable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
+            # else 'default': do not send the parameter
+
+            payload = json.dumps(payload_dict)
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            if api_key_local:
+                headers['Authorization'] = f"Bearer {api_key_local}"
+
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+
+            debug_log_entry = {
+                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "question_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1,
+                "api_url": api_url_local, "model": model_name_local,
+                "raw_subject_chunk_length": len(raw_subject_chunk),
+                "raw_context_chunk_length": len(raw_context_chunk),
+                "messages": messages_for_llm,
+                "sampler_settings": sampler_settings_local,
+                "payload_dict": payload_dict
+            }
+            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
+                debug_log.write(json.dumps(debug_log_entry) + '\n')
+
+            # Apply rate limiting before making the API call
+            global_rate_limiter.wait_if_needed(api_slot_idx)
+
+            # Circuit Breaker Check
+            if not check_circuit_breaker(api_slot_idx):
+                log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} circuit open. Skipping question generation.", "DEBUG")
+                return None
+
+            # Track API response time
+            api_call_start_time = time.time()
+
+            # Create a unique hash of the prompt to use as a cache key
+            prompt_content = json.dumps(messages_for_llm, sort_keys=True)
+            prompt_hash = hashlib.md5(prompt_content.encode()).hexdigest()
+
+            # Check cache
+            cached_response, is_cached = get_cached_response(prompt_hash, api_slot_idx)
+            if is_cached:
+                generated_question_text = cached_response
+                # Update question history if cached
+                lock_acquired_qh_update = app_state.question_history_lock.acquire(timeout=7.0)
+                if lock_acquired_qh_update:
+                    try:
+                        update_question_history(generated_question_text, history_size_local_param)
+                    finally:
+                        app_state.question_history_lock.release()
+                return generated_question_text
+
+            response = requests.post(api_url_local, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))
+
+            api_response_time = time.time() - api_call_start_time
+
+            # Store response time (thread-safe)
+            with api_response_times_lock:
+                api_response_times_per_slot[api_slot_idx].append(api_response_time)
+                if len(api_response_times_per_slot[api_slot_idx]) > MAX_RESPONSE_TIMES_TO_TRACK:
+                    api_response_times_per_slot[api_slot_idx] = api_response_times_per_slot[api_slot_idx][-MAX_RESPONSE_TIMES_TO_TRACK:]
+
+            if response.status_code == 200:
+                record_api_success(api_slot_idx)
+                response_data = response.json()
+                content = response_data['choices'][0]['message'].get('content')
+
+                # NEW: Extract token usage if available
+                usage = response_data.get('usage', {})
+                input_tokens = usage.get('prompt_tokens', 0)
+                output_tokens = usage.get('completion_tokens', 0)
+
+                # Update global counters with timeout
+                lock_acquired_tokens = app_state.stats_lock.acquire(timeout=7.0)
+                if lock_acquired_tokens:
+                    try:
+                        app_state.total_input_tokens += input_tokens
+                        app_state.total_output_tokens += output_tokens
+                    finally:
+                        app_state.stats_lock.release()
+                else:
+                    log_message(f"Thread {thread_id}: WARNING - Could not acquire stats_lock for token update.", "WARNING")
+
+                if content is None:
+                    log_message(f"Thread {thread_id}: API returned None for content (API Slot {api_slot_idx+1}, Attempt {attempt_num+1})", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None, text_context
+                generated_question_text = content.strip()
+                newline_count = generated_question_text.count('\n')
+                text_length = len(generated_question_text)
+
+                max_newlines = global_config.get('generation.max_newlines_malformed', 16)
+                max_text_length = global_config.get('generation.max_text_length_malformed', 5000)
+
+                if newline_count > max_newlines or text_length > max_text_length:
+                    log_message(
+                        f"Thread {thread_id}: Question response appears malformed. "
+                        f"Newlines: {newline_count} (Max: {max_newlines}), Length: {text_length} (Max: {max_text_length}). "
+                        f"Snippet: '{generated_question_text[:100]}...'",
+                        "WARNING"
+                    )
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
+                generated_question_text = content.strip()
+                if not generated_question_text or len(generated_question_text) < 5:
+                    log_message(f"Thread {thread_id}: API returned empty/very short question. Content: '{generated_question_text}'", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
+
+                # Update question history with timeout
+                lock_acquired_qh_update = app_state.question_history_lock.acquire(timeout=7.0)
+                if lock_acquired_qh_update:
+                    try:
+                        update_question_history(generated_question_text, history_size_local_param)
+                        set_cached_response(prompt_hash, api_slot_idx, generated_question_text)
+                        log_message(f"Thread {thread_id}: Cache SET for API Slot {api_slot_idx+1}.", "DEBUG")
+                    finally:
+                        app_state.question_history_lock.release()
+                return generated_question_text
+            else: # API call failed
+                error_message = f"Thread {thread_id}: Error generating question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
+                log_message(error_message, "ERROR")
+                record_api_failure(api_slot_idx)
+                # Update error counters with timeout
+                lock_acquired_err = app_state.stats_lock.acquire(timeout=7.0)
+                if lock_acquired_err:
+                    try:
+                        app_state.error_count_total += 1
+                        app_state.error_counts_per_api[api_slot_idx] += 1
+                        err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
+                        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                        app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                        with app_state.issue_timestamps_lock:
+                            app_state.issue_timestamps['errors'].append(time.time())
+                            cutoff = time.time() - 3600
+                            app_state.issue_timestamps['errors'] = [t for t in app_state.issue_timestamps['errors'] if t > cutoff]
+                        if api_slot_idx < 6 :
+                            if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                            app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                    finally:
+                        app_state.stats_lock.release()
+                if attempt_num < current_max_attempts_param - 1:
+                    time.sleep(random.uniform(0.5, 1.5))
+                    continue
+                else:
+                    return None
+        except requests.exceptions.Timeout:
+            error_message = f"Thread {thread_id}: Timeout generating question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
+            log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx)
+            lock_acquired_err = app_state.stats_lock.acquire(timeout=7.0)
+            if lock_acquired_err:
+                try:
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
+                    err_summary = f"T{thread_id} Q-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    if api_slot_idx < 4:
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                finally:
+                    app_state.stats_lock.release()
+            if attempt_num < current_max_attempts_param - 1:
+                time.sleep(random.uniform(0.5, 1.5))
+                continue
+            else:
+                return None
+        except Exception as e:
+            error_message = f"Thread {thread_id}: Exception in generate_question (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
+            log_message(error_message, "ERROR")
+            import traceback
+            log_message(traceback.format_exc(), "ERROR")
+            record_api_failure(api_slot_idx)
+            lock_acquired_err = app_state.stats_lock.acquire(timeout=7.0)
+            if lock_acquired_err:
+                try:
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
+                    err_summary = f"T{thread_id} Q-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    if api_slot_idx < 4:
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                finally:
+                    app_state.stats_lock.release()
+            if attempt_num < current_max_attempts_param - 1:
+                time.sleep(random.uniform(0.5, 1.5))
+                continue
+            else:
+                return None
+    return None
+
+
+def generate_user_continuation(system_prompt, conversation_history_for_llm, user_continuation_prompt_template,
+                               thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
+                               api_slot_idx, current_max_attempts_param, api_request_timeout_param): # API slot index and max_attempts
+    """Generates the user's continuation reply, with retries for API call failures."""
+
+
+    if not api_url_local:
+        log_message(f"Thread {thread_id}: API URL missing for user continuation (API Slot {api_slot_idx+1}). Cannot proceed.", "ERROR")
+        return None
+
+    for attempt_num in range(current_max_attempts_param):
+        if app_state.stop_processing or app_state.pause_processing: return None
+        MAX_TOTAL_RETRY_WAIT = 20
+        current_attempt_wait = 0
+
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+        if lock_acquired:
+            try:
+                app_state.total_attempts_global += 1
+                app_state.total_attempts_per_api[api_slot_idx] += 1
+            finally:
+                app_state.system_prompt_lock.release()
+
+        try:
+            # Get the last assistant message for the prompt template
+            last_assistant_message = ""
+            if conversation_history_for_llm and conversation_history_for_llm[-1]["role"] == "assistant":
+                last_assistant_message = conversation_history_for_llm[-1]["content"]
+            
+            final_user_continuation_prompt = user_continuation_prompt_template.replace("{last_assistant_message}", last_assistant_message)
+
+            messages = [{"role": "system", "content": system_prompt}] + \
+                       conversation_history_for_llm + \
+                       [{"role": "user", "content": final_user_continuation_prompt}]
+
+            update_live_prompt_preview(messages)
+
+            payload_dict = {
+                "model": model_name_local,
+                "messages": messages,
+                **sampler_settings_local.get("generation_params", { 
+                    "temperature": sampler_settings_local.get("temperature", 0.6), 
+                    "top_p": sampler_settings_local.get("top_p", 0.9),
+                    "top_k": sampler_settings_local.get("top_k", 50),
+                    "repetition_penalty": sampler_settings_local.get("repetition_penalty", 1.1),
+                    "max_tokens": sampler_settings_local.get("max_tokens_user_reply", global_config.get('samplers.max_tokens_user_reply', 256))
+                }),
+                "stream": False
+            }
+            logit_bias_str = sampler_settings_local.get('logit_bias', '')
+            if logit_bias_str:
+                try:
+                    payload_dict['logit_bias'] = json.loads(logit_bias_str)
+                except json.JSONDecodeError:
+                    log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
+            thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+            if thinking_mode == 'enable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
+            elif thinking_mode == 'disable':
+                payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
+            # else 'default': do not send the parameter
+
+            payload = json.dumps(payload_dict)
+            headers = {
+                'Content-Type': 'application/json'
+            }
+
+            if api_key_local:
+                headers['Authorization'] = f"Bearer {api_key_local}"
+            
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
+                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict}) + '\n')
+
+            # NEW: Apply rate limiting before making the API call
+            global_rate_limiter.wait_if_needed(api_slot_idx)
+
+            # Circuit Breaker Check
+            if not check_circuit_breaker(api_slot_idx):
+                log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} circuit open. Skipping user continuation.", "DEBUG")
+                return None
+
+            # Track API response time
+            api_call_start_time = time.time()
+            response = requests.post(api_url_local, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))  # (connect_timeout, read_timeout)
+            api_response_time = time.time() - api_call_start_time
+
+            # Store response time (thread-safe)
+            with api_response_times_lock:
+                api_response_times_per_slot[api_slot_idx].append(api_response_time)
+                if len(api_response_times_per_slot[api_slot_idx]) > MAX_RESPONSE_TIMES_TO_TRACK:
+                    api_response_times_per_slot[api_slot_idx] = api_response_times_per_slot[api_slot_idx][-MAX_RESPONSE_TIMES_TO_TRACK:]
+
+            if response.status_code == 200:
+                # --- FIX START: Handle None content ---
+                record_api_success(api_slot_idx)
+                content = response.json()['choices'][0]['message'].get('content')
+                if content is None:
+                    log_message(f"Thread {thread_id}: API returned None for user continuation content (API Slot {api_slot_idx+1}, Attempt {attempt_num+1})", "WARNING")
+                    sleep_dur = random.uniform(0.5, 1.5)
+                    if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                        time.sleep(sleep_dur)
+                        current_attempt_wait += sleep_dur
+                        continue
+                    else:
+                        return None  # Cap reached, abort continuation
+                user_reply_text = content.strip()
+                if not user_reply_text or len(user_reply_text) < 5:
+                    log_message(f"Thread {thread_id}: API returned empty/very short user reply. Content: '{user_reply_text}'", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
+
+                    newline_count = user_reply_text.count('\n')
+                    text_length = len(user_reply_text)
+
+                    # --- NEW SETTINGS START ---
+                    max_newlines = global_config.get('generation.max_newlines_malformed', 16)
+                    max_text_length = global_config.get('generation.max_text_length_malformed', 5000)
+                    # --- NEW SETTINGS END ---
+
+                    if newline_count > max_newlines or text_length > max_text_length:
+                        log_message(
+                            f"Thread {thread_id}: User reply response appears malformed. "
+                            f"Newlines: {newline_count} (Max: {max_newlines}), Length: {text_length} (Max: {max_text_length}). "
+                            f"Snippet: '{user_reply_text[:100]}...'",
+                            "WARNING"
+                        )
+                        sleep_dur = random.uniform(0.5, 1.5)
+                        if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                            time.sleep(sleep_dur)
+                            current_attempt_wait += sleep_dur
+                            continue
+                        else:
+                            return None  # Cap reached, abort continuation
+                # --- FIX END ---
+                return user_reply_text
+            else: # API call failed
+                record_api_failure(api_slot_idx)
+                error_message = f"Thread {thread_id}: Error generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
+                log_message(error_message, "ERROR")
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.error_count_total += 1
+                        app_state.error_counts_per_api[api_slot_idx] += 1
+                        err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
+                        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                        app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                        if api_slot_idx < 6:
+                            if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                            app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                    finally:
+                        app_state.system_prompt_lock.release()
+
+                with app_state.issue_timestamps_lock:
+                    app_state.issue_timestamps['errors'].append(time.time())
+                    cutoff = time.time() - 3600
+                    app_state.issue_timestamps['errors'] = [t for t in app_state.issue_timestamps['errors'] if t > cutoff]
+                    if api_slot_idx < 4:
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                sleep_dur = random.uniform(0.5, 1.5)
+                if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                    time.sleep(sleep_dur)
+                    current_attempt_wait += sleep_dur
+                    continue
+                else:
+                    return None  # Cap reached, abort continuation
+        except requests.exceptions.Timeout:
+            error_message = f"Thread {thread_id}: Timeout generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
+            log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            if lock_acquired:
+                try:
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
+                    err_summary = f"T{thread_id} UserCont-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    if api_slot_idx < 4:
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                finally:
+                    app_state.system_prompt_lock.release()
+            sleep_dur = random.uniform(0.5, 1.5)
+            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                time.sleep(sleep_dur)
+                current_attempt_wait += sleep_dur
+                continue
+            else:
+                return None  # Cap reached, abort continuation
+        except Exception as e: # Catch any other exceptions
+            error_message = f"Thread {thread_id}: Exception in generate_user_continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
+            log_message(error_message, "ERROR")
+            import traceback
+            log_message(traceback.format_exc(), "ERROR")
+            record_api_failure(api_slot_idx)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            if lock_acquired:
+                try:
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx] += 1
+                    err_summary = f"T{thread_id} UserCont-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    if api_slot_idx < 4:
+                        if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                        app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                finally:
+                    app_state.system_prompt_lock.release()
+            sleep_dur = random.uniform(0.5, 1.5)
+            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                time.sleep(sleep_dur)
+                current_attempt_wait += sleep_dur
+                continue
+            else:
+                return None  # Cap reached, abort continuation
+    return None
+
+
+def call_slop_fixer_llm(text_context, slop_phrase,
+                        slop_fixer_api_config,
+                        main_sampler_settings, thread_id, additional_fix_instructions="",
+                        current_max_attempts_param=5, api_request_timeout_param=300):
+    """Calls a dedicated LLM (API Slot 5, index 4) to rewrite a sentence containing "slop", with retries."""
+
+    api_slot_idx_slop_fixer = 4 # Slop fixer is always API slot 5 (index 4)
+
+    if not slop_fixer_api_config or not slop_fixer_api_config.get('url') or \
+       not slop_fixer_api_config.get('model') or not slop_fixer_api_config.get('key'):
+        log_message(f"Thread {thread_id}: Slop Fixer LLM (API Slot {api_slot_idx_slop_fixer+1}) not fully configured. Cannot call.", "WARNING")
+        return None, text_context # Return None for rewritten, and original sentence
+
+    api_url = slop_fixer_api_config['url']
+    model_name = slop_fixer_api_config['model']
+    api_key = slop_fixer_api_config['key']
+
+    # Added validation for main_sampler_settings to prevent NameError-like issues from bad config
+    if not main_sampler_settings or not isinstance(main_sampler_settings, dict):
+        log_message(f"Thread {thread_id}: main_sampler_settings passed to call_slop_fixer_llm is invalid. Expected a dictionary.", "ERROR")
+        return None, text_context
+
+    for attempt_num in range(current_max_attempts_param):
+        if app_state.stop_processing or app_state.pause_processing: return None, text_context
+
+        with app_state.system_prompt_lock:
+            app_state.total_attempts_global +=1
+            app_state.total_attempts_per_api[api_slot_idx_slop_fixer] +=1
+
+        try:
+            # UPDATED PROMPT: Explicitly instruct to preserve quotes & provide paragraph context
+            user_rewrite_instruction = (
+                f"The following text contains an undesirable phrase: '{slop_phrase}'. "
+                f"Rewrite the text to remove or rephrase this specific undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. "
+                f"CRITICAL: Do not drop any opening or closing quotation marks. Ensure quotes remain perfectly balanced. "
+                f"Only output the rewritten text. Do not include any preamble or explanation. Just the rewritten text."
+            )
+            if additional_fix_instructions:
+                user_rewrite_instruction += f"\n\nImportant instruction to follow: {additional_fix_instructions}"
+
+            user_rewrite_instruction += (
+                "\n\nCRITICAL RULES:\n"
+                "1. Preserve ALL existing quotation marks exactly where they appear structurally.\n"
+                "2. If you must add or remove a quote, ensure every opening mark has a matching closing mark.\n"
+                "3. Do not wrap the entire output in quotes."
+            )
+
+            user_rewrite_instruction += f"\n\n<original_text>\n{text_context}\n</original_text>"
+
+            messages = [
+                {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
+                {"role": "user", "content": user_rewrite_instruction}
+            ]
+
+            # Use dedicated Slop Fixer sampler settings from the API config
+            slop_fixer_sampler_overrides = slop_fixer_api_config.get('sampler_settings', {}) or main_sampler_settings
+
+            # Renamed to match the function context
+            final_slop_fixer_params = {
+                "temperature": slop_fixer_sampler_overrides.get("temperature", 0.5),
+                "top_p": slop_fixer_sampler_overrides.get("top_p", 0.95),
+                "min_p": slop_fixer_sampler_overrides.get("min_p", 0.0),
+                "top_k": slop_fixer_sampler_overrides.get("top_k", 50),
+                "repetition_penalty": slop_fixer_sampler_overrides.get("repetition_penalty", 1.1),
+                "max_tokens": slop_fixer_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
+            }
+
+            payload_data = {
+                "model": model_name,
+                "messages": messages,
+                **final_slop_fixer_params,
+                "stream": False
+            }
+            payload = json.dumps(payload_data)
+            headers = {
+                'Content-Type': 'application/json'
+            }
+
+            if api_key:
+                headers['Authorization'] = f"Bearer {api_key}"
+
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+
+            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
+                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
+
+            # NEW: Apply rate limiting before making the API call
+            global_rate_limiter.wait_if_needed(api_slot_idx_slop_fixer)
+
+            # Track API response time
+            api_call_start_time = time.time()
+            response = requests.post(api_url, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))  # (connect_timeout, read_timeout)
+            api_response_time = time.time() - api_call_start_time
+
+            # Store response time (thread-safe)
+            with api_response_times_lock:
+                api_response_times_per_slot[api_slot_idx_slop_fixer].append(api_response_time)
+            if len(api_response_times_per_slot[api_slot_idx_slop_fixer]) > MAX_RESPONSE_TIMES_TO_TRACK:
+                api_response_times_per_slot[api_slot_idx_slop_fixer] = api_response_times_per_slot[api_slot_idx_slop_fixer][-MAX_RESPONSE_TIMES_TO_TRACK:]
+
+            if response.status_code == 200:
+                # --- FIX START: Handle None content ---
+                record_api_success(api_slot_idx_slop_fixer)
+                response_data = response.json()
+                content = response_data['choices'][0]['message'].get('content')
+
+                # NEW: Extract token usage if available
+                usage = response_data.get('usage', {})
+                input_tokens = usage.get('prompt_tokens', 0)
+                output_tokens = usage.get('completion_tokens', 0)
+
+                # Update global counters safely using the lock
+                with app_state.system_prompt_lock:
+                    app_state.total_input_tokens += input_tokens
+                    app_state.total_output_tokens += output_tokens
+
+                if content is None:
+                    log_message(f"Thread {thread_id}: API returned None for content (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1})", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None, text_context
+
+                rewritten_sentence = content.strip()
+
+                # FIXED: Don't return None for content issues - let the caller handle retries
+                if not rewritten_sentence or len(rewritten_sentence) < 5:
+                    log_message(f"Thread {thread_id}: Slop fixer returned empty/very short response. Original: '{text_context}'", "WARNING")
+                    return None, text_context
+
+                if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(text_context) * 2:
+                    log_message(f"Thread {thread_id}: Slop fixer response appears malformed. Using original.", "WARNING")
+                    return None, text_context
+
+                # Only strip wrapper quotes the fixer ADDED around its rewrite.
+                # If the ORIGINAL sentence was itself a fully-quoted line of
+                # dialogue (e.g. "Get out of here!"), the LLM correctly returning
+                # it still-quoted must NOT be unwrapped here -- stripping would
+                # eat the real opening/closing quotes and is a direct source of
+                # "missing a quote on one side of dialogue".
+                _orig = text_context.strip()
+                _orig_wrapped = _orig.startswith('"') and _orig.endswith('"') and len(_orig) > 2
+                if (rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"')
+                        and len(rewritten_sentence) > 2 and not _orig_wrapped):
+                    rewritten_sentence = rewritten_sentence[1:-1]
+
+                if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(text_context):
+                    log_message(f"Thread {thread_id}: Slop fixer returned very short/empty sentence: '{rewritten_sentence}'. Original: '{text_context}'", "WARNING")
+                    return None, text_context
+
+                return rewritten_sentence, text_context
+            else: # API call failed
+                error_message = f"Thread {thread_id}: Slop Fixer LLM Error (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
+                log_message(error_message, "ERROR")
+                record_api_failure(api_slot_idx_slop_fixer)
+                with app_state.system_prompt_lock:
+                    app_state.error_count_total +=1
+                    app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
+                    err_summary = f"T{thread_id} SlopFix-API (API{api_slot_idx_slop_fixer+1}): S{response.status_code} A{attempt_num+1}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                if attempt_num < current_max_attempts_param - 1:
+                    time.sleep(random.uniform(0.5, 1.5))
+                    continue
+                else:
+                    return None, text_context
+        except requests.exceptions.Timeout:
+            error_message = f"Thread {thread_id}: Slop Fixer LLM request timed out (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
+            log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_slop_fixer)
+            with app_state.system_prompt_lock:
+                app_state.error_count_total +=1
+                app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
+                err_summary = f"T{thread_id} SlopFix-Timeout (API{api_slot_idx_slop_fixer+1}) A{attempt_num+1}"
+                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+            if attempt_num < current_max_attempts_param - 1:
+                time.sleep(random.uniform(0.5, 1.5))
+                continue
+            else:
+                return None, text_context
+        except Exception as e: # Catch any other exceptions
+            error_message = f"Thread {thread_id}: Exception in call_slop_fixer_llm (API Slot {api_slot_idx_slop_fixer+1}, Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
+            log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_slop_fixer)
+            with app_state.system_prompt_lock:
+                app_state.error_count_total +=1
+                app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
+                err_summary = f"T{thread_id} SlopFix-Exc (API{api_slot_idx_slop_fixer+1}) A{attempt_num+1}: {str(e)[:20]}"
+                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+            if attempt_num < current_max_attempts_param - 1:
+                time.sleep(random.uniform(0.5, 1.5))
+                continue
+            else:
+                return None, text_context
+    return None, text_context
+
+
+def call_anti_slop_llm(text_context, anti_slop_phrase,
+                       anti_slop_api_config,
+                       main_sampler_settings, thread_id, additional_fix_instructions="",
+                       current_max_attempts_param=5,
+                       master_duplication_enabled=False,
+                       api_request_timeout_param=300):
+    """Calls a dedicated LLM to rewrite a sentence containing anti-slop phrases."""
+    api_slot_idx_anti_slop = 5
+
+    if not anti_slop_api_config or not anti_slop_api_config.get('url') or \
+       not anti_slop_api_config.get('model') or not anti_slop_api_config.get('key'):
+        log_message(f"Thread {thread_id}: Anti-Slop LLM not fully configured. Cannot call.", "WARNING")
+        return None, text_context
+
+    api_url = anti_slop_api_config['url']
+    model_name = anti_slop_api_config['model']
+    api_key = anti_slop_api_config['key']
+
+    for attempt_num in range(current_max_attempts_param):
+        if app_state.stop_processing or app_state.pause_processing: return None, text_context
+
+        # FIX 2 & 3: Move rate limiter BEFORE lock, and add timeout to lock acquisition
+        global_rate_limiter.wait_if_needed(api_slot_idx_anti_slop)
+
+        # Circuit Breaker Check
+        if not check_circuit_breaker(api_slot_idx_anti_slop):
+            log_message(f"Thread {thread_id}: API Slot {api_slot_idx_anti_slop+1} circuit open. Skipping anti-slop fixer.", "DEBUG")
+            return None, text_context
+
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+        if lock_acquired:
+            try:
+                app_state.total_attempts_global += 1
+                app_state.total_attempts_per_api[api_slot_idx_anti_slop] += 1
+            finally:
+                app_state.system_prompt_lock.release()
+        else:
+            log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock", "WARNING")
+            return None, text_context
+
+        try:
+            # UPDATED PROMPT
+            user_rewrite_instruction = (
+                f"The following text contains an undesirable phrase: '{anti_slop_phrase}'. "
+                f"Rewrite the text to remove or rephrase this specific undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. "
+                f"CRITICAL: Do not drop any opening or closing quotation marks. Ensure quotes remain perfectly balanced. "
+                f"ONLY output the rewritten text. Do not include any preamble, explanation, quotes, or other text."
+            )
+            if additional_fix_instructions:
+                user_rewrite_instruction += f"\n\nAdditional instruction: {additional_fix_instructions}"
+
+            user_rewrite_instruction += (
+                "\n\nCRITICAL RULES:\n"
+                "1. Preserve ALL existing quotation marks exactly where they appear structurally.\n"
+                "2. If you must add or remove a quote, ensure every opening mark has a matching closing mark.\n"
+                "3. Do not wrap the entire output in quotes."
+            )
+
+            user_rewrite_instruction += f"\n\n<original_text>\n{text_context}\n</original_text>"
+
+            messages = [
+                {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
+                {"role": "user", "content": user_rewrite_instruction}
+            ]
+
+            # Use dedicated Anti-Slop sampler settings from the API config
+            anti_slop_sampler_overrides = anti_slop_api_config.get('sampler_settings', {}) or main_sampler_settings
+
+            final_anti_slop_params = {
+                "temperature": anti_slop_sampler_overrides.get("temperature", 0.5),
+                "top_p": anti_slop_sampler_overrides.get("top_p", 0.95),
+                "min_p": anti_slop_sampler_overrides.get("min_p", 0.0),
+                "top_k": anti_slop_sampler_overrides.get("top_k", 50),
+                "repetition_penalty": anti_slop_sampler_overrides.get("repetition_penalty", 1.1),
+                "max_tokens": anti_slop_sampler_overrides.get("max_tokens", len(text_context.split()) * 3 + 70),
+            }
+
+            payload_data = {
+                "model": model_name,
+                "messages": messages,
+                **final_anti_slop_params,
+                "stream": False
+            }
+            payload = json.dumps(payload_data)
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            if api_key:
+                headers['Authorization'] = f"Bearer {api_key}"
+
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_anti_slop}.jsonl" if master_duplication_enabled else BASE_DEBUG_LOG_PATH + ".jsonl"
+            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
+                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "anti_slop_request", "api_slot_idx": api_slot_idx_anti_slop, "attempt": attempt_num + 1, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
+
+            # FIX 2: Rate limiter already called BEFORE lock acquisition above
+            # Track API response time
+            api_call_start_time = time.time()
+            response = requests.post(api_url, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))
+
+            api_response_time = time.time() - api_call_start_time
+            with api_response_times_lock:
+                api_response_times_per_slot[api_slot_idx_anti_slop].append(api_response_time)
+                if len(api_response_times_per_slot[api_slot_idx_anti_slop]) > MAX_RESPONSE_TIMES_TO_TRACK:
+                    api_response_times_per_slot[api_slot_idx_anti_slop] = api_response_times_per_slot[api_slot_idx_anti_slop][-MAX_RESPONSE_TIMES_TO_TRACK:]
+
+            if response.status_code == 200:
+                record_api_success(api_slot_idx_anti_slop)
+                response_data = response.json()
+                content = response_data['choices'][0]['message'].get('content')
+                usage = response_data.get('usage', {})
+                input_tokens = usage.get('prompt_tokens', 0)
+                output_tokens = usage.get('completion_tokens', 0)
+
+                lock_acquired_tokens = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired_tokens:
+                    try:
+                        app_state.total_input_tokens += input_tokens
+                        app_state.total_output_tokens += output_tokens
+                    finally:
+                        app_state.system_prompt_lock.release()
+                else:
+                    log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock for token update.", "WARNING")
+
+                if content is None:
+                    log_message(f"Thread {thread_id}: API returned None for anti-slop content (Attempt {attempt_num+1})", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        if app_state.stop_processing or app_state.pause_processing: return None, text_context
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None, text_context
+
+                rewritten_sentence = content.strip()
+                if not rewritten_sentence or len(rewritten_sentence) < 5:
+                    log_message(f"Thread {thread_id}: Anti-slop fixer returned empty/very short sentence. Content: '{rewritten_sentence}'", "WARNING")
+                    return None, text_context
+
+                if rewritten_sentence.count('\n') > 1 or len(rewritten_sentence) > len(text_context) * 2:
+                    log_message(f"Thread {thread_id}: Anti-slop fixer response appears malformed. Using original.", "WARNING")
+                    return None, text_context
+
+                # Only strip wrapper quotes the fixer ADDED around its rewrite.
+                # If the ORIGINAL sentence was itself a fully-quoted line of
+                # dialogue (e.g. "Get out of here!"), the LLM correctly returning
+                # it still-quoted must NOT be unwrapped here -- stripping would
+                # eat the real opening/closing quotes and is a direct source of
+                # "missing a quote on one side of dialogue".
+                _orig = text_context.strip()
+                _orig_wrapped = _orig.startswith('"') and _orig.endswith('"') and len(_orig) > 2
+                if (rewritten_sentence.startswith('"') and rewritten_sentence.endswith('"')
+                        and len(rewritten_sentence) > 2 and not _orig_wrapped):
+                    rewritten_sentence = rewritten_sentence[1:-1]
+
+                if not rewritten_sentence or len(rewritten_sentence) < 0.5 * len(text_context):
+                    log_message(f"Thread {thread_id}: Anti-slop fixer returned very short/empty sentence", "WARNING")
+                    return None, text_context
+
+                return rewritten_sentence, text_context
+
+            else:
+                error_message = f"Thread {thread_id}: Anti-Slop LLM Error (Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
+                log_message(error_message, "ERROR")
+                record_api_failure(api_slot_idx_anti_slop)
+                lock_acquired_err = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired_err:
+                    try:
+                        app_state.error_count_total += 1
+                        app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
+                        err_summary = f"T{thread_id} AntiSlop-API: S{response.status_code} A{attempt_num+1}"
+                        if len(app_state.recent_errors_total) >= MAX_RECENT:
+                            app_state.recent_errors_total.pop(0)
+                        app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                    finally:
+                        app_state.system_prompt_lock.release()
+
+                if attempt_num < current_max_attempts_param - 1:
+                    if app_state.stop_processing or app_state.pause_processing: return None, text_context
+                    time.sleep(random.uniform(0.5, 1.5))
+                    continue
+                else:
+                    return None, text_context
+
+        except requests.exceptions.Timeout:
+            error_message = f"Thread {thread_id}: Anti-Slop LLM request timed out (Attempt {attempt_num+1}/{current_max_attempts_param})."
+            log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_anti_slop)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            if lock_acquired:
+                try:
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
+                    err_summary = f"T{thread_id} AntiSlop-Timeout A{attempt_num+1}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT:
+                        app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                finally:
+                    app_state.system_prompt_lock.release()
+
+            if attempt_num < current_max_attempts_param - 1:
+                if app_state.stop_processing or app_state.pause_processing: return None, text_context
+                time.sleep(random.uniform(0.5, 1.5))
+                continue
+            else:
+                return None, text_context
+
+        except Exception as e:
+            error_message = f"Thread {thread_id}: Exception in call_anti_slop_llm (Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
+            log_message(error_message, "ERROR")
+            record_api_failure(api_slot_idx_anti_slop)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            if lock_acquired:
+                try:
+                    app_state.error_count_total += 1
+                    app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
+                    err_summary = f"T{thread_id} AntiSlop-Exc A{attempt_num+1}: {str(e)[:20]}"
+                    if len(app_state.recent_errors_total) >= MAX_RECENT:
+                        app_state.recent_errors_total.pop(0)
+                    app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                finally:
+                    app_state.system_prompt_lock.release()
+
+            if attempt_num < current_max_attempts_param - 1:
+                if app_state.stop_processing or app_state.pause_processing: return None, text_context
+                time.sleep(random.uniform(0.5, 1.5))
+                continue
+            else:
+                return None, text_context
+
+    return None, text_context
+
+
+def generate_answer_with_retries(base_system_prompt, conversation_history_for_llm, answer_prompt_template,
+                                 thread_id, q, sampler_settings_local, api_url_local, model_name_local, api_key_local,
+                                 refusal_phrases_local, user_speaking_phrases_local, slop_phrases_local,
+                                 current_anti_slop_phrases_param,
+                                 jailbreaks_local, speaking_fixes_local, slop_fixes_fallback_local,
+                                 max_attempts_local,
+                                 slop_fixer_api_config_param,
+                                 current_slop_fixes_for_rotation_param,
+                                 api_slot_idx,
+                                 current_max_attempts_for_slop_fixer_call,
+                                 anti_slop_fixer_api_config_param,
+                                 master_duplication_enabled_local,
+                                 no_user_impersonation_local,
+                                 api_request_timeout_param):
+    """
+    Generates an assistant's answer, handling retries for refusals, user speaking, and slop.
+    Applies jailbreaks, speaking fixes, and slop fixes (system prompt or dedicated LLM).
+    Returns the generated answer or None if all attempts fail.
+    """
+
+    refusal_detected_this_main_api_call = False
+    issue_ever_detected_this_task = False
+    refusal_ever_detected_this_task = False
+
+    if not api_url_local:
+        log_message(f"Thread {thread_id}: API URL missing for answer generation (API Slot {api_slot_idx+1}). Cannot proceed.", "ERROR")
+        return None
+
+    current_system_prompt_iter = base_system_prompt
+
+    for attempt in range(max_attempts_local):
+        if app_state.stop_processing or app_state.pause_processing: return None
+
+        api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
+        fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0}
+        issue_detected_this_main_api_call = False
+
+        while True:
+            if app_state.stop_processing or app_state.pause_processing: return None
+
+            # --- API Call with Retries for API Failures ---
+            answer = None
+            response_text_content = ""
+            response_status_code = -1
+
+            for api_call_attempt_num in range(api_call_retries_for_this_iteration):
+                if app_state.stop_processing or app_state.pause_processing: return None
+                MAX_TOTAL_RETRY_WAIT = 30  # Cap total sleep per outer attempt
+                current_attempt_wait = 0
+
+                # FIX 3: Add timeout to lock acquisition
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.total_attempts_global += 1
+                        app_state.total_attempts_per_api[api_slot_idx] += 1
+                    finally:
+                        app_state.system_prompt_lock.release()
+                else:
+                    log_message(f"Thread {thread_id}: Skipped stat update (system_prompt_lock busy)", "DEBUG")
+
+                messages = [{"role": "system", "content": current_system_prompt_iter}] + \
+                           conversation_history_for_llm + \
+                           [{"role": "user", "content": answer_prompt_template}]
+
+                # --- LIVE PREVIEW HOOK ---
+                update_live_prompt_preview(messages)
+                # --- END HOOK ---
+
+                payload_dict_ans = {
+                    "model": model_name_local,
+                    "messages": messages,
+                    **sampler_settings_local.get("generation_params", {
+                        "temperature": sampler_settings_local.get("temperature",0.5),
+                        "top_p": sampler_settings_local.get("top_p",0.9),
+                        "min_p": sampler_settings_local.get("min_p", 0.0),
+                        "top_k": sampler_settings_local.get("top_k",50),
+                        "repetition_penalty": sampler_settings_local.get("repetition_penalty",1.1),
+                        "max_tokens": sampler_settings_local.get("max_tokens_answer", global_config.get('samplers.max_tokens_answer',1024))
+                    }),
+                    "stream": False
+                }
+
+                logit_bias_str = sampler_settings_local.get('logit_bias', '')
+                if logit_bias_str:
+                    try:
+                        payload_dict_ans['logit_bias'] = json.loads(logit_bias_str)
+                    except json.JSONDecodeError:
+                        log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
+
+                thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
+                if thinking_mode == 'enable':
+                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": True}
+                elif thinking_mode == 'disable':
+                    payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
+                # else 'default': do not send the parameter
+
+                payload = json.dumps(payload_dict_ans)
+                headers = {
+                    'Content-Type': 'application/json'
+                }
+
+                if api_key_local:
+                    headers['Authorization'] = f"Bearer {api_key_local}"
+
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
+                    debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans}) + '\n')
+
+                global_rate_limiter.wait_if_needed(api_slot_idx)
+
+                # Circuit Breaker Check
+                if not check_circuit_breaker(api_slot_idx):
+                    log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} circuit open. Skipping answer generation.", "DEBUG")
+                    break  # Exit inner retry loop; outer loop handles fallback
+
+                api_call_start_time = time.time()
+                prompt_content = json.dumps(messages, sort_keys=True)
+                prompt_hash = hashlib.md5(prompt_content.encode()).hexdigest()
+
+                cached_response, is_cached = get_cached_response(prompt_hash, api_slot_idx)
+                if is_cached:
+                    answer = cached_response
+                    log_message(f"Cache HIT for answer generation (API Slot {api_slot_idx+1}).", "DEBUG")
+                    break
+
+                try:
+                    response = requests.post(api_url_local, headers=headers, data=payload, timeout=(api_request_timeout_param, api_request_timeout_param))
+                    api_response_time = time.time() - api_call_start_time
+
+                    with api_response_times_lock:
+                        api_response_times_per_slot[api_slot_idx].append(api_response_time)
+                    if len(api_response_times_per_slot[api_slot_idx]) > MAX_RESPONSE_TIMES_TO_TRACK:
+                        api_response_times_per_slot[api_slot_idx] = api_response_times_per_slot[api_slot_idx][-MAX_RESPONSE_TIMES_TO_TRACK:]
+
+                    response_status_code = response.status_code
+                    response_text_content = response.text
+
+                    if response.status_code in [503, 429]:
+                        retry_after = response.headers.get('Retry-After', 60)
+                        try:
+                            retry_after = int(retry_after)
+                        except (ValueError, TypeError):
+                            retry_after = 60
+                        log_message(f"Thread {thread_id}: API Slot {api_slot_idx+1} is overloaded (Status {response.status_code}). Waiting {retry_after}s before retry.", "WARNING")
+                        time.sleep(retry_after)
+                        if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                            continue
+                        else:
+                            break
+
+                    if response.status_code == 200:
+                        record_api_success(api_slot_idx)
+                        response_data = response.json()
+                        content = response_data['choices'][0]['message'].get('content')
+
+                        usage = response_data.get('usage', {})
+                        input_tokens = usage.get('prompt_tokens', 0)
+                        output_tokens = usage.get('completion_tokens', 0)
+
+                        lock_acquired_tokens = app_state.system_prompt_lock.acquire(timeout=0.05)
+                        if lock_acquired_tokens:
+                            try:
+                                app_state.total_input_tokens += input_tokens
+                                app_state.total_output_tokens += output_tokens
+                            finally:
+                                app_state.system_prompt_lock.release()
+                        else:
+                            log_message(f"Thread {thread_id}: WARNING - Could not acquire system_prompt_lock for token update.", "WARNING")
+
+                        if content is None:
+                            log_message(f"Thread {thread_id}: API returned None for answer content (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1})", "WARNING")
+                            if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                                sleep_dur = random.uniform(0.5, 1.5)
+                                if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                    time.sleep(sleep_dur)
+                                    current_attempt_wait += sleep_dur
+                                    continue
+                                else:
+                                    return None  # Cap reached, abort question generation
+                        answer = content.strip()
+
+                        if not answer or len(answer) < 10:
+                            log_message(f"Thread {thread_id}: API returned empty/very short answer. Content: '{answer}'", "WARNING")
+                            if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                                sleep_dur = random.uniform(0.5, 1.5)
+                                if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                    time.sleep(sleep_dur)
+                                    current_attempt_wait += sleep_dur
+                                    continue
+                                else:
+                                    return None  # Cap reached, abort question generation
+
+                        newline_count = answer.count('\n')
+                        text_length = len(answer)
+
+                        max_newlines = global_config.get('generation.max_newlines_malformed', 16)
+                        max_text_length = global_config.get('generation.max_text_length_malformed', 5000)
+
+                        if newline_count > max_newlines or text_length > max_text_length:
+                            log_message(
+                                f"Thread {thread_id}: Answer response appears malformed. "
+                                f"Newlines: {newline_count} (Max: {max_newlines}), Length: {text_length} (Max: {max_text_length}). "
+                                f"Snippet: '{answer[:100]}...'",
+                                "WARNING"
+                            )
+                            sleep_dur = random.uniform(0.5, 1.5)
+                            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                time.sleep(sleep_dur)
+                                current_attempt_wait += sleep_dur
+                                continue
+                            else:
+                                return None  # Cap reached, abort question generation
+                        break
+                    else:
+                        log_message(f"Thread {thread_id}: Error generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}), Status {response_status_code}: {response_text_content[:200]}", "ERROR")
+                        record_api_failure(api_slot_idx)
+                        lock_acquired_err = app_state.system_prompt_lock.acquire(timeout=0.05)
+                        if lock_acquired_err:
+                            try:
+                                app_state.error_count_total += 1
+                                app_state.error_counts_per_api[api_slot_idx] += 1
+                                err_summary = f"T{thread_id} Ans-Err (API{api_slot_idx+1}): S{response_status_code} A{api_call_attempt_num+1}"
+                                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                                app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                                with app_state.issue_timestamps_lock:
+                                    app_state.issue_timestamps['errors'].append(time.time())
+                                    cutoff = time.time() - 3600
+                                    app_state.issue_timestamps['errors'] = [t for t in app_state.issue_timestamps['errors'] if t > cutoff]
+                                if api_slot_idx < 6:
+                                    if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                            finally:
+                                app_state.system_prompt_lock.release()
+                        if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                            sleep_dur = random.uniform(0.5, 1.5)
+                            if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                                time.sleep(sleep_dur)
+                                current_attempt_wait += sleep_dur
+                                continue
+                            else:
+                                return None  # Cap reached, abort question generation
+
+                except requests.exceptions.Timeout:
+                    log_message(f"Thread {thread_id}: API Timeout generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}).", "ERROR")
+                    record_api_failure(api_slot_idx)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    if lock_acquired:
+                        try:
+                            app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
+                            err_summary = f"T{thread_id} Ans-Timeout (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
+                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                            if api_slot_idx < 6:
+                                if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                        finally:
+                            app_state.system_prompt_lock.release()
+                    if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                        time.sleep(random.uniform(0.5, 1.5)); continue
+                    else: break
+                except requests.exceptions.RequestException as e_req:
+                    log_message(f"Thread {thread_id}: RequestException generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_req)}", "ERROR")
+                    record_api_failure(api_slot_idx)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    if lock_acquired:
+                        try:
+                            app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
+                            err_summary = f"T{thread_id} Ans-ReqExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
+                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                            if api_slot_idx < 6:
+                                if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                        finally:
+                            app_state.system_prompt_lock.release()
+                    if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                        time.sleep(random.uniform(0.5, 1.5)); continue
+                    else: break
+                except Exception as e_gen:
+                    log_message(f"Thread {thread_id}: Exception in answer generation (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_gen)}", "ERROR")
+                    import traceback; log_message(traceback.format_exc(), "ERROR")
+                    record_api_failure(api_slot_idx)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    if lock_acquired:
+                        try:
+                            app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
+                            err_summary = f"T{thread_id} Ans-GenExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}: {str(e_gen)[:20]}"
+                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
+                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                            if api_slot_idx < 6:
+                                if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
+                                app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
+                        finally:
+                            app_state.system_prompt_lock.release()
+                    if api_call_attempt_num < api_call_retries_for_this_iteration - 1:
+                        time.sleep(random.uniform(0.5, 1.5)); continue
+                    else: break
+
+            if answer is None:
+                log_message(f"Thread {thread_id}: All API call attempts failed for current content iteration (OuterAttempt {attempt+1}, API Slot {api_slot_idx+1}).", "WARNING")
+                break
+
+            # --- Issue Detection ---
+            issue_detected_this_main_api_call = False
+            refusal_detected, refusal_info = detection.is_refusal(answer, refusal_phrases_local)
+            user_speaking_detected, user_speaking_info = False, []
+            if not no_user_impersonation_local:
+                user_speaking_detected, user_speaking_info = detection.is_user_speaking(answer, user_speaking_phrases_local)
+            slop_detected, slop_info = detection.is_slop(answer, slop_phrases_local)
+
+            if refusal_detected:
+                issue_detected_this_main_api_call = True
+                issue_ever_detected_this_task = True
+                refusal_detected_this_main_api_call = True
+                refusal_ever_detected_this_task = True
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.refusal_count_total += 1
+                        app_state.refusal_counts_per_api[api_slot_idx] += 1
+                        if refusal_info:
+                            detected_phrase, detected_sentence = refusal_info[0]
+                            if len(app_state.recent_refusals_total) >= MAX_RECENT: app_state.recent_refusals_total.pop(0)
+                            app_state.recent_refusals_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if api_slot_idx < 6:
+                                if len(app_state.recent_refusals_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_refusals_per_api[api_slot_idx].pop(0)
+                                app_state.recent_refusals_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                    finally:
+                        app_state.system_prompt_lock.release()
+                if fix_attempts_specific['refusal'] < len(jailbreaks_local):
+                    current_system_prompt_iter += f" {jailbreaks_local[fix_attempts_specific['refusal']]}"
+                    fix_attempts_specific['refusal'] += 1
+                    log_message(f"Thread {thread_id}: Refusal detected (API Slot {api_slot_idx+1}). Applying jailbreak {fix_attempts_specific['refusal']}. Retrying API call.", "DEBUG")
+                    continue
+                else:
+                    log_message(f"Thread {thread_id}: Refusal detected (API Slot {api_slot_idx+1}), jailbreaks exhausted for this attempt {attempt+1}.", "WARNING")
+                    break
+
+            if user_speaking_detected:
+                issue_detected_this_main_api_call = True
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.user_speaking_count_total += 1
+                        app_state.user_speaking_counts_per_api[api_slot_idx] += 1
+                        if user_speaking_info:
+                            detected_phrase, detected_sentence = user_speaking_info[0]
+                            if len(app_state.recent_user_speaking_total) >= MAX_RECENT: app_state.recent_user_speaking_total.pop(0)
+                            app_state.recent_user_speaking_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if api_slot_idx < 6:
+                                if len(app_state.recent_user_speaking_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_user_speaking_per_api[api_slot_idx].pop(0)
+                                app_state.recent_user_speaking_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                    finally:
+                        app_state.system_prompt_lock.release()
+                if fix_attempts_specific['user_speaking'] < len(speaking_fixes_local):
+                    current_system_prompt_iter += f" {speaking_fixes_local[fix_attempts_specific['user_speaking']]}"
+                    fix_attempts_specific['user_speaking'] += 1
+                    log_message(f"Thread {thread_id}: User speaking detected (API Slot {api_slot_idx+1}). Applying fix {fix_attempts_specific['user_speaking']}. Retrying API call.", "DEBUG")
+                    continue
+                else:
+                    log_message(f"Thread {thread_id}: User speaking detected (API Slot {api_slot_idx+1}), fixes exhausted for this attempt {attempt+1}.", "WARNING")
+                    break
+
+            if slop_detected:
+                issue_detected_this_main_api_call = True
+                log_message(f"Thread {thread_id}: Initial slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
+
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.slop_count_total += 1
+                        app_state.slop_counts_per_api[api_slot_idx] += 1
+                        if slop_info:
+                            detected_phrase, detected_sentence = slop_info[0]
+                            if len(app_state.recent_slop_total) >= MAX_RECENT: app_state.recent_slop_total.pop(0)
+                            app_state.recent_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if api_slot_idx < 6:
+                                if len(app_state.recent_slop_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_slop_per_api[api_slot_idx].pop(0)
+                                app_state.recent_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                    finally:
+                        app_state.system_prompt_lock.release()
+
+                if slop_fixer_api_config_param and slop_fixer_api_config_param.get('url'):
+                    current_answer_being_fixed = answer
+                    MAX_SENTENCE_FIX_ITERATIONS = global_config.get('generation.max_slop_sentence_fix_iterations', 4)
+                    slop_fully_resolved_by_sentence_fixer = False
+                    slop_fix_instruction_rotation_idx = 0
+
+                    for slop_iter_num in range(MAX_SENTENCE_FIX_ITERATIONS):
+                        if app_state.stop_processing or app_state.pause_processing: return None
+                        current_slop_check_needed, current_slop_details_iter = detection.is_slop(current_answer_being_fixed, slop_phrases_local)
+                        if not current_slop_check_needed:
+                            log_message(f"Thread {thread_id}: Slop paragraph fully resolved after {slop_iter_num} iterations.", "INFO")
+                            answer = current_answer_being_fixed
+                            issue_detected_this_main_api_call = False
+                            slop_fully_resolved_by_sentence_fixer = True
+                            break
+
+                        phrase_to_fix_iter, sentence_to_fix_iter = current_slop_details_iter[0]
+
+                        phrase_to_fix_iter, sentence_to_fix_iter = current_slop_details_iter[0]
+
+                        # Extract the full paragraph context to preserve quotes
+                        paragraphs = current_answer_being_fixed.split('\n\n')
+                        context_for_fixer = next((p for p in paragraphs if sentence_to_fix_iter in p), sentence_to_fix_iter)
+
+                        additional_instructions_for_llm_fixer = ""
+                        if slop_iter_num >= 2 and current_slop_fixes_for_rotation_param:
+                            additional_instructions_for_llm_fixer = current_slop_fixes_for_rotation_param[slop_fix_instruction_rotation_idx % len(current_slop_fixes_for_rotation_param)]
+                            slop_fix_instruction_rotation_idx +=1
+                            log_message(f"Thread {thread_id}: SlopFixer iter {slop_iter_num+1}. Adding rotating fix: '{additional_instructions_for_llm_fixer}'", "DEBUG")
+
+                        log_message(f"Thread {thread_id}: Fixing slop paragraph (Iter {slop_iter_num+1}): '{phrase_to_fix_iter}' in context...", "DEBUG")
+
+                        rewritten_sentence_part, original_sentence_part = call_slop_fixer_llm(
+                            context_for_fixer, phrase_to_fix_iter, # Pass paragraph instead of single sentence
+                            slop_fixer_api_config_param,
+                            sampler_settings_local,
+                            thread_id,
+                            additional_fix_instructions=additional_instructions_for_llm_fixer,
+                            current_max_attempts_param=current_max_attempts_for_slop_fixer_call
+                        )
+
+                        if rewritten_sentence_part and original_sentence_part:
+                            has_incomplete_quote, _ = detection.is_incomplete_quote(rewritten_sentence_part)
+                            if has_incomplete_quote:
+                                log_message(f"Thread {thread_id}: Slop fixer returned sentence with unbalanced quotes. Skipping replacement for this sentence.", "WARNING")
+                                slop_fully_resolved_by_sentence_fixer = False
+                                break # Stop this sentence's fix attempt to prevent propagating malformed quotes
+                            if original_sentence_part in current_answer_being_fixed:
+                                if rewritten_sentence_part.strip() == original_sentence_part.strip():
+                                    log_message(f"Thread {thread_id}: Slop fixer returned same part for '{phrase_to_fix_iter}'. Iter {slop_iter_num+1}.", "DEBUG")
+                                    slop_fully_resolved_by_sentence_fixer = False
+                                    break
+                                else:
+                                    current_answer_being_fixed = current_answer_being_fixed.replace(original_sentence_part, rewritten_sentence_part, 1)
+                                    log_message(f"Thread {thread_id}: Sentence part rewritten. New snippet: {current_answer_being_fixed[:70]}...", "DEBUG")
+                            else:
+                                log_message(f"Thread {thread_id}: Original sentence for slop fix ('{original_sentence_part[:70]}...') not found in current answer. Iter {slop_iter_num+1}.", "WARNING")
+                                slop_fully_resolved_by_sentence_fixer = False
+                                break
+                        else:
+                            log_message(f"Thread {thread_id}: Slop fixer LLM failed rewrite for '{phrase_to_fix_iter}'. Aborting sentence fixing.", "WARNING")
+                            slop_fully_resolved_by_sentence_fixer = False
+                            break
+
+                    if not slop_fully_resolved_by_sentence_fixer:
+                        log_message(f"Thread {thread_id}: Sentence-level slop fixing failed or max iters for API {api_slot_idx+1}. Slop may remain. Attempting fallback system prompt fix.", "WARNING")
+                    else:
+                        answer = current_answer_being_fixed
+                        issue_detected_this_main_api_call = False
+
+            # --- Anti-Slop Detection and Fixing (Sentence-Level, Like Regular Slop) ---
+            anti_slop_detected, anti_slop_info = detection.is_anti_slop(answer, current_anti_slop_phrases_param)
+
+            # FIX 1: Initialize BEFORE the conditional block
+            anti_slop_fully_resolved = False
+
+            if anti_slop_detected:
+                issue_detected_this_main_api_call = True
+                log_message(f"Thread {thread_id}: Anti-slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
+
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.anti_slop_count_total += 1
+                        anti_slop_counts_per_api[api_slot_idx] += 1
+                        if anti_slop_info:
+                            detected_phrase, detected_sentence = anti_slop_info[0]
+                            if len(app_state.recent_anti_slop_total) >= MAX_RECENT:
+                                app_state.recent_anti_slop_total.pop(0)
+                            app_state.recent_anti_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if api_slot_idx < 4:
+                                if len(app_state.recent_anti_slop_per_api[api_slot_idx]) >= MAX_RECENT:
+                                    app_state.recent_anti_slop_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_anti_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                    finally:
+                        app_state.system_prompt_lock.release()
+
+                # Try to fix using anti-slop LLM - fix individual SENTENCES (like regular slop)
+                if slop_fixer_api_config_param and slop_fixer_api_config_param.get('url'):
+                    current_answer_being_fixed = answer
+                    MAX_ANTI_SLOP_FIX_ITERATIONS = global_config.get('generation.max_anti_slop_fix_iterations', 10)
+                    # anti_slop_fully_resolved = False  # REMOVED - already initialized above
+                    anti_slop_fix_instruction_rotation_idx = 0
+
+                    for anti_slop_iter_num in range(MAX_ANTI_SLOP_FIX_ITERATIONS):
+                        if app_state.stop_processing or app_state.pause_processing:
+                            return None
+
+                        current_anti_slop_check, current_anti_slop_details = detection.is_anti_slop(current_answer_being_fixed, current_anti_slop_phrases_param)
+
+                        if not current_anti_slop_check:
+                            log_message(f"Thread {thread_id}: All anti-slop fixed (API Slot {api_slot_idx+1}) after {anti_slop_iter_num} rewrites.", "INFO")
+                            answer = current_answer_being_fixed
+                            issue_detected_this_main_api_call = False
+                            anti_slop_fully_resolved = True
+                            break
+
+                        phrase_to_fix = current_anti_slop_details[0][0]
+                        sentence_to_fix = current_anti_slop_details[0][1]
+
+                        # Extract the full paragraph context to preserve quotes
+                        paragraphs = current_answer_being_fixed.split('\n\n')
+                        context_for_fixer = next((p for p in paragraphs if sentence_to_fix in p), sentence_to_fix)
+
+                        additional_instructions = ""
+                        if anti_slop_iter_num >= 1 and current_slop_fixes_for_rotation_param:
+                            additional_instructions = current_slop_fixes_for_rotation_param[anti_slop_iter_num % len(current_slop_fixes_for_rotation_param)]
+                            log_message(f"Thread {thread_id}: AntiSlop iter {anti_slop_iter_num+1}. Adding fix: '{additional_instructions}'", "DEBUG")
+
+                        log_message(f"Thread {thread_id}: Fixing anti-slop paragraph (Iter {anti_slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
+
+
+                        rewritten_sentence, original_sentence = call_anti_slop_llm(
+                            context_for_fixer, # Pass paragraph instead of single sentence
+                            phrase_to_fix,
+                            anti_slop_fixer_api_config_param,
+                            sampler_settings_local,
+                            thread_id,
+                            additional_fix_instructions=additional_instructions,
+                            current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
+                            master_duplication_enabled=master_duplication_enabled_local
+                        )
+
+                        if rewritten_sentence and original_sentence:
+                            # NEW: Check for unbalanced quotes before applying the rewrite
+                            has_incomplete_quote, _ = detection.is_incomplete_quote(rewritten_sentence)
+                            if has_incomplete_quote:
+                                log_message(f"Thread {thread_id}: Anti-slop fixer returned sentence with unbalanced quotes. Skipping replacement.", "WARNING")
+                                anti_slop_fully_resolved = False
+                                break
+                            if original_sentence in current_answer_being_fixed:
+                                if rewritten_sentence.strip() == original_sentence.strip():
+                                    log_message(f"Thread {thread_id}: Anti-slop fixer returned same sentence for '{phrase_to_fix}'. Iter {anti_slop_iter_num+1}.", "DEBUG")
+                                    anti_slop_fully_resolved = False
+                                    break
+                                else:
+                                    current_answer_being_fixed = current_answer_being_fixed.replace(original_sentence, rewritten_sentence, 1)
+                                    log_message(f"Thread {thread_id}: Sentence rewritten. New snippet: {current_answer_being_fixed[:70]}...", "DEBUG")
+                            else:
+                                log_message(f"Thread {thread_id}: Original sentence for anti-slop fix not found in current answer. Iter {anti_slop_iter_num+1}.", "WARNING")
+                                anti_slop_fully_resolved = False
+                                break
+                        else:
+                            log_message(f"Thread {thread_id}: Anti-slop LLM failed rewrite for '{phrase_to_fix}'. Aborting fix.", "WARNING")
+                            anti_slop_fully_resolved = False
+                            break
+
+                    if not anti_slop_fully_resolved:
+                        log_message(f"Thread {thread_id}: Anti-slop sentence fixing failed or max iters for API {api_slot_idx+1}.", "WARNING")
+                    else:
+                        answer = current_answer_being_fixed
+                        issue_detected_this_main_api_call = False
+
+                if issue_detected_this_main_api_call:
+                    slop_check_after_sentence_fix, _ = detection.is_slop(answer, slop_phrases_local)
+                    if slop_check_after_sentence_fix:
+                        if fix_attempts_specific['slop_fallback'] < len(slop_fixes_fallback_local):
+                            current_system_prompt_iter += f" {slop_fixes_fallback_local[fix_attempts_specific['slop_fallback']]}"
+                            fix_attempts_specific['slop_fallback'] += 1
+                            log_message(f"Thread {thread_id}: Applying fallback slop fix (system prompt) {fix_attempts_specific['slop_fallback']} for API {api_slot_idx+1}. Retrying API call.", "DEBUG")
+                            continue
+                        else:
+                            log_message(f"Thread {thread_id}: Slop detected (API {api_slot_idx+1}), sentence fixer failed/skipped, and fallback system prompt fixes exhausted for attempt {attempt+1}.", "WARNING")
+                            break
+                    else:
+                        if anti_slop_detected and not anti_slop_fully_resolved:
+                            log_message(f"Thread {thread_id}: Anti-slop still unresolved after fixer attempt.", "WARNING")
+                        else:
+                            issue_detected_this_main_api_call = False
+                incomplete_quote_detected, _ = detection.is_incomplete_quote(answer)
+                if incomplete_quote_detected:
+                    issue_detected_this_main_api_call = True
+                    log_message(f"Thread {thread_id}: Incomplete quote detected (API Slot {api_slot_idx+1}). Retrying with fix instruction.", "DEBUG")
+
+                    if fix_attempts_specific['incomplete_quote'] < 3:
+                        current_system_prompt_iter += " CRITICAL INSTRUCTION: All dialogue quotes must be properly paired. Ensure every opening quote has a matching closing quote."
+                        fix_attempts_specific['incomplete_quote'] += 1
+                        continue
+                    else:
+                        log_message(f"Thread {thread_id}: Incomplete quote detected, max retries reached. Applying programmatic fix.", "WARNING")
+
+                        # ROBUST PROGRAMMATIC FALLBACK: Auto-fix unbalanced quotes
+                        # Uses the upgraded structural balancer instead of simple parity counting
+                        answer = text_utils.normalize_quotes(answer.strip())
+                        issue_detected_this_main_api_call = False  # Mark as resolved so it saves
+
+            if not issue_detected_this_main_api_call:
+                log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")
+                return answer, issue_ever_detected_this_task, refusal_ever_detected_this_task
+
+            break
+
+        current_system_prompt_iter = base_system_prompt
+        log_message(f"Thread {thread_id}: Main attempt {attempt + 1} failed for API {api_url_local} (Slot {api_slot_idx+1}). Resetting system prompt for next attempt if any.", "WARNING")
+        if attempt < max_attempts_local - 1 :
+            time.sleep(random.uniform(0.5, 1.5))
+
+    log_message(f"Thread {thread_id}, API Slot {api_slot_idx+1}: All {max_attempts_local} attempts failed to generate a valid answer for the current turn. Returning None.", "ERROR")
+    return None, issue_ever_detected_this_task, refusal_ever_detected_this_task
+
+
+def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_FILE_PATH is used
+                       conversation_history,
+                       remove_reasoning_flag,
+                       remove_em_dash_flag,
+                       remove_asterisks_flag,
+                       remove_asterisk_space_asterisk_flag,
+                       remove_all_asterisks_flag,
+                       ensure_space_after_line_break_flag,
+                       remove_markdown_flag,
+                       output_format_local,
+                       task_id_for_output="unknown",
+                       api_slot_idx_for_output_file=None, # For per-API files in duplication mode
+                       is_duplication_turn=False, # Flag if this write is for a single turn in duplication mode
+                       turn_number_for_duplication=0 # Turn number (1-based) for duplication mode output ID
+                       ):
+    """
+    Writes a completed conversation (or a single turn in duplication mode) to the output JSONL file.
+    - If api_slot_idx_for_output_file is provided AND master duplication is ON, writes to a per-API file.
+    - Otherwise (non-duplication, or duplication off), writes to the main output.jsonl.
+    """
+    processed_conversation_turns = []
+    for turn in conversation_history:
+        role = turn.get("role")
+        content = turn.get("content", "")
+        # DEBUG: Log content before processing to check if issue starts at API response
+        if role == "assistant" and (content.islower() and not any(c in content for c in '.!?')):
+            log_message(f"DEBUG: API response already lowercase with no punctuation! Task ID: {task_id_for_output}", "WARNING")
+            log_message(f"DEBUG: Raw content: {content[:200]}", "DEBUG")
+        processed_content = text_utils.remove_reasoning_text(content) if remove_reasoning_flag else content
+        processed_content = text_utils.remove_em_dash(processed_content) if remove_em_dash_flag else processed_content
+        processed_content = text_utils.remove_excessive_asterisks(processed_content) if remove_asterisks_flag else processed_content
+        processed_content = text_utils.remove_asterisk_space_asterisk(processed_content) if remove_asterisk_space_asterisk_flag else processed_content
+        processed_content = text_utils.remove_all_asterisks(processed_content) if remove_all_asterisks_flag else processed_content
+        processed_content = text_utils.ensure_space_after_line_break(processed_content) if ensure_space_after_line_break_flag else processed_content
+        processed_content = text_utils.remove_markdown(processed_content) if remove_markdown_flag else processed_content
+        processed_content = text_utils.normalize_quotes(processed_content)
+
+        # Convert roles for ShareGPT format
+        sg_role = "human" if role == "user" else "gpt" if role == "assistant" else role
+        processed_conversation_turns.append({"from": sg_role, "value": processed_content})
+
+    output_data_id = task_id_for_output
+    if is_duplication_turn and app_state.master_duplication_enabled_var.get(): # Check global var for safety
+        output_data_id = f"{task_id_for_output}_api{api_slot_idx_for_output_file}_turn{turn_number_for_duplication}"
+
+    output_data = {
+        "id": output_data_id,
+        "conversations": processed_conversation_turns
+    }
+
+    use_db = global_config.get('database.enabled', False)
+
+    if use_db and app_state.db_pool:
+        try:
+            conn = app_state.db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO generated_conversations (task_id, conversation_data, api_slot_idx)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (task_id) DO NOTHING
+                """, (output_data_id, json.dumps(output_data), api_slot_idx_for_output_file))
+                conn.commit()
+            app_state.db_pool.putconn(conn)
+            log_message(f"Saved task {task_id_for_output} to PostgreSQL.", "DEBUG")
+        except Exception as e:
+            log_message(f"DB insert failed for {task_id_for_output}: {e}", "ERROR")
+            if 'conn' in locals(): app_state.db_pool.putconn(conn)
+
+        # 🔑 CRITICAL: Exit function immediately after DB save.
+        # This guarantees the file-writing code below NEVER runs when DB is enabled.
+        return
+
+    # --- FILE WRITING (Only reached if DB is DISABLED or pool failed to init) ---
+    actual_output_file_path = ""
+    if api_slot_idx_for_output_file is not None and app_state.master_duplication_enabled_var.get():
+        actual_output_file_path = f"{BASE_OUTPUT_FILE_PATH}_api_slot_{api_slot_idx_for_output_file}.jsonl"
+    else:
+        actual_output_file_path = BASE_OUTPUT_FILE_PATH + ".jsonl"
+
+    try:
+        with open(actual_output_file_path, 'a', encoding='utf-8') as file:
+            file.write(json.dumps(output_data) + '\n')
+        log_message(f"Successfully wrote task {task_id_for_output} to {actual_output_file_path}", "DEBUG")
+    except PermissionError as e:
+        log_message(f"Permission error writing to {actual_output_file_path}: {e}", "ERROR")
+    except OSError as e:
+        log_message(f"OS error writing to {actual_output_file_path}: {e}", "ERROR")
+    except Exception as e:
+        log_message(f"Unexpected error writing to {actual_output_file_path}: {e}", "ERROR")
+        import traceback
+        log_message(traceback.format_exc(), "ERROR")
