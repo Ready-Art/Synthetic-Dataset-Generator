@@ -413,6 +413,14 @@ class ConfigEditor(tk.Toplevel):
                         command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
+        # NEW: Add checkbox for Setting field
+        self.enable_setting_selection_var_editor = tk.BooleanVar()
+        ttk.Checkbutton(self.character_engine_content_frame,
+                        text="Enable Setting Selection (custom location/environment for each character)",
+                        variable=self.enable_setting_selection_var_editor,
+                        command=self._toggle_setting_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        character_engine_row_idx += 1
+
         # --- Character Table (Card-based layout) ---
         self.character_entries = []  # List of dicts with StringVar per field per character
 
@@ -946,23 +954,24 @@ class ConfigEditor(tk.Toplevel):
                 'answer': sanitize_input(self.answer_prompt_text.get("1.0", tk.END).strip()),
                 'user_continuation_prompt': sanitize_input(self.user_continuation_prompt_text.get("1.0", tk.END).strip()),
                 'use_questions_file': self.use_questions_file_var_editor.get(),
-                'character': {
-                    'enabled': self.enable_character_engine_var_editor.get(),
-                    'class_enabled': self.enable_class_selection_var_editor.get(),
-                    'num_characters': int(self.num_characters_var_editor.get()),
-                    'characters': [
-                        {
-                            'name': sanitize_input(data['name'].get().strip()),
-                            'race': sanitize_input(data['race'].get().strip()),
-                            'job': sanitize_input(data['job'].get().strip()),
-                            'clothing': sanitize_input(data['clothing'].get().strip()),
-                            'appearance': sanitize_input(data['appearance'].get().strip()),
-                            'traits': sanitize_input(data['traits'].get().strip()),
-                            'backstory': sanitize_input(data['backstory'].get().strip()),
-                            'personality': sanitize_input(data['personality'].get().strip()),
-                            'setting': sanitize_input(data['setting'].get().strip()),
-                            'class': sanitize_input(data['class'].get().strip())
-                        }
+            'character': {
+                'enabled': self.enable_character_engine_var_editor.get(),
+                'class_enabled': self.enable_class_selection_var_editor.get(),
+                'setting_enabled': self.enable_setting_selection_var_editor.get(),  # NEW
+                'num_characters': int(self.num_characters_var_editor.get()),
+                'characters': [
+                    {
+                        'name': sanitize_input(data['name'].get().strip()),
+                        'race': sanitize_input(data['race'].get().strip()),
+                        'job': sanitize_input(data['job'].get().strip()),
+                        'clothing': sanitize_input(data['clothing'].get().strip()),
+                        'appearance': sanitize_input(data['appearance'].get().strip()),
+                        'traits': sanitize_input(data['traits'].get().strip()),
+                        'backstory': sanitize_input(data['backstory'].get().strip()),
+                        'personality': sanitize_input(data['personality'].get().strip()),
+                        'setting': sanitize_input(data['setting'].get().strip()) if self.enable_setting_selection_var_editor.get() else '',
+                        'class': sanitize_input(data['class'].get().strip())
+                    }
                         for data in self.character_entries
                         if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class'])
                     ]
@@ -1103,6 +1112,31 @@ class ConfigEditor(tk.Toplevel):
                 field_widget.config(state='disabled')
 
         log_message(f"Class Selection fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
+
+    def _toggle_setting_fields(self):
+        """Enables/disables setting text field based on checkbox state."""
+        # Simply toggle visibility, as the main engine toggle handles enable/disable state
+        self._update_setting_column_visibility()
+        log_message(f"Setting Selection fields visibility updated", "DEBUG")
+
+    def _update_setting_column_visibility(self):
+        """Shows or hides the 'Setting' fields based on the Enable Setting checkbox."""
+        is_enabled = self.enable_setting_selection_var_editor.get()
+        for data in self.character_entries:
+            if is_enabled:
+                # Show setting label and widget (match original creation coordinates)
+                if 'setting_label' in data:
+                    data['setting_label'].grid(row=4, column=3, padx=(0, 5), pady=5, sticky="ne")
+                if 'setting_widget' in data:
+                    data['setting_widget'].grid(row=4, column=4, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+            else:
+                # Hide setting label and widget
+                if 'setting_label' in data:
+                    data['setting_label'].grid_remove()
+                if 'setting_widget' in data:
+                    data['setting_widget'].grid_remove()
+
+        log_message(f"Setting Selection fields visibility updated", "DEBUG")
 
     def _toggle_character_engine_fields(self):
         """Enables/disables character engine text fields based on checkbox state."""
@@ -1272,6 +1306,7 @@ class ConfigEditor(tk.Toplevel):
             character_conf = prompts_config.get('character', {})
             self.enable_character_engine_var_editor.set(character_conf.get('enabled', True))
             self.enable_class_selection_var_editor.set(character_conf.get('class_enabled', False))
+            self.enable_setting_selection_var_editor.set(character_conf.get('setting_enabled', False))
             self.num_characters_var_editor.set(str(character_conf.get('num_characters', 1)))
 
             # Clear existing entries first
@@ -1336,6 +1371,7 @@ class ConfigEditor(tk.Toplevel):
             # Apply the enabled/disabled state and class visibility
             self._toggle_character_engine_fields()
             self._update_class_column_visibility()
+            self._update_setting_column_visibility()
 
             # NEW: Load emotional states
             emotional_states_conf = prompts_config.get('emotional_states', {})
@@ -1535,6 +1571,8 @@ class ConfigEditor(tk.Toplevel):
             # Label
             lbl = ttk.Label(parent, text=label_text, font=LABEL_FONT, foreground=LABEL_FG)
             lbl.grid(row=row, column=col, padx=(0, 5), pady=5, sticky="ne")
+            # Return label reference for visibility toggling
+            entry_vars[f'{var_key}_label'] = lbl
 
             var = tk.StringVar(value=character_data.get(var_key, ''))
 
@@ -1646,8 +1684,10 @@ class ConfigEditor(tk.Toplevel):
         # === Row 5: Traits & Setting (2 columns) ===
         create_field(card_frame, "Traits:", 'traits', row=4, col=0, colspan=2,
                     init_width=30, init_height=3, max_width=60, max_height=8)
-        create_field(card_frame, "Setting:", 'setting', row=4, col=3, colspan=2,
-                    init_width=30, init_height=3, max_width=60, max_height=8)
+        setting_widget = create_field(card_frame, "Setting:", 'setting', row=4, col=3, colspan=2,
+                            init_width=30, init_height=3, max_width=60, max_height=8)
+
+        entry_vars['setting_widget'] = setting_widget
 
         # === Row 6: Class & Actions ===
         action_frame = ttk.Frame(card_frame)
@@ -1725,6 +1765,10 @@ class ConfigEditor(tk.Toplevel):
                     widget.config(state=state)
                 elif isinstance(widget, ttk.Button) and key == 'delete_btn':
                     widget.config(state='normal' if is_enabled else 'disabled')
+
+        # Also update class and setting visibility when character engine is toggled
+        self._update_class_column_visibility()
+        self._update_setting_column_visibility()  # NEW
 
         log_message(f"Character Engine fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 

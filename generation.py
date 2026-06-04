@@ -246,6 +246,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            master_duplication_enabled_local,
            enable_character_engine_local,
            enable_class_selection_local,
+           enable_setting_selection_local,
            character_list,
            enable_emotional_states_local,
            emotional_states_list_local,
@@ -381,7 +382,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     random_appearance = selected_char.get('appearance', 'Unknown')
                     random_backstory = selected_char.get('backstory', 'Unknown')
                     random_personality = selected_char.get('personality', 'Unknown')
-                    random_setting = selected_char.get('setting', 'A standard indoor environment.')
+                    random_setting = selected_char.get('setting', 'Unknown') if enable_setting_selection_local else 'A standard indoor environment.'
                     random_class = selected_char.get('class', '')
 
                     # Ensure at least name is present to make it valid
@@ -406,7 +407,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"Appearance: {random_appearance}\n"
                             f"Backstory: {random_backstory}\n"
                             f"{personality_injection}"
-                            f"Setting: {random_setting}\n"
+                            f"Setting: {random_setting}\n" if not enable_setting_selection_local else ""
                             f"{class_injection}"
                             f"--- END CHARACTER {idx+1} PROFILE ---\n"
                         )

@@ -646,6 +646,7 @@ def start_processing():
     character_config = global_config.get('prompts.character', {})
     enable_character_engine_local = character_config.get('enabled', True)
     enable_class_selection_local = character_config.get('class_enabled', False)
+    enable_setting_selection_local = character_config.get('setting_enabled', False)
 
     num_characters_local = character_config.get('num_characters', 1)  # Default to 1 for backward compatibility
     if num_characters_local < 1:
@@ -1013,6 +1014,7 @@ def start_processing():
             master_duplication_enabled,
             enable_character_engine_local,
             enable_class_selection_local,
+            enable_setting_selection_local,
             character_list,
             enable_emotional_states,
             emotional_states_list,
@@ -1397,7 +1399,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.8.8",
+    text="v8.8.9",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
