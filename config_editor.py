@@ -1329,9 +1329,9 @@ class ConfigEditor(tk.Toplevel):
                     self._add_character_row(character_data=char_data)
             else:
                 # Add 3 empty rows if config is empty
-                default_empty_rows = min(3, self.max_character_cards)
-                for _ in range(default_empty_rows):
-                    self._add_character_row()
+               default_empty_rows = min(3, int(self.max_character_cards_var.get()))
+               for _ in range(default_empty_rows):
+                   self._add_character_row()
 
             # Apply the enabled/disabled state and class visibility
             self._toggle_character_engine_fields()
