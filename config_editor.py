@@ -1503,6 +1503,7 @@ class ConfigEditor(tk.Toplevel):
                 if age_value:
                     try:
                         age_int = int(age_value)
+                        # Edit the numbers 18 and 60 below to your desired range
                         if age_int < 18 or age_int > 60:
                             raise AssertionError(f"Character {idx+1} age must be between 18 and 60 (got {age_int})")
                     except ValueError:
@@ -1655,13 +1656,14 @@ class ConfigEditor(tk.Toplevel):
         age_widget = ttk.Entry(card_frame, textvariable=age_var, width=5, font=ENTRY_FONT)
         age_widget.grid(row=0, column=6, padx=5, pady=8, sticky="w")
 
-        # Add validation to restrict input to 18-60
         def validate_age(new_value):
             if not new_value:  # Allow empty for typing
                 return True
             try:
                 age = int(new_value)
-                return 0 <= age <= 999  # Allow typing intermediate values
+                # Currently allows 0-999 for typing flexibility.
+                # Change this if you want to block typing outside your new range immediately.
+                return 0 <= age <= 999
             except ValueError:
                 return False
 
@@ -1746,6 +1748,7 @@ class ConfigEditor(tk.Toplevel):
             if age_widget and hasattr(age_widget, 'winfo_exists') and age_widget.winfo_exists():
                 try:
                     age_value = int(data['age'].get().strip())
+                    # Edit the numbers 18 and 60 below to match your new range
                     if age_value < 18 or age_value > 60:
                         age_widget.config(foreground='#ff6b6b')  # Red for invalid
                     else:
