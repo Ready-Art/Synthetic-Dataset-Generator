@@ -81,7 +81,7 @@ class ConfigEditor(tk.Toplevel):
         self.api_canvas.pack(side="left", fill="both", expand=True)
         self.api_scrollbar.pack(side="right", fill="y")
 
-        self.api_canvas.bind_all("<MouseWheel>", lambda e: self.api_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.api_canvas.bind("<MouseWheel>", lambda e: self.api_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         # Pricing Input Field (now inside api_content_frame)
         ttk.Label(self.api_content_frame, text="Cost per 1k Tokens ($):").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="w")
@@ -238,7 +238,7 @@ class ConfigEditor(tk.Toplevel):
         self.generation_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.generation_canvas.bind_all("<MouseWheel>", lambda e: self.generation_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.generation_canvas.bind("<MouseWheel>", lambda e: self.generation_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         # Allow the inner frame to expand horizontally
         gen_settings_frame.grid_columnconfigure(1, weight=1)
@@ -312,7 +312,7 @@ class ConfigEditor(tk.Toplevel):
         self.prompts_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.prompts_canvas.bind_all("<MouseWheel>", lambda e: self.prompts_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.prompts_canvas.bind("<MouseWheel>", lambda e: self.prompts_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         # Define Boolean variables BEFORE they are used in Checkbuttons
         self.use_questions_file_var_editor = tk.BooleanVar()
@@ -338,6 +338,31 @@ class ConfigEditor(tk.Toplevel):
         add_prompt_text_area("Answer Prompt (instruction for the assistant's turn):", 'answer_prompt_text', height=12)
         add_prompt_text_area("User Continuation Prompt (use {last_assistant_message} for user's next turn):", 'user_continuation_prompt_text', height=12)
 
+        # --- NEW: Lore Tab ---
+        self.lore_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.lore_tab, text="Lore")
+
+        self.lore_canvas = tk.Canvas(self.lore_tab)
+        self.lore_scrollbar = ttk.Scrollbar(self.lore_tab, orient="vertical", command=self.lore_canvas.yview)
+        self.lore_content_frame = ttk.Frame(self.lore_canvas)
+
+        self.lore_content_frame.bind(
+            "<Configure>",
+            lambda e: self.lore_canvas.configure(scrollregion=self.lore_canvas.bbox("all"))
+        )
+        self.lore_canvas.create_window((0, 0), window=self.lore_content_frame, anchor="nw")
+        self.lore_canvas.configure(yscrollcommand=self.lore_scrollbar.set)
+
+        self.lore_canvas.pack(side="left", fill="both", expand=True)
+        self.lore_scrollbar.pack(side="right", fill="y")
+        self.lore_canvas.bind("<MouseWheel>", lambda e: self.lore_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Lore UI Content
+        ttk.Label(self.lore_content_frame, text="World Lore & Background Information:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        self.lore_text = scrolledtext.ScrolledText(self.lore_content_frame, wrap=tk.WORD, height=20, width=130, undo=True)
+        self.lore_text.grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+        self.lore_content_frame.grid_columnconfigure(1, weight=1)
+
         self.prompts_content_frame.grid_columnconfigure(1, weight=1) # Make text areas expand
 
         # --- Character Engine Tab ---
@@ -358,7 +383,7 @@ class ConfigEditor(tk.Toplevel):
         self.character_engine_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.character_engine_canvas.bind_all("<MouseWheel>", lambda e: self.character_engine_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.character_engine_canvas.bind("<MouseWheel>", lambda e: self.character_engine_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         character_engine_row_idx = 0
 
@@ -477,7 +502,7 @@ class ConfigEditor(tk.Toplevel):
         self.detection_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.detection_canvas.bind_all("<MouseWheel>", lambda e: self.detection_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.detection_canvas.bind("<MouseWheel>", lambda e: self.detection_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         self.gender_var_editor = tk.StringVar() # Editor's local var for gender
         gender_frame = ttk.Frame(self.detection_content_frame)
@@ -533,7 +558,7 @@ class ConfigEditor(tk.Toplevel):
         self.samplers_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.samplers_canvas.bind_all("<MouseWheel>", lambda e: self.samplers_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.samplers_canvas.bind("<MouseWheel>", lambda e: self.samplers_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         ttk.Label(sampler_params_frame, text="Sampler Priority (Order for API payload, one per line, e.g., temperature, top_p):").grid(row=0, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
         self.sampler_priority_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=30, undo=True); self.sampler_priority_text.grid(row=1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
@@ -831,6 +856,16 @@ class ConfigEditor(tk.Toplevel):
     def on_close_editor(self):
         """Handles saving config when editor is closed via 'X' button."""
         log_message("ConfigEditor: Close button clicked. Saving configuration automatically.", "INFO")
+
+        # Unbind all mouse wheel bindings to prevent stale callbacks
+        self.samplers_canvas.unbind("<MouseWheel>")
+        self.api_canvas.unbind("<MouseWheel>")
+        self.generation_canvas.unbind("<MouseWheel>")
+        self.prompts_canvas.unbind("<MouseWheel>")
+        self.lore_canvas.unbind("<MouseWheel>")
+        self.character_engine_canvas.unbind("<MouseWheel>")
+        self.detection_canvas.unbind("<MouseWheel>")
+
         try:
             self.save_config_handler(silent=True)
         except Exception as e:
@@ -954,6 +989,7 @@ class ConfigEditor(tk.Toplevel):
                 'answer': sanitize_input(self.answer_prompt_text.get("1.0", tk.END).strip()),
                 'user_continuation_prompt': sanitize_input(self.user_continuation_prompt_text.get("1.0", tk.END).strip()),
                 'use_questions_file': self.use_questions_file_var_editor.get(),
+                'lore': sanitize_input(self.lore_text.get("1.0", tk.END).strip()),
             'character': {
                 'enabled': self.enable_character_engine_var_editor.get(),
                 'class_enabled': self.enable_class_selection_var_editor.get(),
@@ -1298,6 +1334,9 @@ class ConfigEditor(tk.Toplevel):
             self.question_prompt_text.delete(1.0, tk.END); self.question_prompt_text.insert(tk.END, prompts_config.get('question', 'Generate a question... {subject} ... {context} ... {recent_questions}'))
             self.answer_prompt_text.delete(1.0, tk.END); self.answer_prompt_text.insert(tk.END, prompts_config.get('answer', 'Answer the question.'))
             self.user_continuation_prompt_text.delete(1.0, tk.END); self.user_continuation_prompt_text.insert(tk.END, prompts_config.get('user_continuation_prompt', 'Continue based on: {last_assistant_message}'))
+
+            self.lore_text.delete(1.0, tk.END)
+            self.lore_text.insert(tk.END, config.get('lore', ''))
 
             if hasattr(self, 'max_character_cards_var'):
                 self.max_character_cards_var.set(str(gen_config.get('max_character_cards', 10)))
