@@ -218,6 +218,23 @@ def estimate_time_remaining(processed_items, total_items, times_list):
     # Format as H:M:S
     return time.strftime('%H:%M:%S', time.gmtime(remaining_time_seconds))
 
+def verify_turn_completion(conversation_history, expected_turns):
+    """
+    Verify conversation has the expected number of complete turns.
+    Each turn should have 1 user + 1 assistant message.
+    Returns: (is_complete, actual_turns, expected_turns)
+    """
+    if not conversation_history:
+        return False, 0, expected_turns
+
+    user_messages = sum(1 for msg in conversation_history if msg.get('role') == 'user')
+    assistant_messages = sum(1 for msg in conversation_history if msg.get('role') == 'assistant')
+
+    # Each turn should have 1 user + 1 assistant message
+    complete_turns = min(user_messages, assistant_messages)
+
+    return complete_turns >= expected_turns, complete_turns, expected_turns
+
 
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
            use_variable_system_local,
@@ -303,6 +320,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             q.task_done(); break # Exit if stop signal received after fetching a task
 
         task_id, file_name, *_ = task # Unpack task data
+        start_time_task_overall = time.time() # For timing the whole task processing
+
+        # ✅ FIX 4: PER-TASK CONVERSATION ISOLATION
+        # Each task gets fresh, isolated conversation lists (NOT shared across threads/tasks)
+        conversation_history_for_output = []      # Stores full conversation for writing to file
+        current_llm_conversation_context = []     # Stores conversation history passed to LLM
+        refusal_detected_in_task = False          # Track refusals for this specific task
+        any_issue_detected_in_task = False        # Track any issues for this specific task
+
+        initial_user_question = None
+        raw_subject_content_for_debug = ""
+        raw_context_content_for_debug = ""
         start_time_task_overall = time.time() # For timing the whole task processing
 
         with output_data_lock:
@@ -674,10 +703,24 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         if refusal_in_this_call:
                             refusal_detected_in_task = True
                         # Update overall progress for non-duplication mode (per turn)
-                        with q.processed_tasks_lock:
-                            if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
-                            if q.processed_tasks < q.total_tasks_for_progress: # Check against total expected turns
-                                q.processed_tasks += 1 
+                        turn_incremented = False
+                        retry_count = 0
+                        while not turn_incremented and retry_count < 5:
+                            lock_acquired = q.processed_tasks_lock.acquire(timeout=1.0)
+                            if lock_acquired:
+                                try:
+                                    if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
+                                    if q.processed_tasks < q.total_tasks_for_progress:
+                                        q.processed_tasks += 1
+                                        turn_incremented = True
+                                finally:
+                                    q.processed_tasks_lock.release()
+                            else:
+                                retry_count += 1
+                                time.sleep(0.1)
+
+                        if not turn_incremented:
+                            log_message(f"Thread {thread_id}: CRITICAL - Failed to increment turn counter after 5 retries!", "ERROR")
                             if not hasattr(q, 'start_times_list'): q.start_times_list = []
                             q.start_times_list.append(api_task_duration)
                             if len(q.start_times_list) > 50: q.start_times_list.pop(0)
@@ -741,53 +784,52 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     if refusal_detected_in_task:
                         log_message(f"Thread {thread_id}: Task {task_id} contained a refusal. NOT saving to output.jsonl.", "WARNING")
                         # Do NOT add to completed_task_ids - this task should not be marked complete
-                    elif len(conversation_history_for_output) < (current_num_turns * 2):
-                        log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {current_num_turns * 2} messages, got {len(conversation_history_for_output)}. NOT saving to output.jsonl.", "WARNING")
-                        # Do NOT add to completed_task_ids - this task should be retried.
-                        # If the host is down, requeue it so it's retried once the host recovers
-                        # (otherwise it would just be discarded and lost).
-                        if api_host_is_down(worker_api_slot):
-                            if requeue_task(q, task, task_id):
-                                log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued incomplete task {task_id} for retry.", "WARNING")
-                            else:
-                                log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
-                    else:
-                        with output_data_lock:
-                            write_conversation(None, conversation_history_for_output, current_remove_reasoning,
-                                current_remove_em_dash,
-                                current_remove_asterisks,
-                                current_remove_asterisk_space_asterisk,
-                                current_remove_all_asterisks,
-                                current_ensure_space_after_line_break,
-                                current_remove_markdown,
-                                current_output_format, task_id,
-                                api_slot_idx_for_output_file=None)
-                        app_state.completed_task_ids.add(task_id)
-
-                    save_generation_state()
-                    log_message(f"Thread {thread_id}: Processed task {task_id} (API Slot {api_slot_idx_for_this_task+1}) from file {file_name}. Turns: {len(conversation_history_for_output)//2}", "INFO")
-                else:
-                    log_message(f"Thread {thread_id}: No valid conversation generated for task {task_id} (API Slot {api_slot_idx_for_this_task+1}). Not writing to output.", "WARNING")
-                    # If this failed because the host is down (circuit open), requeue it so
-                    # it's retried after the host recovers instead of being silently dropped.
-                    if api_host_is_down(worker_api_slot):
+                        # Requeue the task for retry
                         if requeue_task(q, task, task_id):
-                            log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued task {task_id} for retry.", "WARNING")
+                            log_message(f"Thread {thread_id}: Requeued task {task_id} due to refusal detection", "WARNING")
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
-            else: # Master duplication mode - mark task complete if it went through turns
-                # Individual API outputs were already handled per turn inside the loop.
-                if conversation_history_for_output or current_llm_conversation_context: # Check if at least initial question was made
-                    # CRITICAL FIX: Don't save if a refusal was detected at any point
-                    if refusal_detected_in_task:
-                        log_message(f"Thread {thread_id}: Task {task_id} contained a refusal (duplication mode). NOT saving to output.jsonl. refusal_detected_in_task={refusal_detected_in_task}", "WARNING")
-                        log_message(f"Thread {thread_id}: Skipping task {task_id} (duplication mode) - refusal detected during generation", "INFO")
-                        # Do NOT add to completed_task_ids
                     else:
-                        with output_data_lock: # Lock for completed_task_ids and save_generation_state
-                            app_state.completed_task_ids.add(task_id)
+                        # ✅ VERIFY TURN COUNT BEFORE MARKING COMPLETE
+                        expected_messages = current_num_turns * 2
+                        actual_messages = len(conversation_history_for_output)
+
+                        if actual_messages >= expected_messages:
+                            with output_data_lock:
+                                # ✅ DOUBLE-CHECK NOT ALREADY COMPLETE
+                                if task_id not in app_state.completed_task_ids:
+                                    write_conversation(None, conversation_history_for_output, current_remove_reasoning,
+                                        current_remove_em_dash,
+                                        current_remove_asterisks,
+                                        current_remove_asterisk_space_asterisk,
+                                        current_remove_all_asterisks,
+                                        current_ensure_space_after_line_break,
+                                        current_remove_markdown,
+                                        current_output_format, task_id,
+                                        api_slot_idx_for_output_file=None)
+                                    app_state.completed_task_ids.add(task_id)
+                                    log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
+                                else:
+                                    log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
                             save_generation_state()
-                        log_message(f"Thread {thread_id}: Completed processing (duplication mode) for task {task_id} from file {file_name}. Individual API outputs handled per turn.", "INFO")
+                        else:
+                            log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {expected_messages} messages, got {actual_messages}. NOT saving to output.jsonl.", "WARNING")
+                            # Do NOT add to completed_task_ids - this task should be retried.
+                            # If the host is down, requeue it so it's retried once the host recovers
+                            if api_host_is_down(worker_api_slot):
+                                if requeue_task(q, task, task_id):
+                                    log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued incomplete task {task_id} for retry.", "WARNING")
+                                else:
+                                    log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
+                            else:
+                                # Requeue anyway for any incomplete task
+                                if requeue_task(q, task, task_id):
+                                    log_message(f"Thread {thread_id}: Requeued incomplete task {task_id} ({actual_messages}/{expected_messages} messages)", "WARNING")
+                else:
+                    log_message(f"Thread {thread_id}: No valid conversation generated for task {task_id} (API Slot {api_slot_idx_for_this_task+1}). Not writing to output.", "WARNING")
+                    # Requeue task
+                    if requeue_task(q, task, task_id):
+                        log_message(f"Thread {thread_id}: Requeued task {task_id} - no valid conversation", "WARNING")
 
         except Exception as e: # Catch-all for errors during task processing
             error_message_gen = f"Thread {thread_id}: Error processing task {task_id} from {file_name}: {str(e)}"
@@ -845,7 +887,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             current_attempt_wait = 0
 
         # FIX: Use stats_lock instead of system_prompt_lock, with timeout
-        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
         if lock_acquired:
             try:
                 app_state.total_attempts_global += 1
@@ -1122,7 +1164,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
         MAX_TOTAL_RETRY_WAIT = 20
         current_attempt_wait = 0
 
-        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
         if lock_acquired:
             try:
                 app_state.total_attempts_global += 1
@@ -1250,7 +1292,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 record_api_failure(api_slot_idx)
                 error_message = f"Thread {thread_id}: Error generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param}, Status: {response.status_code}): {response.text[:200]}"
                 log_message(error_message, "ERROR")
-                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
                 if lock_acquired:
                     try:
                         app_state.error_count_total += 1
@@ -1282,7 +1324,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             error_message = f"Thread {thread_id}: Timeout generating user continuation (API Slot {api_slot_idx+1}, Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx)
-            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
             if lock_acquired:
                 try:
                     app_state.error_count_total += 1
@@ -1308,7 +1350,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             import traceback
             log_message(traceback.format_exc(), "ERROR")
             record_api_failure(api_slot_idx)
-            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
             if lock_acquired:
                 try:
                     app_state.error_count_total += 1
@@ -1560,7 +1602,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             log_message(f"Thread {thread_id}: API Slot {api_slot_idx_anti_slop+1} circuit open. Skipping anti-slop fixer.", "DEBUG")
             return None, text_context
 
-        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+        lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
         if lock_acquired:
             try:
                 app_state.total_attempts_global += 1
@@ -1717,7 +1759,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             error_message = f"Thread {thread_id}: Anti-Slop LLM request timed out (Attempt {attempt_num+1}/{current_max_attempts_param})."
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx_anti_slop)
-            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
             if lock_acquired:
                 try:
                     app_state.error_count_total += 1
@@ -1740,7 +1782,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             error_message = f"Thread {thread_id}: Exception in call_anti_slop_llm (Attempt {attempt_num+1}/{current_max_attempts_param}): {str(e)}"
             log_message(error_message, "ERROR")
             record_api_failure(api_slot_idx_anti_slop)
-            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+            lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
             if lock_acquired:
                 try:
                     app_state.error_count_total += 1
@@ -1813,7 +1855,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 current_attempt_wait = 0
 
                 # FIX 3: Add timeout to lock acquisition
-                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
                 if lock_acquired:
                     try:
                         app_state.total_attempts_global += 1
@@ -2008,7 +2050,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 except requests.exceptions.Timeout:
                     log_message(f"Thread {thread_id}: API Timeout generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}).", "ERROR")
                     record_api_failure(api_slot_idx)
-                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
                     if lock_acquired:
                         try:
                             app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
@@ -2026,7 +2068,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 except requests.exceptions.RequestException as e_req:
                     log_message(f"Thread {thread_id}: RequestException generating answer (API Slot {api_slot_idx+1}, OuterAttempt {attempt + 1}, API Call Attempt {api_call_attempt_num+1}/{api_call_retries_for_this_iteration}): {str(e_req)}", "ERROR")
                     record_api_failure(api_slot_idx)
-                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.50)
                     if lock_acquired:
                         try:
                             app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
