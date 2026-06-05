@@ -646,8 +646,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         current_slop_fixes_for_rotation_param=current_slop_fixes_for_rotation_worker,
                         api_slot_idx=api_slot_idx_for_this_task, # API slot used by this worker
                         current_max_attempts_for_slop_fixer_call=current_max_attempts, # Pass for slop_fixer's own API call retries
-                        no_user_impersonation_local=no_user_impersonation_local,
                         master_duplication_enabled_local=master_duplication_enabled_local,
+                        no_user_impersonation_local=no_user_impersonation_local,
                         anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
                         api_request_timeout_param=current_api_request_timeout,
                     )
