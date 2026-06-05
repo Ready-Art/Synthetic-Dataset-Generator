@@ -370,36 +370,42 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             if enable_character_engine_local and character_list:
                 # Select multiple random characters based on num_characters_local
                 num_chars_to_select = min(num_characters_local, len(character_list))
-                selected_chars = random.sample(character_list, num_chars_to_select)
 
-                character_profiles = []
-                for idx, selected_char in enumerate(selected_chars):
-                    # Extract attributes with defaults
-                    random_name = selected_char.get('name', f'Character{idx+1}')
-                    random_age = selected_char.get('age', '25')
-                    random_race = selected_char.get('race', 'Unknown')
-                    random_job = selected_char.get('job', 'Unknown')
-                    random_clothing = selected_char.get('clothing', 'Unknown')
-                    random_appearance = selected_char.get('appearance', 'Unknown')
-                    random_backstory = selected_char.get('backstory', 'Unknown')
-                    random_personality = selected_char.get('personality', 'Unknown')
-                    random_setting = selected_char.get('setting', 'Unknown') if enable_setting_selection_local else 'A standard indoor environment.'
-                    random_class = selected_char.get('class', '')
+                # Safety check: ensure we actually have characters to select
+                if num_chars_to_select > 0:
+                    selected_chars = random.sample(character_list, num_chars_to_select)
+                    character_profiles = []
 
-                    try:
-                        random_age = int(random_age) if random_age else random.randint(18, 60)
-                        if random_age < 18 or random_age > 60:
+                    for idx, selected_char in enumerate(selected_chars):
+                        # EXPLICIT NAME VALIDATION: Get name, strip whitespace, check if empty
+                        random_name = selected_char.get('name', '').strip()
+
+                        if not random_name:
+                            log_message(f"Thread {thread_id}: Character {idx+1} has empty/whitespace name. Skipping.", "WARNING")
+                            continue  # Skip this character, don't break the whole loop
+
+                        # Extract other attributes with defaults
+                        random_age = selected_char.get('age', '25')
+                        random_race = selected_char.get('race', 'Unknown')
+                        random_job = selected_char.get('job', 'Unknown')
+                        random_clothing = selected_char.get('clothing', 'Unknown')
+                        random_appearance = selected_char.get('appearance', 'Unknown')
+                        random_backstory = selected_char.get('backstory', 'Unknown')
+                        random_personality = selected_char.get('personality', 'Unknown')
+                        random_setting = selected_char.get('setting', 'Unknown') if enable_setting_selection_local else 'A standard indoor environment.'
+                        random_class = selected_char.get('class', '')
+
+                        # Validate Age
+                        try:
+                            random_age = int(random_age) if random_age else random.randint(18, 60)
+                            if random_age < 18 or random_age > 60:
+                                random_age = random.randint(18, 60)
+                        except (ValueError, TypeError):
                             random_age = random.randint(18, 60)
-                    except (ValueError, TypeError):
-                        random_age = random.randint(18, 60)
 
-                        class_injection = ""
-                        if enable_class_selection_local and random_class:
-                            class_injection = f"\nClass: {random_class}\n"
-
-                        personality_injection = ""
-                        if random_personality and random_personality != 'Unknown':
-                            personality_injection = f"\nPersonality: {random_personality}\n"
+                        # Build Injections
+                        class_injection = f"\nClass: {random_class}\n" if enable_class_selection_local and random_class else ""
+                        personality_injection = f"\nPersonality: {random_personality}\n" if random_personality and random_personality != 'Unknown' else ""
 
                         character_profile = (
                             f"\n--- CHARACTER {idx+1} PROFILE ---\n"
@@ -416,16 +422,16 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"--- END CHARACTER {idx+1} PROFILE ---\n"
                         )
                         character_profiles.append(character_profile)
-                    else:
-                        log_message(f"Thread {thread_id}: Character engine enabled, but selected character lacked a valid name. Skipping this character.", "WARNING")
 
-                if character_profiles:
-                    character_injection = "\n\nMULTI-CHARACTER CONVERSATION MODE:\n" + "\n".join(character_profiles)
-                    character_injection += "\nMaintain all character personas throughout the conversation. Each character should have distinct voices and personalities.\n"
-                    log_message(f"Thread {thread_id}: Adding {len(character_profiles)} character profiles to system prompt for task {task_id}", "DEBUG")
+                    # Finalize Injection
+                    if character_profiles:
+                        character_injection = "\n\nMULTI-CHARACTER CONVERSATION MODE:\n" + "\n".join(character_profiles)
+                        character_injection += "\nMaintain all character personas throughout the conversation. Each character should have distinct voices and personalities.\n"
+                        log_message(f"Thread {thread_id}: Successfully added {len(character_profiles)} character profiles for task {task_id}", "DEBUG")
+                    else:
+                        log_message(f"Thread {thread_id}: Character engine enabled but no VALID characters selected (all had empty names).", "WARNING")
                 else:
-                    if enable_character_engine_local:
-                        log_message(f"Thread {thread_id}: Character engine enabled but no valid characters selected. Skipping character injection.", "WARNING")
+                    log_message(f"Thread {thread_id}: Character engine enabled but character_list is empty or num_characters is 0.", "WARNING")
 
             current_system_prompt_for_task += character_injection
 

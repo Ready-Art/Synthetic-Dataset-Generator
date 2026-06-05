@@ -1498,6 +1498,15 @@ class ConfigEditor(tk.Toplevel):
             float(self.repetition_penalty_var.get());
             int(self.max_tokens_question_var.get()); int(self.max_tokens_answer_var.get()); int(self.max_tokens_user_reply_var.get())
             num_chars_val = int(self.num_characters_var_editor.get())
+            for idx, char_data in enumerate(self.character_entries):
+                age_value = char_data.get('age', '').get().strip()
+                if age_value:
+                    try:
+                        age_int = int(age_value)
+                        if age_int < 18 or age_int > 60:
+                            raise AssertionError(f"Character {idx+1} age must be between 18 and 60 (got {age_int})")
+                    except ValueError:
+                        raise AssertionError(f"Character {idx+1} age must be a valid number (got '{age_value}')")
             assert 1 <= num_chars_val <= 10, "Number of characters must be between 1 and 10"
             if self.slop_fixer_temp_var.get(): float(self.slop_fixer_temp_var.get())
             if self.slop_fixer_top_p_var.get(): float(self.slop_fixer_top_p_var.get())
@@ -1607,7 +1616,7 @@ class ConfigEditor(tk.Toplevel):
             # Label
             lbl = ttk.Label(parent, text=label_text, font=LABEL_FONT, foreground=LABEL_FG)
             lbl.grid(row=row, column=col*2, padx=(10, 5), pady=8, sticky="ne")
-            entry_vars[f'{var_key}_label'] = lbl
+            entry_vars[f'{var_key}_label'] = lbl  # Store label reference in entry_vars
 
             var = tk.StringVar(value=character_data.get(var_key, ''))
 
@@ -1637,7 +1646,32 @@ class ConfigEditor(tk.Toplevel):
 
         # === Row 0: Name and Age ===
         create_field(card_frame, "Name:", 'name', row=0, col=0, width=20)
-        create_field(card_frame, "Age:", 'age', row=0, col=2, width=5)
+
+        # === FIX: Age field with proper label reference ===
+        age_var = tk.StringVar(value=character_data.get('age', '25'))
+        age_label = ttk.Label(card_frame, text="Age:", font=LABEL_FONT, foreground=LABEL_FG)
+        age_label.grid(row=0, column=5, padx=(10, 5), pady=8, sticky="ne")
+
+        age_widget = ttk.Entry(card_frame, textvariable=age_var, width=5, font=ENTRY_FONT)
+        age_widget.grid(row=0, column=6, padx=5, pady=8, sticky="w")
+
+        # Add validation to restrict input to 18-60
+        def validate_age(new_value):
+            if not new_value:  # Allow empty for typing
+                return True
+            try:
+                age = int(new_value)
+                return 0 <= age <= 999  # Allow typing intermediate values
+            except ValueError:
+                return False
+
+        validation_cmd = card_frame.register(validate_age)
+        age_widget.config(validate="key", validatecommand=(validation_cmd, "%P"))
+
+        # Store references in entry_vars
+        entry_vars['age'] = age_var
+        entry_vars['age_widget'] = age_widget
+        entry_vars['age_label'] = age_label  # FIX: Use age_label, not lbl
 
         # === Row 1: Race and Job ===
         create_field(card_frame, "Race:", 'race', row=1, col=0, width=20)
@@ -1672,9 +1706,9 @@ class ConfigEditor(tk.Toplevel):
         # === Row 8: Class & Actions (separate row at bottom) ===
         action_row_frame = ttk.Frame(card_frame)
         action_row_frame.grid(row=8, column=0, columnspan=10, sticky="ew", pady=(15, 5))
-        action_row_frame.columnconfigure(0, weight=0)  # Class label
-        action_row_frame.columnconfigure(1, weight=0)  # Class entry
-        action_row_frame.columnconfigure(2, weight=1)  # Spacer
+        action_row_frame.columnconfigure(0, weight=0)
+        action_row_frame.columnconfigure(1, weight=0)
+        action_row_frame.columnconfigure(2, weight=1)
 
         class_lbl = ttk.Label(action_row_frame, text="⚔ Class:", font=LABEL_FONT, foreground=LABEL_FG)
         class_lbl.grid(row=0, column=0, padx=(10, 5), sticky="w")
@@ -1704,6 +1738,20 @@ class ConfigEditor(tk.Toplevel):
 
         self._update_character_card_labels()
         self._update_canvas_scrollregion(self.character_engine_canvas)
+
+    def _validate_character_ages(self):
+        """Highlights age fields that are outside the 18-60 range."""
+        for idx, data in enumerate(self.character_entries):
+            age_widget = data.get('age_widget')
+            if age_widget and hasattr(age_widget, 'winfo_exists') and age_widget.winfo_exists():
+                try:
+                    age_value = int(data['age'].get().strip())
+                    if age_value < 18 or age_value > 60:
+                        age_widget.config(foreground='#ff6b6b')  # Red for invalid
+                    else:
+                        age_widget.config(foreground='#ffffff')  # White for valid
+                except (ValueError, TypeError):
+                    age_widget.config(foreground='#ff6b6b')  # Red for non-numeric
 
     def _remove_character_row(self, row_index):
         """Removes a character card from the table."""
