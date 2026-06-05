@@ -376,6 +376,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 for idx, selected_char in enumerate(selected_chars):
                     # Extract attributes with defaults
                     random_name = selected_char.get('name', f'Character{idx+1}')
+                    random_age = selected_char.get('age', '25')
                     random_race = selected_char.get('race', 'Unknown')
                     random_job = selected_char.get('job', 'Unknown')
                     random_clothing = selected_char.get('clothing', 'Unknown')
@@ -385,9 +386,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     random_setting = selected_char.get('setting', 'Unknown') if enable_setting_selection_local else 'A standard indoor environment.'
                     random_class = selected_char.get('class', '')
 
-                    # Ensure at least name is present to make it valid
-                    if random_name and random_name != 'Unknown':
-                        random_age = random.randint(18, 50)
+                    try:
+                        random_age = int(random_age) if random_age else random.randint(18, 60)
+                        if random_age < 18 or random_age > 60:
+                            random_age = random.randint(18, 60)
+                    except (ValueError, TypeError):
+                        random_age = random.randint(18, 60)
 
                         class_injection = ""
                         if enable_class_selection_local and random_class:

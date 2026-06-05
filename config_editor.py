@@ -998,6 +998,7 @@ class ConfigEditor(tk.Toplevel):
                 'characters': [
                     {
                         'name': sanitize_input(data['name'].get().strip()),
+                        'age': sanitize_input(data['age'].get().strip()),
                         'race': sanitize_input(data['race'].get().strip()),
                         'job': sanitize_input(data['job'].get().strip()),
                         'clothing': sanitize_input(data['clothing'].get().strip()),
@@ -1009,7 +1010,7 @@ class ConfigEditor(tk.Toplevel):
                         'class': sanitize_input(data['class'].get().strip())
                     }
                         for data in self.character_entries
-                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class'])
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age'])
                     ]
                 },
                 'emotional_states': {
@@ -1160,13 +1161,11 @@ class ConfigEditor(tk.Toplevel):
         is_enabled = self.enable_setting_selection_var_editor.get()
         for data in self.character_entries:
             if is_enabled:
-                # Show setting label and widget (match original creation coordinates)
                 if 'setting_label' in data:
-                    data['setting_label'].grid(row=4, column=3, padx=(0, 5), pady=5, sticky="ne")
+                    data['setting_label'].grid()
                 if 'setting_widget' in data:
-                    data['setting_widget'].grid(row=4, column=4, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+                    data['setting_widget'].grid()
             else:
-                # Hide setting label and widget
                 if 'setting_label' in data:
                     data['setting_label'].grid_remove()
                 if 'setting_widget' in data:
@@ -1364,6 +1363,7 @@ class ConfigEditor(tk.Toplevel):
             # Fallback for old config format (separate lists)
             if not characters_list:
                 old_names = character_conf.get('name', [])
+                old_ages = character_conf.get('age', [])
                 old_races = character_conf.get('race', [])
                 old_jobs = character_conf.get('job', [])
                 old_clothing = character_conf.get('clothing', [])
@@ -1383,6 +1383,7 @@ class ConfigEditor(tk.Toplevel):
                     for i in range(max_len):
                         characters_list.append({
                             'name': old_names[i] if i < len(old_names) else '',
+                            'age': old_ages[i] if i < len(old_ages) else '25',
                             'race': old_races[i] if i < len(old_races) else '',
                             'job': old_jobs[i] if i < len(old_jobs) else '',
                             'clothing': old_clothing[i] if i < len(old_clothing) else '',
@@ -1575,8 +1576,7 @@ class ConfigEditor(tk.Toplevel):
         max_cards = int(max_cards_str) if max_cards_str and max_cards_str.strip() else 10
 
         if len(self.character_entries) >= max_cards:
-            messagebox.showwarning("Limit Reached",
-                f"Maximum {max_cards} character cards allowed.")
+            messagebox.showwarning("Limit Reached", f"Maximum {max_cards} character cards allowed.")
             return
 
         if character_data is None:
@@ -1588,182 +1588,121 @@ class ConfigEditor(tk.Toplevel):
         card_frame = ttk.LabelFrame(
             self.character_cards_frame,
             text=f"  ✦ Character {row_index + 1}  ",
-            padding=10
+            padding=15
         )
-        card_frame.pack(fill=tk.X, pady=10, padx=10)
+        card_frame.pack(fill=tk.X, pady=15, padx=15)
 
         entry_vars = {}
 
         # === Styling Constants ===
-        LABEL_FONT = ('Segoe UI', 10, 'bold')
-        ENTRY_FONT = ('Segoe UI', 10)
-        LABEL_FG = '#f8f9fa'  # Light gray/white for high contrast on dark themes
-        ENTRY_BG = '#ffffff'
-        GRIP_FG = '#adb5bd'  # Lighter gray for better visibility
-        GRIP_FG_HOVER = '#ffffff'
+        LABEL_FONT = ('Segoe UI', 9, 'bold')
+        ENTRY_FONT = ('Segoe UI', 9)
+        LABEL_FG = '#e0e0e0'
+        ENTRY_BG = '#2a2a35'
+        ENTRY_FG = '#ffffff'
 
-        # === Helper: Create a labeled resizable text field ===
-        def create_field(parent, label_text, var_key, row, col, colspan=2,
-                         init_width=30, init_height=2, max_width=60, max_height=10,
-                         is_multiline=True):
-
+        # === Helper: Create a labeled field ===
+        def create_field(parent, label_text, var_key, row, col,
+                        width=25, is_multiline=False, height=3, colspan=1):
             # Label
             lbl = ttk.Label(parent, text=label_text, font=LABEL_FONT, foreground=LABEL_FG)
-            lbl.grid(row=row, column=col, padx=(0, 5), pady=5, sticky="ne")
-            # Return label reference for visibility toggling
+            lbl.grid(row=row, column=col*2, padx=(10, 5), pady=8, sticky="ne")
             entry_vars[f'{var_key}_label'] = lbl
 
             var = tk.StringVar(value=character_data.get(var_key, ''))
 
             if is_multiline:
-                # Multi-line Text widget
-                widget = tk.Text(parent, width=init_width, height=init_height,
-                                font=ENTRY_FONT, bg=ENTRY_BG, wrap=tk.WORD,
-                                relief=tk.SOLID, borderwidth=1)
+                widget = tk.Text(parent, width=width, height=height,
+                                font=ENTRY_FONT, bg=ENTRY_BG, fg=ENTRY_FG,
+                                wrap=tk.WORD, relief=tk.SOLID, borderwidth=1)
                 widget.insert("1.0", character_data.get(var_key, ''))
-                widget.grid(row=row, column=col+1, columnspan=colspan, padx=5, pady=5, sticky="ew")
+                widget.grid(row=row, column=col*2+1, padx=5, pady=8, sticky="ew", columnspan=colspan)
 
-                # Sync to StringVar
                 def on_change(e=None):
                     var.set(widget.get("1.0", tk.END).strip())
                 widget.bind("<KeyRelease>", on_change)
                 widget.bind("<FocusOut>", on_change)
-
-                # Resize grips container
-                grip_frame = ttk.Frame(parent)
-                grip_frame.grid(row=row, column=col+1+colspan, padx=(2, 0), pady=5, sticky="nsew")
-
-                # Horizontal grip
-                h_grip = tk.Label(grip_frame, text="⋮", cursor="sb_h_double_arrow",
-                                 foreground=GRIP_FG, font=('Segoe UI', 8))
-                h_grip.pack(side=tk.TOP, pady=2)
-
-                # Vertical grip
-                v_grip = tk.Label(grip_frame, text="⤦", cursor="sb_v_double_arrow",
-                                 foreground=GRIP_FG, font=('Segoe UI', 8))
-                v_grip.pack(side=tk.BOTTOM, pady=2)
-
-                # Drag state
-                state = {'width': init_width, 'height': init_height}
-
-                def h_drag(e):
-                    delta = (e.x_root - state.get('start_x', e.x_root)) // 7
-                    new_w = max(5, min(state['width'] + delta, max_width))
-                    widget.config(width=int(new_w))
-                def h_press(e):
-                    state['start_x'] = e.x_root
-                    state['width'] = widget.cget("width")
-                h_grip.bind("<Button-1>", h_press)
-                h_grip.bind("<B1-Motion>", h_drag)
-                h_grip.bind("<Enter>", lambda e: h_grip.config(foreground=GRIP_FG_HOVER))
-                h_grip.bind("<Leave>", lambda e: h_grip.config(foreground=GRIP_FG))
-
-                def v_drag(e):
-                    delta = (e.y_root - state.get('start_y', e.y_root)) // 12
-                    new_h = max(1, min(state['height'] + delta, max_height))
-                    widget.config(height=int(new_h))
-                def v_press(e):
-                    state['start_y'] = e.y_root
-                    state['height'] = widget.cget("height")
-                v_grip.bind("<Button-1>", v_press)
-                v_grip.bind("<B1-Motion>", v_drag)
-                v_grip.bind("<Enter>", lambda e: v_grip.config(foreground=GRIP_FG_HOVER))
-                v_grip.bind("<Leave>", lambda e: v_grip.config(foreground=GRIP_FG))
-
             else:
-                # Single-line Entry
-                widget = tk.Entry(parent, textvariable=var, width=init_width,
-                                 font=ENTRY_FONT, bg=ENTRY_BG, relief=tk.SOLID, borderwidth=1)
-                widget.grid(row=row, column=col+1, columnspan=colspan, padx=5, pady=5, sticky="ew")
-
-                # Horizontal grip only
-                h_grip = tk.Label(parent, text="⋮", cursor="sb_h_double_arrow",
-                                 foreground=GRIP_FG, font=('Segoe UI', 8))
-                h_grip.grid(row=row, column=col+1+colspan, padx=(2, 0), pady=5, sticky="w")
-
-                state = {'width': init_width}
-                def h_drag(e):
-                    delta = (e.x_root - state.get('start_x', e.x_root)) // 7
-                    new_w = max(5, min(state['width'] + delta, max_width))
-                    widget.config(width=int(new_w))
-                def h_press(e):
-                    state['start_x'] = e.x_root
-                    state['width'] = widget.cget("width")
-                h_grip.bind("<Button-1>", h_press)
-                h_grip.bind("<B1-Motion>", h_drag)
-                h_grip.bind("<Enter>", lambda e: h_grip.config(foreground=GRIP_FG_HOVER))
-                h_grip.bind("<Leave>", lambda e: h_grip.config(foreground=GRIP_FG))
+                widget = ttk.Entry(parent, textvariable=var, width=width,
+                                font=ENTRY_FONT)
+                widget.grid(row=row, column=col*2+1, padx=5, pady=8, sticky="ew", columnspan=colspan)
 
             entry_vars[var_key] = var
             entry_vars[f'{var_key}_widget'] = widget
             return widget
 
-        # === Row 1: Basic Info (3 columns) ===
-        create_field(card_frame, "Name:", 'name', row=0, col=0, colspan=1,
-                    init_width=15, max_width=30, is_multiline=False)
-        create_field(card_frame, "Race:", 'race', row=0, col=2, colspan=1,
-                    init_width=10, max_width=20, is_multiline=False)
-        create_field(card_frame, "Job:", 'job', row=0, col=4, colspan=1,
-                    init_width=10, max_width=20, is_multiline=False)
+        # Configure grid columns (even = labels, odd = fields)
+        for i in range(10):
+            card_frame.columnconfigure(i, weight=1 if i % 2 == 1 else 0)
 
-        # === Row 2: Visual Details (2 columns) ===
-        create_field(card_frame, "Clothing:", 'clothing', row=1, col=0, colspan=2,
-                    init_width=25, init_height=2, max_width=50, max_height=6)
-        create_field(card_frame, "Appearance:", 'appearance', row=1, col=3, colspan=2,
-                    init_width=25, init_height=2, max_width=50, max_height=6)
+        # === Row 0: Name and Age ===
+        create_field(card_frame, "Name:", 'name', row=0, col=0, width=20)
+        create_field(card_frame, "Age:", 'age', row=0, col=2, width=5)
 
-        # === Row 3: Character Depth (full width) ===
-        create_field(card_frame, "Backstory:", 'backstory', row=2, col=0, colspan=5,
-                    init_width=40, init_height=3, max_width=80, max_height=10)
+        # === Row 1: Race and Job ===
+        create_field(card_frame, "Race:", 'race', row=1, col=0, width=20)
+        create_field(card_frame, "Job:", 'job', row=1, col=2, width=20)
 
-        # === Row 4: Personality (full width) ===
-        create_field(card_frame, "Personality:", 'personality', row=3, col=0, colspan=5,
-                    init_width=40, init_height=3, max_width=80, max_height=10)
+        # === Row 2: Clothing (full width) ===
+        create_field(card_frame, "Clothing:", 'clothing', row=2, col=0,
+                    width=50, is_multiline=True, height=2, colspan=4)
 
-        # === Row 5: Traits & Setting (2 columns) ===
-        create_field(card_frame, "Traits:", 'traits', row=4, col=0, colspan=2,
-                    init_width=30, init_height=3, max_width=60, max_height=8)
-        setting_widget = create_field(card_frame, "Setting:", 'setting', row=4, col=3, colspan=2,
-                            init_width=30, init_height=3, max_width=60, max_height=8)
+        # === Row 3: Appearance (full width) ===
+        create_field(card_frame, "Appearance:", 'appearance', row=3, col=0,
+                    width=50, is_multiline=True, height=2, colspan=4)
 
-        entry_vars['setting_widget'] = setting_widget
+        # === Row 4: Backstory (full width) ===
+        create_field(card_frame, "Backstory:", 'backstory', row=4, col=0,
+                    width=50, is_multiline=True, height=3, colspan=4)
 
-        # === Row 6: Class & Actions ===
-        action_frame = ttk.Frame(card_frame)
-        action_frame.grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
+        # === Row 5: Personality (full width) ===
+        create_field(card_frame, "Personality:", 'personality', row=5, col=0,
+                    width=50, is_multiline=True, height=3, colspan=4)
 
-        class_lbl = ttk.Label(action_frame, text="⚔ Class:", font=LABEL_FONT, foreground=LABEL_FG)
-        class_lbl.grid(row=0, column=0, padx=(0, 5), sticky="w")
+        # === Row 6: Traits (full width) ===
+        create_field(card_frame, "Traits:", 'traits', row=6, col=0,
+                    width=50, is_multiline=True, height=2, colspan=4)
+
+        # === Row 7: Setting (full width) - Hidden by default ===
+        create_field(card_frame, "Setting:", 'setting', row=7, col=0,
+                    width=50, is_multiline=True, height=2, colspan=4)
+        entry_vars['setting_label'].grid_remove()
+        entry_vars['setting_widget'].grid_remove()
+
+        # === Row 8: Class & Actions (separate row at bottom) ===
+        action_row_frame = ttk.Frame(card_frame)
+        action_row_frame.grid(row=8, column=0, columnspan=10, sticky="ew", pady=(15, 5))
+        action_row_frame.columnconfigure(0, weight=0)  # Class label
+        action_row_frame.columnconfigure(1, weight=0)  # Class entry
+        action_row_frame.columnconfigure(2, weight=1)  # Spacer
+
+        class_lbl = ttk.Label(action_row_frame, text="⚔ Class:", font=LABEL_FONT, foreground=LABEL_FG)
+        class_lbl.grid(row=0, column=0, padx=(10, 5), sticky="w")
+        entry_vars['class_label'] = class_lbl
 
         class_var = tk.StringVar(value=character_data.get('class', ''))
-        class_entry = tk.Entry(action_frame, textvariable=class_var, width=15,
-                              font=ENTRY_FONT, bg=ENTRY_BG, relief=tk.SOLID, borderwidth=1)
+        class_entry = ttk.Entry(action_row_frame, textvariable=class_var, width=20, font=ENTRY_FONT)
         class_entry.grid(row=0, column=1, padx=5, sticky="w")
-
-        # Store references for visibility toggle
         entry_vars['class'] = class_var
         entry_vars['class_entry'] = class_entry
-        entry_vars['class_label'] = class_lbl
-        entry_vars['class_frame'] = action_frame
 
-        # Delete button with styling
+        # Spacer
+        ttk.Label(action_row_frame, text="").grid(row=0, column=2)
+
+        # Delete button - far right
         delete_btn = ttk.Button(
-            action_frame, text="✕ Remove Character",
+            card_frame, text="✕ Remove Character",
             command=lambda idx=row_index: self._remove_character_row(idx),
             style='Danger.TButton'
         )
-        delete_btn.grid(row=0, column=2, padx=(10, 0), sticky="e")
+        delete_btn.grid(row=9, column=0, columnspan=10, padx=(20, 10), pady=(5, 15), sticky="e")
         entry_vars['delete_btn'] = delete_btn
-
-        # Configure grid weights for responsive layout
-        for i in range(6):
-            card_frame.columnconfigure(i, weight=1 if i % 2 == 1 else 0)
+        entry_vars['class_frame'] = action_row_frame
 
         entry_vars['frame'] = card_frame
         self.character_entries.append(entry_vars)
 
         self._update_character_card_labels()
-        self._update_class_column_visibility()
         self._update_canvas_scrollregion(self.character_engine_canvas)
 
     def _remove_character_row(self, row_index):
@@ -1822,28 +1761,21 @@ class ConfigEditor(tk.Toplevel):
         is_enabled = self.enable_class_selection_var_editor.get()
         for data in self.character_entries:
             if is_enabled:
-                # Show class frame and widgets
-                if 'class_frame' in data:
-                    data['class_frame'].grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
+                # Show class label, entry, and action row
                 if 'class_label' in data:
-                    data['class_label'].grid(row=0, column=0, padx=(0, 5), sticky="w")
+                    data['class_label'].grid()
                 if 'class_entry' in data:
-                    data['class_entry'].grid(row=0, column=1, padx=5, sticky="w")
-                # Reset delete button to original column when class is enabled
-                if 'delete_btn' in data:
-                    data['delete_btn'].grid(row=0, column=2, padx=(10, 0), sticky="e")
-            else:
-                # Keep class_frame visible so delete_btn remains accessible
+                    data['class_entry'].grid()
                 if 'class_frame' in data:
-                    data['class_frame'].grid(row=5, column=0, columnspan=6, pady=(10, 0), sticky="w")
-                # Hide only the class-specific widgets
+                    data['class_frame'].grid()
+            else:
+                # Hide class label, entry, and action row
                 if 'class_label' in data:
                     data['class_label'].grid_remove()
                 if 'class_entry' in data:
                     data['class_entry'].grid_remove()
-                # Move delete button to column 0 for better alignment when class is hidden
-                if 'delete_btn' in data:
-                    data['delete_btn'].grid(row=0, column=0, padx=(10, 0), sticky="w")
+                if 'class_frame' in data:
+                    data['class_frame'].grid_remove()
 
         log_message(f"Class Selection fields visibility updated", "DEBUG")
 # --- End of ConfigEditor Class ---
