@@ -530,7 +530,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             
                             answer_result = generate_answer_with_retries(
                                 base_system_prompt=current_system_prompt_for_task,
-                                conversation_history_for_llm=list(current_llm_conversation_context), # Pass a copy
+                                conversation_history_for_llm=list(current_llm_conversation_context),
                                 answer_prompt_template=current_answer_prompt,
                                 thread_id=thread_id, q=q,
                                 sampler_settings_local=dup_api_conf_item.get('sampler_settings', {}),
@@ -540,16 +540,17 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 refusal_phrases_local=current_refusal_phrases,
                                 user_speaking_phrases_local=current_user_speaking_phrases,
                                 slop_phrases_local=current_slop_phrases,
+                                current_anti_slop_phrases_param=current_anti_slop_phrases,
                                 jailbreaks_local=current_jailbreaks,
                                 speaking_fixes_local=current_speaking_fixes,
                                 slop_fixes_fallback_local=current_slop_fixes_fallback,
-                                max_attempts_local=current_max_attempts, # This is for main answer generation logic
+                                max_attempts_local=current_max_attempts,
                                 slop_fixer_api_config_param=slop_fixer_api_config,
                                 current_slop_fixes_for_rotation_param=current_slop_fixes_for_rotation_worker,
-                                api_slot_idx=dup_api_idx, # Pass the specific API slot index being used
-                                current_max_attempts_for_slop_fixer_call=current_max_attempts, # Pass for slop_fixer's own API call retries
+                                api_slot_idx=dup_api_idx,
+                                current_max_attempts_for_slop_fixer_call=current_max_attempts,
                                 master_duplication_enabled_local=master_duplication_enabled_local,
-                                current_anti_slop_phrases_param=current_anti_slop_phrases, # (Prevents future error)
+                                no_user_impersonation_local=no_user_impersonation_local,
                                 anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
                                 api_request_timeout_param=current_api_request_timeout,
                             )
