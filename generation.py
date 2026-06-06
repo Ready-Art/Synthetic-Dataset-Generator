@@ -518,15 +518,16 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 q_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
 
                 initial_user_question = generate_question(
-                    current_system_prompt_for_task, current_question_prompt, 
+                    current_system_prompt_for_task, current_question_prompt,
                     subject_content_for_task, context_content_for_task,
-                    thread_id, q_gen_api_conf.get('sampler_settings', {}), 
+                    thread_id, q_gen_api_conf.get('sampler_settings', {}),
                     q_gen_api_conf.get('url'), q_gen_api_conf.get('model'), q_gen_api_conf.get('key'),
                     current_history_size_local,
-                    raw_subject_content_for_debug, raw_context_content_for_debug, 
-                    api_slot_idx=q_gen_api_slot_idx, # Pass the correct API slot index for stats/logging
-                    current_max_attempts_param=current_max_attempts, # Pass max attempts for retries
-                    api_request_timeout_param=current_api_request_timeout
+                    raw_subject_content_for_debug, raw_context_content_for_debug,
+                    api_slot_idx=q_gen_api_slot_idx,
+                    current_max_attempts_param=current_max_attempts,
+                    api_request_timeout_param=current_api_request_timeout,
+                    file_name=file_name
                 )
             
             if not initial_user_question:
@@ -582,6 +583,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 no_user_impersonation_local=no_user_impersonation_local,
                                 anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
                                 api_request_timeout_param=current_api_request_timeout,
+                                file_name=file_name,
                             )
                             if answer_result and answer_result[0]:  # Check if answer is not None
                                 duplicated_answer_text = answer_result[0]
@@ -674,12 +676,13 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         max_attempts_local=current_max_attempts,
                         slop_fixer_api_config_param=slop_fixer_api_config,
                         current_slop_fixes_for_rotation_param=current_slop_fixes_for_rotation_worker,
-                        api_slot_idx=api_slot_idx_for_this_task, # API slot used by this worker
-                        current_max_attempts_for_slop_fixer_call=current_max_attempts, # Pass for slop_fixer's own API call retries
+                        api_slot_idx=api_slot_idx_for_this_task,
+                        current_max_attempts_for_slop_fixer_call=current_max_attempts,
                         master_duplication_enabled_local=master_duplication_enabled_local,
                         no_user_impersonation_local=no_user_impersonation_local,
                         anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
                         api_request_timeout_param=current_api_request_timeout,
+                        file_name=file_name,
                     )
                     if answer_result and answer_result[0]:  # Check if answer is not None
                         assistant_answer = answer_result[0]
@@ -751,17 +754,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 cont_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
 
                 user_continuation_reply = generate_user_continuation(
-                    system_prompt=current_system_prompt_for_task, 
-                    conversation_history_for_llm=list(current_llm_conversation_context), 
+                    system_prompt=current_system_prompt_for_task,
+                    conversation_history_for_llm=list(current_llm_conversation_context),
                     user_continuation_prompt_template=current_user_continuation_prompt,
-                    thread_id=thread_id, 
+                    thread_id=thread_id,
                     sampler_settings_local=cont_gen_api_conf.get('sampler_settings', {}),
-                    api_url_local=cont_gen_api_conf.get('url'), 
-                    model_name_local=cont_gen_api_conf.get('model'), 
+                    api_url_local=cont_gen_api_conf.get('url'),
+                    model_name_local=cont_gen_api_conf.get('model'),
                     api_key_local=cont_gen_api_conf.get('key'),
-                    api_slot_idx=cont_gen_api_slot_idx, # Pass correct API slot for stats/logging
-                    current_max_attempts_param=current_max_attempts, # Pass max attempts for retries
-                    api_request_timeout_param=current_api_request_timeout
+                    api_slot_idx=cont_gen_api_slot_idx,
+                    current_max_attempts_param=current_max_attempts,
+                    api_request_timeout_param=current_api_request_timeout,
+                    file_name=file_name
                 )
 
                 if not user_continuation_reply:
@@ -873,7 +877,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       sampler_settings_local, api_url_local, model_name_local, api_key_local,
                       history_size_local_param,
                       raw_subject_chunk, raw_context_chunk,
-                      api_slot_idx, current_max_attempts_param, api_request_timeout_param):
+                      api_slot_idx, current_max_attempts_param, api_request_timeout_param,
+                      file_name=""):
     """Generates an initial question using the LLM, with retries for API call failures."""
 
     if not api_url_local:
@@ -960,6 +965,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             debug_log_entry = {
                 "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "question_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1,
                 "api_url": api_url_local, "model": model_name_local,
+                "source_file": file_name,
                 "raw_subject_chunk_length": len(raw_subject_chunk),
                 "raw_context_chunk_length": len(raw_context_chunk),
                 "messages": messages_for_llm,
@@ -1151,7 +1157,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
 
 def generate_user_continuation(system_prompt, conversation_history_for_llm, user_continuation_prompt_template,
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
-                               api_slot_idx, current_max_attempts_param, api_request_timeout_param): # API slot index and max_attempts
+                               api_slot_idx, current_max_attempts_param, api_request_timeout_param,
+                               file_name=""):
     """Generates the user's continuation reply, with retries for API call failures."""
 
 
@@ -1177,7 +1184,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             last_assistant_message = ""
             if conversation_history_for_llm and conversation_history_for_llm[-1]["role"] == "assistant":
                 last_assistant_message = conversation_history_for_llm[-1]["content"]
-            
+
             final_user_continuation_prompt = user_continuation_prompt_template.replace("{last_assistant_message}", last_assistant_message)
 
             messages = [{"role": "system", "content": system_prompt}] + \
@@ -1189,8 +1196,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             payload_dict = {
                 "model": model_name_local,
                 "messages": messages,
-                **sampler_settings_local.get("generation_params", { 
-                    "temperature": sampler_settings_local.get("temperature", 0.6), 
+                **sampler_settings_local.get("generation_params", {
+                    "temperature": sampler_settings_local.get("temperature", 0.6),
                     "top_p": sampler_settings_local.get("top_p", 0.9),
                     "top_k": sampler_settings_local.get("top_k", 50),
                     "repetition_penalty": sampler_settings_local.get("repetition_penalty", 1.1),
@@ -1218,10 +1225,10 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
             if api_key_local:
                 headers['Authorization'] = f"Bearer {api_key_local}"
-            
+
             current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
             with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict}) + '\n')
+                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict}) + '\n')
 
             # NEW: Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx)
@@ -1376,7 +1383,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 def call_slop_fixer_llm(text_context, slop_phrase,
                         slop_fixer_api_config,
                         main_sampler_settings, thread_id, additional_fix_instructions="",
-                        current_max_attempts_param=5, api_request_timeout_param=300):
+                        current_max_attempts_param=5, api_request_timeout_param=300,
+                        file_name=""):
     """Calls a dedicated LLM (API Slot 5, index 4) to rewrite a sentence containing "slop", with retries."""
 
     api_slot_idx_slop_fixer = 4 # Slop fixer is always API slot 5 (index 4)
@@ -1457,7 +1465,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
 
             with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
+                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
 
             # NEW: Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx_slop_fixer)
@@ -1578,7 +1586,8 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                        main_sampler_settings, thread_id, additional_fix_instructions="",
                        current_max_attempts_param=5,
                        master_duplication_enabled=False,
-                       api_request_timeout_param=300):
+                       api_request_timeout_param=300,
+                       file_name=""):
     """Calls a dedicated LLM to rewrite a sentence containing anti-slop phrases."""
     api_slot_idx_anti_slop = 5
 
@@ -1665,7 +1674,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
 
             current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_anti_slop}.jsonl" if master_duplication_enabled else BASE_DEBUG_LOG_PATH + ".jsonl"
             with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "anti_slop_request", "api_slot_idx": api_slot_idx_anti_slop, "attempt": attempt_num + 1, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
+                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "anti_slop_request", "api_slot_idx": api_slot_idx_anti_slop, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
 
             # FIX 2: Rate limiter already called BEFORE lock acquisition above
             # Track API response time
@@ -1817,7 +1826,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  anti_slop_fixer_api_config_param,
                                  master_duplication_enabled_local,
                                  no_user_impersonation_local,
-                                 api_request_timeout_param):
+                                 api_request_timeout_param,
+                                 file_name=""):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, and slop.
     Applies jailbreaks, speaking fixes, and slop fixes (system prompt or dedicated LLM).
@@ -1911,7 +1921,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
                 with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                    debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans}) + '\n')
+                    debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "source_file": file_name, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans}) + '\n')
 
                 global_rate_limiter.wait_if_needed(api_slot_idx)
 
@@ -2225,7 +2235,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             sampler_settings_local,
                             thread_id,
                             additional_fix_instructions=additional_instructions_for_llm_fixer,
-                            current_max_attempts_param=current_max_attempts_for_slop_fixer_call
+                            current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
+                            file_name=file_name
                         )
 
                         if rewritten_sentence_part and original_sentence_part:
@@ -2327,7 +2338,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             thread_id,
                             additional_fix_instructions=additional_instructions,
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
-                            master_duplication_enabled=master_duplication_enabled_local
+                            master_duplication_enabled=master_duplication_enabled_local,
+                            file_name=file_name
                         )
 
                         if rewritten_sentence and original_sentence:
