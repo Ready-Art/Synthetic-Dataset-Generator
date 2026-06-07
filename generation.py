@@ -411,10 +411,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                         if not random_name:
                             log_message(f"Thread {thread_id}: Character {idx+1} has empty/whitespace name. Skipping.", "WARNING")
-                            continue  # Skip this character, don't break the whole loop
+                            continue
 
                         # Extract other attributes with defaults
                         random_age = selected_char.get('age', '25')
+                        random_gender = selected_char.get('gender', 'Unknown')
                         random_race = selected_char.get('race', 'Unknown')
                         random_job = selected_char.get('job', 'Unknown')
                         random_clothing = selected_char.get('clothing', 'Unknown')
@@ -439,6 +440,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         character_profile = (
                             f"\n--- CHARACTER {idx+1} PROFILE ---\n"
                             f"Name: {random_name}\n"
+                            f"Gender: {random_gender}\n"
                             f"Race: {random_race}\n"
                             f"Age: {random_age}\n"
                             f"Job: {random_job}\n"

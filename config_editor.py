@@ -999,6 +999,7 @@ class ConfigEditor(tk.Toplevel):
                     {
                         'name': sanitize_input(data['name'].get().strip()),
                         'age': sanitize_input(data['age'].get().strip()),
+                        'gender': sanitize_input(data['gender'].get().strip()),
                         'race': sanitize_input(data['race'].get().strip()),
                         'job': sanitize_input(data['job'].get().strip()),
                         'clothing': sanitize_input(data['clothing'].get().strip()),
@@ -1010,7 +1011,7 @@ class ConfigEditor(tk.Toplevel):
                         'class': sanitize_input(data['class'].get().strip())
                     }
                         for data in self.character_entries
-                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age'])
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender'])
                     ]
                 },
                 'emotional_states': {
@@ -1364,26 +1365,28 @@ class ConfigEditor(tk.Toplevel):
             if not characters_list:
                 old_names = character_conf.get('name', [])
                 old_ages = character_conf.get('age', [])
+                old_genders = character_conf.get('gender', [])
                 old_races = character_conf.get('race', [])
                 old_jobs = character_conf.get('job', [])
                 old_clothing = character_conf.get('clothing', [])
                 old_appearance = character_conf.get('appearance', [])
                 old_backstory = character_conf.get('backstory', [])
-                old_traits = character_conf.get('traits', [])
                 old_personality = character_conf.get('personality', [])
+                old_traits = character_conf.get('traits', [])
                 old_setting = character_conf.get('setting', [])
                 old_class = character_conf.get('class', [])
 
-                if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class]):
+                if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class, old_genders]):
                     max_len = max(
                         len(old_names), len(old_races), len(old_jobs), len(old_clothing),
                         len(old_appearance), len(old_backstory), len(old_personality), len(old_traits),
-                        len(old_setting), len(old_class)
+                        len(old_setting), len(old_class), len(old_genders)
                     )
                     for i in range(max_len):
                         characters_list.append({
                             'name': old_names[i] if i < len(old_names) else '',
                             'age': old_ages[i] if i < len(old_ages) else '25',
+                            'gender': old_genders[i] if i < len(old_genders) else '',
                             'race': old_races[i] if i < len(old_races) else '',
                             'job': old_jobs[i] if i < len(old_jobs) else '',
                             'clothing': old_clothing[i] if i < len(old_clothing) else '',
@@ -1661,8 +1664,7 @@ class ConfigEditor(tk.Toplevel):
                 return True
             try:
                 age = int(new_value)
-                # Currently allows 0-999 for typing flexibility.
-                # Change this if you want to block typing outside your new range immediately.
+                # Currently allows 0-999 for typing flexibility
                 return 0 <= age <= 999
             except ValueError:
                 return False
@@ -1676,8 +1678,9 @@ class ConfigEditor(tk.Toplevel):
         entry_vars['age_label'] = age_label  # FIX: Use age_label, not lbl
 
         # === Row 1: Race and Job ===
-        create_field(card_frame, "Race:", 'race', row=1, col=0, width=20)
-        create_field(card_frame, "Job:", 'job', row=1, col=2, width=20)
+        create_field(card_frame, "Race:", 'race', row=1, col=0, width=18)
+        create_field(card_frame, "Job:", 'job', row=1, col=2, width=18)
+        create_field(card_frame, "Gender:", 'gender', row=1, col=4, width=12)
 
         # === Row 2: Clothing (full width) ===
         create_field(card_frame, "Clothing:", 'clothing', row=2, col=0,
@@ -1779,25 +1782,27 @@ class ConfigEditor(tk.Toplevel):
             data['frame'].config(text=f"Character {i + 1}")
 
     def _toggle_character_engine_fields(self):
-        """Enables/disables character engine text fields based on checkbox state."""
+        """Enables/disables character engine fields based on checkbox state."""
         is_enabled = self.enable_character_engine_var_editor.get()
 
         # Enable/disable the Add Character button
-        if hasattr(self, 'add_char_btn'):
+        if hasattr(self, 'add_char_btn') and self.add_char_btn.winfo_exists():
             self.add_char_btn.config(state='normal' if is_enabled else 'disabled')
 
         # Enable/disable all entry fields inside the character cards
         for data in self.character_entries:
             state = 'normal' if is_enabled else 'disabled'
             for key, widget in data.items():
+                if key in ('frame', 'delete_btn', 'class_frame'):
+                    continue
                 if isinstance(widget, (ttk.Entry, tk.Entry)):
                     widget.config(state=state)
-                elif isinstance(widget, ttk.Button) and key == 'delete_btn':
-                    widget.config(state='normal' if is_enabled else 'disabled')
+                elif isinstance(widget, tk.Text):
+                    widget.config(state=state if is_enabled else 'disabled')
 
-        # Also update class and setting visibility when character engine is toggled
+        # Also toggle class and setting visibility
         self._update_class_column_visibility()
-        self._update_setting_column_visibility()  # NEW
+        self._update_setting_column_visibility()
 
         log_message(f"Character Engine fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 
