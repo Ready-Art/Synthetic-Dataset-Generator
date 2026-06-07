@@ -63,6 +63,8 @@ total_input_tokens = 0
 total_output_tokens = 0
 user_speaking_count_total = 0
 user_speaking_counts_per_api = {i: 0 for i in range(6)}
+character_counter = 0  # Round-robin counter for character selection
+character_counter_lock = Lock()  # Thread-safe access
 
 
 

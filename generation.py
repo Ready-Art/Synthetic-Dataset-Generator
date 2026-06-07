@@ -154,6 +154,7 @@ def save_generation_state():
                 'total_attempts_per_api': app_state.total_attempts_per_api,
                 'anti_slop_count_total': app_state.anti_slop_count_total,
                 'anti_slop_counts_per_api': anti_slop_counts_per_api,
+                'character_counter': app_state.character_counter,
                 # Snapshot of critical config settings at the time of saving state
                 'config_snapshot': {
                     'prompts.use_questions_file': global_config.get('prompts.use_questions_file'),
@@ -397,12 +398,31 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             character_injection = ""
             if enable_character_engine_local and character_list:
-                # Select multiple random characters based on num_characters_local
+                # Select multiple characters based on num_characters_local using round-robin
                 num_chars_to_select = min(num_characters_local, len(character_list))
 
                 # Safety check: ensure we actually have characters to select
                 if num_chars_to_select > 0:
-                    selected_chars = random.sample(character_list, num_chars_to_select)
+                    # Round-robin selection for even distribution across tasks
+                    with app_state.character_counter_lock:
+                        start_idx = app_state.character_counter % len(character_list)
+                        app_state.character_counter += num_chars_to_select
+
+                    selected_indices = [(start_idx + i) % len(character_list) for i in range(num_chars_to_select)]
+                    seen = set()
+                    selected_chars = []
+                    for idx in selected_indices:
+                        if idx not in seen:
+                            seen.add(idx)
+                            selected_chars.append(character_list[idx])
+
+                    # Fill remaining slots if needed (when num_chars > unique available)
+                    remaining_needed = num_chars_to_select - len(selected_chars)
+                    if remaining_needed > 0:
+                        available = [c for i, c in enumerate(character_list) if i not in seen]
+                        if available:
+                            selected_chars.extend(random.sample(available, min(remaining_needed, len(available))))
+
                     character_profiles = []
 
                     for idx, selected_char in enumerate(selected_chars):

@@ -155,6 +155,7 @@ def load_generation_state():
                 # Load state data into global variables
                 app_state.completed_task_ids = set(state_data.get('completed_task_ids', []))
                 app_state.system_prompt_counter = state_data.get('system_prompt_counter', 0)
+                app_state.character_counter = state_data.get('character_counter', 0)
                 app_state.question_history = state_data.get('question_history', [])
                 
                 app_state.total_attempts_global = state_data.get('total_attempts_global', 0)
@@ -199,6 +200,7 @@ def reset_all_stats_and_history():
 
     app_state.completed_task_ids = set()
     app_state.system_prompt_counter = 0
+    app_state.character_counter = 0
     app_state.question_history = []
 
     with api_response_times_lock:
@@ -1403,7 +1405,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.9.6",
+    text="v8.9.7",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
