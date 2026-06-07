@@ -869,10 +869,17 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
 
 def get_next_system_prompt(prompts_list_local):
-    """Randomly selects a system prompt from the list if variable system prompts are enabled."""
+    """Selects the next system prompt in round-robin order for even distribution."""
     if not prompts_list_local:
         return "You are a helpful assistant."  # Fallback
-    return random.choice(prompts_list_local)
+
+    # Use the thread-safe counter for round-robin cycling
+    with app_state.system_prompt_lock:
+        idx = app_state.system_prompt_counter % len(prompts_list_local)
+        app_state.system_prompt_counter += 1
+        selected = prompts_list_local[idx]
+
+    return selected
 
 
 def generate_question(system_prompt, question_prompt_template, subject, context, thread_id,
