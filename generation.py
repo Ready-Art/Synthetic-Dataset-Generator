@@ -270,7 +270,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            emotional_states_list_local,
            num_characters_local,
            no_user_impersonation_local,
-           current_api_request_timeout):
+           current_api_request_timeout,
+           current_slop_to_anti_slop_fallback):
     """
     The main function executed by each worker thread.
     It fetches tasks from the queue, processes them by interacting with LLMs 
@@ -606,6 +607,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
                                 api_request_timeout_param=current_api_request_timeout,
                                 file_name=file_name,
+                                slop_to_anti_slop_fallback=current_slop_to_anti_slop_fallback,
                             )
                             if answer_result and answer_result[0]:  # Check if answer is not None
                                 duplicated_answer_text = answer_result[0]
@@ -704,6 +706,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         no_user_impersonation_local=no_user_impersonation_local,
                         anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
                         api_request_timeout_param=current_api_request_timeout,
+                        slop_to_anti_slop_fallback=current_slop_to_anti_slop_fallback,
                         file_name=file_name,
                     )
                     if answer_result and answer_result[0]:  # Check if answer is not None
@@ -787,7 +790,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     api_slot_idx=cont_gen_api_slot_idx,
                     current_max_attempts_param=current_max_attempts,
                     api_request_timeout_param=current_api_request_timeout,
-                    file_name=file_name
+                    file_name=file_name,
                 )
 
                 if not user_continuation_reply:
@@ -1856,6 +1859,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  master_duplication_enabled_local,
                                  no_user_impersonation_local,
                                  api_request_timeout_param,
+                                 slop_to_anti_slop_fallback=False,
                                  file_name=""):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, and slop.
@@ -2207,6 +2211,10 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     log_message(f"Thread {thread_id}: User speaking detected (API Slot {api_slot_idx+1}), fixes exhausted for this attempt {attempt+1}.", "WARNING")
                     break
 
+            # Initialize slop fix tracking BEFORE slop detection so fallback logic can reference them
+            slop_fully_resolved_by_sentence_fixer = False
+            current_answer_being_fixed = answer
+
             if slop_detected:
                 issue_detected_this_main_api_call = True
                 log_message(f"Thread {thread_id}: Initial slop detected in answer (API Slot {api_slot_idx+1}). Snippet: {answer[:70]}...", "DEBUG")
@@ -2227,9 +2235,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         app_state.system_prompt_lock.release()
 
                 if slop_fixer_api_config_param and slop_fixer_api_config_param.get('url'):
-                    current_answer_being_fixed = answer
                     MAX_SENTENCE_FIX_ITERATIONS = global_config.get('generation.max_slop_sentence_fix_iterations', 4)
-                    slop_fully_resolved_by_sentence_fixer = False
+                    # slop_fully_resolved_by_sentence_fixer and current_answer_being_fixed already initialized above
                     slop_fix_instruction_rotation_idx = 0
 
                     for slop_iter_num in range(MAX_SENTENCE_FIX_ITERATIONS):
@@ -2296,6 +2303,72 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     else:
                         answer = current_answer_being_fixed
                         issue_detected_this_main_api_call = False
+
+            # --- NEW: Slop → Anti-Slop Fallback ---
+            # If slop was detected but not fully resolved by the Slop Fixer,
+            # try the Anti-Slop API as a final attempt (1 attempt only).
+            if slop_to_anti_slop_fallback and slop_detected and not slop_fully_resolved_by_sentence_fixer:
+                if anti_slop_fixer_api_config_param and anti_slop_fixer_api_config_param.get('url'):
+                    log_message(f"Thread {thread_id}: Slop fixer failed to fully resolve slop. Attempting Anti-Slop fallback (1 attempt) for API Slot {api_slot_idx+1}.", "INFO")
+
+                    # Use the best available version of the answer
+                    fallback_answer = current_answer_being_fixed
+
+                    # Check for remaining slop phrases
+                    remaining_slop_check, remaining_slop_details = detection.is_slop(fallback_answer, slop_phrases_local)
+                    if remaining_slop_check and remaining_slop_details:
+                        fb_phrase = remaining_slop_details[0][0]
+                        fb_sentence = remaining_slop_details[0][1]
+
+                        # Extract paragraph context to preserve quotes
+                        fb_paragraphs = fallback_answer.split('\n\n')
+                        fb_context = next((p for p in fb_paragraphs if fb_sentence in p), fb_sentence)
+
+                        log_message(f"Thread {thread_id}: Anti-Slop fallback attempting to fix: '{fb_phrase}' in context...", "DEBUG")
+
+                        rewritten_fb, original_fb = call_anti_slop_llm(
+                            fb_context, fb_phrase,
+                            anti_slop_fixer_api_config_param,
+                            sampler_settings_local, thread_id,
+                            additional_fix_instructions="This is a SLOP phrase that needs to be rephrased. Remove or rephrase this undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. ONLY output the rewritten text.",
+                            current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
+                            master_duplication_enabled=master_duplication_enabled_local,
+                            file_name=file_name
+                        )
+
+                        if rewritten_fb and original_fb:
+                            # Check for unbalanced quotes before applying
+                            has_incomplete_quote_fb, _ = detection.is_incomplete_quote(rewritten_fb)
+                            if has_incomplete_quote_fb:
+                                log_message(f"Thread {thread_id}: Anti-Slop fallback returned unbalanced quotes. Skipping replacement.", "WARNING")
+                            elif original_fb in fallback_answer:
+                                if rewritten_fb.strip() == original_fb.strip():
+                                    log_message(f"Thread {thread_id}: Anti-Slop fallback returned identical text for '{fb_phrase}'. Fallback failed.", "WARNING")
+                                else:
+                                    fallback_answer = fallback_answer.replace(original_fb, rewritten_fb, 1)
+                                    log_message(f"Thread {thread_id}: Anti-Slop fallback replacement applied. Re-checking for slop...", "INFO")
+
+                                    # Re-check if slop is fully resolved
+                                    final_slop_check, _ = detection.is_slop(fallback_answer, slop_phrases_local)
+                                    if not final_slop_check:
+                                        answer = fallback_answer
+                                        issue_detected_this_main_api_call = False
+                                        slop_fully_resolved_by_sentence_fixer = True
+                                        log_message(f"Thread {thread_id}: Slop fully resolved by Anti-Slop fallback.", "INFO")
+                                    else:
+                                        log_message(f"Thread {thread_id}: Slop still present after Anti-Slop fallback.", "WARNING")
+                                        answer = fallback_answer  # Use partially fixed version
+                            else:
+                                log_message(f"Thread {thread_id}: Anti-Slop fallback - original sentence not found in answer. Fallback failed.", "WARNING")
+                    else:
+                        log_message(f"Thread {thread_id}: Anti-Slop fallback - no remaining slop detected (may have been resolved during iteration).", "DEBUG")
+                        # Slop was actually resolved during iterations but flag wasn't updated
+                        slop_fully_resolved_by_sentence_fixer = True
+                        answer = fallback_answer
+                        issue_detected_this_main_api_call = False
+                else:
+                    log_message(f"Thread {thread_id}: Slop → Anti-Slop fallback enabled but Anti-Slop API (Slot 6) not configured.", "WARNING")
+            # --- END: Slop → Anti-Slop Fallback ---
 
             # --- Anti-Slop Detection and Fixing (Sentence-Level, Like Regular Slop) ---
             anti_slop_detected, anti_slop_info = detection.is_anti_slop(answer, current_anti_slop_phrases_param)

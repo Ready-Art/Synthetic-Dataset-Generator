@@ -288,6 +288,10 @@ class ConfigEditor(tk.Toplevel):
         ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Markdown Formatting (Convert to plain text)", variable=self.remove_markdown_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
+
+        self.slop_to_anti_slop_fallback_var_editor = tk.BooleanVar()
+        ttk.Checkbutton(gen_settings_frame, text="Slop → Anti-Slop Fallback (Use Anti-Slop API as final attempt if Slop Fixer fails)",
+                        variable=self.slop_to_anti_slop_fallback_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
         
         ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.output_format_var = tk.StringVar(value="sharegpt")
@@ -976,7 +980,8 @@ class ConfigEditor(tk.Toplevel):
                 'output_format': self.output_format_var.get(),
                 'api_request_timeout': int(self.api_request_timeout_var.get()),
                 'max_newlines_malformed': int(self.max_newlines_malformed_var.get()),
-                'max_text_length_malformed': int(self.max_text_length_malformed_var.get())
+                'max_text_length_malformed': int(self.max_text_length_malformed_var.get()),
+                'slop_to_anti_slop_fallback': self.slop_to_anti_slop_fallback_var_editor.get()
             },
             'prompts': {
                 'system': {
@@ -1320,6 +1325,7 @@ class ConfigEditor(tk.Toplevel):
             self.remove_markdown_var_editor.set(gen_config.get('remove_markdown', False))
             self.ensure_space_after_line_break_var_editor.set(gen_config.get('ensure_space_after_line_break', False))
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
+            self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
             self.output_format_var.set(gen_config.get('output_format', 'sharegpt'))
 
             prompts_config = config.get('prompts', {})

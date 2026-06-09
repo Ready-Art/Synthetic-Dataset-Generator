@@ -735,7 +735,8 @@ def start_processing():
     current_slop_phrases = global_config.get('detection.slop.phrases', [])
     current_jailbreaks = global_config.get('detection.refusal.fixes', []) 
     current_slop_fixes_fallback = global_config.get('detection.slop.fixes', []) 
-    current_slop_fixes_for_rotation = global_config.get('detection.slop.fixes', []) 
+    current_slop_fixes_for_rotation = global_config.get('detection.slop.fixes', [])
+    current_slop_to_anti_slop_fallback = global_config.get('generation.slop_to_anti_slop_fallback', False)
 
     # --- Initialize Processing State ---
     app_state.stop_processing = False 
@@ -1026,7 +1027,8 @@ def start_processing():
             emotional_states_list,
             num_characters_local,
             no_user_impersonation_var.get(),
-            current_api_request_timeout
+            current_api_request_timeout,
+            current_slop_to_anti_slop_fallback,
         ), name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -1405,7 +1407,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v8.9.7",
+    text="v9.0.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
