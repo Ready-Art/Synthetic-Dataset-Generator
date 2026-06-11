@@ -458,9 +458,15 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         class_injection = f"\nClass: {random_class}\n" if enable_class_selection_local and random_class else ""
                         personality_injection = f"\nPersonality: {random_personality}\n" if random_personality and random_personality != 'Unknown' else ""
 
+                        # Check if names should be included in prompt
+                        include_names = global_config.get('prompts.character.include_names_in_prompt', True)
+
+                        # Build name line conditionally
+                        name_line = f"Name: {random_name}\n" if include_names else ""
+
                         character_profile = (
                             f"\n--- CHARACTER {idx+1} PROFILE ---\n"
-                            f"Name: {random_name}\n"
+                            f"{name_line}"
                             f"Gender: {random_gender}\n"
                             f"Race: {random_race}\n"
                             f"Age: {random_age}\n"

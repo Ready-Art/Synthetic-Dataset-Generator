@@ -413,6 +413,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Add checkbox to enable character engine
         self.enable_character_engine_var_editor = tk.BooleanVar()
+        self.include_names_in_prompt_var_editor = tk.BooleanVar(value=True)
         self.enable_character_checkbox = ttk.Checkbutton(
             self.character_engine_content_frame,
             text="Enable Character Engine (random character profiles in conversations)",
@@ -420,6 +421,13 @@ class ConfigEditor(tk.Toplevel):
             command=self._toggle_character_engine_fields
         )
         self.enable_character_checkbox.grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        character_engine_row_idx += 1
+
+        ttk.Checkbutton(
+            self.character_engine_content_frame,
+            text="Include Character Names in Prompt",
+            variable=self.include_names_in_prompt_var_editor
+        ).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
         character_engine_row_idx += 1
 
         # Add checkbox to enable emotional states
@@ -997,8 +1005,9 @@ class ConfigEditor(tk.Toplevel):
                 'lore': sanitize_input(self.lore_text.get("1.0", tk.END).strip()),
             'character': {
                 'enabled': self.enable_character_engine_var_editor.get(),
+                'include_names_in_prompt': self.include_names_in_prompt_var_editor.get(),
                 'class_enabled': self.enable_class_selection_var_editor.get(),
-                'setting_enabled': self.enable_setting_selection_var_editor.get(),  # NEW
+                'setting_enabled': self.enable_setting_selection_var_editor.get(),
                 'num_characters': int(self.num_characters_var_editor.get()),
                 'characters': [
                     {
@@ -1350,6 +1359,7 @@ class ConfigEditor(tk.Toplevel):
                 self.max_character_cards_var = tk.StringVar(value=str(gen_config.get('max_character_cards', 10)))
             character_conf = prompts_config.get('character', {})
             self.enable_character_engine_var_editor.set(character_conf.get('enabled', True))
+            self.include_names_in_prompt_var_editor.set(character_conf.get('include_names_in_prompt', True))
             self.enable_class_selection_var_editor.set(character_conf.get('class_enabled', False))
             self.enable_setting_selection_var_editor.set(character_conf.get('setting_enabled', False))
             self.num_characters_var_editor.set(str(character_conf.get('num_characters', 1)))
