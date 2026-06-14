@@ -1351,7 +1351,7 @@ class ConfigEditor(tk.Toplevel):
             self.user_continuation_prompt_text.delete(1.0, tk.END); self.user_continuation_prompt_text.insert(tk.END, prompts_config.get('user_continuation_prompt', 'Continue based on: {last_assistant_message}'))
 
             self.lore_text.delete(1.0, tk.END)
-            self.lore_text.insert(tk.END, config.get('lore', ''))
+            self.lore_text.insert(tk.END, config.get('prompts', {}).get('lore', ''))
 
             if hasattr(self, 'max_character_cards_var'):
                 self.max_character_cards_var.set(str(gen_config.get('max_character_cards', 10)))
