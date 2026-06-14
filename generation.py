@@ -271,7 +271,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            num_characters_local,
            no_user_impersonation_local,
            current_api_request_timeout,
-           current_slop_to_anti_slop_fallback):
+           current_slop_to_anti_slop_fallback,
+           current_lore):
     """
     The main function executed by each worker thread.
     It fetches tasks from the queue, processes them by interacting with LLMs 
@@ -396,6 +397,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             if current_top_level_system_prompt:
                 current_system_prompt_for_task = current_top_level_system_prompt + "\n\n" + current_system_prompt_for_task
                 log_message(f"Thread {thread_id}: Prepending Top Level System Prompt for task {task_id}", "DEBUG")
+
+            # --- NEW: Inject Lore ---
+            if current_lore:
+                current_system_prompt_for_task = current_system_prompt_for_task.rstrip() + "\n\n--- WORLD LORE ---\n" + current_lore + "\n--- END WORLD LORE ---\n"
+                log_message(f"Thread {thread_id}: Injected lore ({len(current_lore)} chars) for task {task_id}", "DEBUG")
 
             character_injection = ""
             if enable_character_engine_local and character_list:

@@ -645,6 +645,11 @@ def start_processing():
     current_question_prompt = global_config.get('prompts.question', "Generate a question based on the provided text. Recent questions to avoid: {recent_questions}\n\nSubject: {subject}\n\nContext: {context}")
     current_answer_prompt = global_config.get('prompts.answer', "Provide an answer to the last question.")
     current_api_request_timeout = global_config.get('generation.api_request_timeout', 300)
+    current_lore = global_config.get('prompts.lore', '')
+    if current_lore:
+        log_message(f"Lore loaded ({len(current_lore)} chars).", "INFO")
+    else:
+        log_message("No lore configured.", "INFO")
     character_config = global_config.get('prompts.character', {})
     enable_character_engine_local = character_config.get('enabled', True)
     enable_class_selection_local = character_config.get('class_enabled', False)
@@ -1029,6 +1034,7 @@ def start_processing():
             no_user_impersonation_var.get(),
             current_api_request_timeout,
             current_slop_to_anti_slop_fallback,
+            current_lore,
         ), name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -1407,7 +1413,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.0.0",
+    text="v9.0.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
