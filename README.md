@@ -21,6 +21,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Database & Caching](#database--caching)
   - [Budget & Cost Control](#budget--cost-control)
   - [Circuit Breaker](#circuit-breaker)
+  - [Rate Limiting](#rate-limiting)
 - [Usage](#-usage)
   - [Starting a Generation Run](#starting-a-generation-run)
   - [Resuming & Crash Recovery](#resuming--crash-recovery)
@@ -29,13 +30,25 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Live Prompt Preview](#live-prompt-preview)
   - [Configuration Profiles](#configuration-profiles)
   - [API Connection Testing](#api-connection-testing)
+  - [Valkey Connection Testing](#valkey-connection-testing)
   - [Stop & Clear Job](#stop--clear-job)
   - [Force Recovery](#force-recovery)
   - [Database Management](#database-management)
 - [Output Formats](#-output-formats)
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
+  - [Generation Pipeline](#generation-pipeline)
+  - [Multi-Character Conversation Mode](#multi-character-conversation-mode)
+  - [Slop Fixing Flow](#slop-fixing-flow)
+  - [Anti-Slop Fixing Flow](#anti-slop-fixing-flow)
+  - [Slop → Anti-Slop Fallback](#slop--anti-slop-fallback)
+  - [Incomplete Quote Detection & Auto-Fix](#incomplete-quote-detection--auto-fix)
+  - [Circuit Breaker Flow](#circuit-breaker-flow)
+  - [Task Requeue on Host Failure](#task-requeue-on-host-failure)
+  - [Budget Enforcement](#budget-enforcement)
+  - [Malformed Response Detection](#malformed-response-detection)
 - [Troubleshooting](#-troubleshooting)
+- [Performance Tips](#-performance-tips)
 - [License](#-license)
 
 ---
@@ -60,16 +73,20 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Incomplete Quote Detection** — Catches unbalanced quotation marks (both straight `"` and curly `""` quotes) with programmatic auto-fix fallback
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
 - **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness and rotating fix instructions
+- **Slop → Anti-Slop Fallback** — When the Slop Fixer fails to fully resolve slop, the Anti-Slop Fixer LLM is used as a final attempt before accepting the output
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
-- **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds
+- **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds (`max_newlines_malformed`, `max_text_length_malformed`)
 
 ### Character & Persona Engine
-- **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues
-- **Character Profiles** — Randomly inject character names, races, jobs, clothing, appearance, backstories, personalities, traits, and settings into system prompts
+- **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues (1–10 characters per conversation)
+- **Character Profiles** — Randomly inject character names, ages (validated 18–60), races, jobs, clothing, appearance, backstories, personalities, traits, and settings into system prompts
+- **Name Validation** — Characters with empty or whitespace-only names are automatically skipped with a warning
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
+- **Setting Selection** — Optionally assign custom locations/environments to each character
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
 - **Top-Level System Prompt** — Prepend a universal instruction to all system prompts across all conversations
+- **Lore Injection** — Inject world lore/background information into every system prompt
 
 ### Text Post-Processing
 - Remove thinking blocks from reasoning models
@@ -79,17 +96,17 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Remove all asterisks
 - Ensure spaces after line breaks
 - Strip markdown formatting to plain text
-- Normalize and balance quotation marks (handles both straight and curly quotes)
+- Normalize and balance quotation marks (handles both straight `"` and curly `""` quotes, with special handling to avoid breaking inch marks and intentional unquoted dialogue)
 
 ### Infrastructure & UI
-- **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached
-- **Circuit Breaker** — Automatically disables API slots after consecutive failures with exponential backoff cooldown (60s, 120s, 240s, 480s, max 600s) and re-enables after cooldown
-- **Per-API Rate Limiting** — Configurable RPM per API slot with automatic wait and real-time status display with color-coded indicators
+- **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached, with real-time cost tracking
+- **Circuit Breaker** — Automatically disables API slots after consecutive failures with exponential backoff cooldown (60s → 120s → 240s → 480s → 600s max) and re-enables after cooldown
 - **Task Requeue on Host Failure** — Tasks assigned to a downed API host are automatically requeued (up to 50 times) rather than discarded, ensuring no work is lost during outages
 - **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed per API slot) to avoid redundant API calls
 - **PostgreSQL Storage** — Optional database backend with connection pooling, automatic initialization at startup, and JSONL export
 - **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings
 - **Configuration Profiles** — Save, load, and delete named configuration profiles
+- **Configuration Editor Search** — Search bar for quickly finding tabs and LabelFrame sections by name
 - **API Connection Testing** — Test API connectivity directly from the configuration editor
 - **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
 - **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
@@ -109,7 +126,6 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Dashboard Search** — Case-insensitive search across all issue panels within a dashboard tab with auto-scroll to first match
 - **Dashboard Copy All** — Copy all issue text from a dashboard tab to clipboard
 - **Clear Dashboard** — Reset all recent issue lists and graph data with a single button
-- **Config Editor Search** — Search bar in the configuration editor for quickly finding tabs and LabelFrame sections by name
 
 ---
 
@@ -276,6 +292,7 @@ generation:
   max_character_cards: 10        # Maximum character profile cards in the editor
   output_format: "sharegpt"       # "sharegpt" or "openai"
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
+  slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
 
   # Text post-processing flags
   remove_reasoning: false
@@ -304,22 +321,30 @@ prompts:
       - "You are a knowledgeable professor."
       - "You are a friendly chatbot."
 
+  lore: ""                        # World lore injected into every system prompt
+
   character:
     enabled: true
-    class_enabled: false          # Enable fantasy class selection
-    num_characters: 1             # Number of characters per conversation (1-10)
-    characters:                   # List-of-dicts format (recommended)
+    include_names_in_prompt: true  # Include character names in the prompt
+    class_enabled: false           # Enable fantasy class selection
+    setting_enabled: false         # Enable custom setting/location per character
+    num_characters: 1              # Number of characters per conversation (1-10)
+    characters:                    # List-of-dicts format (recommended)
       - name: "Melody"
+        age: "59"
+        gender: "Female"
         race: "Human"
         job: "Horologist and Pawn Shop Manager"
         clothing: "Heavyweight flannel button-down, faded rust color, straight-leg cargo pants dark olive green"
-        appearance: "59, broad-shouldered and sturdy with a soft midsection, weathered olive skin, steel-gray and dark brown hair in choppy jaw-length bob"
+        appearance: "Broad-shouldered and sturdy with a soft midsection, weathered olive skin, steel-gray and dark brown hair in choppy jaw-length bob"
         backstory: "Estranged from religious parents, lives alone above the shop, drives a 2004 Subaru Outback, goal is to restore an 18th-century marine chronometer"
         personality: "Fundamentally stoic and introverted, copes with stress by disassembling cheap mechanical watches, curt with strangers but nurturing with friends"
         traits: "Meticulous, cynical, resilient, stubborn; taps thumb against index finger rhythmically when thinking, refuses hot beverages without lids"
         setting: "Cluttered repair counter in dimly lit pawn shop, 6:45 PM Tuesday, heavy rain lashing windows, smells of brass polish and damp wool"
         class: ""
       - name: "Bob"
+        age: "150"
+        gender: "Male"
         race: "Elf"
         job: "Teacher"
         clothing: "Business suit"
@@ -344,13 +369,14 @@ prompts:
 
 **Character Configuration Notes:**
 
-- **New format (recommended):** Use the `characters` list with dicts containing `name`, `race`, `job`, `clothing`, `appearance`, `backstory`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
+- **New format (recommended):** Use the `characters` list with dicts containing `name`, `age`, `gender`, `race`, `job`, `clothing`, `appearance`, `backstory`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
 - **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
 - **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
 - **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10, max: 100).
 - **`personality`:** Optional field that adds a personality description to the character's system prompt injection.
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
-- **`race`:** Optional field for the character's species/race.
+- **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
+- **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
 
 **Template Variables:**
 - `{recent_questions}` — Recent question history to avoid repetition
@@ -411,8 +437,8 @@ samplers:
   max_tokens_question: 256
   max_tokens_answer: 1024
   max_tokens_user_reply: 256
-  enable_thinking: false
-  logit_bias: ""                 # JSON format, e.g., {"15": 100}
+  enable_thinking: "default"    # "default", "enable", or "disable"
+  logit_bias: ""                # JSON format, e.g., {"15": 100}
 
   # Slop Fixer LLM overrides (API Slot 5)
   slop_fixer_params:
@@ -434,7 +460,10 @@ samplers:
 ```
 
 - **`logit_bias`** — JSON object mapping token IDs to bias values. Passed directly to the API payload. Leave empty (`""`) to disable.
-- **`enable_thinking`** — When `true`, adds `{"chat_template_kwargs": {"enable_thinking": false}}` to the API payload to disable chain-of-thought output in reasoning models.
+- **`enable_thinking`** — Controls chain-of-thought output in reasoning models:
+  - `"default"` — Don't send `chat_template_kwargs` parameter
+  - `"enable"` — Send `{"chat_template_kwargs": {"enable_thinking": true}}`
+  - `"disable"` — Send `{"chat_template_kwargs": {"enable_thinking": false}}`
 - **`max_tokens_user_reply`** — Maximum tokens for LLM-generated user continuation messages.
 
 ### Database & Caching
@@ -489,7 +518,7 @@ The application includes an automatic **circuit breaker** for each API slot that
 API_CIRCUIT_BREAKER = {
     "max_consecutive_failures": 5,   # Failures before circuit opens
     "base_cooldown_seconds": 60,     # Initial cooldown (doubles each failure)
-    "max_cooldown_seconds": 600,    # Maximum cooldown cap
+    "max_cooldown_seconds": 600,     # Maximum cooldown cap
     ...
 }
 ```
@@ -499,6 +528,20 @@ When an API slot experiences 5 consecutive failures (HTTP errors, timeouts, or e
 Circuit breaker events are logged:
 - `API Slot X circuit OPEN after 5 consecutive failures. Backoff: 60s (exponential)` (WARNING)
 - `API Slot X circuit closed after 60s. Resuming requests with base cooldown.` (INFO)
+
+### Rate Limiting
+
+Each API slot has a configurable requests-per-minute (RPM) limit. The rate limiter:
+
+1. Tracks request timestamps per slot in a sliding 60-second window
+2. When the limit is reached, automatically waits until the oldest request in the window expires
+3. Displays real-time usage in the UI with color-coded indicators:
+   - 🟢 Green: 0–40% of limit used
+   - 🟠 Orange: 40–70% of limit used
+   - 🟡 Yellow: 70–90% of limit used
+   - 🔴 Red: 90–100% of limit used
+
+Rate limits can be adjusted mid-run by pausing generation, editing the config, and resuming — the new limits are applied automatically.
 
 ---
 
@@ -564,11 +607,11 @@ Progress bars use color-coded styles that change based on completion percentage:
 
 | Stage | Percentage | Color | Description |
 |-------|-----------|-------|-------------|
-| Low | 0-25% | Blue | Just starting |
-| Medium | 25-50% | Cyan/Teal | Progressing steadily |
-| Progressing | 50-75% | Green | Over halfway |
-| High | 75-90% | Amber/Yellow | Almost done |
-| Complete | 90-100% | Bright Green | Finished |
+| Low | 0–25% | Blue | Just starting |
+| Medium | 25–50% | Cyan/Teal | Progressing steadily |
+| Progressing | 50–75% | Green | Over halfway |
+| High | 75–90% | Amber/Yellow | Almost done |
+| Complete | 90–100% | Bright Green | Finished |
 
 When a milestone (25%, 50%, 75%, 90%, 100%) is crossed, the progress bar briefly pulses to a brighter color before reverting. Error states are shown in red.
 
@@ -675,16 +718,16 @@ When **PostgreSQL** is enabled, conversations are stored in the `generated_conve
 
 ```
 readyart-dataset-generator/
-├── generate.py              # Main application (GUI, workers, orchestration)
+├── generate.py              # Main application (GUI, orchestration)
+├── generation.py            # Generation engine (worker logic, API calls)
 ├── detection.py             # Issue detection (refusals, slop, quotes, anti-slop)
 ├── text_utils.py            # Text post-processing utilities
-├── config_loader.py         # Configuration management & profiles
-├── api_handler.py           # Rate limiting, circuit breaker & Valkey caching
-├── logging_config.py        # Centralized logging with colorama
-├── config_editor.py         # Configuration editor window
-├── generation.py            # Generation engine with worker logic
-├── dashboard.py             # Dashboard/presentation layer
-├── app_state.py             # Shared runtime state
+├── config_loader.py          # Configuration management & profiles
+├── api_handler.py            # Rate limiting, circuit breaker & Valkey caching
+├── logging_config.py          # Centralized logging with colorama
+├── config_editor.py          # Configuration editor window
+├── dashboard.py              # Dashboard/presentation layer
+├── app_state.py              # Shared runtime state
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   └── profiles/            # Saved configuration profiles
@@ -720,7 +763,7 @@ readyart-dataset-generator/
    - Anti-slop → Attempt sentence-level rewriting via Anti-Slop Fixer LLM
    - Incomplete quotes → Retry with fix instruction, then programmatic auto-fix
 4. **User Continuation** — If multi-turn, an LLM generates the user's next message. Responses are also checked for malformed content
-5. **Repeat** — Steps 3-4 repeat for the configured number of turns
+5. **Repeat** — Steps 3–4 repeat for the configured number of turns
 6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, etc.)
 7. **Output** — Write to JSONL file or PostgreSQL database
 8. **State Save** — Update crash recovery state
@@ -728,6 +771,8 @@ readyart-dataset-generator/
 ### Multi-Character Conversation Mode
 
 When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, appearance, backstory, personality, traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
+
+Characters with empty or whitespace-only names are automatically skipped. Ages outside the 18–60 range are auto-corrected. Character selection uses round-robin distribution across tasks for even coverage.
 
 ### Slop Fixing Flow
 
@@ -771,6 +816,28 @@ Call Anti-Slop Fixer LLM (API Slot 6) to rewrite paragraph
             │
             ├── Max iterations reached → Log warning
             └── All fixes exhausted → Accept with anti-slop remaining
+```
+
+### Slop → Anti-Slop Fallback
+
+When `slop_to_anti_slop_fallback` is enabled and the Slop Fixer fails to fully resolve slop, the system makes a final attempt using the Anti-Slop Fixer LLM (API Slot 6):
+
+```
+Slop Fixer Failed to Fully Resolve Slop
+    │
+    ▼
+Check for remaining slop phrases
+    │
+    ├── Remaining slop found
+    │       │
+    │       ▼
+    │   Call Anti-Slop Fixer LLM (1 attempt)
+    │       │
+    │       ├── Success & quotes balanced → Replace in text
+    │       ├── Success & quotes broken → Skip replacement
+    │       └── Failure → Accept with slop remaining
+    │
+    └── No remaining slop → Slop was resolved during iterations
 ```
 
 ### Incomplete Quote Detection & Auto-Fix
@@ -841,6 +908,15 @@ Is current_cost >= budget_limit?
 
 Budget is checked at the start of each worker loop iteration with thread-safe access to token counters, ensuring spending doesn't significantly exceed the limit.
 
+### Malformed Response Detection
+
+The application checks for malformed LLM responses using two configurable thresholds:
+
+- **`max_newlines_malformed`** (default: 16) — If a response contains more newlines than this threshold, it's considered malformed and the attempt is retried
+- **`max_text_length_malformed`** (default: 5000) — If a response exceeds this character length, it's considered malformed and the attempt is retried
+
+This catches cases where the LLM generates excessively long or poorly formatted output, such as dumping entire documents or generating repetitive text.
+
 ---
 
 ## 🐛 Troubleshooting
@@ -853,7 +929,7 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
 | **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators in the UI |
 | **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers with exponential backoff (60s–600s) |
-| **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` |
+| **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` in generation settings |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
 | **Database connection failed** | Verify PostgreSQL is running and credentials are correct; check that the database exists |
 | **Valkey connection failed** | Click **Test Valkey** to diagnose; caching will be disabled automatically if unavailable |
@@ -868,8 +944,9 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in the toolbar to disable verbose logging |
 | **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
-| **Reasoning models outputting thinking blocks** | Enable `enable_thinking: false` in samplers config to add `chat_template_kwargs` to API payload |
+| **Reasoning models outputting thinking blocks** | Set `enable_thinking` to `"disable"` in samplers config to add `chat_template_kwargs` to API payload |
 | **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` field is populated in character entries |
+| **Characters not getting settings** | Ensure `setting_enabled: true` in the character config and that `setting` field is populated in character entries |
 | **Characters not getting personalities** | Add the `personality` field to character entries in the config |
 | **Characters not getting traits** | Add the `traits` field to character entries in the config (e.g., `"quick-witted, detail-oriented"`) |
 | **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
@@ -877,6 +954,9 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 | **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
 | **Progress bars not animating** | Ensure ttkbootstrap is installed; progress bars use color-coded styles that change with completion percentage |
 | **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
+| **Slop fixer breaking quotes** | This is expected behavior — the fixer checks for unbalanced quotes after each rewrite and skips replacements that would break quote structure |
+| **Characters with empty names** | Characters with empty or whitespace-only names are automatically skipped with a warning; ensure all character entries have valid names |
+| **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
 
 ### Environment Variables
 
@@ -919,6 +999,104 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Use multi-character mode** — Set `num_characters` > 1 for richer, multi-party dialogues
 - **Use emotional states** — Enable `emotional_states` to add tonal variety to conversations
 - **Add character traits** — Use the `traits` field in character entries to add more depth to character personas
+- **Enable slop → anti-slop fallback** — Set `slop_to_anti_slop_fallback: true` to use the Anti-Slop Fixer as a final attempt when the Slop Fixer fails
+- **Adjust malformed response thresholds** — Tune `max_newlines_malformed` and `max_text_length_malformed` to catch poorly formatted LLM output without rejecting valid responses
+- **Use the `enable_thinking` sampler option** — Set to `"disable"` for reasoning models that output unwanted thinking tags.
+
+---
+
+## 🔑 Key Configuration Details
+
+### Character Engine Injection Format
+
+When characters are injected into the system prompt, they follow this format:
+
+```
+--- CHARACTER 1 PROFILE ---
+Name: Melody
+Gender: Female
+Race: Human
+Age: 59
+Job: Horologist and Pawn Shop Manager
+Clothing: Heavyweight flannel button-down, faded rust color...
+Appearance: Broad-shouldered and sturdy with a soft midsection...
+Backstory: Estranged from religious parents, lives alone above the shop...
+Personality: Fundamentally stoic and introverted, copes with stress...
+Setting: Cluttered repair counter in dimly lit pawn shop...
+--- END CHARACTER 1 PROFILE ---
+```
+
+The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true. The `Class` field is only included when `class_enabled` is true. The `Personality` field is only included when it's not empty or "Unknown".
+
+### Emotional State Injection
+
+When emotional states are enabled, they are injected after the character profiles:
+
+```
+EMOTIONAL STATE: ANXIOUS
+Express this emotional state throughout your responses. Use appropriate tone, word choice, and emotional expression that reflects ANXIOUS feelings.
+```
+
+### Lore Injection
+
+When lore is configured, it's injected after the system prompt with clear delimiters:
+
+```
+--- WORLD LORE ---
+[Your lore text here]
+--- END WORLD LORE ---
+```
+
+### Top-Level System Prompt
+
+The top-level system prompt is prepended to all system prompts, separated by a double newline. This allows you to add universal instructions that apply to every conversation regardless of the base system prompt or variations.
+
+### Question Generation Cache
+
+When Valkey caching is enabled, question generation uses an MD5 hash of the full messages array (sorted by key) as the cache key. This means identical prompts will return cached responses, saving API calls. The cache key includes the API slot index, so different models can produce different cached responses for the same prompt.
+
+### Per-API Debug Logs
+
+In duplication mode, each API slot writes to its own debug log file:
+- `output/debug_prompt_api_slot_0.jsonl`
+- `output/debug_prompt_api_slot_1.jsonl`
+- etc.
+
+In collaborative mode, a single debug log is used:
+- `output/debug_prompt.jsonl`
+
+Each debug log entry is a JSON object containing:
+- `timestamp` — When the request was made
+- `thread_id` — Which worker thread made the request
+- `type` — Request type (`question_request`, `answer_request`, `user_continuation_request`, `slop_fix_request`, `anti_slop_request`)
+- `api_slot_idx` — Which API slot was used
+- `attempt` — Retry attempt number
+- `source_file` — Input file that generated this task
+- `api_url` — The endpoint called
+- `model` — The model name used
+- `messages` — The full messages array sent to the API
+- `payload_dict` — The complete API payload including sampler settings
+
+---
+
+## 🔄 Module Architecture
+
+The application is organized into focused modules with one-way dependencies:
+
+| Module | Purpose | Imports From |
+|--------|---------|--------------|
+| `generate.py` | Main GUI, orchestration, startup | All modules |
+| `generation.py` | Worker loop, LLM calls, answer generation | `app_state`, `api_handler`, `detection`, `text_utils`, `logging_config` |
+| `config_editor.py` | Configuration editor window | `config_loader`, `logging_config`, `api_handler` |
+| `dashboard.py` | Dashboard UI, graphs, progress bars | `app_state`, `api_handler`, `logging_config` |
+| `detection.py` | Issue detection (refusals, slop, quotes) | `app_state` (for timestamps) |
+| `text_utils.py` | Text post-processing utilities | None (stdlib only) |
+| `config_loader.py` | Configuration management & profiles | `logging_config` |
+| `api_handler.py` | Rate limiting, caching, circuit breaker | `logging_config` |
+| `app_state.py` | Shared runtime state & constants | `config_loader` |
+| `logging_config.py` | Centralized logging with colorama | None (stdlib only) |
+
+**Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root.
 
 ---
 
