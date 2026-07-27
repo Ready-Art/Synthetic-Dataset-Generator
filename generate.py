@@ -29,7 +29,7 @@ import matplotlib.ticker as ticker
 import api_handler
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
-from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_metric_card, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
+from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_metric_card, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
@@ -1795,10 +1795,6 @@ recovery_button = ttk.Button(
 )
 recovery_button.pack(side=tk.LEFT, padx=SPACING)
 
-
-
-# --- Dashboard Setup ---
-
 # --- Dashboard Setup ---
 dashboard_outer_frame = ttk.Frame(app_state.root); dashboard_outer_frame.pack(pady=SPACING, padx=SPACING, fill=tk.BOTH, expand=True)
 
@@ -1939,18 +1935,18 @@ for tab_name in tab_names:
             continue
 
         key = issue_keys[idx]
+        columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
+        color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
+                     "anti_slop": "#ffd43b", "errors": "#fc8181"}
+
+        # Create & grid the panel container
         panel = ttk.LabelFrame(parent_frame, text=f"Recent {issue_type_title}")
         base_row, col = divmod(idx, 2)
         panel.grid(row=base_row + panel_row_offset, column=col, padx=SPACING, pady=SPACING, sticky="nsew")
 
-        text_area = scrolledtext.ScrolledText(panel, wrap=tk.WORD, height=6)
-        text_area.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
-        text_area.insert(tk.END, f"No recent {key}.")
-        text_area.config(state=tk.DISABLED)
-        app_state.dashboard_notebook.tabs_widgets[tab_name][key] = text_area
-
-        for tag_name_cfg, config_cfg in highlight_colors.items():
-            text_area.tag_configure(tag_name_cfg, foreground=config_cfg["foreground"], font=config_cfg["font"])
+        # Populate the panel with the Treeview
+        panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
+        app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
 
     # 4. Add Graph to Totals Tab
     if tab_name == "Totals":
@@ -1961,11 +1957,6 @@ for tab_name in tab_names:
         graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
         draw_issue_graph(graph_canvas_widget)
-
-
-
-
-
 
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 

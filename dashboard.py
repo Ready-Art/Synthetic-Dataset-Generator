@@ -25,6 +25,87 @@ from api_handler import (
 
 SPACING = 8  # UI padding constant (mirrors generate.py)
 
+def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
+    """Creates a modern, dark-themed Treeview inside an existing panel widget."""
+    # Configure modern Treeview style
+    style = ttk.Style()
+    style.configure("Issue.Treeview",
+                    background="#2a2a35",
+                    fieldbackground="#2a2a35",
+                    foreground="#e0e0e0",
+                    rowheight=28,
+                    font=('Segoe UI', 9))
+    style.configure("Issue.Treeview.Heading",
+                    background="#1e1e24",
+                    foreground="#ffffff",
+                    font=('Segoe UI', 10, 'bold'))
+    style.map("Issue.Treeview",
+              background=[('selected', '#3a3a45')],
+              foreground=[('selected', '#ffffff')])
+
+    tree = ttk.Treeview(panel_widget, columns=columns, show="headings", height=8, style="Issue.Treeview")
+
+    # Set column widths & headings
+    col_widths = {"Time": 80, "API": 60, "Phrase": 140, "Context": 380}
+    for col in columns:
+        tree.heading(col, text=col.replace('_', ' ').title())
+        tree.column(col, width=col_widths.get(col, 120), anchor='w')
+
+    # Add vertical scrollbar
+    vsb = ttk.Scrollbar(panel_widget, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=vsb.set)
+
+    # Pack internal widgets INSIDE the panel (safe, since panel is a new container)
+    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+    vsb.pack(side=tk.RIGHT, fill="y", pady=5)
+
+    # Configure highlight tag
+    tree.tag_configure("issue_highlight", background="#3a3a45", foreground=highlight_color, font=('Segoe UI', 9, 'italic'))
+
+    return tree
+
+def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight", is_total_tab=False):
+    """Updates a modern Treeview panel with recent issues."""
+    if not tree or not hasattr(tree, 'winfo_exists') or not tree.winfo_exists():
+        return
+
+    # Clear old data efficiently
+    for item_id in tree.get_children():
+        tree.delete(item_id)
+
+    # Insert new items
+    for item in recent_items:
+        phrase = context = api_str = "N/A"
+        ts = time.time()
+
+        # Parse tuple formats from app_state
+        if is_total_tab:
+            if isinstance(item, tuple) and len(item) == 3:
+                phrase, context, api_idx = item
+                api_str = f"Slot {api_idx+1}"
+                ts = time.time() # Or extract from item if stored
+            elif isinstance(item, tuple) and len(item) == 2:
+                context, api_idx = item
+                api_str = f"Slot {api_idx+1}"
+        else:
+            if isinstance(item, tuple) and len(item) == 2:
+                phrase, context = item
+            else:
+                context = str(item)
+
+        # Format timestamp
+        time_str = time.strftime("%H:%M:%S", time.localtime(ts))
+
+        # Determine columns based on tab type
+        if is_total_tab:
+            tree.insert("", tk.END, values=(time_str, api_str, phrase, context), tags=(highlight_tag,))
+        else:
+            tree.insert("", tk.END, values=(time_str, phrase, context), tags=(highlight_tag,))
+
+    # Auto-scroll to the bottom (latest issue)
+    children = tree.get_children()
+    if children:
+        tree.see(children[-1])
 
 def draw_issue_graph(canvas_widget, height=400):
     """Draws a modern, detailed time-series graph showing issue counts over the last 60 minutes."""
@@ -195,11 +276,11 @@ def update_dashboard():
     # NEW: Update rate limit status
     update_rate_limit_status()
 
-    total_attempts_for_calc = app_state.total_attempts_global if app_state.total_attempts_global > 0 else 1 
-    
+    total_attempts_for_calc = app_state.total_attempts_global if app_state.total_attempts_global > 0 else 1
+
     refusal_percent = (app_state.refusal_count_total / total_attempts_for_calc) * 100
     user_speaking_percent = (app_state.user_speaking_count_total / total_attempts_for_calc) * 100
-    slop_percent = (app_state.slop_count_total / total_attempts_for_calc) * 100 
+    slop_percent = (app_state.slop_count_total / total_attempts_for_calc) * 100
     error_percent = (app_state.error_count_total / total_attempts_for_calc) * 100
 
     # Calculate cost (ensure you have the price per 1k tokens from config)
@@ -256,62 +337,62 @@ def update_dashboard():
         for item_idx, item in enumerate(recent_items_list):
             phrase_to_highlight = None
             sentence_context = None
-            api_origin_idx = -1 
+            api_origin_idx = -1
 
-            if is_total_tab_list: 
-                if isinstance(item, tuple) and len(item) == 3 and isinstance(item[0], str) and isinstance(item[1], str) and isinstance(item[2], int): 
+            if is_total_tab_list:
+                if isinstance(item, tuple) and len(item) == 3 and isinstance(item[0], str) and isinstance(item[1], str) and isinstance(item[2], int):
                     phrase_to_highlight, sentence_context, api_origin_idx = item
-                elif isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int): 
-                    sentence_context = item[0] 
+                elif isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int):
+                    sentence_context = item[0]
                     api_origin_idx = item[1]
-                else: 
+                else:
                     sentence_context = str(item)
-            else: 
-                if isinstance(item, tuple) and len(item) == 2: 
+            else:
+                if isinstance(item, tuple) and len(item) == 2:
                     phrase_to_highlight, sentence_context = item
-                else: 
+                else:
                     sentence_context = str(item)
-            
+
             prefix = f"- "
-            if api_origin_idx != -1: 
+            if api_origin_idx != -1:
                 prefix += f"[API {api_origin_idx+1}] "
-            
-            if phrase_to_highlight and sentence_context: 
+
+            if phrase_to_highlight and sentence_context:
                 start_idx = -1; end_idx = -1
-                try: 
+                try:
                     match = re.search(r'\b' + re.escape(phrase_to_highlight) + r'\b', sentence_context, re.IGNORECASE)
                     if match:
                         start_idx = match.start(); end_idx = match.end()
-                except re.error: 
+                except re.error:
                     start_idx = sentence_context.lower().find(phrase_to_highlight.lower())
                     if start_idx != -1: end_idx = start_idx + len(phrase_to_highlight)
-                
+
                 text_widget.insert(tk.END, prefix)
-                if start_idx != -1 and end_idx != -1: 
+                if start_idx != -1 and end_idx != -1:
                     text_widget.insert(tk.END, sentence_context[:start_idx])
                     text_widget.insert(tk.END, sentence_context[start_idx:end_idx], (tag_name, f"item_{item_idx}"))
                     text_widget.insert(tk.END, f"{sentence_context[end_idx:]}\n")
-                else: 
+                else:
                     text_widget.insert(tk.END, f"{sentence_context} (Highlight failed for '{phrase_to_highlight}')\n")
-            elif sentence_context: 
+            elif sentence_context:
                 text_widget.insert(tk.END, f"{prefix}{sentence_context}\n")
-            
+
         text_widget.config(state=tk.DISABLED)
         text_widget.yview(tk.END)
 
-    update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets["Totals"]["refusals"], app_state.recent_refusals_total, "highlight_refusal", is_total_tab_list=True)
-    update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets["Totals"]["user_speak"], app_state.recent_user_speaking_total, "highlight_user_speak", is_total_tab_list=True)
-    update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, "highlight_slop", is_total_tab_list=True)
-    update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, "highlight_anti_slop", is_total_tab_list=True)
+    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["refusals"], app_state.recent_refusals_total, is_total_tab=True)
+    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["user_speak"], app_state.recent_user_speaking_total, is_total_tab=True)
+    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, is_total_tab=True)
+    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, is_total_tab=True)
 
     for i in range(6):
         api_tab_name = f"API {i+1}"
         if api_tab_name in app_state.dashboard_notebook.tabs_widgets:
-            update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["refusals"], app_state.recent_refusals_per_api.get(i,[]), "highlight_refusal")
-            update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["user_speak"], app_state.recent_user_speaking_per_api.get(i,[]), "highlight_user_speak")
-            update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]), "highlight_slop")
-            update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]), "highlight_anti_slop")
-            update_scrolled_text_widget_content(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]), "highlight_error")
+            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["refusals"], app_state.recent_refusals_per_api.get(i,[]))
+            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["user_speak"], app_state.recent_user_speaking_per_api.get(i,[]))
+            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]))
+            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
+            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]))
 
     # NEW: Update the graph on the Totals tab
     if "Totals" in app_state.dashboard_notebook.tabs_widgets:
