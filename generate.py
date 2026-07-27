@@ -1922,6 +1922,11 @@ for tab_name in tab_names:
         app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
         draw_issue_graph(graph_canvas_widget)
 
+        # FIX: Explicitly refresh the parent canvas scrollregion after the graph renders
+        app_state.root.update_idletasks()
+        parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
+        parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
+
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 
 def init_database_pool():

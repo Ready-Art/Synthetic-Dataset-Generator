@@ -189,6 +189,9 @@ def draw_issue_graph(canvas_widget, height=400):
     canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+    # FIX: Force Tkinter to process geometry events immediately so the
+    # parent scrollable frame can calculate the correct scroll region
+    canvas_widget.update_idletasks()
     canvas_widget.graph_canvas = canvas
     canvas_widget.graph_fig = fig
     canvas_widget.graph_ax = ax
