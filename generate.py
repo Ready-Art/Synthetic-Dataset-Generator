@@ -1537,23 +1537,17 @@ for slot_idx in range(6):
 progress_frame = ttk.Frame(app_state.root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 # --- Main Action Buttons Frame ---
-button_frame = ttk.Frame(app_state.root); button_frame.pack(pady=SPACING)
+button_frame = ttk.Frame(app_state.root)
+button_frame.pack(pady=SPACING, fill=tk.X)
 
-start_button = ttk.Button(
-    button_frame,
-    text="🚀 Start Generation",
-    command=start_processing,
-    style="Accent.TButton"  # Optional: use custom style
-)
-start_button.pack(side=tk.LEFT, padx=SPACING)
+for i in range(4):
+    button_frame.columnconfigure(i, weight=1, uniform="btn")
 
-pause_button = ttk.Button(
-    button_frame,
-    text="⏸️ Pause",
-    command=toggle_pause,
-    state=tk.DISABLED
-)
-pause_button.pack(side=tk.LEFT, padx=SPACING)
+start_button = ttk.Button(button_frame, text="🚀 Start Generation", command=start_processing, style="Accent.TButton")
+start_button.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+
+pause_button = ttk.Button(button_frame, text="⏸️ Pause", command=toggle_pause, state=tk.DISABLED)
+pause_button.grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
 
 dashboard_pause_var = tk.BooleanVar(value=False)
 ttk.Checkbutton(metrics_frame, text="⏸️ Pause UI Updates", variable=dashboard_pause_var).pack(side=tk.RIGHT, padx=SPACING)
@@ -1613,7 +1607,7 @@ def wait_for_threads_to_stop_for_clear():
         for t in app_state.threads:
             if t.is_alive():
                 try:
-                    t.join(timeout=1.0) 
+                    t.join(timeout=1.0)
                     if t.is_alive(): log_message(f"Stop & Clear: Thread {t.name} did not join in time.", "WARNING")
                 except Exception as e: log_message(f"Stop & Clear: Error joining thread {t.name}: {e}", "WARNING")
         log_message("Stop & Clear: All worker threads joined or timed out.", "INFO")
@@ -1625,7 +1619,7 @@ def wait_for_threads_to_stop_for_clear():
         while not app_state.task_queue.empty():
             try: app_state.task_queue.get_nowait()
             except Empty: break
-        app_state.task_queue = Queue() 
+        app_state.task_queue = Queue()
         log_message("Stop & Clear: Task queue cleared and reinitialized.", "INFO")
 
     if os.path.exists(STATE_FILE_PATH): # Remove the state file for a fresh start next time
@@ -1652,29 +1646,15 @@ def finalize_stop_and_clear_ui():
     quit_button.config(state=tk.NORMAL)
     log_message("Stop & Clear: UI reset. Ready for a new job.", "INFO")
 
-stop_clear_button = ttk.Button(
-    button_frame,
-    text="🛑 Stop & Clear Job",
-    command=stop_and_clear_processing_job,
-    state=tk.DISABLED
-)
-stop_clear_button.pack(side=tk.LEFT, padx=SPACING)
+stop_clear_button = ttk.Button(button_frame, text="🛑 Stop & Clear Job", command=stop_and_clear_processing_job, state=tk.DISABLED)
+stop_clear_button.grid(row=0, column=2, padx=SPACING, pady=SPACING, sticky="ew")
 # --- End of Stop and Clear Job Functionality ---
 
-config_button = ttk.Button(
-    button_frame,
-    text="⚙️ Edit Config",
-    command=open_config_editor
-)
-config_button.pack(side=tk.LEFT, padx=SPACING)
+config_button = ttk.Button(button_frame, text="⚙️ Edit Config", command=open_config_editor)
+config_button.grid(row=0, column=3, padx=SPACING, pady=SPACING, sticky="ew")
 
-debug_log_check = ttk.Checkbutton(
-    button_frame,
-    text="🐛 Debug Logs",
-    variable=debug_logging_var,
-    command=toggle_debug_logging
-)
-debug_log_check.pack(side=tk.LEFT, padx=SPACING)
+debug_log_check = ttk.Checkbutton(button_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
+debug_log_check.grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="ew")
 
 def quit_application():
     """Handles graceful shutdown of the application when Quit button or window X is clicked."""
@@ -1689,19 +1669,19 @@ def quit_application():
         quit_button.config(state=tk.DISABLED)
 
 
-        if app_state.task_queue and app_state.threads and any(t.is_alive() for t in app_state.threads): 
+        if app_state.task_queue and app_state.threads and any(t.is_alive() for t in app_state.threads):
             active_thread_count = sum(1 for t in app_state.threads if t.is_alive())
-            num_sentinels = active_thread_count if active_thread_count > 0 else len(app_state.threads) 
+            num_sentinels = active_thread_count if active_thread_count > 0 else len(app_state.threads)
             log_message(f"Quit: Attempting to stop threads by queueing {num_sentinels} sentinels.", "DEBUG")
-            for _ in range(num_sentinels): 
+            for _ in range(num_sentinels):
                 try:
                     if app_state.task_queue: app_state.task_queue.put(None, block=False, timeout=0.05)
-                except Full: 
+                except Full:
                     log_message("Quit: Queue full while trying to put sentinel. Threads might be stuck.", "WARNING")
-                    break 
-                except Exception as e: 
+                    break
+                except Exception as e:
                     log_message(f"Quit: Error putting sentinel in queue: {e}", "WARNING")
-        
+
         if app_state.threads:
             log_message(f"Quit: Waiting for {len(app_state.threads)} worker threads to join...", "INFO")
             for t in app_state.threads:
@@ -1713,27 +1693,23 @@ def quit_application():
                     except Exception as e:
                         log_message(f"Quit: Error joining thread {t.name}: {e}", "WARNING")
             log_message("Quit: All worker threads joined or timed out.", "INFO")
-        
+
         app_state.processing_active = False # Mark processing as fully stopped
 
         log_message("Quit: Saving generation state before exiting...", "INFO")
         save_generation_state() # Save final progress
 
         log_message("Quit: Destroying Tkinter root window...", "INFO")
-        if app_state.root and hasattr(app_state.root, 'winfo_exists') and app_state.root.winfo_exists(): 
-            app_state.root.destroy() 
+        if app_state.root and hasattr(app_state.root, 'winfo_exists') and app_state.root.winfo_exists():
+            app_state.root.destroy()
         if app_state.db_pool:
             app_state.db_pool.closeall()
             log_message("PostgreSQL pool closed.", "INFO")
         log_message("Application shutdown sequence complete. Exiting process.", "INFO")
         sys.exit(0) # Terminate the script
 
-quit_button = ttk.Button(
-    button_frame,
-    text="❌ Quit Application",
-    command=quit_application
-)
-quit_button.pack(side=tk.LEFT, padx=SPACING)
+quit_button = ttk.Button(button_frame, text="❌ Quit Application", command=quit_application)
+quit_button.grid(row=2, column=0, columnspan=4, padx=SPACING, pady=SPACING, sticky="ew")
 app_state.root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
 app_state.status_bar = ttk.Label(app_state.root, text="Ready", foreground="lightgray", anchor="w")
@@ -1774,26 +1750,14 @@ def trigger_export():
 
     threading.Thread(target=run_export, daemon=True).start()
 
-export_button = ttk.Button(
-    button_frame,
-    text="📤 Export DB → JSONL",
-    command=trigger_export
-)
-export_button.pack(side=tk.LEFT, padx=SPACING)
+export_button = ttk.Button(button_frame, text="📤 Export DB → JSONL", command=trigger_export)
+export_button.grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="ew")
 
-clear_db_button = ttk.Button(
-    button_frame,
-    text="🗑️ Clear Database",
-    command=clear_database
-)
-clear_db_button.pack(side=tk.LEFT, padx=SPACING)
+clear_db_button = ttk.Button(button_frame, text="🗑️ Clear Database", command=clear_database)
+clear_db_button.grid(row=1, column=2, padx=SPACING, pady=SPACING, sticky="ew")
 
-recovery_button = ttk.Button(
-    button_frame,
-    text="🔄 Force Recovery",
-    command=force_recovery
-)
-recovery_button.pack(side=tk.LEFT, padx=SPACING)
+recovery_button = ttk.Button(button_frame, text="🔄 Force Recovery", command=force_recovery)
+recovery_button.grid(row=1, column=3, padx=SPACING, pady=SPACING, sticky="ew")
 
 # --- Dashboard Setup ---
 dashboard_outer_frame = ttk.Frame(app_state.root); dashboard_outer_frame.pack(pady=SPACING, padx=SPACING, fill=tk.BOTH, expand=True)
