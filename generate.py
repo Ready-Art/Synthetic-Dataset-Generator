@@ -784,10 +784,14 @@ def start_processing():
     total_tasks_to_queue = 0
     if current_use_questions_file:
         for i, q_text in enumerate(app_state.questions_list):
-            task_id = f"q_{i}" 
-            if task_id not in app_state.completed_task_ids: 
-                app_state.task_queue.put((task_id, os.path.basename(QUESTIONS_FILE_PATH), i, q_text))
+            task_id = f"q_{i}"
+            if task_id not in app_state.completed_task_ids:
+                task_tuple = (task_id, os.path.basename(QUESTIONS_FILE_PATH), i, q_text)
+                app_state.task_queue.put(task_tuple)
                 total_tasks_to_queue += 1
+                with app_state.task_queue_ui_lock:
+                    app_state.pending_task_ids.add(task_id)
+                    app_state.task_metadata[task_id] = {'file': os.path.basename(QUESTIONS_FILE_PATH), 'retries': 0, 'task_data': task_tuple}
     else: # Chunk input files (Randomized)
         subject_size = subject_size_conf
         context_size = context_size_conf
@@ -860,9 +864,13 @@ def start_processing():
                     current_context_text = full_file_content[context_start_index:context_end_index]
 
                     # 6. Add the task to the queue
-                    app_state.task_queue.put((task_id, random_file_name, random_start_index, current_subject_content, current_context_text))
+                    task_tuple = (task_id, random_file_name, random_start_index, current_subject_content, current_context_text)
+                    app_state.task_queue.put(task_tuple)
                     tasks_queued_count += 1
-                    total_tasks_to_queue += 1 # Update the global counter used for progress bars
+                    total_tasks_to_queue += 1
+                    with app_state.task_queue_ui_lock:
+                        app_state.pending_task_ids.add(task_id)
+                        app_state.task_metadata[task_id] = {'file': random_file_name, 'retries': 0, 'task_data': task_tuple}
                 else:
                     # Task already exists, just count it for the progress bar total
                     total_tasks_to_queue += 1
@@ -1105,6 +1113,7 @@ def start_processing():
                 
                 update_dashboard() # Refresh dashboard stats
                 update_database_status()
+                update_queue_ui()
                 if app_state.root.winfo_exists():
                     # ADAPTIVE UPDATE FREQUENCY
                     is_active = app_state.processing_active and not app_state.stop_processing and not app_state.pause_processing
@@ -1413,7 +1422,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.1.2",
+    text="v9.1.3",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1923,6 +1932,118 @@ for tab_name in tab_names:
         app_state.root.update_idletasks()
         parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
         parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
+
+# --- Queue Management Tab ---
+queue_tab = ttk.Frame(app_state.dashboard_notebook)
+app_state.dashboard_notebook.add(queue_tab, text="📦 Queue")
+
+def create_queue_panel(parent, title, columns):
+    frame = ttk.LabelFrame(parent, text=title)
+    frame.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=5)
+
+    # Inner frame to cleanly hold the tree + scrollbars
+    inner = ttk.Frame(frame)
+    inner.pack(fill=tk.BOTH, expand=True)
+    inner.columnconfigure(0, weight=1)
+    inner.rowconfigure(0, weight=1)
+
+    # Override theme compression with explicit font and row spacing
+    style.configure('Queue.Treeview', font=('Segoe UI', 10), rowheight=28)
+    style.configure('Queue.Treeview.Heading', font=('Segoe UI', 10, 'bold'))
+
+    tree = ttk.Treeview(inner, columns=columns, show="headings", height=12, style='Queue.Treeview')
+
+    for col in columns:
+        tree.heading(col, text=col)
+        # stretch=False prevents columns from shrinking/compressing on window resize
+        if col == "Retries":
+            tree.column(col, width=80, minwidth=50, stretch=True, anchor="center")
+        else:
+            tree.column(col, width=400, minwidth=150, stretch=True, anchor="w")
+
+    vsb = ttk.Scrollbar(inner, orient="vertical", command=tree.yview)
+    hsb = ttk.Scrollbar(inner, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+    # Grid layout is significantly more stable for Treeviews + Scrollbars than pack
+    tree.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+    hsb.grid(row=1, column=0, sticky="ew")
+
+    return tree
+
+def update_queue_ui():
+    if not app_state.root.winfo_exists() or not app_state.queue_trees: return
+    for tree in app_state.queue_trees.values():
+        for item in tree.get_children(): tree.delete(item)
+
+    with app_state.task_queue_ui_lock:
+        for tid in app_state.pending_task_ids:
+            m = app_state.task_metadata.get(tid, {})
+            app_state.queue_trees['pending'].insert("", tk.END, values=(tid, m.get('file', 'N/A'), m.get('retries', 0)))
+        for tid in app_state.completed_task_ids:
+            m = app_state.task_metadata.get(tid, {})
+            app_state.queue_trees['completed'].insert("", tk.END, values=(tid, m.get('file', 'N/A'), m.get('retries', 0)))
+        for tid in app_state.failed_task_ids:
+            m = app_state.task_metadata.get(tid, {})
+            app_state.queue_trees['failed'].insert("", tk.END, values=(tid, m.get('file', 'N/A'), m.get('retries', 0)))
+
+def purge_queue():
+    if messagebox.askyesno("Purge Queue", "Remove all pending tasks? They will be skipped by workers."):
+        with app_state.task_queue_ui_lock:
+            app_state.purged_task_ids.update(app_state.pending_task_ids)
+            app_state.pending_task_ids.clear()
+        log_message("Purged all pending tasks from UI tracking.", "INFO")
+        update_queue_ui()
+
+def retry_failed_tasks():
+    if not app_state.failed_task_ids:
+        messagebox.showinfo("Info", "No failed tasks to retry.")
+        return
+    if messagebox.askyesno("Retry Failed", f"Retry {len(app_state.failed_task_ids)} failed tasks?"):
+        with app_state.task_queue_ui_lock:
+            to_retry = list(app_state.failed_task_ids)
+            app_state.failed_task_ids.clear()
+            for tid in to_retry:
+                app_state.pending_task_ids.add(tid)
+                meta = app_state.task_metadata.get(tid, {})
+                meta['retries'] = 0
+                app_state.task_metadata[tid] = meta
+                if 'task_data' in meta:
+                    app_state.task_queue.put(meta['task_data'])
+        log_message(f"Re-queued {len(to_retry)} failed tasks.", "INFO")
+        update_queue_ui()
+
+def export_queue():
+    import csv
+    out_path = os.path.join(app_state.OUTPUT_DIR, 'queue_export.csv')
+    with open(out_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Status', 'Task ID', 'Source File', 'Retries'])
+        with app_state.task_queue_ui_lock:
+            for tid in app_state.pending_task_ids:
+                m = app_state.task_metadata.get(tid, {})
+                writer.writerow(['Pending', tid, m.get('file', 'N/A'), m.get('retries', 0)])
+            for tid in app_state.completed_task_ids:
+                m = app_state.task_metadata.get(tid, {})
+                writer.writerow(['Completed', tid, m.get('file', 'N/A'), m.get('retries', 0)])
+            for tid in app_state.failed_task_ids:
+                m = app_state.task_metadata.get(tid, {})
+                writer.writerow(['Failed', tid, m.get('file', 'N/A'), m.get('retries', 0)])
+    messagebox.showinfo("Export", f"Queue exported to {out_path}")
+
+queue_btn_frame = ttk.Frame(queue_tab)
+queue_btn_frame.pack(fill=tk.X, padx=SPACING, pady=SPACING)
+ttk.Button(queue_btn_frame, text="🗑️ Purge Queue", command=purge_queue).pack(side=tk.LEFT, padx=5)
+ttk.Button(queue_btn_frame, text="🔄 Retry Failed", command=retry_failed_tasks).pack(side=tk.LEFT, padx=5)
+ttk.Button(queue_btn_frame, text="📤 Export Queue", command=export_queue).pack(side=tk.LEFT, padx=5)
+ttk.Button(queue_btn_frame, text="🔄 Refresh View", command=update_queue_ui).pack(side=tk.LEFT, padx=5)
+
+queue_cols = ("Task ID", "Source File", "Retries")
+app_state.queue_trees['pending'] = create_queue_panel(queue_tab, "Pending", queue_cols)
+app_state.queue_trees['completed'] = create_queue_panel(queue_tab, "Completed", queue_cols)
+app_state.queue_trees['failed'] = create_queue_panel(queue_tab, "Failed", queue_cols)
+# --- End Queue Management Tab ---
 
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 

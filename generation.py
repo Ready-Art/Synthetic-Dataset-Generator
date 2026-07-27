@@ -118,8 +118,10 @@ def api_host_is_down(api_slot_idx):
 
 
 def requeue_task(q, task, task_id):
-    """Put a task back on the queue for a later retry (host-outage recovery).
-    Returns True if requeued, False once it has exhausted MAX_TASK_REQUEUES."""
+    """Put a task back on the queue for a later retry (host-outage recovery)."""
+    with app_state.task_queue_ui_lock:
+        if task_id in app_state.task_metadata:
+            app_state.task_metadata[task_id]['retries'] += 1
     with task_retry_lock:
         n = task_retry_counts.get(task_id, 0) + 1
         task_retry_counts[task_id] = n
@@ -323,6 +325,16 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             q.task_done(); break # Exit if stop signal received after fetching a task
 
         task_id, file_name, *_ = task # Unpack task data
+
+        # --- PURGE CHECK ---
+        if task_id in app_state.purged_task_ids:
+            with app_state.task_queue_ui_lock:
+                app_state.pending_task_ids.discard(task_id)
+            q.task_done()
+            log_message(f"Thread {thread_id}: Skipping purged task {task_id}.", "INFO")
+            continue
+        # --- END PURGE CHECK ---
+
         start_time_task_overall = time.time() # For timing the whole task processing
 
         # ✅ FIX 4: PER-TASK CONVERSATION ISOLATION
@@ -830,6 +842,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             log_message(f"Thread {thread_id}: Requeued task {task_id} due to refusal detection", "WARNING")
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
+                            with app_state.task_queue_ui_lock:
+                                app_state.pending_task_ids.discard(task_id)
+                                app_state.failed_task_ids.add(task_id)
                     else:
                         # ✅ VERIFY TURN COUNT BEFORE MARKING COMPLETE
                         expected_messages = current_num_turns * 2
@@ -837,21 +852,19 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                         if actual_messages >= expected_messages:
                             with output_data_lock:
-                                # ✅ DOUBLE-CHECK NOT ALREADY COMPLETE
                                 if task_id not in app_state.completed_task_ids:
                                     write_conversation(None, conversation_history_for_output, current_remove_reasoning,
-                                        current_remove_em_dash,
-                                        current_remove_asterisks,
-                                        current_remove_asterisk_space_asterisk,
-                                        current_remove_all_asterisks,
-                                        current_ensure_space_after_line_break,
-                                        current_remove_markdown,
-                                        current_output_format, task_id,
-                                        api_slot_idx_for_output_file=None)
+                                        current_remove_em_dash, current_remove_asterisks,
+                                        current_remove_asterisk_space_asterisk, current_remove_all_asterisks,
+                                        current_ensure_space_after_line_break, current_remove_markdown,
+                                        current_output_format, task_id, api_slot_idx_for_output_file=None)
                                     app_state.completed_task_ids.add(task_id)
                                     log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
                                 else:
                                     log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
+                            # Update UI tracking on success
+                            with app_state.task_queue_ui_lock:
+                                app_state.pending_task_ids.discard(task_id)
                             save_generation_state()
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {expected_messages} messages, got {actual_messages}. NOT saving to output.jsonl.", "WARNING")
@@ -871,6 +884,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     # Requeue task
                     if requeue_task(q, task, task_id):
                         log_message(f"Thread {thread_id}: Requeued task {task_id} - no valid conversation", "WARNING")
+                    else:
+                        log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues; giving up.", "ERROR")
+                        with app_state.task_queue_ui_lock:
+                            app_state.pending_task_ids.discard(task_id)
+                            app_state.failed_task_ids.add(task_id)
 
         except Exception as e: # Catch-all for errors during task processing
             error_message_gen = f"Thread {thread_id}: Error processing task {task_id} from {file_name}: {str(e)}"

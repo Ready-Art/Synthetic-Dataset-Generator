@@ -65,6 +65,12 @@ user_speaking_count_total = 0
 user_speaking_counts_per_api = {i: 0 for i in range(6)}
 character_counter = 0  # Round-robin counter for character selection
 character_counter_lock = Lock()  # Thread-safe access
+pending_task_ids = set()
+failed_task_ids = set()
+purged_task_ids = set()
+task_metadata = {}  # {task_id: {'file': str, 'retries': int, 'task_data': tuple}}
+task_queue_ui_lock = Lock()
+queue_trees = {}    # Holds UI Treeview widgets
 
 
 
