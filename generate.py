@@ -29,7 +29,7 @@ import matplotlib.ticker as ticker
 import api_handler
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
-from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_metric_card, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
+from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
@@ -1413,7 +1413,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.1.0",
+    text="v9.1.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1426,35 +1426,32 @@ controls_frame = ttk.Frame(app_state.root); controls_frame.pack(pady=SPACING, pa
 # Threads input removed from main window - now configured per API in the config editor
 
 # --- Metrics Display Frame ---
-
-# Replace your current metrics_frame section with:
-
 metrics_frame = ttk.Frame(app_state.root)
 metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
-# Helper to create a metric card
+def _create_ttkbs_metric(parent, title, icon, default_text="0 (0.0%)"):
+    """Helper to create consistent ttkbootstrap Card metrics"""
+    card = ttk.Frame(parent, borderwidth=0, padding=10)
+    card.pack(side=tk.LEFT, padx=SPACING, fill="both", expand=True)
 
-app_state.refusal_percent_label = create_metric_card(metrics_frame, "Refusals", "🚫")
-app_state.user_speaking_label = create_metric_card(metrics_frame, "User Speak", "🗣️")
-app_state.slop_label = create_metric_card(metrics_frame, "Slop", "🧹")
-app_state.error_percent_label = create_metric_card(metrics_frame, "Errors", "⚠️")
+    ttk.Label(card, text=f"{icon} {title}", style='Header.TLabel').pack(pady=(0, 2))
+    val_lbl = ttk.Label(card, text=default_text, style='MetricValue.TLabel')
+    val_lbl.pack(pady=(0, 4))
+    return val_lbl
+
+app_state.refusal_percent_label = _create_ttkbs_metric(metrics_frame, "Refusals", "🚫")
+app_state.user_speaking_label = _create_ttkbs_metric(metrics_frame, "User Speak", "🗣️")
+app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
+app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 
 # Secondary metrics row
 metrics_row2 = ttk.Frame(app_state.root)
 metrics_row2.pack(pady=(0, SPACING), padx=SPACING, fill="x")
 
-app_state.token_label = create_metric_card(metrics_row2, "Tokens", "🔢")
-app_state.cost_label = create_metric_card(metrics_row2, "Est. Cost", "💰")
-app_state.budget_label = create_metric_card(metrics_row2, "Budget", "📊")
-app_state.thread_status_label = create_metric_card(metrics_row2, "Threads", "🧵")
-
-# Rate Limit Status Labels
-rate_limit_frame = ttk.LabelFrame(app_state.root, text="Rate Limit Status (Requests/Min)")
-rate_limit_frame.pack(pady=SPACING, padx=SPACING, fill="x")
-for slot_idx in range(6):
-    label = ttk.Label(rate_limit_frame, text=f"API {slot_idx+1}: --/--")
-    label.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
-    app_state.rate_limit_labels[slot_idx] = label
+app_state.token_label = _create_ttkbs_metric(metrics_row2, "Tokens", "🔢", default_text="0")
+app_state.cost_label = _create_ttkbs_metric(metrics_row2, "Est. Cost", "💰", default_text="$0.0000")
+app_state.budget_label = _create_ttkbs_metric(metrics_row2, "Budget", "📊", default_text="Budget: Disabled")
+app_state.thread_status_label = _create_ttkbs_metric(metrics_row2, "Threads", "🧵", default_text="Threads: 0 spawned, 0 active")
 # --- End of Metrics Display Frame ---
 
 # --- Database Connection Status Frame ---

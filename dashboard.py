@@ -497,15 +497,6 @@ def copy_dashboard_tab(tab_name):
     else:
         app_state.status_bar.config(text="No data to copy.", foreground="orange")
 
-
-def create_metric_card(parent, title, icon, style_suffix=''):
-    card = ttk.LabelFrame(parent, text=f" {icon} {title}")
-    card.pack(side=tk.LEFT, padx=SPACING, fill="both", expand=True)
-    value_label = ttk.Label(card, text="0 (0.0%)", style=f'MetricValue{style_suffix}.TLabel')
-    value_label.pack(padx=SPACING, pady=(5, 2))
-    return value_label
-
-
 def pulse_progress_bar(bar, bar_key, root_window):
     """Briefly flashes a progress bar to a brighter color when a milestone is crossed,
     then reverts it back after a short delay."""
