@@ -1413,7 +1413,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.1.1",
+    text="v9.1.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1534,7 +1534,7 @@ for slot_idx in range(6):
 progress_frame = ttk.Frame(app_state.root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 # --- Main Action Buttons Frame ---
-button_frame = ttk.Frame(app_state.root)
+button_frame = ttkbs.Frame(app_state.root, padding=10)
 button_frame.pack(pady=SPACING, fill=tk.X)
 
 for i in range(4):
