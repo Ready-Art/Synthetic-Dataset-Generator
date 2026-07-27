@@ -91,6 +91,49 @@ prompt_preview_text = None
 # (one that fails for content reasons while the host is up) can't loop forever.
 
 
+class ToastManager:
+    def __init__(self, root):
+        self.root = root
+        self._toasts = []
+        self._offset_y = 10
+
+    def show(self, message, level="info", duration=4000):
+        colors = {
+            "success": ("#28a745", "✅"),
+            "error": ("#dc3545", "❌"),
+            "warning": ("#ffc107", "⚠️"),
+            "info": ("#17a2b8", "ℹ️")
+        }
+        bg_color, icon = colors.get(level, colors["info"])
+
+        toast = tk.Toplevel(self.root)
+        toast.wm_overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.attributes("-alpha", 0.95)
+
+        self.root.update_idletasks()
+        rw = self.root.winfo_width()
+        rh = self.root.winfo_height()
+        sx = self.root.winfo_x() + rw - 320
+        sy = self.root.winfo_y() + rh - 60 - self._offset_y
+
+        toast.geometry(f"300x50+{sx}+{sy}")
+
+        frame = tk.Frame(toast, bg=bg_color)
+        frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        tk.Label(frame, text=f"{icon} {message}", bg=bg_color, fg="white",
+                 font=('Segoe UI', 10), anchor="w").pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self._toasts.append(toast)
+        self._offset_y += 60
+
+        def dismiss():
+            if toast.winfo_exists():
+                toast.destroy()
+                self._toasts.remove(toast)
+                self._offset_y -= 60
+        self.root.after(duration, dismiss)
 
 # --- Crash Recovery Functions ---
 
@@ -308,7 +351,7 @@ def clear_database():
         return  # User selected "No", so exit without doing anything
 
     if not app_state.db_pool:
-        messagebox.showwarning("Database Error", "Database pool is not initialized.")
+        toast.show("Database pool is not initialized.", "warning")
         log_message("Database pool not initialized.", "ERROR")
         return
 
@@ -318,27 +361,19 @@ def clear_database():
             cur.execute("TRUNCATE TABLE generated_conversations RESTART IDENTITY;")
             conn.commit()
         app_state.db_pool.putconn(conn)
-        messagebox.showinfo("Success", "Database cleared successfully!")
+        toast.show("Database cleared successfully!", "success")
         log_message("Database cleared successfully.", "INFO")
     except Exception as e:
         log_message(f"Failed to clear database: {e}", "ERROR")
-        messagebox.showerror("Database Error", f"Failed to clear database: {e}")
+        toast.show(f"Failed to clear database: {e}", "error")
         if conn:
             app_state.db_pool.putconn(conn)
 
 # --- Core Worker Logic ---
 
-
-
-
-
-
-
-
-
 def export_db_to_jsonl(output_path):
     if not app_state.db_pool:
-        messagebox.showerror("Export Error", "Database pool not initialized.")
+        toast.show("Export failed: DB pool not initialized.", "error")
         return False
 
     try:
@@ -357,9 +392,6 @@ def export_db_to_jsonl(output_path):
         log_message(f"Export failed: {e}", "ERROR")
         if conn: app_state.db_pool.putconn(conn)
         return False
-
-
-
 
 # --- Tkinter UI Update and Control Functions ---
 
@@ -536,7 +568,7 @@ def start_processing():
     # --- Load API Configurations ---
     all_apis_config_from_yml = global_config.get('api.apis', [])
     if not all_apis_config_from_yml or not isinstance(all_apis_config_from_yml, list):
-        messagebox.showerror("Config Error", "API configuration is missing or malformed in config.yml.")
+        toast.show("API configuration missing or malformed.", "error")
         log_message("API configuration missing/malformed in config.yml.", "ERROR"); return
 
     all_api_configs_runtime = [] 
@@ -571,7 +603,7 @@ def start_processing():
     master_duplication_enabled = app_state.master_duplication_enabled_var.get() 
 
     if not master_duplication_enabled and not active_enabled_api_configs_for_worker_list:
-        messagebox.showerror("Config Error", "Non-Duplication mode is selected, but no APIs (Slots 1-4) are enabled or configured (URL needed).")
+        toast.show("No APIs enabled/configured for non-duplication mode.", "error")
         log_message("Non-Duplication: No APIs 1-4 enabled/configured for work.", "ERROR"); return
     
     slop_fixer_api_config_runtime = all_api_configs_runtime[4]
@@ -591,7 +623,7 @@ def start_processing():
     else: 
         num_enabled_dup_apis = sum(1 for idx, conf in enumerate(all_api_configs_runtime) if idx < 4 and conf.get('enabled') and conf.get('url'))
         if num_enabled_dup_apis == 0:
-            messagebox.showerror("Config Error", "Master Duplication Mode is ON, but no APIs (Slots 1-4) are enabled or fully configured (URL needed).")
+            toast.show("Duplication mode on, but no APIs configured.", "error")
             log_message("Duplication mode on, but no APIs 0-3 enabled/configured for work.", "ERROR"); return
         log_message(f"Duplication Mode: {num_enabled_dup_apis} APIs (Slots 1-4) will duplicate tasks.", "INFO")
 
@@ -616,7 +648,7 @@ def start_processing():
         
         if app_state.num_threads <=0: raise ValueError("Number of threads must be positive.")
     except ValueError:
-        messagebox.showerror("Config Error", "Invalid number of threads specified in UI.")
+        toast.show("Invalid thread count specified.", "error")
         log_message(f"Invalid number of threads in UI: {num_threads_var.get()}", "ERROR"); return
 
     subject_size_conf = global_config.get('generation.subject_size', 1000)
@@ -765,7 +797,7 @@ def start_processing():
         try:
             app_state.questions_list = read_txt(QUESTIONS_FILE_PATH)
             if not app_state.questions_list:
-                messagebox.showwarning("Input Error", f"{QUESTIONS_FILE_PATH} is enabled but empty/not found.")
+                toast.show("Questions file is empty or not found.", "warning")
                 log_message(f"{QUESTIONS_FILE_PATH} enabled but empty/not found.", "WARNING")
                 app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
         except Exception as e:
@@ -777,7 +809,7 @@ def start_processing():
 
     input_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('.txt') and f != os.path.basename(QUESTIONS_FILE_PATH)]
     if not current_use_questions_file and not input_files:
-        messagebox.showwarning("Input Error", "No input .txt files found in 'input' folder (and not using questions.txt).")
+        toast.show("No input .txt files found.", "warning")
         log_message("No input .txt files found for chunking.", "WARNING")
         app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
 
@@ -882,10 +914,10 @@ def start_processing():
         log_message(f"Attempted to queue {NUM_RANDOM_CHUNKS} random tasks. Successfully queued {tasks_queued_count} new unique tasks.", "INFO")
 
     if total_tasks_to_queue == 0 and not app_state.completed_task_ids: 
-        messagebox.showwarning("Processing Error", "No tasks to process (all inputs might be empty, or no new tasks found).")
+        toast.show("No tasks to process.", "warning")
         log_message("No tasks to queue.", "WARNING"); app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
     elif total_tasks_to_queue == 0 and app_state.completed_task_ids: # All tasks were already done
-        messagebox.showinfo("Processing Complete", "All tasks were already completed in a previous session.")
+        toast.show("All tasks already completed.", "info")
         log_message("All tasks already completed. Nothing new to queue.", "INFO"); app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
 
     app_state.task_queue.all_tasks_queued = True 
@@ -1340,6 +1372,7 @@ ACCENT_CYAN = '#17a2b8'  # Teal/cyan accent for superhero theme
 app_state.root = ttkbs.Window(themename="superhero")
 app_state.root.title("Main UI")
 app_state.root.minsize(1100, 700)  # Prevents layout breakage on resize
+toast = ToastManager(app_state.root)
 app_state.root.grid_columnconfigure(0, weight=1)
 app_state.root.grid_rowconfigure(0, weight=1)
 icon_path = "taskbar.png"
@@ -1422,7 +1455,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.1.3",
+    text="v9.1.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1729,13 +1762,13 @@ def force_recovery():
                 log_message("Force recovery: State loaded. Ready to resume.", "INFO")
                 reset_all_stats_and_history()
                 update_dashboard()
-                messagebox.showinfo("Recovery", "State recovered. Click Start to resume.")
+                toast.show("State recovered. Click Start to resume.", "success")
             else:
-                messagebox.showwarning("Recovery Failed", "Could not load state. Check logs.")
+                toast.show("Could not load state. Check logs.", "warning")
         else:
-            messagebox.showinfo("No State", "No previous state found to recover.")
+            toast.show("No previous state found.", "info")
     else:
-        messagebox.showwarning("Busy", "Cannot force recovery while processing is active.")
+        toast.show("Cannot force recovery while processing.", "warning")
 
 def trigger_export():
     file_path = filedialog.asksaveasfilename(
@@ -2030,7 +2063,7 @@ def export_queue():
             for tid in app_state.failed_task_ids:
                 m = app_state.task_metadata.get(tid, {})
                 writer.writerow(['Failed', tid, m.get('file', 'N/A'), m.get('retries', 0)])
-    messagebox.showinfo("Export", f"Queue exported to {out_path}")
+    toast.show(f"Queue exported to {out_path}", "success")
 
 queue_btn_frame = ttk.Frame(queue_tab)
 queue_btn_frame.pack(fill=tk.X, padx=SPACING, pady=SPACING)
