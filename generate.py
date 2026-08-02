@@ -77,6 +77,15 @@ from app_state import (
 )
 from config_editor import ConfigEditor
 matplotlib.use('TkAgg')
+matplotlib.use('TkAgg')
+# --- VirGL/Mesa Performance Tuning ---
+matplotlib.rcParams['text.antialiased'] = False          # Disables slow font rendering
+matplotlib.rcParams['path.simplify'] = True              # Reduces polygon vertex count
+matplotlib.rcParams['path.simplify_threshold'] = 1.0     # Aggressive simplification
+matplotlib.rcParams['agg.path.chunksize'] = 10000        # Batches draw calls
+matplotlib.rcParams['figure.max_open_warning'] = 0       # Suppresses warnings
+# --------------------------------------------------------------------------
+import matplotlib.ticker as ticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from urllib.parse import urlparse
