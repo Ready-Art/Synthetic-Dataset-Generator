@@ -24,73 +24,14 @@ import text_utils
 import detection
 from config_loader import ConfigLoader, sanitize_input
 import psutil
-import matplotlib
-import matplotlib.ticker as ticker
-
-# --- VirGL / VM Performance Fix ---
-# VirGL (common on VMs with virglrenderer/Mesa) causes extreme Tkinter/matplotlib
-# lag due to broken OpenGL anti-aliasing paths. We detect VirGL or other SW rasterizers
-# and force CPU-safe settings before creating the window.
-_VIRGL_ACTIVE = any(
-    kw in os.environ.get('LIBGL_ALWAYS_SOFTWARE', '') or
-    kw in os.environ.get('GALLIUM_DRIVER', '') or
-    kw in os.environ.get('MESA_GL_VERSION_OVERRIDE', '') or
-    kw in str(matplotlib.get_backend())
-    for kw in ('virgl', 'swrast', 'llvmpipe', 'zink')
-)
-
-def _detect_virgl():
-
-    global _VIRGL_ACTIVE
-    env_sources = [
-        os.environ.get('LIBGL_ALWAYS_SOFTWARE', ''),
-        os.environ.get('GALLIUM_DRIVER', ''),
-        os.environ.get('MESA_GL_VERSION_OVERRIDE', ''),
-    ]
-    for source in env_sources:
-        if any(kw in source.lower() for kw in ('virgl', 'swrast', 'llvmpipe', 'zink')):
-            _VIRGL_ACTIVE = True
-            return True
-    return _VIRGL_ACTIVE
-
-_detect_virgl()
-
 import api_handler
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
-from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
+from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
 from config_editor import ConfigEditor
-matplotlib.use('TkAgg')
-# --- VirGL/Mesa Performance Tuning ---
-matplotlib.rcParams['text.antialiased'] = False          # Disables slow font rendering
-matplotlib.rcParams['path.simplify'] = True              # Reduces polygon vertex count
-matplotlib.rcParams['path.simplify_threshold'] = 1.0     # Aggressive simplification
-matplotlib.rcParams['agg.path.chunksize'] = 10000        # Batches draw calls
-matplotlib.rcParams['figure.max_open_warning'] = 0       # Suppresses warnings
-# --------------------------------------------------------------------------
-
-if _VIRGL_ACTIVE:
-    print("[PERF] VirGL/SW rasterizer detected. Applying aggressive matplotlib tuning.")
-    matplotlib.rcParams['agg.path.chunksize'] = 10000
-    matplotlib.rcParams['figure.max_open_warning'] = 0
-    matplotlib.rcParams['text.antialiased'] = False
-    matplotlib.rcParams['path.simplify'] = True
-    matplotlib.rcParams['path.simplify_threshold'] = 1.0
-    # NEW: Prevent matplotlib from using any GL-accelerated backend
-    matplotlib.rcParams['backend'] = 'Agg'
-    # NEW: Disable font cache rebuilds (slow on network/VM filesystems)
-    matplotlib.rcParams['font.family'] = 'sans-serif'
-    matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
-    # NEW: Reduce the default figure DPI further
-    matplotlib.rcParams['figure.dpi'] = 72
-    matplotlib.rcParams['savefig.dpi'] = 72
-
-import matplotlib.ticker as ticker
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
 from urllib.parse import urlparse
 from api_handler import RateLimiter, global_rate_limiter, get_cached_response, set_cached_response, api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK
 import logging_config
@@ -1198,21 +1139,6 @@ def start_processing():
                             app_state.task_queue.overall_percent_label.config(text="N/A")
                 
                 update_dashboard() # Refresh dashboard stats
-
-                # Throttle graph updates to avoid VirGL rendering spam
-                _last_graph_update = getattr(app_state, '_last_graph_update', 0)
-                _now = time.time()
-                _graph_interval = 0.5 if _VIRGL_ACTIVE else 1.0
-                if _now - _last_graph_update >= _graph_interval:
-                    app_state._last_graph_update = _now
-                    if "Totals" in app_state.dashboard_notebook.tabs_widgets:
-                        _gc = app_state.dashboard_notebook.tabs_widgets["Totals"].get("graph_canvas")
-                        if _gc and hasattr(_gc, 'winfo_exists') and _gc.winfo_exists():
-                            try:
-                                from dashboard import update_issue_graph
-                                update_issue_graph(_gc)
-                            except Exception as _e:
-                                log_message(f"Graph update error: {_e}", "ERROR")
                 update_database_status()
                 update_queue_ui()
                 if app_state.root.winfo_exists():
@@ -2019,36 +1945,6 @@ for tab_name in tab_names:
         # Populate the panel with the Treeview
         panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
         app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
-
-    # 4. Add Graph to Totals Tab
-    if tab_name == "Totals":
-        graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
-        graph_frame.grid(row=2, column=0, columnspan=2, padx=SPACING, pady=(20, 5), sticky="nsew")
-
-        graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')
-        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
-        from dashboard import schedule_graph_draw
-        schedule_graph_draw(graph_canvas_widget, delay_ms=800)
-
-        # FIX: Explicitly refresh the parent canvas scrollregion after the graph renders
-        app_state.root.update_idletasks()
-        parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
-        parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
-
-def _on_tab_changed(event):
-    """Only update the graph when the Totals tab is actually visible."""
-    current_tab = app_state.dashboard_notebook.index(
-        app_state.dashboard_notebook.select()
-    )
-    tab_text = app_state.dashboard_notebook.tab(current_tab, "text")
-    if tab_text == "Totals":
-        gc = app_state.dashboard_notebook.tabs_widgets.get("Totals", {}).get("graph_canvas")
-        if gc and gc.winfo_exists():
-            from dashboard import update_issue_graph
-            update_issue_graph(gc)
-
-app_state.dashboard_notebook.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)
