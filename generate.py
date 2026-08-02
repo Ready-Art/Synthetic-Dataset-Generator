@@ -64,7 +64,6 @@ from app_state import (
 )
 from config_editor import ConfigEditor
 matplotlib.use('TkAgg')
-matplotlib.use('TkAgg')
 # --- VirGL/Mesa Performance Tuning ---
 matplotlib.rcParams['text.antialiased'] = False          # Disables slow font rendering
 matplotlib.rcParams['path.simplify'] = True              # Reduces polygon vertex count
@@ -72,6 +71,23 @@ matplotlib.rcParams['path.simplify_threshold'] = 1.0     # Aggressive simplifica
 matplotlib.rcParams['agg.path.chunksize'] = 10000        # Batches draw calls
 matplotlib.rcParams['figure.max_open_warning'] = 0       # Suppresses warnings
 # --------------------------------------------------------------------------
+
+if _VIRGL_ACTIVE:
+    print("[PERF] VirGL/SW rasterizer detected. Applying aggressive matplotlib tuning.")
+    matplotlib.rcParams['agg.path.chunksize'] = 10000
+    matplotlib.rcParams['figure.max_open_warning'] = 0
+    matplotlib.rcParams['text.antialiased'] = False
+    matplotlib.rcParams['path.simplify'] = True
+    matplotlib.rcParams['path.simplify_threshold'] = 1.0
+    # NEW: Prevent matplotlib from using any GL-accelerated backend
+    matplotlib.rcParams['backend'] = 'Agg'
+    # NEW: Disable font cache rebuilds (slow on network/VM filesystems)
+    matplotlib.rcParams['font.family'] = 'sans-serif'
+    matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
+    # NEW: Reduce the default figure DPI further
+    matplotlib.rcParams['figure.dpi'] = 72
+    matplotlib.rcParams['savefig.dpi'] = 72
+
 import matplotlib.ticker as ticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
