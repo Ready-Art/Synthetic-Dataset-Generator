@@ -24,14 +24,19 @@ import text_utils
 import detection
 from config_loader import ConfigLoader, sanitize_input
 import psutil
+import matplotlib
+import matplotlib.ticker as ticker
 import api_handler
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
-from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
+from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
 from config_editor import ConfigEditor
+matplotlib.use('TkAgg')
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 from urllib.parse import urlparse
 from api_handler import RateLimiter, global_rate_limiter, get_cached_response, set_cached_response, api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK
 import logging_config
@@ -1945,6 +1950,21 @@ for tab_name in tab_names:
         # Populate the panel with the Treeview
         panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
         app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
+
+    # 4. Add Graph to Totals Tab
+    if tab_name == "Totals":
+        graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
+        graph_frame.grid(row=2, column=0, columnspan=2, padx=SPACING, pady=(20, 5), sticky="nsew")
+
+        graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')
+        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
+        draw_issue_graph(graph_canvas_widget)
+
+        # FIX: Explicitly refresh the parent canvas scrollregion after the graph renders
+        app_state.root.update_idletasks()
+        parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
+        parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
 
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)

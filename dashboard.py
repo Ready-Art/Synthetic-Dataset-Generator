@@ -7,6 +7,10 @@ NOT import generate.py (one-way dependency: generate.py imports dashboard).
 """
 import re
 import time
+
+import matplotlib.ticker as ticker
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import tkinter as tk
 from tkinter import ttk, scrolledtext, font, messagebox, filedialog
 
@@ -102,6 +106,172 @@ def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight
     children = tree.get_children()
     if children:
         tree.see(children[-1])
+
+def draw_issue_graph(canvas_widget, height=400):
+    """Draws a modern, detailed time-series graph showing issue counts over the last 60 minutes."""
+    canvas_widget.delete("all")
+
+    # Modern dark theme setup
+    fig = Figure(figsize=(12, 4.5), dpi=120, facecolor='#1e1e24')
+    fig.patch.set_facecolor('#1e1e24')
+    ax = fig.add_subplot(111)
+    ax.set_facecolor('#2a2a35')
+
+    # Time bins setup
+    now = time.time()
+    sixty_minutes_ago = now - 3600
+    num_bins = 6
+    bin_size = 3600 / num_bins
+
+    # Initialize counts
+    counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
+              'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins}
+
+    with app_state.issue_timestamps_lock:
+        for key in counts.keys():
+            for ts in app_state.issue_timestamps.get(key, []):
+                if sixty_minutes_ago <= ts <= now:
+                    idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
+                    counts[key][idx] += 1
+
+    # X-axis labels (stacked for readability)
+    x_labels = []
+    for i in range(num_bins):
+        start = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + i * bin_size))
+        end = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + (i + 1) * bin_size))
+        x_labels.append(f"{start}\n{end}")
+
+    x = range(num_bins)
+    width = 0.15
+    offsets = [-2*width, -width, 0, width, 2*width]
+
+    # Cohesive, accessible color palette
+    colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
+              'anti_slop': '#ffd43b', 'errors': '#fc8181'}
+    labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors'}
+
+    # Plot bars & add value labels
+    for i, key in enumerate(counts.keys()):
+        bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
+                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+        for rect in bar:
+            h = rect.get_height()
+            if h > 0:
+                ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
+                            xytext=(0, 4), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+
+    # Styling & Layout
+    max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
+    ax.set_ylim(0, max_val + 2)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
+
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#555555')
+    ax.spines['left'].set_color('#555555')
+    ax.tick_params(axis='both', colors='#c0c0c0')
+
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
+              edgecolor='#444444', labelcolor='#e0e0e0')
+    fig.tight_layout()
+
+    # Embed in Tkinter
+    canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    # FIX: Force Tkinter to process geometry events immediately so the
+    # parent scrollable frame can calculate the correct scroll region
+    canvas_widget.update_idletasks()
+    canvas_widget.graph_canvas = canvas
+    canvas_widget.graph_fig = fig
+    canvas_widget.graph_ax = ax
+
+
+def update_issue_graph(canvas_widget):
+    """Updates an existing issue graph with new data without recreating the figure."""
+    if not hasattr(canvas_widget, 'graph_canvas'):
+        draw_issue_graph(canvas_widget)
+        return
+
+    fig = canvas_widget.graph_fig
+    ax = canvas_widget.graph_ax
+    ax.clear()
+
+    # Reuse the exact same drawing logic from draw_issue_graph
+    # (We extract it into a shared helper in production, but for drop-in replacement:)
+    fig.patch.set_facecolor('#1e1e24')
+    ax.set_facecolor('#2a2a35')
+
+    now = time.time()
+    sixty_minutes_ago = now - 3600
+    num_bins = 6
+    bin_size = 3600 / num_bins
+    counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
+              'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins}
+
+    with app_state.issue_timestamps_lock:
+        for key in counts.keys():
+            for ts in app_state.issue_timestamps.get(key, []):
+                if sixty_minutes_ago <= ts <= now:
+                    idx = min(int((ts - sixty_minutes_ago) / bin_size), num_bins - 1)
+                    counts[key][idx] += 1
+
+    x_labels = []
+    for i in range(num_bins):
+        start = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + i * bin_size))
+        end = time.strftime('%H:%M', time.localtime(sixty_minutes_ago + (i + 1) * bin_size))
+        x_labels.append(f"{start}\n{end}")
+
+    x = range(num_bins)
+    width = 0.15
+    offsets = [-2*width, -width, 0, width, 2*width]
+    colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
+              'anti_slop': '#ffd43b', 'errors': '#fc8181'}
+    labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors'}
+
+    for i, key in enumerate(counts.keys()):
+        bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
+                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+        for rect in bar:
+            h = rect.get_height()
+            if h > 0:
+                ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
+                            xytext=(0, 4), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+
+    max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
+    ax.set_ylim(0, max_val + 2)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
+
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#555555')
+    ax.spines['left'].set_color('#555555')
+    ax.tick_params(axis='both', colors='#c0c0c0')
+
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
+              edgecolor='#444444', labelcolor='#e0e0e0')
+    fig.tight_layout()
+    canvas_widget.graph_canvas.draw()
+
 
 def update_dashboard():
     """Updates the dashboard labels and text areas with current statistics and recent issues."""
@@ -226,6 +396,15 @@ def update_dashboard():
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]))
+
+    # NEW: Update the graph on the Totals tab
+    if "Totals" in app_state.dashboard_notebook.tabs_widgets:
+        graph_canvas_widget = app_state.dashboard_notebook.tabs_widgets["Totals"].get("graph_canvas")
+        if graph_canvas_widget and hasattr(graph_canvas_widget, 'winfo_exists') and graph_canvas_widget.winfo_exists():
+            try:
+                update_issue_graph(graph_canvas_widget)
+            except Exception as e_graph:
+                log_message(f"Error updating issue graph: {e_graph}", "ERROR")
 
 
 def update_dashboard_safe(): 
