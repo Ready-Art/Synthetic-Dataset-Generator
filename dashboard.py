@@ -11,6 +11,13 @@ import time
 import matplotlib.ticker as ticker
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+# Patch to prevent synchronous draw() during window resize (fixes VirGL/Mesa lag)
+class SmoothCanvas(FigureCanvasTkAgg):
+    def resize(self, event=None):
+        # Update internal dimensions without blocking the UI thread
+        super().resize(event)
+        # Defer rendering to the Tk event loop instead of drawing synchronously
+        self.draw_idle()
 import tkinter as tk
 from tkinter import ttk, scrolledtext, font, messagebox, filedialog
 
@@ -185,7 +192,7 @@ def draw_issue_graph(canvas_widget, height=400):
     # 🔑 REPLACES tight_layout(): prevents bounding-box render hangs on VirGL
     fig.subplots_adjust(left=0.08, right=0.96, top=0.88, bottom=0.14)
 
-    canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
+    canvas = SmoothCanvas(fig, master=canvas_widget)
     # 🔑 draw_idle() defers rendering to the Tk event loop, avoiding initial WM deadlocks
     canvas.draw_idle()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -351,8 +358,9 @@ def update_issue_graph(canvas_widget):
 
     ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
               edgecolor='#444444', labelcolor='#e0e0e0')
-    fig.tight_layout()
-    canvas_widget.graph_canvas.draw()
+    # 🔧 Avoid tight_layout(): it recalculates axes on every update and freezes the UI
+    fig.subplots_adjust(left=0.08, right=0.96, top=0.88, bottom=0.14)
+    canvas_widget.graph_canvas.draw_idle()
 
 
 def update_dashboard():
