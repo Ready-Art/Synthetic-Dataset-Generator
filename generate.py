@@ -39,34 +39,21 @@ _VIRGL_ACTIVE = any(
     for kw in ('virgl', 'swrast', 'llvmpipe', 'zink')
 )
 
-# Fallback: check if we can detect VirGL via a quick GL probe after Tk is available
-def _detect_virgl_later():
+def _detect_virgl():
+
     global _VIRGL_ACTIVE
-    if _VIRGL_ACTIVE:
-        return True
-    try:
-        import tkinter as _tk
-        _r = _tk.Tk()
-        _r.withdraw()
-        # Try to read GL renderer string via a minimal canvas
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        from matplotlib.figure import Figure
-        _fig = Figure()
-        _c = FigureCanvasTkAgg(_fig, master=_r)
-        _c.draw()
-        renderer_str = str(_c.get_renderer())
-        _r.destroy()
-        if any(kw in renderer_str.lower() for kw in ('virgl', 'swrast', 'llvmpipe')):
+    env_sources = [
+        os.environ.get('LIBGL_ALWAYS_SOFTWARE', ''),
+        os.environ.get('GALLIUM_DRIVER', ''),
+        os.environ.get('MESA_GL_VERSION_OVERRIDE', ''),
+    ]
+    for source in env_sources:
+        if any(kw in source.lower() for kw in ('virgl', 'swrast', 'llvmpipe', 'zink')):
             _VIRGL_ACTIVE = True
-    except Exception:
-        pass
+            return True
     return _VIRGL_ACTIVE
 
-if _VIRGL_ACTIVE:
-    print("[PERF] VirGL/SW rasterizer detected. Disabling matplotlib anti-aliasing.")
-    matplotlib.rcParams['agg.path.chunksize'] = 10000
-    matplotlib.rcParams['figure.max_open_warning'] = 0
-# --- End VirGL Fix ---
+_detect_virgl()
 
 import api_handler
 import app_state
@@ -2025,12 +2012,27 @@ for tab_name in tab_names:
         graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')
         graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
-        draw_issue_graph(graph_canvas_widget)
+        from dashboard import schedule_graph_draw
+        schedule_graph_draw(graph_canvas_widget, delay_ms=800)
 
         # FIX: Explicitly refresh the parent canvas scrollregion after the graph renders
         app_state.root.update_idletasks()
         parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
         parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
+
+def _on_tab_changed(event):
+    """Only update the graph when the Totals tab is actually visible."""
+    current_tab = app_state.dashboard_notebook.index(
+        app_state.dashboard_notebook.select()
+    )
+    tab_text = app_state.dashboard_notebook.tab(current_tab, "text")
+    if tab_text == "Totals":
+        gc = app_state.dashboard_notebook.tabs_widgets.get("Totals", {}).get("graph_canvas")
+        if gc and gc.winfo_exists():
+            from dashboard import update_issue_graph
+            update_issue_graph(gc)
+
+app_state.dashboard_notebook.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)

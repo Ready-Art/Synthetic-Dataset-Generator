@@ -62,6 +62,19 @@ from api_handler import (
 
 SPACING = 8  # UI padding constant (mirrors generate.py)
 
+def schedule_graph_draw(canvas_widget, delay_ms=500):
+    """Defers the initial graph draw so the UI appears first.
+
+    On VirGL, the first matplotlib render can take 30-120 seconds.
+    Drawing it after the mainloop settles means the user sees the
+    window immediately instead of a frozen blank screen.
+    """
+    def _do_draw():
+        if canvas_widget.winfo_exists():
+            draw_issue_graph(canvas_widget)
+    # Schedule after the Tk event loop has processed the initial layout
+    canvas_widget.after(delay_ms, _do_draw)
+
 def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
     """Creates a modern, dark-themed Treeview inside an existing panel widget."""
     # Configure modern Treeview style
