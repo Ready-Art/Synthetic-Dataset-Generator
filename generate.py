@@ -26,6 +26,48 @@ from config_loader import ConfigLoader, sanitize_input
 import psutil
 import matplotlib
 import matplotlib.ticker as ticker
+
+# --- VirGL / VM Performance Fix ---
+# VirGL (common on VMs with virglrenderer/Mesa) causes extreme Tkinter/matplotlib
+# lag due to broken OpenGL anti-aliasing paths. We detect VirGL or other SW rasterizers
+# and force CPU-safe settings before creating the window.
+_VIRGL_ACTIVE = any(
+    kw in os.environ.get('LIBGL_ALWAYS_SOFTWARE', '') or
+    kw in os.environ.get('GALLIUM_DRIVER', '') or
+    kw in os.environ.get('MESA_GL_VERSION_OVERRIDE', '') or
+    kw in str(matplotlib.get_backend())
+    for kw in ('virgl', 'swrast', 'llvmpipe', 'zink')
+)
+
+# Fallback: check if we can detect VirGL via a quick GL probe after Tk is available
+def _detect_virgl_later():
+    global _VIRGL_ACTIVE
+    if _VIRGL_ACTIVE:
+        return True
+    try:
+        import tkinter as _tk
+        _r = _tk.Tk()
+        _r.withdraw()
+        # Try to read GL renderer string via a minimal canvas
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
+        _fig = Figure()
+        _c = FigureCanvasTkAgg(_fig, master=_r)
+        _c.draw()
+        renderer_str = str(_c.get_renderer())
+        _r.destroy()
+        if any(kw in renderer_str.lower() for kw in ('virgl', 'swrast', 'llvmpipe')):
+            _VIRGL_ACTIVE = True
+    except Exception:
+        pass
+    return _VIRGL_ACTIVE
+
+if _VIRGL_ACTIVE:
+    print("[PERF] VirGL/SW rasterizer detected. Disabling matplotlib anti-aliasing.")
+    matplotlib.rcParams['agg.path.chunksize'] = 10000
+    matplotlib.rcParams['figure.max_open_warning'] = 0
+# --- End VirGL Fix ---
+
 import api_handler
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
@@ -1144,6 +1186,21 @@ def start_processing():
                             app_state.task_queue.overall_percent_label.config(text="N/A")
                 
                 update_dashboard() # Refresh dashboard stats
+
+                # Throttle graph updates to avoid VirGL rendering spam
+                _last_graph_update = getattr(app_state, '_last_graph_update', 0)
+                _now = time.time()
+                _graph_interval = 0.5 if _VIRGL_ACTIVE else 1.0
+                if _now - _last_graph_update >= _graph_interval:
+                    app_state._last_graph_update = _now
+                    if "Totals" in app_state.dashboard_notebook.tabs_widgets:
+                        _gc = app_state.dashboard_notebook.tabs_widgets["Totals"].get("graph_canvas")
+                        if _gc and hasattr(_gc, 'winfo_exists') and _gc.winfo_exists():
+                            try:
+                                from dashboard import update_issue_graph
+                                update_issue_graph(_gc)
+                            except Exception as _e:
+                                log_message(f"Graph update error: {_e}", "ERROR")
                 update_database_status()
                 update_queue_ui()
                 if app_state.root.winfo_exists():

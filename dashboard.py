@@ -117,6 +117,17 @@ def draw_issue_graph(canvas_widget, height=400):
     ax = fig.add_subplot(111)
     ax.set_facecolor('#2a2a35')
 
+    # --- VirGL fix: disable anti-aliasing on all artists ---
+    import os
+    _virgl = any(kw in os.environ.get('GALLIUM_DRIVER', '').lower()
+                 for kw in ('virgl', 'llvmpipe', 'zink'))
+
+    if _virgl:
+        fig.patch.set_antialiased(False)
+        ax.patch.set_antialiased(False)
+        for spine in ax.spines.values():
+            spine.set_antialiased(False)
+
     # Time bins setup
     now = time.time()
     sixty_minutes_ago = now - 3600
@@ -154,22 +165,26 @@ def draw_issue_graph(canvas_widget, height=400):
     # Plot bars & add value labels
     for i, key in enumerate(counts.keys()):
         bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
-                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9,
+                     antialiased=not _virgl)
         for rect in bar:
             h = rect.get_height()
             if h > 0:
                 ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
                             xytext=(0, 4), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+                            ha='center', va='bottom', fontsize=8, color='#e0e0e0',
+                            fontweight='bold', antialiased=not _virgl)
 
     # Styling & Layout
     max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
     ax.set_ylim(0, max_val + 2)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold',
+                  color='#e0e0e0', labelpad=10)
     ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
-    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold',
+                 color='#ffffff', pad=15)
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
 
@@ -189,13 +204,10 @@ def draw_issue_graph(canvas_widget, height=400):
     canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    # FIX: Force Tkinter to process geometry events immediately so the
-    # parent scrollable frame can calculate the correct scroll region
     canvas_widget.update_idletasks()
     canvas_widget.graph_canvas = canvas
     canvas_widget.graph_fig = fig
     canvas_widget.graph_ax = ax
-
 
 def update_issue_graph(canvas_widget):
     """Updates an existing issue graph with new data without recreating the figure."""
@@ -207,10 +219,15 @@ def update_issue_graph(canvas_widget):
     ax = canvas_widget.graph_ax
     ax.clear()
 
-    # Reuse the exact same drawing logic from draw_issue_graph
-    # (We extract it into a shared helper in production, but for drop-in replacement:)
+    # --- VirGL anti-aliasing guard ---
+    import os
+    _virgl = any(kw in os.environ.get('GALLIUM_DRIVER', '').lower()
+                 for kw in ('virgl', 'llvmpipe', 'zink'))
     fig.patch.set_facecolor('#1e1e24')
+    fig.patch.set_antialiased(not _virgl)
     ax.set_facecolor('#2a2a35')
+    ax.patch.set_antialiased(not _virgl)
+    # --- End VirGL guard ---
 
     now = time.time()
     sixty_minutes_ago = now - 3600
@@ -242,21 +259,25 @@ def update_issue_graph(canvas_widget):
 
     for i, key in enumerate(counts.keys()):
         bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
-                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9,
+                     antialiased=not _virgl)
         for rect in bar:
             h = rect.get_height()
             if h > 0:
                 ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
                             xytext=(0, 4), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+                            ha='center', va='bottom', fontsize=8, color='#e0e0e0',
+                            fontweight='bold', antialiased=not _virgl)
 
     max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
     ax.set_ylim(0, max_val + 2)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold',
+                  color='#e0e0e0', labelpad=10)
     ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
-    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold',
+                 color='#ffffff', pad=15)
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
 
@@ -396,15 +417,6 @@ def update_dashboard():
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]))
-
-    # NEW: Update the graph on the Totals tab
-    if "Totals" in app_state.dashboard_notebook.tabs_widgets:
-        graph_canvas_widget = app_state.dashboard_notebook.tabs_widgets["Totals"].get("graph_canvas")
-        if graph_canvas_widget and hasattr(graph_canvas_widget, 'winfo_exists') and graph_canvas_widget.winfo_exists():
-            try:
-                update_issue_graph(graph_canvas_widget)
-            except Exception as e_graph:
-                log_message(f"Error updating issue graph: {e_graph}", "ERROR")
 
 
 def update_dashboard_safe(): 
