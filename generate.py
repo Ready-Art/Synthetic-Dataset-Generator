@@ -1201,6 +1201,7 @@ def start_processing():
                             app_state.task_queue.overall_percent_label.config(text="N/A")
                 
                 update_dashboard() # Refresh dashboard stats
+                update_api_response_time_labels()  # Dynamic color-coded response times
                 update_database_status()
                 update_queue_ui()
                 if app_state.root.winfo_exists():
@@ -1502,7 +1503,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.2.4",
+    text="v9.2.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1637,6 +1638,64 @@ for slot_idx in range(6):
     slot_label.pack(fill="x")
     app_state.slot_widgets[slot_label_name] = slot_label
 # --- End of API Response Time Display Frame ---
+
+# --- API Response Time Dynamic Color Coding ---
+API_RT_THRESHOLDS_MS = (500, 1500)  # (good, medium) — above medium = slow
+
+API_RT_COLORS = {
+    "good":    "#51cf66",   # Green  — snappy
+    "medium":  "#fcc419",   # Amber  — acceptable
+    "slow":    "#ff6b6b",   # Red    — needs attention
+    "no_data": "#868e96",   # Muted  — idle
+}
+
+def _get_api_rt_color(avg_ms):
+    """Return the appropriate color for a given average response time in ms."""
+    if avg_ms is None or avg_ms <= 0:
+        return API_RT_COLORS["no_data"]
+    if avg_ms < API_RT_THRESHOLDS_MS[0]:
+        return API_RT_COLORS["good"]
+    elif avg_ms < API_RT_THRESHOLDS_MS[1]:
+        return API_RT_COLORS["medium"]
+    else:
+        return API_RT_COLORS["slow"]
+
+def _format_api_rt(avg_ms):
+    """Format a response time in ms into a human-friendly string."""
+    if avg_ms >= 1000:
+        return f"{avg_ms / 1000:.2f}s"
+    return f"{avg_ms:.0f}ms"
+
+def update_api_response_time_labels():
+    """
+    Refreshes all 6 API response-time labels with dynamic color coding.
+    Call this from the GUI update loop alongside update_dashboard().
+    """
+    if not app_state.root.winfo_exists():
+        return
+
+    with api_response_times_lock:
+        for slot_idx in range(6):
+            label_name = f"api_response_time_label_{slot_idx + 1}"
+            label = app_state.slot_widgets.get(label_name)
+            if label is None or not label.winfo_exists():
+                continue
+
+            times = api_response_times_per_slot[slot_idx] if slot_idx < len(api_response_times_per_slot) else []
+
+            if not times:
+                label.config(
+                    text=f"⚡ API {slot_idx + 1}: No data yet",
+                    foreground=API_RT_COLORS["no_data"]
+                )
+            else:
+                avg_ms = sum(times) / len(times)
+                color = _get_api_rt_color(avg_ms)
+                label.config(
+                    text=f"⚡ API {slot_idx + 1}: {_format_api_rt(avg_ms)} avg",
+                    foreground=color
+                )
+# --- End API Response Time Dynamic Color Coding ---
 
 # --- Progress Bars Frame ---
 progress_frame = ttk.Frame(app_state.root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
