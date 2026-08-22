@@ -1108,7 +1108,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                         time.sleep(random.uniform(0.5, 1.5))
                         continue
                     else:
-                        return None, text_context
+                        return None
                 generated_question_text = content.strip()
                 newline_count = generated_question_text.count('\n')
                 text_length = len(generated_question_text)
@@ -2574,7 +2574,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
             if not issue_detected_this_main_api_call:
                 log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")
                 return answer, issue_ever_detected_this_task, refusal_ever_detected_this_task
-
+    # Safety exit: an issue was flagged but no specific fix path triggered
+    # a break/continue (e.g., slop detected but no Slop Fixer API configured).
+    # Without this, the while True would loop indefinitely.
             break
 
         current_system_prompt_iter = base_system_prompt

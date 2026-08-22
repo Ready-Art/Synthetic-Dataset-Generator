@@ -164,17 +164,14 @@ def is_incomplete_quote(text):
     if not text:
         return False, []
 
-    # Count straight and curly quotes separately
     straight_count = text.count('"')
-    curly_left = text.count('“')
-    curly_right = text.count('”')
+    curly_left = text.count('\u201c')   # Explicit — no ambiguity
+    curly_right = text.count('\u201d')  # Explicit — no ambiguity
 
-    # Check for unbalanced straight quotes
     if straight_count % 2 != 0:
         snippet = text[:150] + ("..." if len(text) > 150 else "")
         return True, [("Incomplete quote (unbalanced straight quotes)", snippet)]
 
-    # Check for mismatched curly quotes
     if curly_left != curly_right:
         snippet = text[:150] + ("..." if len(text) > 150 else "")
         return True, [("Incomplete quote (unbalanced curly quotes)", snippet)]
