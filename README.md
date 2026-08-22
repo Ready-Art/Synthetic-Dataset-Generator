@@ -27,6 +27,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Resuming & Crash Recovery](#resuming--crash-recovery)
   - [Duplication vs. Collaborative Mode](#duplication-vs-collaborative-mode)
   - [Dashboard & Monitoring](#dashboard--monitoring)
+  - [Queue Management](#queue-management)
   - [Live Prompt Preview](#live-prompt-preview)
   - [Configuration Profiles](#configuration-profiles)
   - [API Connection Testing](#api-connection-testing)
@@ -69,7 +70,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Refusal Detection** — Automatically detects and retries LLM refusals with configurable jailbreak prompts
 - **User Speaking Detection** — Detects when the assistant impersonates the user, with gender-specific phrase lists
 - **Slop Detection** — Identifies undesirable phrases/patterns in generated text
-- **Anti-Slop Detection** — Secondary detection layer for additional phrase filtering with dedicated LLM rewriting
+- **Anti-Slop Detection** — Independent secondary detection layer with its own API slot (6), dedicated sampler settings, and LLM rewriting
 - **Incomplete Quote Detection** — Catches unbalanced quotation marks (both straight `"` and curly `""` quotes) with programmatic auto-fix fallback
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
 - **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness and rotating fix instructions
@@ -80,6 +81,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 ### Character & Persona Engine
 - **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues (1–10 characters per conversation)
 - **Character Profiles** — Randomly inject character names, ages (validated 18–60), races, jobs, clothing, appearance, backstories, personalities, traits, and settings into system prompts
+- **Card-Based Character Editor** — Visual card layout in the Configuration Editor with individual add/remove per character
 - **Name Validation** — Characters with empty or whitespace-only names are automatically skipped with a warning
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
 - **Setting Selection** — Optionally assign custom locations/environments to each character
@@ -110,7 +112,9 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **API Connection Testing** — Test API connectivity directly from the configuration editor
 - **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
 - **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
-- **Live Prompt Preview** — View prompts being sent to APIs in real-time as JSON
+- **Queue Management** — View pending, completed, and failed tasks; purge pending tasks, retry failed tasks, and export queue state to CSV
+- **Live Prompt Preview** — View prompts being sent to APIs in real-time with role-based color coding, search & highlight, section copy, and auto-scroll toggle
+- **Toast Notifications** — Non-blocking, auto-dismissing notification popups for status updates (success, error, warning, info)
 - **Token & Cost Tracking** — Track input/output tokens and estimate API costs with budget enforcement
 - **Debug Logging Toggle** — Enable/disable verbose debug logging from the UI with a single checkbox
 - **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
@@ -119,13 +123,14 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Stop & Clear Job** — Stop the current generation job, clear all progress, and reset for a fresh start
 - **Force Recovery** — Bypass configuration compatibility checks and force-load a previous generation state
 - **Clear Database** — Clear the PostgreSQL `generated_conversations` table from the UI with confirmation dialog
-- **Export DB → JSONL** — Export stored conversations from PostgreSQL to a JSONL file
+- **Export DB → JSONL** — Export stored conversations from PostgreSQL to a JSONL file (runs in background thread)
 - **Rate Limit Status Display** — Real-time per-API rate limit usage indicators with color-coded status (green/orange/red)
 - **API Response Times** — Average, min, max response times and sample count per API slot displayed in the UI
 - **Thread Status Display** — Shows spawned and active thread counts in the metrics bar
 - **Dashboard Search** — Case-insensitive search across all issue panels within a dashboard tab with auto-scroll to first match
 - **Dashboard Copy All** — Copy all issue text from a dashboard tab to clipboard
 - **Clear Dashboard** — Reset all recent issue lists and graph data with a single button
+- **ttkbootstrap "superhero" Theme** — Modern dark-themed UI with custom styling for all widgets
 
 ---
 
@@ -136,7 +141,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 │                    Tkinter GUI (Main Thread)             │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
 │  │ Controls  │ │ Progress │ │ Dashboard│ │ Config    │  │
-│  │           │ │  Bars    │ │  & Graph │ │  Editor   │  │
+│  │ & Toasts  │ │  Bars    │ │ & Queue  │ │  Editor   │  │
 │  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
 └──────────────────────┬──────────────────────────────────┘
                        │
@@ -246,7 +251,7 @@ The application supports **6 API slots**:
 |------|---------|---------------------|----------------------|------------------------|
 | 1-4  | Main generation APIs | Yes | Yes | Yes |
 | 5    | Slop Fixer LLM | No | Yes | Yes |
-| 6    | Anti-Slop Fixer LLM | No | Yes | Yes |
+| 6    | Anti-Slop Fixer LLM (independent) | No | Yes | Yes |
 
 ```yaml
 api:
@@ -288,9 +293,9 @@ generation:
   max_newlines_malformed: 16      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
   max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing
-  max_anti_slop_fix_iterations: 3      # Iterations for sentence-level anti-slop fixing
+  max_anti_slop_fix_iterations: 10     # Iterations for sentence-level anti-slop fixing
   max_character_cards: 10        # Maximum character profile cards in the editor
-  output_format: "sharegpt"       # "sharegpt" or "openai"
+  output_format: "sharegpt"       # Output format for JSONL files
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
   slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
 
@@ -419,6 +424,8 @@ The **gender** setting (`config.yml` top level) determines which user speaking p
 gender: "female"  # "male", "female", or "neutral"
 ```
 
+> **Note:** Anti-Slop is a fully independent detection layer. It uses its own API (Slot 6), its own sampler settings, and its own phrase/fix lists. It is separate from Slop Detection (Slot 5) and can be configured independently.
+
 ### Sampler Parameters
 
 ```yaml
@@ -465,6 +472,7 @@ samplers:
   - `"enable"` — Send `{"chat_template_kwargs": {"enable_thinking": true}}`
   - `"disable"` — Send `{"chat_template_kwargs": {"enable_thinking": false}}`
 - **`max_tokens_user_reply`** — Maximum tokens for LLM-generated user continuation messages.
+- **`slop_fixer_params` / `anti_slop_params`** — Leave individual fields blank to inherit from the main sampler defaults.
 
 ### Database & Caching
 
@@ -590,7 +598,9 @@ The state file tracks:
 The real-time dashboard provides:
 
 - **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes (10-minute bins)
-- **Per-API tabs** — Individual API statistics and recent issues (APIs 1-6)
+- **Per-API tabs (API 1–4)** — Individual API statistics and recent issues for each generation slot
+- **Prompt Viewer tab** — Real-time view of prompts being sent to APIs with rich formatting
+- **Queue tab** — Live view of pending, completed, and failed tasks with management actions
 - **Metrics bar** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
 - **Budget indicator** — Current spend vs. budget limit with color-coded status (turns red when exceeded)
 - **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
@@ -599,7 +609,22 @@ The real-time dashboard provides:
 - **Search** — Search across all issue panels in a tab with case-insensitive matching and auto-scroll to first result
 - **Copy All** — Copy all issue text from a tab to clipboard
 - **Clear Dashboard** button — Resets all recent issue lists and graph data
-- **Live Prompt Preview** tab — Shows exact JSON payloads being sent to APIs in real-time
+
+### Queue Management
+
+The **📦 Queue** tab in the dashboard provides real-time visibility and control over task processing:
+
+- **Pending panel** — Tasks currently in the queue waiting to be processed
+- **Completed panel** — Tasks that have been successfully processed
+- **Failed panel** — Tasks that exceeded their retry limit or were discarded
+
+Each panel displays: Task ID, Source File, and Retry count.
+
+**Actions:**
+- **🗑️ Purge Queue** — Marks all pending tasks as purged; workers will skip them. Useful for abandoning a bad batch without stopping the job.
+- **🔄 Retry Failed** — Re-queues all failed tasks for another processing attempt (resets retry counters).
+- **📤 Export Queue** — Exports the full queue state (all three panels) to a CSV file in the output directory.
+- **🔄 Refresh View** — Manually refreshes the queue display.
 
 ### Animated Progress Bars
 
@@ -617,14 +642,29 @@ When a milestone (25%, 50%, 75%, 90%, 100%) is crossed, the progress bar briefly
 
 ### Live Prompt Preview
 
-A dedicated **Live Prompt Preview** tab in the dashboard shows the exact JSON payload (messages array) being sent to the API in real-time. This is useful for:
+A dedicated **🔍 Prompt Viewer** tab in the dashboard shows the exact messages being sent to the API in real-time, with rich formatting and utility controls:
 
+**Display Features:**
+- **Role-based color coding** — System (purple), User (blue), Assistant (green) with bold role headers
+- **Metadata header** — Shows thread ID, API slot, message type (Question/Answer/User Continuation/Slop Fix/Anti-Slop Fix), attempt number, and timestamp
+- **Stats bar** — Message count, total character count, and estimated token count (~4 chars/token)
+- **Separator lines** — Visual dividers between messages for readability
+
+**Utility Controls:**
+- **🔍 Search** — Case-insensitive search with yellow highlighting of all matches; auto-scrolls to first match
+- **📋 System** — Copies only the system prompt section to clipboard
+- **📋 Latest** — Copies the most recent message to clipboard
+- **📋 All** — Copies the full prompt content to clipboard
+- **Auto-scroll toggle** — Enable/disable automatic scrolling to the latest prompt
+
+This is useful for:
 - Debugging prompt templates and variable substitution
 - Verifying character engine injections and emotional state assignments
 - Confirming system prompt construction and jailbreak additions
 - Monitoring the conversation context being passed to the LLM
+- Verifying slop/anti-slop fixer prompts
 
-The preview auto-scrolls to the latest prompt and updates thread-safely from worker threads.
+The preview updates thread-safely from worker threads and respects the dashboard pause state.
 
 ### Configuration Profiles
 
@@ -638,13 +678,13 @@ Save and load complete configurations as named profiles:
 
 ### API Connection Testing
 
-The Configuration Editor includes a **Test Connection** button for each API slot. Clicking it sends a minimal test request (`"Reply with 'OK'."`) to verify:
+The Configuration Editor includes a **Test Connection** button for each API slot. Clicking it sends a minimal test request (`"Reply with 'OK'."`) in a background thread to verify:
 
 - The API URL is reachable and correctly formatted
 - The API key is valid
 - The model name is accepted by the endpoint
 
-Results are displayed next to the button with color-coded status (green for success, red for failure with error details).
+Results are displayed next to the button with color-coded status (green for success, red for failure with error details). The test runs asynchronously so the UI remains responsive.
 
 ### Valkey Connection Testing
 
@@ -671,8 +711,19 @@ Use with caution, as incompatible settings may lead to unexpected behavior.
 
 ### Database Management
 
-- **Export DB → JSONL** — Exports all conversations stored in PostgreSQL to a JSONL file. A file dialog prompts for the save location.
+- **Export DB → JSONL** — Exports all conversations stored in PostgreSQL to a JSONL file. A file dialog prompts for the save location. The export runs in a background thread to prevent UI freeze and uses a server-side cursor for large datasets.
 - **Clear Database** — Truncates the `generated_conversations` table in PostgreSQL. A confirmation dialog prevents accidental data loss.
+
+### Toast Notifications
+
+The application uses a toast notification system for non-blocking status updates. Toasts appear in the bottom-right corner with an icon and color based on severity:
+
+- ✅ **Success** (green) — e.g., "Database cleared successfully!"
+- ❌ **Error** (red) — e.g., "Export failed: DB pool not initialized."
+- ⚠️ **Warning** (yellow) — e.g., "Questions file is empty or not found."
+- ℹ️ **Info** (blue) — e.g., "All tasks already completed."
+
+Toasts auto-dismiss after 4 seconds and stack vertically.
 
 ---
 
@@ -689,17 +740,6 @@ Use with caution, as incompatible settings may lead to unexpected behavior.
 }
 ```
 
-### OpenAI Format
-```json
-{
-  "id": "filename_chunk_at_1234",
-  "messages": [
-    {"role": "user", "content": "What is the main theme of..."},
-    {"role": "assistant", "content": "The main theme revolves around..."}
-  ]
-}
-```
-
 In **Duplication Mode**, output files are named per API slot:
 - `output/output_api_slot_0.jsonl`
 - `output/output_api_slot_1.jsonl`
@@ -710,7 +750,7 @@ In **Collaborative Mode**, a single file is produced:
 
 When **PostgreSQL** is enabled, conversations are stored in the `generated_conversations` table and file writing is skipped entirely. Use the **Export DB → JSONL** button to export.
 
-> **Note:** Conversations that contain detected refusals are **not** saved to output, ensuring dataset quality. Incomplete conversations (fewer turns than configured) are also excluded.
+> **Note:** Conversations that contain detected refusals are **not** saved to output, ensuring dataset quality. Incomplete conversations (fewer turns than configured) are also excluded and requeued for retry.
 
 ---
 
@@ -744,6 +784,7 @@ readyart-dataset-generator/
 │   ├── log.txt              # Application log
 │   ├── debug_prompt.jsonl        # Debug logs (collaborative mode)
 │   ├── debug_prompt_api_slot_0.jsonl  # Per-API debug logs (duplication mode)
+│   ├── queue_export.csv          # Queue state export (from Queue tab)
 │   └── output_data_backup_*.zip # Auto-backups of previous runs
 └── taskbar.png              # Application icon (optional)
 ```
@@ -957,6 +998,8 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Slop fixer breaking quotes** | This is expected behavior — the fixer checks for unbalanced quotes after each rewrite and skips replacements that would break quote structure |
 | **Characters with empty names** | Characters with empty or whitespace-only names are automatically skipped with a warning; ensure all character entries have valid names |
 | **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
+| **Tasks stuck in Failed state** | Use **🔄 Retry Failed** in the Queue tab to re-queue them, or **🗑️ Purge Queue** to discard pending tasks |
+| **Queue tab not updating** | Click **🔄 Refresh View** in the Queue tab; the view auto-updates during active processing |
 
 ### Environment Variables
 
@@ -1001,7 +1044,9 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Add character traits** — Use the `traits` field in character entries to add more depth to character personas
 - **Enable slop → anti-slop fallback** — Set `slop_to_anti_slop_fallback: true` to use the Anti-Slop Fixer as a final attempt when the Slop Fixer fails
 - **Adjust malformed response thresholds** — Tune `max_newlines_malformed` and `max_text_length_malformed` to catch poorly formatted LLM output without rejecting valid responses
-- **Use the `enable_thinking` sampler option** — Set to `"disable"` for reasoning models that output unwanted thinking tags.
+- **Use the `enable_thinking` sampler option** — Set to `"disable"` for reasoning models that output unwanted thinking tags
+- **Use the Queue tab** — Monitor task progress in real-time; use **Purge Queue** to abandon bad batches without stopping the entire job, or **Retry Failed** to recover from transient issues
+- **Export queue state** — Use **📤 Export Queue** to get a CSV snapshot of task status for external analysis
 
 ---
 
