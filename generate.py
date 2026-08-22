@@ -463,32 +463,79 @@ def update_database_status():
             app_state.db_status_widgets['valkey_icon'].config(text="❌", foreground="gray")
             app_state.db_status_widgets['valkey_status'].config(text="Valkey: Disconnected", foreground="gray")
 
-def update_live_prompt_preview(messages_list):
-    """Thread-safe function to update the Live Prompt Preview widget from worker threads."""
-    # Check if paused - don't update preview if UI updates are paused
+def update_live_prompt_preview(messages_list, metadata=None):
+    """Thread-safe function to update the Rich Prompt Viewer from worker threads."""
     if dashboard_pause_var.get():
         return
 
     if not app_state.root.winfo_exists() or prompt_preview_text is None:
         return
 
-    # Format payload for clean JSON readability
-    preview_json = json.dumps({"messages": messages_list}, indent=2, ensure_ascii=False)
+    if metadata is None:
+        metadata = {}
 
     def _apply_update():
         if not app_state.root.winfo_exists() or prompt_preview_text is None:
             return
-        # Double-check pause state in main thread callback
         if dashboard_pause_var.get():
             return
+
+        # --- Update Metadata Header ---
+        if prompt_preview_meta_var is not None:
+            thread_id = metadata.get('thread_id', 'N/A')
+            api_slot = metadata.get('api_slot_idx', 'N/A')
+            msg_type = metadata.get('message_type', 'Unknown')
+            attempt = metadata.get('attempt', 'N/A')
+            timestamp = metadata.get('timestamp', time.strftime('%H:%M:%S'))
+            prompt_preview_meta_var.set(
+                f"Thread: {thread_id}  |  API Slot: {api_slot}  |  Type: {msg_type}  |  "
+                f"Attempt: {attempt}  |  {timestamp}"
+            )
+
+        # --- Update Message Count & Token Estimate ---
+        if prompt_preview_stats_var is not None:
+            msg_count = len(messages_list)
+            total_chars = sum(len(m.get('content', '')) for m in messages_list)
+            approx_tokens = total_chars // 4  # Rough 4 chars per token
+            prompt_preview_stats_var.set(
+                f"Messages: {msg_count}  |  Chars: {total_chars:,}  |  Est. Tokens: ~{approx_tokens:,}"
+            )
+
+        # --- Build Rich Text Content ---
         prompt_preview_text.config(state=tk.NORMAL)
         prompt_preview_text.delete(1.0, tk.END)
-        prompt_preview_text.insert(tk.END, preview_json)
+
+        for i, msg in enumerate(messages_list):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+
+            # Add a separator between messages (except before the first)
+            if i > 0:
+                prompt_preview_text.insert(tk.END, "\n" + "─" * 80 + "\n\n", "separator")
+
+            # Role header
+            role_tag = f"{role}_role"
+            prompt_preview_text.insert(tk.END, f"📌 {role.upper()}", role_tag)
+            prompt_preview_text.insert(tk.END, "\n", "separator")
+
+            # Content (indented)
+            content_tag = f"{role}_content"
+            indented_content = content
+            # Simple indent for readability
+            lines = indented_content.split('\n')
+            indented_lines = [f"   {line}" for line in lines]
+            prompt_preview_text.insert(tk.END, "\n".join(indented_lines), content_tag)
+            prompt_preview_text.insert(tk.END, "\n")
+
+        # Auto-scroll if not paused
+        if not prompt_preview_autoscroll_var.get():
+            prompt_preview_text.see(tk.END)
+
         prompt_preview_text.config(state=tk.DISABLED)
-        prompt_preview_text.see(tk.END)  # Auto-scroll to bottom
 
     # Schedule UI update on the main Tkinter thread
     app_state.root.after(0, _apply_update)
+
 app_state.live_prompt_preview_hook = update_live_prompt_preview
 
 def start_processing():
@@ -1455,7 +1502,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.2.1",
+    text="v9.2.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1822,16 +1869,157 @@ tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "Errors"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"] # Keys for accessing data and widgets
 
-# --- Live Prompt Preview Tab Setup ---
+# --- Rich Prompt Viewer Tab Setup ---
 preview_tab = ttk.Frame(app_state.dashboard_notebook)
-app_state.dashboard_notebook.add(preview_tab, text="Live Prompt Preview")
+app_state.dashboard_notebook.add(preview_tab, text="🔍 Prompt Viewer")
 
-prompt_preview_text = scrolledtext.ScrolledText(preview_tab, wrap=tk.WORD, state=tk.NORMAL)
-prompt_preview_text.config(font=('Consolas', 9))
-prompt_preview_text.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
-prompt_preview_text.insert(tk.END, "Waiting for prompt generation...\n\n(Prompts will appear here in real-time as they are queued for the API)")
+# Top toolbar: metadata + stats
+preview_toolbar = ttk.Frame(preview_tab)
+preview_toolbar.pack(fill=tk.X, padx=SPACING, pady=(SPACING, 2))
+
+# Metadata label (thread, slot, type, attempt, timestamp)
+prompt_preview_meta_var = tk.StringVar(value="Waiting for prompt generation...")
+meta_label = ttk.Label(preview_toolbar, textvariable=prompt_preview_meta_var,
+                       font=('Segoe UI', 9, 'bold'), foreground=ACCENT_CYAN, anchor='w')
+meta_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+# Stats label (message count, chars, tokens)
+prompt_preview_stats_var = tk.StringVar(value="")
+stats_label = ttk.Label(preview_toolbar, textvariable=prompt_preview_stats_var,
+                        font=('Segoe UI', 9), foreground='#868e96', anchor='e')
+stats_label.pack(side=tk.RIGHT)
+
+# Second toolbar: search + actions
+preview_actions_bar = ttk.Frame(preview_tab)
+preview_actions_bar.pack(fill=tk.X, padx=SPACING, pady=(2, SPACING))
+
+# Search
+preview_search_var = tk.StringVar()
+preview_search_entry = ttk.Entry(preview_actions_bar, textvariable=preview_search_var, width=25)
+preview_search_entry.pack(side=tk.LEFT, padx=(0, 5))
+
+def _preview_search():
+    """Highlight all occurrences of the search term in the prompt viewer."""
+    if prompt_preview_text is None:
+        return
+    prompt_preview_text.config(state=tk.NORMAL)
+    # Remove old highlights
+    for tag in prompt_preview_text.tag_names():
+        if tag.startswith('search_'):
+            prompt_preview_text.tag_delete(tag)
+    term = preview_search_var.get().strip()
+    if not term:
+        prompt_preview_text.config(state=tk.DISABLED)
+        return
+    # Find all occurrences
+    start = '1.0'
+    idx = prompt_preview_text.search(term, start, stopindex=tk.END)
+    tag_name = f'search_{id(term)}'
+    prompt_preview_text.tag_configure(tag_name, background='#ffd43b', foreground='#000000')
+    count = 0
+    while idx:
+        end_idx = f"{idx}+{len(term)}c"
+        prompt_preview_text.tag_add(tag_name, idx, end_idx)
+        count += 1
+        start = end_idx
+        idx = prompt_preview_text.search(term, start, stopindex=tk.END)
+    if count > 0:
+        # Scroll to first match
+        prompt_preview_text.see(idx)
+    prompt_preview_text.config(state=tk.DISABLED)
+
+preview_search_entry.bind('<Return>', lambda e: _preview_search())
+ttk.Button(preview_actions_bar, text="🔍", width=3, command=_preview_search).pack(side=tk.LEFT, padx=2)
+ttk.Button(preview_actions_bar, text="Clear", width=5,
+           command=lambda: (preview_search_var.set(''), _preview_search())).pack(side=tk.LEFT, padx=2)
+
+# Copy buttons
+def _copy_system_prompt():
+    if prompt_preview_text is None:
+        return
+    content = prompt_preview_text.get(1.0, tk.END)
+    # Extract system section
+    sys_start = content.find('📌 SYSTEM')
+    if sys_start == -1:
+        toast.show("No system prompt found.", "warning")
+        return
+    # Find end of system section (next separator or end)
+    next_sep = content.find('─' * 80, sys_start + 10)
+    if next_sep == -1:
+        next_sep = len(content)
+    sys_text = content[sys_start + 12:next_sep].strip()
+    app_state.root.clipboard_clear()
+    app_state.root.clipboard_append(sys_text)
+    toast.show("System prompt copied.", "success")
+
+def _copy_latest_message():
+    if prompt_preview_text is None:
+        return
+    content = prompt_preview_text.get(1.0, tk.END)
+    # Find last role marker
+    last_marker = max(
+        content.rfind('📌 SYSTEM'),
+        content.rfind('📌 USER'),
+        content.rfind('📌 ASSISTANT')
+    )
+    if last_marker == -1:
+        toast.show("No messages found.", "warning")
+        return
+    latest_text = content[last_marker + 12:].strip()
+    app_state.root.clipboard_clear()
+    app_state.root.clipboard_append(latest_text)
+    toast.show("Latest message copied.", "success")
+
+def _copy_all():
+    if prompt_preview_text is None:
+        return
+    content = prompt_preview_text.get(1.0, tk.END).strip()
+    app_state.root.clipboard_clear()
+    app_state.root.clipboard_append(content)
+    toast.show("Full prompt copied.", "success")
+
+ttk.Button(preview_actions_bar, text="📋 System", width=10, command=_copy_system_prompt).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_actions_bar, text="📋 Latest", width=10, command=_copy_latest_message).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_actions_bar, text="📋 All", width=8, command=_copy_all).pack(side=tk.RIGHT, padx=2)
+
+# Auto-scroll toggle
+prompt_preview_autoscroll_var = tk.BooleanVar(value=True)
+ttk.Checkbutton(preview_actions_bar, text="Auto-scroll", variable=prompt_preview_autoscroll_var).pack(side=tk.RIGHT, padx=8)
+
+# Main rich text area
+prompt_preview_text = scrolledtext.ScrolledText(
+    preview_tab, wrap=tk.WORD, state=tk.NORMAL,
+    font=('Consolas', 10), spacing1=2, spacing3=2,
+    background='#1a1a2e', foreground='#e0e0e0',
+    insertbackground='#ffffff', selectbackground='#2a4a6a',
+    relief=tk.FLAT, borderwidth=0
+)
+prompt_preview_text.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=(0, SPACING))
+
+# Configure text tags for rich syntax highlighting
+prompt_preview_text.tag_configure('system_role', foreground='#bb86fc', font=('Consolas', 11, 'bold'))
+prompt_preview_text.tag_configure('system_content', foreground='#ce93d8')
+prompt_preview_text.tag_configure('user_role', foreground='#4fc3f7', font=('Consolas', 11, 'bold'))
+prompt_preview_text.tag_configure('user_content', foreground='#81d4fa')
+prompt_preview_text.tag_configure('assistant_role', foreground='#69f0ae', font=('Consolas', 11, 'bold'))
+prompt_preview_text.tag_configure('assistant_content', foreground='#b2dfdb')
+prompt_preview_text.tag_configure('separator', foreground='#444466')
+
+# Initial placeholder text
+prompt_preview_text.insert(tk.END,
+    "🔍 Rich Prompt Viewer\n\n"
+    "Waiting for prompt generation...\n\n"
+    "Prompts will appear here in real-time as they are queued for the API.\n\n"
+    "Features:\n"
+    "  • Color-coded by role (System / User / Assistant)\n"
+    "  • Metadata header (thread, slot, type, attempt)\n"
+    "  • Token estimation\n"
+    "  • Search & highlight\n"
+    "  • Copy individual sections\n"
+    "  • Auto-scroll toggle\n"
+)
 prompt_preview_text.config(state=tk.DISABLED)
-# --- End Preview Tab Setup ---
+# --- End Rich Prompt Viewer Tab Setup ---
 
 for tab_name in tab_names:
     tab_frame = ttk.Frame(app_state.dashboard_notebook)

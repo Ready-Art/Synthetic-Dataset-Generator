@@ -29,11 +29,11 @@ from app_state import (
 )
 
 
-def update_live_prompt_preview(messages_list):
+def update_live_prompt_preview(messages_list, metadata=None):
     """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
     hook = app_state.live_prompt_preview_hook
     if hook:
-        hook(messages_list)
+        hook(messages_list, metadata)
 
 
 def check_budget_limit():
@@ -987,7 +987,13 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 {"role": "user", "content": final_formatted_user_prompt}
             ]
 
-            update_live_prompt_preview(messages_for_llm)
+            update_live_prompt_preview(messages_for_llm, {
+                'thread_id': thread_id,
+                'api_slot_idx': api_slot_idx + 1,
+                'message_type': 'Question',
+                'attempt': attempt_num + 1,
+                'timestamp': time.strftime('%H:%M:%S'),
+            })
 
             # Prepare payload for LLM API
             payload_dict = {
@@ -1253,7 +1259,13 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                        conversation_history_for_llm + \
                        [{"role": "user", "content": final_user_continuation_prompt}]
 
-            update_live_prompt_preview(messages)
+            update_live_prompt_preview(messages, {
+                'thread_id': thread_id,
+                'api_slot_idx': api_slot_idx + 1,
+                'message_type': 'User Continuation',
+                'attempt': attempt_num + 1,
+                'timestamp': time.strftime('%H:%M:%S'),
+            })
 
             payload_dict = {
                 "model": model_name_local,
@@ -1497,6 +1509,14 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 {"role": "user", "content": user_rewrite_instruction}
             ]
 
+            update_live_prompt_preview(messages, {
+                'thread_id': thread_id,
+                'api_slot_idx': api_slot_idx_slop_fixer + 1,
+                'message_type': 'Slop Fix',
+                'attempt': attempt_num + 1,
+                'timestamp': time.strftime('%H:%M:%S'),
+            })
+
             # Use dedicated Slop Fixer sampler settings from the API config
             slop_fixer_sampler_overrides = slop_fixer_api_config.get('sampler_settings', {}) or main_sampler_settings
 
@@ -1708,6 +1728,14 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 {"role": "system", "content": "You are an expert editor. Rewrite the given text to remove the specified undesirable phrase, ensuring the core meaning is kept. Output only the rewritten text."},
                 {"role": "user", "content": user_rewrite_instruction}
             ]
+
+            update_live_prompt_preview(messages, {
+                'thread_id': thread_id,
+                'api_slot_idx': api_slot_idx_anti_slop + 1,
+                'message_type': 'Anti-Slop Fix',
+                'attempt': attempt_num + 1,
+                'timestamp': time.strftime('%H:%M:%S'),
+            })
 
             # Use dedicated Anti-Slop sampler settings from the API config
             anti_slop_sampler_overrides = anti_slop_api_config.get('sampler_settings', {}) or main_sampler_settings
@@ -1943,7 +1971,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                            [{"role": "user", "content": answer_prompt_template}]
 
                 # --- LIVE PREVIEW HOOK ---
-                update_live_prompt_preview(messages)
+                update_live_prompt_preview(messages, {
+                    'thread_id': thread_id,
+                    'api_slot_idx': api_slot_idx + 1,
+                    'message_type': 'Answer',
+                    'attempt': f"{attempt + 1}/{max_attempts_local}",
+                    'timestamp': time.strftime('%H:%M:%S'),
+                })
                 # --- END HOOK ---
 
                 payload_dict_ans = {
