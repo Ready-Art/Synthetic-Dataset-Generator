@@ -160,7 +160,7 @@ class ConfigEditor(tk.Toplevel):
             frame_text = f"API Slot {i+1}"
             if i == 0: frame_text += " (Primary for Q/Continuation in Duplication)"
             if i == 4: frame_text += " (Slop Fixer LLM - Not part of Duplication)"
-            if i == 5: frame_text += " (Anti-Slop Fixer LLM - Not part of Duplication)"
+            if i == 5: frame_text += " (Anti-Slop Fixer LLM - Independent Misc Option Not Part of Duplication)"
             
             api_frame = ttk.LabelFrame(self.api_content_frame, text=frame_text) # Changed parent to self.api_content_frame
             api_frame.grid(row=i + 5, column=0, padx=SPACING, pady=SPACING, sticky="ew")
@@ -205,18 +205,31 @@ class ConfigEditor(tk.Toplevel):
                 setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
                 ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=5, column=1, padx=SPACING, pady=SPACING, sticky="w")
                 ttk.Label(api_frame, text="(Requests/Min)").grid(row=5, column=2, padx=SPACING, pady=SPACING, sticky="w")
-            else: # API Slot 5 (Slop Fixer) - add threads setting but no enabled checkbox
+            else: # API Slot 5 (Slop Fixer) and Slot 6 (Anti-Slop Fixer)
                 ttk.Label(api_frame, text="Number of Threads:").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 threads_var = tk.StringVar(value="10")  # Default value
                 setattr(self, f'api_threads_var_{i+1}', threads_var)
                 ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
-                # NEW: Add rate limit setting for Slop Fixer API
+                # NEW: Add rate limit setting for Slop Fixer / Anti-Slop Fixer API
                 ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=4, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 rate_limit_var = tk.StringVar(value="60")  # Default 60 requests per minute
                 setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
                 ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
                 ttk.Label(api_frame, text="(Requests/Min)").grid(row=4, column=2, padx=SPACING, pady=SPACING, sticky="w")
+
+                # --- NEW: Independence note for Anti-Slop (Slot 6) ---
+                if i == 5:
+                    ttk.Label(
+                        api_frame,
+                        text="This API slot is fully independent from the Slop Fixer (Slot 5). "
+                             "You can point it at a different model/provider, "
+                             "or leave it unconfigured to disable anti-slop fixing entirely.",
+                        style='Small.TLabel',
+                        wraplength=500,
+                        justify="left"
+                    ).grid(row=5, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="w")
+                # --- END independence note ---
 
             api_frame.grid_columnconfigure(1, weight=1) # Make entry fields expand
 
@@ -557,6 +570,20 @@ class ConfigEditor(tk.Toplevel):
         add_detection_list_pair(col2_frame, "Slop Detection", 'slop_phrases_text', 'slop_fixes_text')
         add_detection_list_pair(col2_frame, "Anti-Slop Detection", 'anti_slop_phrases_text', 'anti_slop_fixes_text')
 
+        anti_slop_note_frame = ttk.Frame(col2_frame)
+        anti_slop_note_frame.pack(padx=SPACING, pady=(0, SPACING), fill="x")
+        ttk.Label(
+            anti_slop_note_frame,
+            text="ℹ️ Anti-Slop is an optional, independent detection layer. "
+                 "It uses its own API (Slot 6) and its own sampler settings, "
+                 "fully separate from Slop Detection (Slot 5). "
+                 "Configure it only if you need an additional pass for "
+                 "specific undesirable phrases that Slop Detection doesn't cover.",
+            style='Small.TLabel',
+            wraplength=500,
+            justify="left"
+        ).pack(anchor="w", padx=5, pady=(5, 0))
+
 
         # --- Samplers Tab ---
         self.samplers_tab = ttk.Frame(self.notebook)
@@ -625,6 +652,16 @@ class ConfigEditor(tk.Toplevel):
         add_slop_fixer_param("Top K (Slop Fixer):", 'slop_fixer_top_k_var', "(E.g., 40, uses main if blank)")
         add_slop_fixer_param("Repetition Penalty (Slop Fixer):", 'slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
         # --- NEW: Anti-Slop Fixer Sampler Settings ---
+        ttk.Label(
+            sampler_params_frame,
+            text="The Anti-Slop Fixer (Slot 6) uses its own sampler settings, independent of the Slop Fixer (Slot 5). "
+                 "Leave fields blank to inherit from the main sampler defaults.",
+            style='Small.TLabel',
+            wraplength=600,
+            justify="left"
+        ).grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=(8, 0), sticky="w")
+        sampler_row += 1
+
         anti_slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Anti-Slop Fixer LLM Sampler Overrides (API Slot 6 - Optional)")
         anti_slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
         asf_sampler_row = 0
