@@ -360,7 +360,7 @@ class ConfigEditor(tk.Toplevel):
             lambda e: self.lore_canvas.configure(scrollregion=self.lore_canvas.bbox("all"))
         )
         self.lore_canvas_window_id = self.lore_canvas.create_window((0, 0), window=self.lore_content_frame, anchor="nw")
-        self.lore_canvas.bind("<Configure>", lambda e: self.lore_canvas.itemconfig(self.lore_canvas_window_id, width=e.width) if e.width > 1 else None)
+        self.lore_canvas.bind("<Configure>", lambda e: self.lore_canvas.itemconfig(self.lore_canvas_window_id, width=e.width, height=max(e.height, self.lore_content_frame.winfo_reqheight())) if e.width > 1 else None)
         self.lore_canvas.configure(yscrollcommand=self.lore_scrollbar.set)
 
         self.lore_canvas.pack(side="left", fill="both", expand=True)
@@ -368,10 +368,11 @@ class ConfigEditor(tk.Toplevel):
         self.lore_canvas.bind("<MouseWheel>", lambda e: self.lore_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         # Lore UI Content
-        ttk.Label(self.lore_content_frame, text="World Lore & Background Information:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="nw")
-        self.lore_text = scrolledtext.ScrolledText(self.lore_content_frame, wrap=tk.WORD, height=20, width=130, undo=True)
-        self.lore_text.grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
-        self.lore_content_frame.grid_columnconfigure(1, weight=1)
+        ttk.Label(self.lore_content_frame, text="World Lore & Background Information:").grid(row=0, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.lore_text = scrolledtext.ScrolledText(self.lore_content_frame, wrap=tk.WORD, undo=True)
+        self.lore_text.grid(row=1, column=0, padx=SPACING, pady=(0, SPACING), sticky="nsew")
+        self.lore_content_frame.grid_columnconfigure(0, weight=1)
+        self.lore_content_frame.grid_rowconfigure(1, weight=1)
 
         self.prompts_content_frame.grid_columnconfigure(1, weight=1) # Make text areas expand
 
