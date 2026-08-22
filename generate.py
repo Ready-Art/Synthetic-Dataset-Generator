@@ -1502,7 +1502,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.2.3",
+    text="v9.2.4",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1611,12 +1611,31 @@ app_state.db_status_widgets = {
 }
 
 # --- API Response Time Display Frame ---
-api_response_times_frame = tk.LabelFrame(app_state.root, text="API Response Times"); api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
+api_response_times_frame = ttk.LabelFrame(app_state.root, text="⚡ API Response Times")
+api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
+
+# 3-column grid: 6 slots in 2 rows
+for col in range(3):
+    api_response_times_frame.columnconfigure(col, weight=1, uniform="api_rt")
+api_response_times_frame.rowconfigure(0, weight=1)
+api_response_times_frame.rowconfigure(1, weight=1)
+
 for slot_idx in range(6):
+    row, col = divmod(slot_idx, 3)
+
+    card = ttk.Frame(api_response_times_frame, padding=6)
+    card.grid(row=row, column=col, padx=4, pady=3, sticky="nsew")
+
     slot_label_name = f"api_response_time_label_{slot_idx+1}"
-    slot_label = ttk.Label(api_response_times_frame, text=f"API {slot_idx+1}: No data yet", font=('TkDefaultFont', 8))
-    slot_label.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
-    app_state.slot_widgets[slot_label_name] = slot_label  # Store reference in globals for update_dashboard to access
+    slot_label = ttk.Label(
+        card,
+        text=f"⚡ API {slot_idx+1}: No data yet",
+        font=('Segoe UI', 9),
+        foreground='#868e96',
+        anchor="w"
+    )
+    slot_label.pack(fill="x")
+    app_state.slot_widgets[slot_label_name] = slot_label
 # --- End of API Response Time Display Frame ---
 
 # --- Progress Bars Frame ---
