@@ -34,6 +34,7 @@ class ConfigEditor(tk.Toplevel):
     """A Toplevel window for editing all application configurations (config.yml and .env)."""
     def __init__(self, parent, global_config, master_duplication_enabled_var, no_user_impersonation_var, on_config_saved=None):
         super().__init__(parent)
+        self.scrollbar_width = 20
         self.global_config = global_config
         self.master_duplication_enabled_var = master_duplication_enabled_var
         self.no_user_impersonation_var = no_user_impersonation_var
@@ -68,7 +69,7 @@ class ConfigEditor(tk.Toplevel):
         self.notebook.add(self.api_tab, text="API")
 
         self.api_canvas = tk.Canvas(self.api_tab)
-        self.api_scrollbar = ttk.Scrollbar(self.api_tab, orient="vertical", command=self.api_canvas.yview)
+        self.api_scrollbar = tk.Scrollbar(self.api_tab, orient="vertical", command=self.api_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         self.api_content_frame = ttk.Frame(self.api_canvas)
 
         self.api_content_frame.bind(
@@ -76,9 +77,11 @@ class ConfigEditor(tk.Toplevel):
             lambda e: self.api_canvas.configure(scrollregion=self.api_canvas.bbox("all"))
         )
 
-        self.api_canvas.create_window((0, 0), window=self.api_content_frame, anchor="nw")
+        self.api_canvas_window_id = self.api_canvas.create_window((0, 0), window=self.api_content_frame, anchor="nw")
+        self.api_canvas.bind("<Configure>", lambda e: self.api_canvas.itemconfig(self.api_canvas_window_id, width=e.width) if e.width > 1 else None)
 
         self.api_canvas.pack(side="left", fill="both", expand=True)
+        self.api_canvas.configure(yscrollcommand=self.api_scrollbar.set)
         self.api_scrollbar.pack(side="right", fill="y")
 
         self.api_canvas.bind("<MouseWheel>", lambda e: self.api_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
@@ -223,7 +226,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Setup Canvas and Scrollbar for Generation Tab (similar to Prompts tab)
         self.generation_canvas = tk.Canvas(self.generation_tab)
-        self.generation_scrollbar = ttk.Scrollbar(self.generation_tab, orient="vertical", command=self.generation_canvas.yview)
+        self.generation_scrollbar = tk.Scrollbar(self.generation_tab, orient="vertical", command=self.generation_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         gen_settings_frame = ttk.Frame(self.generation_canvas)
 
         gen_settings_frame.bind(
@@ -231,7 +234,8 @@ class ConfigEditor(tk.Toplevel):
             lambda e: self.generation_canvas.configure(scrollregion=self.generation_canvas.bbox("all"))
         )
 
-        self.generation_canvas.create_window((0, 0), window=gen_settings_frame, anchor="nw")
+        self.generation_canvas_window_id = self.generation_canvas.create_window((0, 0), window=gen_settings_frame, anchor="nw")
+        self.generation_canvas.bind("<Configure>", lambda e: self.generation_canvas.itemconfig(self.generation_canvas_window_id, width=e.width) if e.width > 1 else None)
         self.generation_canvas.configure(yscrollcommand=self.generation_scrollbar.set)
 
         self.generation_canvas.pack(side="left", fill="both", expand=True)
@@ -302,13 +306,14 @@ class ConfigEditor(tk.Toplevel):
         self.prompts_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.prompts_tab, text="Prompts")
         self.prompts_canvas = tk.Canvas(self.prompts_tab)
-        self.prompts_scrollbar = ttk.Scrollbar(self.prompts_tab, orient="vertical", command=self.prompts_canvas.yview)
+        self.prompts_scrollbar = tk.Scrollbar(self.prompts_tab, orient="vertical", command=self.prompts_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         self.prompts_content_frame = ttk.Frame(self.prompts_canvas)
         self.prompts_content_frame.bind(
             "<Configure>",
             lambda e: self.prompts_canvas.configure(scrollregion=self.prompts_canvas.bbox("all"))
         )
-        self.prompts_canvas.create_window((0, 0), window=self.prompts_content_frame, anchor="nw")
+        self.prompts_canvas_window_id = self.prompts_canvas.create_window((0, 0), window=self.prompts_content_frame, anchor="nw")
+        self.prompts_canvas.bind("<Configure>", lambda e: self.prompts_canvas.itemconfig(self.prompts_canvas_window_id, width=e.width) if e.width > 1 else None)
         self.prompts_canvas.configure(yscrollcommand=self.prompts_scrollbar.set)
 
         # Pack canvas and scrollbar into the tab to fill available space
@@ -347,14 +352,15 @@ class ConfigEditor(tk.Toplevel):
         self.notebook.add(self.lore_tab, text="Lore")
 
         self.lore_canvas = tk.Canvas(self.lore_tab)
-        self.lore_scrollbar = ttk.Scrollbar(self.lore_tab, orient="vertical", command=self.lore_canvas.yview)
+        self.lore_scrollbar = tk.Scrollbar(self.lore_tab, orient="vertical", command=self.lore_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         self.lore_content_frame = ttk.Frame(self.lore_canvas)
 
         self.lore_content_frame.bind(
             "<Configure>",
             lambda e: self.lore_canvas.configure(scrollregion=self.lore_canvas.bbox("all"))
         )
-        self.lore_canvas.create_window((0, 0), window=self.lore_content_frame, anchor="nw")
+        self.lore_canvas_window_id = self.lore_canvas.create_window((0, 0), window=self.lore_content_frame, anchor="nw")
+        self.lore_canvas.bind("<Configure>", lambda e: self.lore_canvas.itemconfig(self.lore_canvas_window_id, width=e.width) if e.width > 1 else None)
         self.lore_canvas.configure(yscrollcommand=self.lore_scrollbar.set)
 
         self.lore_canvas.pack(side="left", fill="both", expand=True)
@@ -373,13 +379,14 @@ class ConfigEditor(tk.Toplevel):
         self.character_engine_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.character_engine_tab, text="Character Engine")
         self.character_engine_canvas = tk.Canvas(self.character_engine_tab)
-        self.character_engine_scrollbar = ttk.Scrollbar(self.character_engine_tab, orient="vertical", command=self.character_engine_canvas.yview)
+        self.character_engine_scrollbar = tk.Scrollbar(self.character_engine_tab, orient="vertical", command=self.character_engine_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         self.character_engine_content_frame = ttk.Frame(self.character_engine_canvas)
         self.character_engine_content_frame.bind(
             "<Configure>",
             lambda e: self.character_engine_canvas.configure(scrollregion=self.character_engine_canvas.bbox("all"))
         )
-        self.character_engine_canvas.create_window((0, 0), window=self.character_engine_content_frame, anchor="nw")
+        self.character_engine_canvas_window_id = self.character_engine_canvas.create_window((0, 0), window=self.character_engine_content_frame, anchor="nw")
+        self.character_engine_canvas.bind("<Configure>", lambda e: self.character_engine_canvas.itemconfig(self.character_engine_canvas_window_id, width=e.width) if e.width > 1 else None)
         self.character_engine_canvas.configure(yscrollcommand=self.character_engine_scrollbar.set)
 
         # Pack canvas and scrollbar into the tab to fill available space
@@ -499,7 +506,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Setup Canvas and Scrollbar for Detection Tab (similar to Prompts tab)
         self.detection_canvas = tk.Canvas(self.detection_tab)
-        self.detection_scrollbar = ttk.Scrollbar(self.detection_tab, orient="vertical", command=self.detection_canvas.yview)
+        self.detection_scrollbar = tk.Scrollbar(self.detection_tab, orient="vertical", command=self.detection_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         self.detection_content_frame = ttk.Frame(self.detection_canvas)
 
         self.detection_content_frame.bind(
@@ -507,7 +514,8 @@ class ConfigEditor(tk.Toplevel):
             lambda e: self.detection_canvas.configure(scrollregion=self.detection_canvas.bbox("all"))
         )
 
-        self.detection_canvas.create_window((0, 0), window=self.detection_content_frame, anchor="nw")
+        self.detection_canvas_window_id = self.detection_canvas.create_window((0, 0), window=self.detection_content_frame, anchor="nw")
+        self.detection_canvas.bind("<Configure>", lambda e: self.detection_canvas.itemconfig(self.detection_canvas_window_id, width=e.width) if e.width > 1 else None)
         self.detection_canvas.configure(yscrollcommand=self.detection_scrollbar.set)
 
         self.detection_canvas.pack(side="left", fill="both", expand=True)
@@ -555,7 +563,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Setup Canvas and Scrollbar for Samplers Tab
         self.samplers_canvas = tk.Canvas(self.samplers_tab)
-        self.samplers_scrollbar = ttk.Scrollbar(self.samplers_tab, orient="vertical", command=self.samplers_canvas.yview)
+        self.samplers_scrollbar = tk.Scrollbar(self.samplers_tab, orient="vertical", command=self.samplers_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         sampler_params_frame = ttk.Frame(self.samplers_canvas)
 
         sampler_params_frame.bind(
@@ -563,7 +571,8 @@ class ConfigEditor(tk.Toplevel):
             lambda e: self.samplers_canvas.configure(scrollregion=self.samplers_canvas.bbox("all"))
         )
 
-        self.samplers_canvas.create_window((0, 0), window=sampler_params_frame, anchor="nw")
+        self.samplers_canvas_window_id = self.samplers_canvas.create_window((0, 0), window=sampler_params_frame, anchor="nw")
+        self.samplers_canvas.bind("<Configure>", lambda e: self.samplers_canvas.itemconfig(self.samplers_canvas_window_id, width=e.width) if e.width > 1 else None)
         self.samplers_canvas.configure(yscrollcommand=self.samplers_scrollbar.set)
 
         self.samplers_canvas.pack(side="left", fill="both", expand=True)

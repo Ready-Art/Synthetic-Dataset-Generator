@@ -1081,6 +1081,9 @@ def start_processing():
 
     log_message(f"Started {total_threads} worker threads.", "INFO")
 
+    _psutil_state = {"last_check": 0.0}
+    PSUTIL_CHECK_INTERVAL = 10.0  # seconds
+
     # --- GUI Progress Update Loop ---
     def update_gui_progress():
         if dashboard_pause_var.get():
@@ -1089,10 +1092,17 @@ def start_processing():
         if app_state.processing_active and not app_state.stop_processing: 
             check_budget_limit()
             try:
-                process = psutil.Process()
-                open_files = process.open_files()
-                if len(open_files) > 300:  # Threshold
-                    log_message(f"Warning: {len(open_files)} open files", "WARNING")
+                if time.time() - _psutil_state["last_check"] > PSUTIL_CHECK_INTERVAL:
+                    _psutil_state["last_check"] = time.time()
+                    def _check_open_files():
+                        try:
+                            p = psutil.Process()
+                            of = p.open_files()
+                            if len(of) > 300:
+                                log_message(f"Warning: {len(of)} open files", "WARNING")
+                        except Exception:
+                            pass
+                    threading.Thread(target=_check_open_files, daemon=True).start()
                 master_duplication_current = app_state.master_duplication_enabled_var.get()
 
                 if app_state.task_queue and hasattr(app_state.task_queue, 'qsize'):
@@ -1394,16 +1404,6 @@ try:
 except tk.TclError:
     log_message(f"Could not apply superhero theme. Using system default.", "WARNING")
 
-# --- Animated Progress Bar Styling ---
-
-
-
-
-
-
-# Track the previous progress percentage for each bar to detect milestone changes
-
-
 
 
 # Configure the styles on startup
@@ -1455,7 +1455,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.1.5",
+    text="v9.2.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1862,7 +1862,10 @@ for tab_name in tab_names:
     # 2. Determine parent frame and configure grids
     if tab_name == "Totals":
         canvas = tk.Canvas(tab_frame)
-        scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
+                                 width=20, highlightthickness=0, bd=0,
+                                 bg='#999999', troughcolor='#555555',
+             activebackground='#bbbbbb', relief='flat')
         scrollable_frame = ttk.Frame(canvas)
 
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -1894,7 +1897,10 @@ for tab_name in tab_names:
     elif tab_name.startswith("API "):
         # Wrap API tabs in Canvas + Scrollbar
         canvas = tk.Canvas(tab_frame)
-        scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
+                                 width=20, highlightthickness=0, bd=0,
+                                 bg='#2d2d2d', troughcolor='#1a1a1a',
+                                 activebackground='#5bc0de', relief='flat')
         scrollable_frame = ttk.Frame(canvas)
 
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -1970,6 +1976,33 @@ for tab_name in tab_names:
 queue_tab = ttk.Frame(app_state.dashboard_notebook)
 app_state.dashboard_notebook.add(queue_tab, text="📦 Queue")
 
+# Scrollable wrapper so all three panels are reachable when the tab is short
+queue_canvas = tk.Canvas(queue_tab, highlightthickness=0)
+queue_scrollbar = tk.Scrollbar(queue_tab, orient="vertical", command=queue_canvas.yview,
+                               width=20, highlightthickness=0, bd=0,
+                               bg='#999999', troughcolor='#555555',
+                               activebackground='#bbbbbb', relief='flat')
+queue_scrollable_frame = ttk.Frame(queue_canvas)
+
+queue_scrollable_frame.bind("<Configure>",
+    lambda e: queue_canvas.configure(scrollregion=queue_canvas.bbox("all")))
+queue_canvas_win = queue_canvas.create_window((0, 0), window=queue_scrollable_frame, anchor="nw")
+queue_canvas.configure(yscrollcommand=queue_scrollbar.set)
+
+def _on_queue_canvas_configure(event, c=queue_canvas, wid=queue_canvas_win):
+    if event.width > 1:
+        c.itemconfig(wid, width=event.width)
+queue_canvas.bind("<Configure>", _on_queue_canvas_configure)
+
+queue_tab.columnconfigure(0, weight=1)
+queue_tab.columnconfigure(1, weight=0)
+queue_tab.rowconfigure(0, weight=1)
+
+queue_canvas.grid(row=0, column=0, sticky="nsew")
+queue_scrollbar.grid(row=0, column=1, sticky="ns")
+queue_canvas.bind("<MouseWheel>",
+    lambda e, c=queue_canvas: c.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
 def create_queue_panel(parent, title, columns):
     frame = ttk.LabelFrame(parent, text=title)
     frame.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=5)
@@ -1994,8 +2027,14 @@ def create_queue_panel(parent, title, columns):
         else:
             tree.column(col, width=400, minwidth=150, stretch=True, anchor="w")
 
-    vsb = ttk.Scrollbar(inner, orient="vertical", command=tree.yview)
-    hsb = ttk.Scrollbar(inner, orient="horizontal", command=tree.xview)
+    vsb = tk.Scrollbar(inner, orient="vertical", command=tree.yview,
+                       width=20, highlightthickness=0, bd=0,
+                       bg='#999999', troughcolor='#555555',
+             activebackground='#bbbbbb', relief='flat')
+    hsb = tk.Scrollbar(inner, orient="horizontal", command=tree.xview,
+                       width=20, highlightthickness=0, bd=0,
+                       bg='#999999', troughcolor='#555555',
+             activebackground='#bbbbbb', relief='flat')
     tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
     # Grid layout is significantly more stable for Treeviews + Scrollbars than pack
@@ -2065,7 +2104,7 @@ def export_queue():
                 writer.writerow(['Failed', tid, m.get('file', 'N/A'), m.get('retries', 0)])
     toast.show(f"Queue exported to {out_path}", "success")
 
-queue_btn_frame = ttk.Frame(queue_tab)
+queue_btn_frame = ttk.Frame(queue_scrollable_frame)
 queue_btn_frame.pack(fill=tk.X, padx=SPACING, pady=SPACING)
 ttk.Button(queue_btn_frame, text="🗑️ Purge Queue", command=purge_queue).pack(side=tk.LEFT, padx=5)
 ttk.Button(queue_btn_frame, text="🔄 Retry Failed", command=retry_failed_tasks).pack(side=tk.LEFT, padx=5)
@@ -2073,9 +2112,9 @@ ttk.Button(queue_btn_frame, text="📤 Export Queue", command=export_queue).pack
 ttk.Button(queue_btn_frame, text="🔄 Refresh View", command=update_queue_ui).pack(side=tk.LEFT, padx=5)
 
 queue_cols = ("Task ID", "Source File", "Retries")
-app_state.queue_trees['pending'] = create_queue_panel(queue_tab, "Pending", queue_cols)
-app_state.queue_trees['completed'] = create_queue_panel(queue_tab, "Completed", queue_cols)
-app_state.queue_trees['failed'] = create_queue_panel(queue_tab, "Failed", queue_cols)
+app_state.queue_trees['pending']   = create_queue_panel(queue_scrollable_frame, "Pending", queue_cols)
+app_state.queue_trees['completed'] = create_queue_panel(queue_scrollable_frame, "Completed", queue_cols)
+app_state.queue_trees['failed']    = create_queue_panel(queue_scrollable_frame, "Failed", queue_cols)
 # --- End Queue Management Tab ---
 
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance

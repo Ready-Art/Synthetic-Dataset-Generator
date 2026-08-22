@@ -27,8 +27,9 @@ SPACING = 8  # UI padding constant (mirrors generate.py)
 
 def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
     """Creates a modern, dark-themed Treeview inside an existing panel widget."""
-    # Configure modern Treeview style
     style = ttk.Style()
+
+    # --- Treeview styles (unchanged) ---
     style.configure("Issue.Treeview",
                     background="#2a2a35",
                     fieldbackground="#2a2a35",
@@ -43,24 +44,36 @@ def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
               background=[('selected', '#3a3a45')],
               foreground=[('selected', '#ffffff')])
 
-    tree = ttk.Treeview(panel_widget, columns=columns, show="headings", height=8, style="Issue.Treeview")
+    tree = ttk.Treeview(panel_widget, columns=columns, show="headings",
+                        height=8, style="Issue.Treeview")
 
-    # Set column widths & headings
     col_widths = {"Time": 80, "API": 60, "Phrase": 140, "Context": 380}
     for col in columns:
         tree.heading(col, text=col.replace('_', ' ').title())
         tree.column(col, width=col_widths.get(col, 120), anchor='w')
 
-    # Add vertical scrollbar
-    vsb = ttk.Scrollbar(panel_widget, orient="vertical", command=tree.yview)
+    # --- Scrollbar (tk, not ttk — width is respected) ---
+    vsb = tk.Scrollbar(
+        panel_widget,
+        orient="vertical",
+        command=tree.yview,
+        width=18,
+        background="#7a7a9a",
+        troughcolor="#16161c",
+        activebackground="#b0b0d0",
+        highlightthickness=0,
+        borderwidth=0,
+        relief="flat"
+    )
     tree.configure(yscrollcommand=vsb.set)
+    # ----------------------------------------------------
 
-    # Pack internal widgets INSIDE the panel (safe, since panel is a new container)
-    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-    vsb.pack(side=tk.RIGHT, fill="y", pady=5)
+    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 2), pady=5)
+    vsb.pack(side=tk.RIGHT, fill="y", padx=(2, 5), pady=5)
 
-    # Configure highlight tag
-    tree.tag_configure("issue_highlight", background="#3a3a45", foreground=highlight_color, font=('Segoe UI', 9, 'italic'))
+    tree.tag_configure("issue_highlight",
+                       background="#3a3a45", foreground=highlight_color,
+                       font=('Segoe UI', 9, 'italic'))
 
     return tree
 
