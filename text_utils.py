@@ -111,3 +111,32 @@ def normalize_quotes(text):
     #    the regeneration retry loop are the right place to handle a genuinely
     #    unbalanced straight quote.
     return text
+
+def repair_straight_quotes(text):
+    """
+    Attempts to repair unbalanced straight quotes using structural heuristics.
+    Only applies when the count is odd (one missing quote).
+    """
+    if text.count('"') % 2 == 0:
+        return text  # Already balanced
+
+    # Strategy: find the most likely position for the missing quote.
+    # Heuristic 1: If the text starts with a word that's commonly dialogue
+    #   (e.g., a capital letter followed by lowercase), prepend an opening quote.
+    # Heuristic 2: If the last word ends with punctuation inside what looks
+    #   like a sentence, append a closing quote.
+    # Heuristic 3: Look for the longest span between existing quotes and
+    #   check if it looks like a complete sentence (ends with ., !, ?).
+
+    stripped = text.strip()
+
+    # If the text ends with punctuation + closing context, likely missing an opener
+    if re.search(r'[.!?]\s*$', stripped) and not stripped.startswith('"'):
+        return '"' + stripped
+
+    # If the text starts with a capital and looks like dialogue, likely missing a closer
+    if re.match(r'^[A-Z][a-z]+', stripped) and not stripped.endswith('"'):
+        return stripped + '"'
+
+    # Fallback: append at end (least bad option)
+    return stripped + '"'

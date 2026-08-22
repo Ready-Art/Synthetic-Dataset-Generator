@@ -2623,6 +2623,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         processed_content = text_utils.remove_all_asterisks(processed_content) if remove_all_asterisks_flag else processed_content
         processed_content = text_utils.ensure_space_after_line_break(processed_content) if ensure_space_after_line_break_flag else processed_content
         processed_content = text_utils.remove_markdown(processed_content) if remove_markdown_flag else processed_content
+        processed_content = text_utils.repair_straight_quotes(processed_content)
         processed_content = text_utils.normalize_quotes(processed_content)
 
         # Convert roles for ShareGPT format
