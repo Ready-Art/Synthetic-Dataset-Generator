@@ -16,6 +16,7 @@ import tkinter as tk
 import app_state
 import detection
 import text_utils
+import quality
 from queue import Queue, Empty, Full
 from logging_config import log_message, LOG_FILE_PATH
 from api_handler import (
@@ -164,7 +165,8 @@ def save_generation_state():
                     'generation.subject_size': global_config.get('generation.subject_size', 1000),
                     'generation.context_size': global_config.get('generation.context_size', 3000),
                     'api.master_duplication_mode': global_config.get('api.master_duplication_mode', False)
-                }
+                },
+                'quality_scores': {k: v for k, v in app_state.quality_scores.items()},
             }
             # If in master duplication mode and task queue has per-API progress, save it
             # Also save overall progress if not in duplication mode
@@ -700,7 +702,42 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     is_duplication_turn=True, turn_number_for_duplication=turn_num + 1) # Mark as duplication turn
                             else:
                                 log_message(f"Thread {thread_id}: Skipping turn {turn_num+1} output for API Slot {original_slot_idx_for_file+1} due to previous refusal in task {task_id}", "DEBUG")
-                    # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
+                    # --- Quality Scoring (Duplication Mode: score the primary flow) ---
+                    if app_state.quality_enabled and assistant_answer:
+                        try:
+                            primary_conv_for_scoring = list(current_llm_conversation_context)
+                            primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
+                            quality_result = quality.score_conversation(
+                                primary_conv_for_scoring,
+                                task_id,
+                                thread_id,
+                                api_slot_idx=0,
+                                file_name=file_name
+                            )
+                            with app_state.quality_lock:
+                                # Store with task_id (overwrites per-API scores with primary)
+                                if task_id not in app_state.quality_scores:
+                                    app_state.quality_scores[task_id] = quality_result
+
+                            # ✅ FIX: Flag for review if below threshold (was missing entirely)
+                            min_threshold = global_config.get('quality.min_score_threshold', 50)
+                            if quality_result['composite'] < min_threshold:
+                                with app_state.quality_review_lock:
+                                    app_state.quality_review_ids.add(task_id)
+                                log_message(
+                                    f"Thread {thread_id}: Task {task_id} flagged for review "
+                                    f"(score {quality_result['composite']} < threshold {min_threshold}).",
+                                    "WARNING"
+                                )
+
+                            log_message(
+                                f"Thread {thread_id}: Quality score (dup, primary) for {task_id}: "
+                                f"{quality_result['composite']}/100",
+                                "INFO"
+                            )
+                        except Exception as e_quality:
+                            log_message(f"Thread {thread_id}: Quality scoring error (dup) for {task_id}: {e_quality}", "ERROR")
+                        # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
                 
                 else: # --- Non-Duplication Mode: Single API call for answer ---
                     if app_state.stop_processing or app_state.pause_processing: break
@@ -860,6 +897,44 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_output_format, task_id, api_slot_idx_for_output_file=None)
                                     app_state.completed_task_ids.add(task_id)
                                     log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
+                                    # --- Quality Scoring ---
+                                    if app_state.quality_enabled:
+                                        try:
+                                            quality_result = quality.score_conversation(
+                                                conversation_history_for_output,
+                                                task_id,
+                                                thread_id,
+                                                api_slot_idx=api_slot_idx_for_this_task,
+                                                file_name=file_name
+                                            )
+                                            with app_state.quality_lock:
+                                                app_state.quality_scores[task_id] = quality_result
+                                            # Flag for review if below threshold
+                                            min_threshold = global_config.get('quality.min_score_threshold', 50)
+                                            if quality_result['composite'] < min_threshold:
+                                                with app_state.quality_review_lock:
+                                                    app_state.quality_review_ids.add(task_id)
+                                            log_message(
+                                                f"Thread {thread_id}: Quality score for {task_id}: "
+                                                f"{quality_result['composite']}/100 "
+                                                f"(method: {quality_result['method']}, flags: {quality_result['flags']})",
+                                                "INFO"
+                                            )
+
+                                            # Optional: filter output by quality threshold
+                                            if app_state.quality_output_filter:
+                                                min_threshold = global_config.get('quality.min_score_threshold', 50)
+                                                if quality_result['composite'] < min_threshold:
+                                                    log_message(
+                                                        f"Thread {thread_id}: Task {task_id} score {quality_result['composite']} "
+                                                        f"below threshold {min_threshold}. Marking as quality-rejected.",
+                                                        "WARNING"
+                                                    )
+                                                    # The conversation was already written, but we flag it.
+                                                    # If you want to DELETE it from the output file, you'd need
+                                                    # a post-processing step. For now, the flag is stored.
+                                        except Exception as e_quality:
+                                            log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e_quality}", "ERROR")
                                 else:
                                     log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
                             # Update UI tracking on success

@@ -280,6 +280,37 @@ class ConfigEditor(tk.Toplevel):
         add_gen_setting("Max Newlines (Malformed):", 'max_newlines_malformed_var', "(Max newlines in a reply before it's considered malformed)")
         add_gen_setting("Max Text Length (Malformed):", 'max_text_length_malformed_var', "(Max length in chars before reply is considered malformed)")
         add_gen_setting("Max Character Cards:", 'max_character_cards_var', "(Maximum character profiles in Character Engine)")
+
+        # --- Quality Scoring Section ---
+        ttk.Separator(gen_settings_frame, orient="horizontal").grid(row=row_idx, column=0, columnspan=3, sticky="ew", pady=10)
+        row_idx += 1
+        ttk.Label(gen_settings_frame, text="Quality Scoring", style='Header.TLabel').grid(row=row_idx, column=0, columnspan=3, sticky="w", pady=(5, 10))
+        row_idx += 1
+
+        self.quality_enabled_var_editor = tk.BooleanVar(value=True)
+        ttk.Checkbutton(gen_settings_frame, text="Enable Quality Scoring", variable=self.quality_enabled_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+
+        self.quality_use_llm_var_editor = tk.BooleanVar(value=False)
+        ttk.Checkbutton(gen_settings_frame, text="Use LLM for Coherence/Naturalness/Engagement/Consistency (uses extra API calls)", variable=self.quality_use_llm_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+
+        self.quality_output_filter_var_editor = tk.BooleanVar(value=False)
+        ttk.Checkbutton(gen_settings_frame, text="Flag conversations below threshold (for post-filtering)", variable=self.quality_output_filter_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+
+        add_gen_setting("Min Score Threshold (0-100):", 'quality_min_threshold_var', "(Conversations below this are flagged)")
+        add_gen_setting("Max Chars for LLM Scoring:", 'quality_max_chars_var', "(Truncate conversation before sending to scoring LLM)")
+
+        # Quality scoring API config
+        ttk.Label(gen_settings_frame, text="Quality Scoring API URL:").grid(row=row_idx, column=0, padx=SPACING, pady=2, sticky="e")
+        self.quality_api_url_var = tk.StringVar()
+        ttk.Entry(gen_settings_frame, width=40, textvariable=self.quality_api_url_var).grid(row=row_idx, column=1, columnspan=2, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+
+        ttk.Label(gen_settings_frame, text="Quality Scoring Model:").grid(row=row_idx, column=0, padx=SPACING, pady=2, sticky="e")
+        self.quality_api_model_var = tk.StringVar()
+        ttk.Entry(gen_settings_frame, width=40, textvariable=self.quality_api_model_var).grid(row=row_idx, column=1, columnspan=2, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+
+        ttk.Label(gen_settings_frame, text="Quality Scoring API Key:").grid(row=row_idx, column=0, padx=SPACING, pady=2, sticky="e")
+        self.quality_api_key_var = tk.StringVar()
+        ttk.Entry(gen_settings_frame, width=40, textvariable=self.quality_api_key_var, show="*").grid(row=row_idx, column=1, columnspan=2, padx=SPACING, pady=2, sticky="w"); row_idx += 1
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
         ttk.Checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
@@ -1038,6 +1069,18 @@ class ConfigEditor(tk.Toplevel):
                 'max_text_length_malformed': int(self.max_text_length_malformed_var.get()),
                 'slop_to_anti_slop_fallback': self.slop_to_anti_slop_fallback_var_editor.get()
             },
+            'quality': {
+                'enabled': self.quality_enabled_var_editor.get(),
+                'use_llm_scoring': self.quality_use_llm_var_editor.get(),
+                'output_filter': self.quality_output_filter_var_editor.get(),
+                'min_score_threshold': int(self.quality_min_threshold_var.get() or 50),
+                'max_chars_for_scoring': int(self.quality_max_chars_var.get() or 8000),
+                'scoring_api': {
+                    'url': sanitize_input(self.quality_api_url_var.get()),
+                    'model': sanitize_input(self.quality_api_model_var.get()),
+                    'key': self.quality_api_key_var.get(),
+                },
+            },
             'prompts': {
                 'system': {
                     'base': sanitize_input(self.system_base_prompt_text.get("1.0", tk.END).strip()),
@@ -1382,6 +1425,16 @@ class ConfigEditor(tk.Toplevel):
             self.ensure_space_after_line_break_var_editor.set(gen_config.get('ensure_space_after_line_break', False))
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
             self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
+            # Load quality scoring config
+            quality_conf = config.get('quality', {})
+            self.quality_enabled_var_editor.set(quality_conf.get('enabled', True))
+            self.quality_use_llm_var_editor.set(quality_conf.get('use_llm_scoring', False))
+            self.quality_output_filter_var_editor.set(quality_conf.get('output_filter', False))
+            self.quality_min_threshold_var.set(str(quality_conf.get('min_score_threshold', 50)))
+            self.quality_max_chars_var.set(str(quality_conf.get('max_chars_for_scoring', 8000)))
+            self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
+            self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
+            self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
             self.output_format_var.set(gen_config.get('output_format', 'sharegpt'))
 
             prompts_config = config.get('prompts', {})
@@ -1609,6 +1662,10 @@ class ConfigEditor(tk.Toplevel):
             max_cards_val = int(self.max_character_cards_var.get())
             assert max_cards_val > 0, "Max character cards must be > 0"
             assert max_cards_val <= 100, "Max character cards should not exceed 100"
+            quality_threshold = int(self.quality_min_threshold_var.get() or 50)
+            assert 0 <= quality_threshold <= 100, "Quality threshold must be 0-100"
+            quality_max_chars = int(self.quality_max_chars_var.get() or 8000)
+            assert quality_max_chars > 100, "Max chars for scoring must be > 100"
 
             if show_success_message:
                 self.status.config(text="Validation successful (basic checks).", foreground="green")

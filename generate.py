@@ -41,6 +41,7 @@ from urllib.parse import urlparse
 from api_handler import RateLimiter, global_rate_limiter, get_cached_response, set_cached_response, api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK
 import logging_config
 from logging_config import log_message, LOG_FILE_PATH
+import quality
 
 init()
 
@@ -198,6 +199,7 @@ def load_generation_state():
                 # Load state data into global variables
                 app_state.completed_task_ids = set(state_data.get('completed_task_ids', []))
                 app_state.system_prompt_counter = state_data.get('system_prompt_counter', 0)
+                app_state.quality_scores = state_data.get('quality_scores', {})
                 app_state.character_counter = state_data.get('character_counter', 0)
                 app_state.question_history = state_data.get('question_history', [])
                 
@@ -280,7 +282,11 @@ def reset_all_stats_and_history():
     
     app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
+    with app_state.quality_lock:
+        app_state.quality_scores = {}
     log_message("All global statistics, history, and progress trackers have been reset.", "INFO")
+    with app_state.quality_review_lock:
+        app_state.quality_review_ids = set()
 
 
 def cleanup_old_files_and_backup_output():
@@ -462,6 +468,221 @@ def update_database_status():
         else:
             app_state.db_status_widgets['valkey_icon'].config(text="❌", foreground="gray")
             app_state.db_status_widgets['valkey_status'].config(text="Valkey: Disconnected", foreground="gray")
+
+def _update_review_table():
+    """Refreshes the Review tab table with currently flagged items."""
+    review_tab = "🔍 Review"
+    if review_tab not in app_state.dashboard_notebook.tabs_widgets:
+        return
+    widgets = app_state.dashboard_notebook.tabs_widgets[review_tab]
+    review_tree = widgets.get('review_tree')
+    count_label = widgets.get('review_count_label')
+    filter_var = widgets.get('review_filter_var')
+
+    if not review_tree or not hasattr(review_tree, 'winfo_exists') or not review_tree.winfo_exists():
+        return
+
+    for item in review_tree.get_children():
+        review_tree.delete(item)
+
+    filter_text = (filter_var.get().strip().lower() if filter_var else "")
+
+    with app_state.quality_review_lock:
+        review_ids = list(app_state.quality_review_ids)
+
+    with app_state.quality_lock:
+        scores = app_state.quality_scores
+
+    shown = 0
+    for task_id in review_ids:
+        if filter_text and filter_text not in task_id.lower():
+            continue
+        score_data = scores.get(task_id)
+        if not score_data:
+            continue
+
+        composite = score_data.get("composite", 0)
+        dims = score_data.get("dimensions", {})
+        flags = score_data.get("flags", [])
+        scored_at = score_data.get("scored_at", "")
+
+        # Find the lowest-scoring dimension
+        lowest_dim = min(dims, key=dims.get) if dims else "N/A"
+        lowest_val = dims.get(lowest_dim, 0)
+
+        # Get source file from task metadata
+        source_file = "N/A"
+        with app_state.task_queue_ui_lock:
+            meta = app_state.task_metadata.get(task_id, {})
+            source_file = meta.get('file', 'N/A')
+
+        tag = "critical" if composite < 40 else "warning"
+        review_tree.insert("", tk.END, values=(
+            task_id[:50], f"{composite}", f"{lowest_dim} ({lowest_val})",
+            ", ".join(flags[:4]), source_file, scored_at
+        ), tags=(tag,))
+        shown += 1
+
+    if count_label and hasattr(count_label, 'winfo_exists') and count_label.winfo_exists():
+        count_label.config(text=f"{shown} flagged")
+
+
+def _show_review_detail(review_tree):
+    """Shows the full conversation for the selected review item."""
+    review_tab = "🔍 Review"
+    widgets = app_state.dashboard_notebook.tabs_widgets.get(review_tab, {})
+    detail_text = widgets.get('detail_text')
+    if not detail_text or not hasattr(detail_text, 'winfo_exists') or not detail_text.winfo_exists():
+        return
+
+    selected = review_tree.selection()
+    if not selected:
+        return
+
+    task_id_full = review_tree.item(selected[0], 'values')[0]
+    # Find the full task_id (the table truncates display)
+    with app_state.quality_review_lock:
+        matching = [tid for tid in app_state.quality_review_ids if tid.startswith(task_id_full)]
+    if not matching:
+        return
+    task_id = matching[0]
+
+    # Get score data
+    with app_state.quality_lock:
+        score_data = app_state.quality_scores.get(task_id, {})
+
+    # Get the conversation from output (re-read from file or use in-memory)
+    # For now, show the score breakdown + flags. Full conversation would require
+    # re-reading the output JSONL or storing it in memory.
+    detail_text.config(state=tk.NORMAL)
+    detail_text.delete(1.0, tk.END)
+
+    detail_text.insert(tk.END, f"TASK: {task_id}\n")
+    detail_text.insert(tk.END, f"SCORE: {score_data.get('composite', 'N/A')}/100\n")
+    detail_text.insert(tk.END, f"METHOD: {score_data.get('method', 'N/A')}\n")
+    detail_text.insert(tk.END, f"SCORED: {score_data.get('scored_at', 'N/A')}\n")
+    detail_text.insert(tk.END, f"\nDIMENSIONS:\n")
+    for dim, val in score_data.get('dimensions', {}).items():
+        bar = "█" * int(val // 5) + "░" * (20 - int(val // 5))
+        detail_text.insert(tk.END, f"  {dim:<15} {bar} {val}\n")
+    detail_text.insert(tk.END, f"\nFLAGS: {', '.join(score_data.get('flags', []))}\n")
+    detail_text.insert(tk.END, f"\n{'='*60}\n")
+    detail_text.insert(tk.END, "NOTE: Full conversation text is in the output JSONL file.\n")
+    detail_text.insert(tk.END, f"      Search for id: \"{task_id}\" in output/output.jsonl\n")
+    detail_text.config(state=tk.DISABLED)
+
+
+def _export_flagged_review():
+    """Exports all flagged conversations to a separate JSONL file for manual review."""
+    with app_state.quality_review_lock:
+        review_ids = set(app_state.quality_review_ids)
+
+    if not review_ids:
+        toast.show("No flagged items to export.", "info")
+        return
+
+    with app_state.quality_lock:
+        scores = app_state.quality_scores
+
+    export_path = os.path.join(app_state.OUTPUT_DIR, 'quality_review_flagged.jsonl')
+    exported = 0
+
+    # Read the main output file and extract flagged conversations
+    main_output = app_state.BASE_OUTPUT_FILE_PATH + ".jsonl"
+    if os.path.exists(main_output):
+        with open(main_output, 'r', encoding='utf-8') as src, \
+             open(export_path, 'w', encoding='utf-8') as dst:
+            for line in src:
+                try:
+                    entry = json.loads(line)
+                    entry_id = entry.get('id', '')
+                    # Match both direct task_id and duplication-format ids
+                    if entry_id in review_ids or any(
+                        entry_id.startswith(f"{rid}_api") for rid in review_ids
+                    ):
+                        # Attach quality score metadata
+                        matching_score = scores.get(entry_id)
+                        if not matching_score:
+                            # Try to find the parent task_id
+                            for rid in review_ids:
+                                if entry_id.startswith(rid):
+                                    matching_score = scores.get(rid)
+                                    break
+                        entry['_quality_score'] = matching_score
+                        dst.write(json.dumps(entry) + '\n')
+                        exported += 1
+                except json.JSONDecodeError:
+                    continue
+
+    toast.show(f"Exported {exported} flagged conversations to {export_path}", "success")
+    log_message(f"Quality review export: {exported} items → {export_path}", "INFO")
+
+
+def _dismiss_all_review():
+    """Clears all review flags (user has handled them)."""
+    if not messagebox.askyesno("Dismiss All", "Remove all review flags? This does NOT delete the output data."):
+        return
+    with app_state.quality_review_lock:
+        app_state.quality_review_ids.clear()
+    toast.show("All review flags dismissed.", "success")
+    _update_review_table()
+
+def update_quality_display():
+    """Updates the quality metrics labels in the UI."""
+    if not app_state.root.winfo_exists():
+        return
+
+    stats = quality.get_quality_stats()
+
+    if stats["count"] == 0:
+        if hasattr(app_state.quality_score_label, 'winfo_exists') and app_state.quality_score_label.winfo_exists():
+            app_state.quality_score_label.config(text="N/A")
+            app_state.quality_threshold_label.config(text="0")
+            app_state.quality_flag_label.config(text="None")
+        return
+
+    # Composite score with color coding
+    avg = stats["avg_composite"]
+    if avg >= 80:
+        color = "#51cf66"  # Green
+    elif avg >= 60:
+        color = "#fcc419"  # Amber
+    else:
+        color = "#ff6b6b"  # Red
+
+    if hasattr(app_state.quality_score_label, 'winfo_exists') and app_state.quality_score_label.winfo_exists():
+        app_state.quality_score_label.config(
+            text=f"{avg}/100 (n={stats['count']})",
+            foreground=color
+        )
+        app_state.quality_threshold_label.config(
+            text=f"{stats['threshold_failures']} below min"
+        )
+
+    # Top flag
+    if stats["flag_counts"]:
+        top_flag = max(stats["flag_counts"], key=stats["flag_counts"].get)
+        app_state.quality_flag_label.config(
+            text=f"{top_flag} ({stats['flag_counts'][top_flag]}x)"
+        )
+    else:
+        app_state.quality_flag_label.config(text="None")
+    # Update the Review tab label with a count badge
+    with app_state.quality_review_lock:
+        review_count = len(app_state.quality_review_ids)
+
+    # Find the review tab widget by its text (since we don't store the widget ref)
+    review_tab_widget = None
+    for tab_id in app_state.dashboard_notebook.tabs():
+        if "Review" in app_state.dashboard_notebook.tab(tab_id, "text"):
+            review_tab_widget = tab_id
+            break
+
+    if review_tab_widget:
+        if review_count > 0:
+            app_state.dashboard_notebook.tab(review_tab_widget, text=f"🔍 Review ({review_count})")
+        else:
+            app_state.dashboard_notebook.tab(review_tab_widget, text="🔍 Review")
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Thread-safe function to update the Rich Prompt Viewer from worker threads."""
@@ -725,6 +946,9 @@ def start_processing():
     current_answer_prompt = global_config.get('prompts.answer', "Provide an answer to the last question.")
     current_api_request_timeout = global_config.get('generation.api_request_timeout', 300)
     current_lore = global_config.get('prompts.lore', '')
+    app_state.quality_enabled = global_config.get('quality.enabled', True)
+    app_state.quality_output_filter = global_config.get('quality.output_filter', False)
+    log_message(f"Quality scoring: enabled={app_state.quality_enabled}, output_filter={app_state.quality_output_filter}", "INFO")
     if current_lore:
         log_message(f"Lore loaded ({len(current_lore)} chars).", "INFO")
     else:
@@ -1204,6 +1428,8 @@ def start_processing():
                 update_api_response_time_labels()  # Dynamic color-coded response times
                 update_database_status()
                 update_queue_ui()
+                update_quality_display()
+                _update_review_table()
                 if app_state.root.winfo_exists():
                     # ADAPTIVE UPDATE FREQUENCY
                     is_active = app_state.processing_active and not app_state.stop_processing and not app_state.pause_processing
@@ -1503,7 +1729,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.2.7",
+    text="v9.3.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1542,6 +1768,15 @@ app_state.token_label = _create_ttkbs_metric(metrics_row2, "Tokens", "🔢", def
 app_state.cost_label = _create_ttkbs_metric(metrics_row2, "Est. Cost", "💰", default_text="$0.0000")
 app_state.budget_label = _create_ttkbs_metric(metrics_row2, "Budget", "📊", default_text="Budget: Disabled")
 app_state.thread_status_label = _create_ttkbs_metric(metrics_row2, "Threads", "🧵", default_text="Threads: 0 spawned, 0 active")
+
+# --- Quality Metrics Row ---
+metrics_row3 = ttk.Frame(app_state.root)
+metrics_row3.pack(pady=(0, SPACING), padx=SPACING, fill="x")
+
+app_state.quality_score_label = _create_ttkbs_metric(metrics_row3, "Quality Score", "⭐", default_text="N/A")
+app_state.quality_threshold_label = _create_ttkbs_metric(metrics_row3, "Below Threshold", "📉", default_text="0")
+app_state.quality_flag_label = _create_ttkbs_metric(metrics_row3, "Top Flag", "🏳️", default_text="None")
+
 # --- End of Metrics Display Frame ---
 
 # --- Database Connection Status Frame ---
@@ -1943,7 +2178,7 @@ highlight_colors = {
     "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright orange
 }
 
-tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)]
+tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review"]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "Errors"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"] # Keys for accessing data and widgets
 
@@ -2204,24 +2439,23 @@ for tab_name in tab_names:
         tab_frame.rowconfigure(2, weight=1)
         tab_frame.rowconfigure(3, weight=1)
 
-    # 3. Create Issue Panels
-    for idx, issue_type_title in enumerate(issue_types):
-        if tab_name == "Totals" and idx == 4:  # Skip "Errors" for Totals tab
-            continue
+    # 3. Create Issue Panels (skip for custom tabs)
+    if tab_name not in ("Quality", "🔍 Review"):
+        for idx, issue_type_title in enumerate(issue_types):
+            if tab_name == "Totals" and idx == 4:  # Skip "Errors" for Totals tab
+                continue
 
-        key = issue_keys[idx]
-        columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
-        color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
-                     "anti_slop": "#ffd43b", "errors": "#fc8181"}
+            key = issue_keys[idx]
+            columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
+            color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
+                         "anti_slop": "#ffd43b", "errors": "#fc8181"}
 
-        # Create & grid the panel container
-        panel = ttk.LabelFrame(parent_frame, text=f"Recent {issue_type_title}")
-        base_row, col = divmod(idx, 2)
-        panel.grid(row=base_row + panel_row_offset, column=col, padx=SPACING, pady=SPACING, sticky="nsew")
+            panel = ttk.LabelFrame(parent_frame, text=f"Recent {issue_type_title}")
+            base_row, col = divmod(idx, 2)
+            panel.grid(row=base_row + panel_row_offset, column=col, padx=SPACING, pady=SPACING, sticky="nsew")
 
-        # Populate the panel with the Treeview
-        panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
-        app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
+            panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
+            app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
 
     # 4. Add Graph to Totals Tab
     if tab_name == "Totals":
@@ -2237,6 +2471,154 @@ for tab_name in tab_names:
         app_state.root.update_idletasks()
         parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
         parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
+
+    elif tab_name == "Quality":
+        # Quality tab: scrollable frame with score table + dimension bars
+        canvas = tk.Canvas(tab_frame)
+        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
+                                 width=20, highlightthickness=0, bd=0,
+                                 bg='#999999', troughcolor='#555555',
+                                 activebackground='#bbbbbb', relief='flat')
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_quality_canvas_configure(event, c=canvas, wid=canvas_window_id):
+            if event.width > 1:
+                c.itemconfig(wid, width=event.width)
+        canvas.bind("<Configure>", _on_quality_canvas_configure)
+
+        tab_frame.columnconfigure(0, weight=1)
+        tab_frame.columnconfigure(1, weight=0)
+        tab_frame.rowconfigure(0, weight=0)
+        tab_frame.rowconfigure(1, weight=1)
+        tab_frame.rowconfigure(2, weight=0)
+        tab_frame.rowconfigure(3, weight=0)
+
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
+
+        scrollable_frame.columnconfigure(0, weight=1)
+
+        parent_frame = scrollable_frame
+        panel_row_offset = 0
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
+        canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Quality summary panel
+        quality_summary_lf = ttk.LabelFrame(parent_frame, text="Quality Summary")
+        quality_summary_lf.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+
+        # Dimension average labels
+        for dim_idx, dim_name in enumerate(quality.SCORING_DIMENSIONS.keys()):
+            row, col = divmod(dim_idx, 3)
+            dim_label = ttk.Label(quality_summary_lf, text=f"{dim_name.title()}: N/A")
+            dim_label.grid(row=row, column=col, padx=SPACING, pady=2, sticky="w")
+            app_state.dashboard_notebook.tabs_widgets[tab_name].setdefault('dimension_labels', {})[dim_name] = dim_label
+
+        # Score table
+        quality_table_lf = ttk.LabelFrame(parent_frame, text="Recent Scores (latest 50)")
+        quality_table_lf.grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="nsew")
+
+        quality_cols = ("Task ID", "Score", "Coherence", "Naturalness", "Engagement", "Diversity", "Consistency", "Technical", "Flags", "Method")
+        quality_tree = ttk.Treeview(quality_table_lf, columns=quality_cols, show="headings", height=15)
+        for col in quality_cols:
+            quality_tree.heading(col, text=col)
+            quality_tree.column(col, width=100, anchor="w")
+        quality_tree.column("Task ID", width=200)
+        quality_tree.column("Flags", width=200)
+
+        q_vsb = tk.Scrollbar(quality_table_lf, orient="vertical", command=quality_tree.yview, width=18)
+        quality_tree.configure(yscrollcommand=q_vsb.set)
+        quality_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        q_vsb.pack(side=tk.RIGHT, fill="y")
+
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['quality_tree'] = quality_tree
+
+    elif tab_name == "🔍 Review":
+        # Review tab: scrollable list of flagged conversations with action buttons
+        canvas = tk.Canvas(tab_frame)
+        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
+                                 width=20, highlightthickness=0, bd=0,
+                                 bg='#999999', troughcolor='#555555',
+                                 activebackground='#bbbbbb', relief='flat')
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_review_canvas_configure(event, c=canvas, wid=canvas_window_id):
+            if event.width > 1:
+                c.itemconfig(wid, width=event.width)
+        canvas.bind("<Configure>", _on_review_canvas_configure)
+
+        tab_frame.columnconfigure(0, weight=1)
+        tab_frame.columnconfigure(1, weight=0)
+        tab_frame.rowconfigure(0, weight=0)
+        tab_frame.rowconfigure(1, weight=1)
+        tab_frame.rowconfigure(2, weight=0)
+        tab_frame.rowconfigure(3, weight=0)
+
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
+
+        scrollable_frame.columnconfigure(0, weight=1)
+
+        # --- Toolbar: filter + actions ---
+        review_toolbar = ttk.Frame(scrollable_frame)
+        review_toolbar.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 5))
+
+        review_filter_var = tk.StringVar()
+        review_filter_entry = ttk.Entry(review_toolbar, textvariable=review_filter_var, width=30)
+        review_filter_entry.pack(side=tk.LEFT, padx=(0, 5))
+        review_filter_entry.bind("<Return>", lambda e: _update_review_table())
+        ttk.Button(review_toolbar, text="🔍 Filter", command=_update_review_table).pack(side=tk.LEFT, padx=2)
+        ttk.Button(review_toolbar, text="📤 Export Flagged → JSONL", command=_export_flagged_review).pack(side=tk.LEFT, padx=2)
+        ttk.Button(review_toolbar, text="✅ Dismiss All", command=_dismiss_all_review).pack(side=tk.LEFT, padx=2)
+        ttk.Button(review_toolbar, text="🔄 Refresh", command=_update_review_table).pack(side=tk.LEFT, padx=2)
+
+        review_count_label = ttk.Label(review_toolbar, text="", foreground="#ff6b6b", font=('Segoe UI', 10, 'bold'))
+        review_count_label.pack(side=tk.RIGHT, padx=5)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['review_count_label'] = review_count_label
+
+        # --- Flagged items table ---
+        review_table_lf = ttk.LabelFrame(scrollable_frame, text="Flagged Conversations (Below Threshold)")
+        review_table_lf.grid(row=1, column=0, sticky="nsew", padx=SPACING, pady=SPACING)
+
+        review_cols = ("Task ID", "Score", "Lowest Dim", "Flags", "Source File", "Scored At")
+        review_tree = ttk.Treeview(review_table_lf, columns=review_cols, show="headings", height=12)
+        for col in review_cols:
+            review_tree.heading(col, text=col)
+            review_tree.column(col, width=120, anchor="w")
+        review_tree.column("Task ID", width=220)
+        review_tree.column("Flags", width=250)
+
+        r_vsb = tk.Scrollbar(review_table_lf, orient="vertical", command=review_tree.yview, width=18)
+        review_tree.configure(yscrollcommand=r_vsb.set)
+        review_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        r_vsb.pack(side=tk.RIGHT, fill="y")
+
+        review_tree.tag_configure("critical", foreground="#ff6b6b")
+        review_tree.tag_configure("warning", foreground="#fcc419")
+
+        # Double-click to view conversation detail
+        review_tree.bind("<Double-1>", lambda e: _show_review_detail(review_tree))
+
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['review_tree'] = review_tree
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['review_filter_var'] = review_filter_var
+
+        # --- Detail panel (hidden until double-click) ---
+        detail_lf = ttk.LabelFrame(scrollable_frame, text="Conversation Detail (double-click a row above)")
+        detail_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
+
+        detail_text = scrolledtext.ScrolledText(detail_lf, wrap=tk.WORD, height=15, font=('Consolas', 9),
+                                                 bg='#1a1a2e', fg='#e0e0e0', relief=tk.FLAT)
+        detail_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['detail_text'] = detail_text
 
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)

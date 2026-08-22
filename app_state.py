@@ -11,6 +11,7 @@ import os
 import threading
 from threading import Lock
 from config_loader import ConfigLoader
+import json
 
 _previous_progress_values = {}
 anti_slop_count_total = 0
@@ -97,6 +98,13 @@ api_circuit_breaker_lock = threading.Lock()
 MAX_TASK_REQUEUES = 50
 task_retry_counts = {}
 task_retry_lock = threading.Lock()
+quality_lock = Lock()
+quality_scores = {}  # {task_id: {"composite": float, "dimensions": {...}, "flags": [...], "scored_at": str, "method": str}}
+quality_enabled = True  # Master toggle (overridden by config)
+quality_output_filter = False  # If True, only write conversations meeting the threshold to output
+# --- Quality Review Queue ---
+quality_review_ids = set()  # task_ids flagged for human review
+quality_review_lock = Lock()
 master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
 live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
 
