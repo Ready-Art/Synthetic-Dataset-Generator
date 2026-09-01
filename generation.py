@@ -38,38 +38,45 @@ def update_live_prompt_preview(messages_list, metadata=None):
         hook(messages_list, metadata)
 
 
-# The payload builders below target a permissive vLLM/OpenAI-compatible schema. The hosted Mistral
-# API (api.mistral.ai) rejects several of those body fields outright with HTTP 400/422, which made
-# every Mistral request fail on all retries. When an endpoint is a known-strict one we drop the
-# unsupported fields before sending. repetition_penalty (multiplicative around 1.0) is translated to
-# frequency_penalty (additive around 0.0), the closest control Mistral does support.
-_MISTRAL_UNSUPPORTED_KEYS = ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias")
+# The payload builders below target a permissive vLLM/OpenAI-compatible schema. Some hosted APIs
+# reject several of those body fields outright with HTTP 400/422 (Mistral, for one), which made
+# every request to them fail on all retries. For a host listed here we drop the unsupported fields
+# before sending. To support another strict endpoint, add a "domain": (keys-to-drop, ...) entry; the
+# key matches the request host exactly or as a ".domain" suffix.
+_STRICT_ENDPOINT_DROP_KEYS = {
+    "mistral.ai": ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias"),
+}
 
 
-def _endpoint_is_mistral(api_url):
-    """True when api_url points at the hosted Mistral API, which rejects non-OpenAI sampler params."""
+def _keys_to_drop_for(api_url):
+    """Union of body keys to strip for api_url's host, or an empty set if the host isn't listed."""
     if not api_url:
-        return False
+        return set()
     try:
         host = (urllib.parse.urlparse(api_url).hostname or "").lower()
     except Exception:
-        return False
-    return host == "api.mistral.ai" or host.endswith(".mistral.ai")
+        return set()
+    drop = set()
+    for domain, keys in _STRICT_ENDPOINT_DROP_KEYS.items():
+        if host == domain or host.endswith("." + domain):
+            drop.update(keys)
+    return drop
 
 
 def sanitize_payload_for_endpoint(payload_dict, api_url):
     """Return payload_dict adjusted for known-strict endpoints; other endpoints pass through unchanged."""
-    if not _endpoint_is_mistral(api_url):
+    drop = _keys_to_drop_for(api_url)
+    if not drop:
         return payload_dict
 
-    cleaned = dict(payload_dict)
-    rep_pen = cleaned.get("repetition_penalty")
-    for key in _MISTRAL_UNSUPPORTED_KEYS:
-        cleaned.pop(key, None)
-    if isinstance(rep_pen, (int, float)) and "frequency_penalty" not in cleaned:
-        # frequency_penalty is only valid in [-2, 2]; clamp so a high repetition_penalty
-        # in the config doesn't turn into a 400 from Mistral. round() drops float noise
-        # (1.1 - 1.0 == 0.10000000000000009) from the wire payload and debug logs.
+    cleaned = {k: v for k, v in payload_dict.items() if k not in drop}
+    rep_pen = payload_dict.get("repetition_penalty")
+    if ("repetition_penalty" in drop and "frequency_penalty" not in drop
+            and isinstance(rep_pen, (int, float)) and "frequency_penalty" not in cleaned):
+        # repetition_penalty (multiplicative around 1.0) has no equivalent on these APIs; map it to
+        # frequency_penalty (additive around 0.0), the closest supported control. frequency_penalty
+        # is only valid in [-2, 2], so clamp; round() drops float noise (1.1 - 1.0 ==
+        # 0.10000000000000009) from the wire payload and debug logs.
         freq = round(max(-2.0, min(2.0, float(rep_pen) - 1.0)), 4)
         if freq:
             cleaned["frequency_penalty"] = freq
