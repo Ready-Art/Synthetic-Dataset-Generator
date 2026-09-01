@@ -1,0 +1,68 @@
+# API compatibility profiles -- consumed by api_profiles.py.
+#
+# The request builders in generation.py emit a permissive, vLLM/OpenAI-style JSON body
+# (top_k, min_p, repetition_penalty, chat_template_kwargs, logit_bias, ...). Some hosted
+# APIs reject any field outside their documented set with HTTP 400/422, so a request that
+# works against a local server fails outright against, e.g., Mistral.
+#
+# A profile is an allow-list of body keys (plus optional key renames) applied to the payload
+# just before it is sent. Each API slot in the config editor picks one.
+#
+#   label:        text shown in the config editor's "API Compatibility" dropdown
+#   allow:        list of accepted body keys, OR
+#                   all           -> send the payload untouched (no filtering)
+#                   from_config   -> use that slot's custom_allowed_params list
+#   rename:       {old_key: new_key}, applied before filtering so a value survives its
+#                 source key being dropped. The only value-aware rename is
+#                 repetition_penalty -> frequency_penalty (v - 1, clamped to [-2, 2]);
+#                 every other pair is copied through unchanged.
+#   detect_hosts: hostnames (exact, or ".suffix" for subdomains) the "Detect" button and the
+#                 auto-fallback use to guess a profile from an API URL.
+#
+# "model", "messages" and "stream" are always sent, regardless of the allow-list.
+#
+# These parameter sets drift as providers change their APIs. Fix them here -- no code change
+# is needed to add, remove, or adjust a profile.
+
+openai_compatible:
+  label: "Broad / OpenAI-compatible (vLLM, TGI, llama.cpp, local servers)"
+  allow: all
+  detect_hosts: []
+
+openai:
+  label: "OpenAI"
+  allow: [temperature, top_p, max_tokens, max_completion_tokens, frequency_penalty,
+          presence_penalty, stop, seed, logit_bias, response_format, n, tools, tool_choice, user]
+  rename: {repetition_penalty: frequency_penalty}
+  detect_hosts: [api.openai.com]
+
+mistral:
+  label: "Mistral (La Plateforme)"
+  allow: [temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop,
+          random_seed, response_format, n, tools, tool_choice, safe_prompt]
+  rename: {repetition_penalty: frequency_penalty}
+  detect_hosts: [mistral.ai]
+
+xai_grok:
+  label: "xAI (Grok)"
+  allow: [temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop,
+          seed, logit_bias, response_format, n, tools, tool_choice]
+  rename: {repetition_penalty: frequency_penalty}
+  detect_hosts: [api.x.ai]
+
+gemini_openai:
+  label: "Google Gemini (OpenAI-compatible endpoint)"
+  allow: [temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop,
+          seed, response_format, n, tools, tool_choice]
+  rename: {repetition_penalty: frequency_penalty}
+  detect_hosts: [generativelanguage.googleapis.com]
+
+anthropic_openai:
+  label: "Anthropic Claude (OpenAI-compatible endpoint / proxy)"
+  allow: [temperature, top_p, top_k, max_tokens, stop, tools, tool_choice]
+  detect_hosts: [api.anthropic.com]
+
+custom:
+  label: "User Defined (pick the accepted params)"
+  allow: from_config
+  detect_hosts: []

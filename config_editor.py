@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
+import api_profiles
 from config_loader import sanitize_input
 from logging_config import log_message
 from api_handler import global_rate_limiter
@@ -156,6 +157,8 @@ class ConfigEditor(tk.Toplevel):
         master_duplication_check.grid(row=4, column=0, columnspan=2, padx=SPACING, pady=(10,5), sticky="w")
 
         num_api_slots = 6
+        # (name, label) pairs for the per-slot "API Compatibility" dropdown; see api_profiles.py.
+        self._api_profile_choices = api_profiles.list_profiles()
         for i in range(num_api_slots):
             frame_text = f"API Slot {i+1}"
             if i == 0: frame_text += " (Primary for Q/Continuation in Duplication)"
@@ -187,7 +190,37 @@ class ConfigEditor(tk.Toplevel):
             test_btn = ttk.Button(api_frame, text="Test Connection", command=lambda idx=i: self.test_api_connection(idx))  # This should already work since it's a lambda
             test_btn.grid(row=7, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
             setattr(self, f'api_test_btn_{i+1}', test_btn)
-            
+
+            # --- API Compatibility (payload param filtering per endpoint) ---
+            compat_frame = ttk.LabelFrame(api_frame, text="API Compatibility")
+            compat_frame.grid(row=8, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 2), sticky="ew")
+            compat_frame.grid_columnconfigure(0, weight=1)
+
+            profile_var = tk.StringVar()
+            setattr(self, f'api_profile_var_{i+1}', profile_var)
+            profile_combo = ttk.Combobox(
+                compat_frame, textvariable=profile_var, state="readonly", width=52,
+                values=[lbl for _, lbl in self._api_profile_choices]
+            )
+            profile_combo.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+            profile_combo.bind("<<ComboboxSelected>>", lambda e, idx=i: self._on_api_profile_change(idx))
+            ttk.Button(compat_frame, text="Detect", command=lambda idx=i: self._detect_api_profile(idx)).grid(
+                row=0, column=1, padx=SPACING, pady=SPACING)
+
+            custom_params_var = tk.StringVar()
+            setattr(self, f'api_custom_params_var_{i+1}', custom_params_var)
+            custom_params_entry = ttk.Entry(compat_frame, textvariable=custom_params_var, width=60)
+            custom_params_entry.grid(row=1, column=0, columnspan=2, padx=SPACING, pady=(0, 2), sticky="ew")
+            setattr(self, f'api_custom_params_entry_{i+1}', custom_params_entry)
+            ttk.Label(
+                compat_frame,
+                text="Trims the request body to what the chosen endpoint accepts, so requests don't "
+                     "fail on params it rejects (e.g. top_k on Mistral). Only the 'User Defined' "
+                     "profile uses the comma-separated param list above.",
+                style='Small.TLabel', wraplength=520, justify="left"
+            ).grid(row=2, column=0, columnspan=2, padx=SPACING, pady=(0, SPACING), sticky="w")
+
+
             if i < 4: # APIs 1-4 (indices 0-3) can be enabled/disabled for main generation
                 enabled_var = tk.BooleanVar(self, value=(i==0)) # API 1 defaults to enabled
                 setattr(self, f'api_enabled_var_{i+1}', enabled_var)
@@ -980,6 +1013,44 @@ class ConfigEditor(tk.Toplevel):
         except Exception as e:
             log_message(f"ConfigEditor: Error populating profile list: {e}", "ERROR")
 
+    # --- API Compatibility profile helpers ---
+    def _profile_name_to_label(self, name):
+        """Map a stored profile name (e.g. 'mistral') to its dropdown label, defaulting sanely."""
+        for n, lbl in self._api_profile_choices:
+            if n == name:
+                return lbl
+        for n, lbl in self._api_profile_choices:
+            if n == api_profiles.DEFAULT_PROFILE:
+                return lbl
+        return name
+
+    def _profile_label_to_name(self, label):
+        """Inverse of _profile_name_to_label; falls back to the default profile."""
+        for n, lbl in self._api_profile_choices:
+            if lbl == label:
+                return n
+        return api_profiles.DEFAULT_PROFILE
+
+    def _on_api_profile_change(self, slot_index):
+        """Enable the custom-params entry only for the 'User Defined' profile."""
+        name = self._profile_label_to_name(getattr(self, f'api_profile_var_{slot_index+1}').get())
+        entry = getattr(self, f'api_custom_params_entry_{slot_index+1}', None)
+        if entry is not None:
+            entry.configure(state="normal" if name == "custom" else "disabled")
+
+    def _detect_api_profile(self, slot_index):
+        """Guess the compatibility profile for a slot from its API URL host."""
+        url = getattr(self, f'api_url_var_{slot_index+1}').get().strip()
+        detected = api_profiles.detect_profile(url)
+        status_var = getattr(self, f'api_status_var_{slot_index+1}', None)
+        if detected:
+            getattr(self, f'api_profile_var_{slot_index+1}').set(self._profile_name_to_label(detected))
+            self._on_api_profile_change(slot_index)
+            if status_var is not None:
+                status_var.set(f"Compatibility profile set to: {detected}")
+        elif status_var is not None:
+            status_var.set("No known profile matches that URL. Leave as-is, or pick 'User Defined'.")
+
     def _get_current_editor_config_data(self):
         """Gathers all configuration data currently entered in the editor fields into a dictionary suitable for YAML."""
         self.on_gender_change_editor_handler(save_current=True)
@@ -1001,6 +1072,14 @@ class ConfigEditor(tk.Toplevel):
             # NEW: Add rate limit setting for all API slots (1-5)
             if hasattr(self, f'api_rate_limit_var_{i+1}'):
                 api_entry['rate_limit_rpm'] = int(getattr(self, f'api_rate_limit_var_{i+1}').get())
+
+            # API compatibility profile (payload param filtering) for this slot
+            if hasattr(self, f'api_profile_var_{i+1}'):
+                api_entry['api_profile'] = self._profile_label_to_name(getattr(self, f'api_profile_var_{i+1}').get())
+                custom_raw = getattr(self, f'api_custom_params_var_{i+1}').get()
+                custom_list = [p.strip() for p in custom_raw.replace(',', ' ').split() if p.strip()]
+                if custom_list:
+                    api_entry['custom_allowed_params'] = custom_list
 
             apis_list_to_save.append(api_entry)
 
@@ -1393,6 +1472,14 @@ class ConfigEditor(tk.Toplevel):
                 # NEW: Load rate limit setting for all API slots (1-5)
                 if hasattr(self, f'api_rate_limit_var_{i+1}'):
                     getattr(self, f'api_rate_limit_var_{i+1}').set(str(api_details_yml.get('rate_limit_rpm', 60)))
+
+                # Load API compatibility profile for this slot
+                if hasattr(self, f'api_profile_var_{i+1}'):
+                    prof_name = api_details_yml.get('api_profile', api_profiles.DEFAULT_PROFILE)
+                    getattr(self, f'api_profile_var_{i+1}').set(self._profile_name_to_label(prof_name))
+                    custom_list = api_details_yml.get('custom_allowed_params', []) or []
+                    getattr(self, f'api_custom_params_var_{i+1}').set(', '.join(str(p) for p in custom_list))
+                    self._on_api_profile_change(i)
 
             gen_config = config.get('generation', {})
             if hasattr(self, 'max_character_cards_var'):

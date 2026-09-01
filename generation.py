@@ -12,8 +12,8 @@ import random
 import requests
 import time
 import tkinter as tk
-import urllib.parse
 
+import api_profiles
 import app_state
 import detection
 import text_utils
@@ -38,49 +38,16 @@ def update_live_prompt_preview(messages_list, metadata=None):
         hook(messages_list, metadata)
 
 
-# The payload builders below target a permissive vLLM/OpenAI-compatible schema. Some hosted APIs
-# reject several of those body fields outright with HTTP 400/422 (Mistral, for one), which made
-# every request to them fail on all retries. For a host listed here we drop the unsupported fields
-# before sending. To support another strict endpoint, add a "domain": (keys-to-drop, ...) entry; the
-# key matches the request host exactly or as a ".domain" suffix.
-_STRICT_ENDPOINT_DROP_KEYS = {
-    "mistral.ai": ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias"),
-}
+def sanitize_payload_for_endpoint(payload_dict, api_url, slot_idx):
+    """Filter the outgoing request body to what API slot `slot_idx`'s compatibility profile allows.
 
-
-def _keys_to_drop_for(api_url):
-    """Union of body keys to strip for api_url's host, or an empty set if the host isn't listed."""
-    if not api_url:
-        return set()
-    try:
-        host = (urllib.parse.urlparse(api_url).hostname or "").lower()
-    except Exception:
-        return set()
-    drop = set()
-    for domain, keys in _STRICT_ENDPOINT_DROP_KEYS.items():
-        if host == domain or host.endswith("." + domain):
-            drop.update(keys)
-    return drop
-
-
-def sanitize_payload_for_endpoint(payload_dict, api_url):
-    """Return payload_dict adjusted for known-strict endpoints; other endpoints pass through unchanged."""
-    drop = _keys_to_drop_for(api_url)
-    if not drop:
-        return payload_dict
-
-    cleaned = {k: v for k, v in payload_dict.items() if k not in drop}
-    rep_pen = payload_dict.get("repetition_penalty")
-    if ("repetition_penalty" in drop and "frequency_penalty" not in drop
-            and isinstance(rep_pen, (int, float)) and "frequency_penalty" not in cleaned):
-        # repetition_penalty (multiplicative around 1.0) has no equivalent on these APIs; map it to
-        # frequency_penalty (additive around 0.0), the closest supported control. frequency_penalty
-        # is only valid in [-2, 2], so clamp; round() drops float noise (1.1 - 1.0 ==
-        # 0.10000000000000009) from the wire payload and debug logs.
-        freq = round(max(-2.0, min(2.0, float(rep_pen) - 1.0)), 4)
-        if freq:
-            cleaned["frequency_penalty"] = freq
-    return cleaned
+    Thin wrapper over api_profiles (see config/api_profiles.yml). The builders emit a permissive
+    vLLM/OpenAI-style payload; some hosted APIs (Mistral, OpenAI, ...) reject fields outside their
+    documented set with HTTP 400/422. The default profile does no filtering and returns the same
+    object unchanged, so untouched configs behave exactly as before. `api_url` is used only as a
+    fallback to auto-detect the profile when the slot has no registered one.
+    """
+    return api_profiles.apply_profile_for_slot(payload_dict, slot_idx, api_url)
 
 
 def check_budget_limit():
@@ -1142,7 +1109,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
 
-            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local)
+            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local, api_slot_idx)
             payload = json.dumps(payload_dict)
             headers = {
                 'Content-Type': 'application/json'
@@ -1414,7 +1381,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
 
-            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local)
+            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local, api_slot_idx)
             payload = json.dumps(payload_dict)
             headers = {
                 'Content-Type': 'application/json'
@@ -1659,7 +1626,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 **final_slop_fixer_params,
                 "stream": False
             }
-            payload_data = sanitize_payload_for_endpoint(payload_data, api_url)
+            payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_slop_fixer)
             payload = json.dumps(payload_data)
             headers = {
                 'Content-Type': 'application/json'
@@ -1879,7 +1846,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 **final_anti_slop_params,
                 "stream": False
             }
-            payload_data = sanitize_payload_for_endpoint(payload_data, api_url)
+            payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_anti_slop)
             payload = json.dumps(payload_data)
             headers = {
                 'Content-Type': 'application/json'
@@ -2133,7 +2100,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
                 # else 'default': do not send the parameter
 
-                payload_dict_ans = sanitize_payload_for_endpoint(payload_dict_ans, api_url_local)
+                payload_dict_ans = sanitize_payload_for_endpoint(payload_dict_ans, api_url_local, api_slot_idx)
                 payload = json.dumps(payload_dict_ans)
                 headers = {
                     'Content-Type': 'application/json'

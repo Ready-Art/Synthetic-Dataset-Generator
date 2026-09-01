@@ -27,6 +27,7 @@ import psutil
 import matplotlib
 import matplotlib.ticker as ticker
 import api_handler
+import api_profiles
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
 from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
@@ -851,7 +852,9 @@ def start_processing():
             'key': os.getenv(f'API_KEY_{i+1}', api_conf_yml.get('key', '')),
             'sampler_settings': global_config.get('samplers', {}),
             'threads': api_conf_yml.get('threads', 10),  # Get threads from API config
-            'rate_limit_rpm': api_conf_yml.get('rate_limit_rpm', 60)
+            'rate_limit_rpm': api_conf_yml.get('rate_limit_rpm', 60),
+            'api_profile': os.getenv(f'API_PROFILE_{i+1}', api_conf_yml.get('api_profile', api_profiles.DEFAULT_PROFILE)),
+            'custom_allowed_params': api_conf_yml.get('custom_allowed_params', [])
         }
         enabled_in_config = api_conf_yml.get('enabled', (i==0)) 
         api_runtime['enabled'] = enabled_in_config
@@ -867,6 +870,16 @@ def start_processing():
     
     while len(all_api_configs_runtime) < 6:
         all_api_configs_runtime.append({'enabled': False, 'url':'', 'model':'', 'key':'', 'sampler_settings':{}})
+
+    # Register each slot's API compatibility profile so generation.py can trim outgoing payloads
+    # to what that endpoint accepts (see api_profiles.py / config/api_profiles.yml).
+    api_profiles.load_profiles()
+    api_profiles.reset_slot_profiles()
+    for slot_idx, conf in enumerate(all_api_configs_runtime[:6]):
+        resolved = api_profiles.set_slot_profile(
+            slot_idx, conf.get('api_profile'), conf.get('custom_allowed_params'), conf.get('url'))
+        if conf.get('url'):
+            log_message(f"API Slot {slot_idx+1} compatibility profile: {resolved}", "INFO")
 
     master_duplication_enabled = app_state.master_duplication_enabled_var.get() 
 
