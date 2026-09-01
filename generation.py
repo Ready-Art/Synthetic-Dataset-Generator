@@ -12,6 +12,7 @@ import random
 import requests
 import time
 import tkinter as tk
+import urllib.parse
 
 import app_state
 import detection
@@ -35,6 +36,44 @@ def update_live_prompt_preview(messages_list, metadata=None):
     hook = app_state.live_prompt_preview_hook
     if hook:
         hook(messages_list, metadata)
+
+
+# The payload builders below target a permissive vLLM/OpenAI-compatible schema. The hosted Mistral
+# API (api.mistral.ai) rejects several of those body fields outright with HTTP 400/422, which made
+# every Mistral request fail on all retries. When an endpoint is a known-strict one we drop the
+# unsupported fields before sending. repetition_penalty (multiplicative around 1.0) is translated to
+# frequency_penalty (additive around 0.0), the closest control Mistral does support.
+_MISTRAL_UNSUPPORTED_KEYS = ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias")
+
+
+def _endpoint_is_mistral(api_url):
+    """True when api_url points at the hosted Mistral API, which rejects non-OpenAI sampler params."""
+    if not api_url:
+        return False
+    try:
+        host = (urllib.parse.urlparse(api_url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.mistral.ai" or host.endswith(".mistral.ai")
+
+
+def sanitize_payload_for_endpoint(payload_dict, api_url):
+    """Return payload_dict adjusted for known-strict endpoints; other endpoints pass through unchanged."""
+    if not _endpoint_is_mistral(api_url):
+        return payload_dict
+
+    cleaned = dict(payload_dict)
+    rep_pen = cleaned.get("repetition_penalty")
+    for key in _MISTRAL_UNSUPPORTED_KEYS:
+        cleaned.pop(key, None)
+    if isinstance(rep_pen, (int, float)) and "frequency_penalty" not in cleaned:
+        # frequency_penalty is only valid in [-2, 2]; clamp so a high repetition_penalty
+        # in the config doesn't turn into a 400 from Mistral. round() drops float noise
+        # (1.1 - 1.0 == 0.10000000000000009) from the wire payload and debug logs.
+        freq = round(max(-2.0, min(2.0, float(rep_pen) - 1.0)), 4)
+        if freq:
+            cleaned["frequency_penalty"] = freq
+    return cleaned
 
 
 def check_budget_limit():
@@ -1096,6 +1135,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
 
+            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local)
             payload = json.dumps(payload_dict)
             headers = {
                 'Content-Type': 'application/json'
@@ -1367,6 +1407,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
 
+            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local)
             payload = json.dumps(payload_dict)
             headers = {
                 'Content-Type': 'application/json'
@@ -1611,6 +1652,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 **final_slop_fixer_params,
                 "stream": False
             }
+            payload_data = sanitize_payload_for_endpoint(payload_data, api_url)
             payload = json.dumps(payload_data)
             headers = {
                 'Content-Type': 'application/json'
@@ -1830,6 +1872,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 **final_anti_slop_params,
                 "stream": False
             }
+            payload_data = sanitize_payload_for_endpoint(payload_data, api_url)
             payload = json.dumps(payload_data)
             headers = {
                 'Content-Type': 'application/json'
@@ -2083,6 +2126,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
                 # else 'default': do not send the parameter
 
+                payload_dict_ans = sanitize_payload_for_endpoint(payload_dict_ans, api_url_local)
                 payload = json.dumps(payload_dict_ans)
                 headers = {
                     'Content-Type': 'application/json'
