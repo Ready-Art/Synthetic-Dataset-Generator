@@ -314,6 +314,11 @@ Notes:
 - The named provider profiles assume an OpenAI-**shaped** endpoint (same URL style, `Bearer` auth,
   `choices[].message.content` response). Native Anthropic / native Gemini APIs are a different
   request/response shape and are **not** covered by profile filtering alone.
+- Only `mistral` and `openai_compatible` have been verified against a live endpoint. The `openai`,
+  `xai_grok`, `gemini_openai` and `anthropic_openai` allow-lists are built from each provider's API
+  docs — they filter exactly as listed, but if a provider actually accepts a param that isn't in
+  its list, that param is dropped rather than sent. Adjust the list in `config/api_profiles.yml` if
+  you hit this; no code change is needed.
 
 **Params the request builders send** — a profile whose `allow` list omits one of these drops it
 before the request: `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `max_tokens`,
