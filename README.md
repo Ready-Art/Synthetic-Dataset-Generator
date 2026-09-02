@@ -1,8 +1,8 @@
-# ReadyArt Synthetic Dataset Generator v9.2.7
+# ReadyArt Synthetic Dataset Generator v9.4.0
 
-A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, and real-time monitoring dashboards.
+A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
-**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v9.2.5-STABLE branch.
+**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v9.3.0-STABLE branch.
 
 ---
 
@@ -17,6 +17,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Generation Settings](#generation-settings)
   - [Prompts & Character Engine](#prompts--character-engine)
   - [Detection & Quality Control](#detection--quality-control)
+  - [Quality Scoring](#quality-scoring)
   - [Sampler Parameters](#sampler-parameters)
   - [Database & Caching](#database--caching)
   - [Budget & Cost Control](#budget--cost-control)
@@ -27,6 +28,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Resuming & Crash Recovery](#resuming--crash-recovery)
   - [Duplication vs. Collaborative Mode](#duplication-vs-collaborative-mode)
   - [Dashboard & Monitoring](#dashboard--monitoring)
+  - [Quality Dashboard & Review](#quality-dashboard--review)
   - [Queue Management](#queue-management)
   - [Live Prompt Preview](#live-prompt-preview)
   - [Configuration Profiles](#configuration-profiles)
@@ -39,6 +41,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
   - [Generation Pipeline](#generation-pipeline)
+  - [Quality Scoring Pipeline](#quality-scoring-pipeline)
   - [Multi-Character Conversation Mode](#multi-character-conversation-mode)
   - [Slop Fixing Flow](#slop-fixing-flow)
   - [Anti-Slop Fixing Flow](#anti-slop-fixing-flow)
@@ -66,12 +69,24 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Randomized Chunking** — Automatically extracts random subject/context chunks from input text files
 - **Questions File Mode** — Use a predefined list of questions instead of LLM-generated ones
 
+### Quality Scoring (NEW in v9.4.0)
+- **Hybrid Scoring Engine** — Scores every completed conversation across six dimensions (coherence, naturalness, engagement, diversity, consistency, technical) using a fast heuristic pass plus optional LLM-based evaluation
+- **Composite Score (0–100)** — Weighted combination of all dimension scores; weights configurable per dimension
+- **Heuristic Dimensions** — Diversity (type-token ratio, sentence length variance, trigram repetition, paragraph structure) and Technical (quote balance, stray asterisks, em dashes, whitespace, all-lowercase detection) run without any API call
+- **Optional LLM Scoring** — Coherence, naturalness, engagement, and consistency can be scored by a dedicated LLM (separate API endpoint) for deeper evaluation; falls back to heuristic estimates if the LLM call fails
+- **Threshold Flagging** — Conversations scoring below a configurable minimum threshold are automatically flagged for human review
+- **Quality Review Tab** — Dedicated dashboard tab listing all flagged conversations with score, lowest dimension, flags, source file, and timestamp; supports filtering, double-click detail view, export to JSONL, and bulk dismiss
+- **Quality Metrics Bar** — Real-time average composite score (color-coded green/amber/red), count of below-threshold conversations, and most frequent flag displayed in the main metrics area
+- **Quality Score Table** — Dashboard tab showing the latest 50 scored conversations with per-dimension breakdown and method used
+- **Output Filtering** — Optional flag to mark below-threshold conversations for post-processing (score metadata attached to exported JSONL)
+- **Quality State Persistence** — Scores and review flags are saved in the generation state file for crash recovery
+
 ### Quality Control & Detection
 - **Refusal Detection** — Automatically detects and retries LLM refusals with configurable jailbreak prompts
 - **User Speaking Detection** — Detects when the assistant impersonates the user, with gender-specific phrase lists
 - **Slop Detection** — Identifies undesirable phrases/patterns in generated text
 - **Anti-Slop Detection** — Independent secondary detection layer with its own API slot (6), dedicated sampler settings, and LLM rewriting
-- **Incomplete Quote Detection** — Catches unbalanced quotation marks (both straight `"` and curly `""` quotes) with programmatic auto-fix fallback
+- **Incomplete Quote Detection** — Catches unbalanced quotation marks (both straight `"` and curly `""` quotes) with programmatic auto-fix fallback including structural heuristic repair
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
 - **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness and rotating fix instructions
 - **Slop → Anti-Slop Fallback** — When the Slop Fixer fails to fully resolve slop, the Anti-Slop Fixer LLM is used as a final attempt before accepting the output
@@ -99,6 +114,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Ensure spaces after line breaks
 - Strip markdown formatting to plain text
 - Normalize and balance quotation marks (handles both straight `"` and curly `""` quotes, with special handling to avoid breaking inch marks and intentional unquoted dialogue)
+- **Structural Quote Repair** — `repair_straight_quotes()` applies heuristic-based fixes for unbalanced straight quotes (prepends opener or appends closer based on text structure) before the final normalization pass
 
 ### Infrastructure & UI
 - **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached, with real-time cost tracking
@@ -106,20 +122,20 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Task Requeue on Host Failure** — Tasks assigned to a downed API host are automatically requeued (up to 50 times) rather than discarded, ensuring no work is lost during outages
 - **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed per API slot) to avoid redundant API calls
 - **PostgreSQL Storage** — Optional database backend with connection pooling, automatic initialization at startup, and JSONL export
-- **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings
+- **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings (now includes quality scores)
 - **Configuration Profiles** — Save, load, and delete named configuration profiles
 - **Configuration Editor Search** — Search bar for quickly finding tabs and LabelFrame sections by name
 - **API Compatibility Profiles** — Per-slot payload profiles (OpenAI, Mistral, xAI, Gemini, Anthropic-compat, or user-defined) that trim the request body to what each endpoint accepts, so hosted APIs don't 400/422 on sampler params they don't support; profiles are editable data in `config/api_profiles.yml`, with URL-based auto-detection
 - **API Connection Testing** — Test API connectivity directly from the configuration editor
 - **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
-- **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
+- **Real-Time Dashboard** — Monitor refusals, slop, errors, quality scores, and API response times with time-series graphs, search, and copy functionality
 - **Queue Management** — View pending, completed, and failed tasks; purge pending tasks, retry failed tasks, and export queue state to CSV
 - **Live Prompt Preview** — View prompts being sent to APIs in real-time with role-based color coding, search & highlight, section copy, and auto-scroll toggle
 - **Toast Notifications** — Non-blocking, auto-dismissing notification popups for status updates (success, error, warning, info)
 - **Token & Cost Tracking** — Track input/output tokens and estimate API costs with budget enforcement
 - **Debug Logging Toggle** — Enable/disable verbose debug logging from the UI with a single checkbox
 - **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
-- **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting
+- **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting (now includes quality scoring requests)
 - **Animated Progress Bars** — Color-coded progress bars that change style based on completion percentage (blue → cyan → green → amber → bright green) with pulse animations at milestones
 - **Stop & Clear Job** — Stop the current generation job, clear all progress, and reset for a fresh start
 - **Force Recovery** — Bypass configuration compatibility checks and force-load a previous generation state
@@ -179,6 +195,12 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
     │ JSONL   │  │PostgreSQL│  │  Valkey  │
     │ Files   │  │  (Opt.)  │  │  Cache   │
     └─────────┘  └─────────┘  └──────────┘
+                       │
+                       ▼
+    ┌──────────────────────────────────────┐
+    │     Quality Scoring Engine           │
+    │  (Heuristic + Optional LLM, 6 dims) │
+    └──────────────────────────────────────┘
 ```
 
 ---
@@ -496,6 +518,51 @@ gender: "female"  # "male", "female", or "neutral"
 
 > **Note:** Anti-Slop is a fully independent detection layer. It uses its own API (Slot 6), its own sampler settings, and its own phrase/fix lists. It is separate from Slop Detection (Slot 5) and can be configured independently.
 
+### Quality Scoring
+
+The quality scoring engine evaluates every completed conversation across six dimensions and produces a weighted composite score from 0 to 100.
+
+```yaml
+quality:
+  enabled: true                    # Master toggle for quality scoring
+  use_llm_scoring: false           # Use LLM for coherence/naturalness/engagement/consistency (extra API calls)
+  output_filter: false             # Flag conversations below threshold (for post-filtering)
+  min_score_threshold: 50          # Conversations below this composite score are flagged for review
+  max_chars_for_scoring: 8000      # Truncate conversation before sending to scoring LLM
+  scoring_api:
+    url: ""                        # Dedicated LLM endpoint for scoring (optional)
+    model: ""                      # Model name for scoring LLM
+    key: ""                        # API key for scoring LLM
+```
+
+**Scoring Dimensions & Default Weights:**
+
+| Dimension | Weight | Method |
+|-----------|--------|--------|
+| Coherence | 0.25 | LLM (or heuristic fallback) |
+| Naturalness | 0.20 | LLM (or heuristic fallback) |
+| Engagement | 0.15 | LLM (or heuristic fallback) |
+| Diversity | 0.15 | Heuristic (always) |
+| Consistency | 0.15 | LLM (or heuristic fallback) |
+| Technical | 0.10 | Heuristic (always) |
+
+**Heuristic Scoring (no API call required):**
+- **Diversity** — Type-token ratio, sentence length variance, trigram repetition rate, paragraph structure
+- **Technical** — Quote balance (straight + curly), stray asterisks, em dashes, tab characters, excessive whitespace, trailing whitespace, all-lowercase detection
+
+**LLM Scoring (optional, when `use_llm_scoring: true`):**
+- Sends the conversation (truncated to `max_chars_for_scoring`) to a dedicated LLM with a structured scoring prompt
+- Expects a JSON response with 0–100 scores for coherence, naturalness, engagement, and consistency
+- Falls back to heuristic estimates if the LLM call fails or returns invalid JSON
+
+**Flags generated by scoring:**
+- `below_threshold_{N}` — Composite score is below the configured minimum
+- `low_vocabulary_diversity`, `repetitive_phrases`, `uniform_sentence_length` — Diversity issues
+- `unbalanced_straight_quotes`, `stray_asterisks`, `all_lowercase_no_punctuation` — Technical issues
+- `low_coherence`, `low_naturalness`, `low_engagement`, `low_consistency` — LLM dimension scores below 40
+- `llm_scoring_fallback` — LLM scoring failed, heuristic estimates used
+- `empty_conversation` — Conversation has fewer than 2 messages
+
 ### Sampler Parameters
 
 ```yaml
@@ -645,6 +712,7 @@ The state file tracks:
 - Question history
 - All statistics (refusals, slop, errors, tokens, costs, etc.)
 - Per-API progress (in duplication mode)
+- Quality scores and review flags
 - Configuration snapshot (warns if settings changed since last run)
 
 **Configuration Incompatibility Detection:** When resuming, the application compares critical settings (`use_questions_file`, `num_turns`, `subject_size`, `context_size`, `master_duplication_mode`) between the saved state and current config. If they differ, a warning dialog presents the differences and lets you choose whether to proceed or start fresh.
@@ -669,9 +737,12 @@ The real-time dashboard provides:
 
 - **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes (10-minute bins)
 - **Per-API tabs (API 1–4)** — Individual API statistics and recent issues for each generation slot
+- **Quality tab** — Quality scoring summary, dimension averages, and a table of the latest 50 scored conversations
+- **🔍 Review tab** — Flagged conversations (below threshold) with filter, export, dismiss, and detail view
 - **Prompt Viewer tab** — Real-time view of prompts being sent to APIs with rich formatting
 - **Queue tab** — Live view of pending, completed, and failed tasks with management actions
 - **Metrics bar** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
+- **Quality metrics** — Average composite score (color-coded), below-threshold count, top flag
 - **Budget indicator** — Current spend vs. budget limit with color-coded status (turns red when exceeded)
 - **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
 - **API response times** — Average, min, max response times and sample count per slot
@@ -679,6 +750,25 @@ The real-time dashboard provides:
 - **Search** — Search across all issue panels in a tab with case-insensitive matching and auto-scroll to first result
 - **Copy All** — Copy all issue text from a tab to clipboard
 - **Clear Dashboard** button — Resets all recent issue lists and graph data
+
+### Quality Dashboard & Review
+
+The **Quality** and **🔍 Review** tabs provide post-generation quality analysis:
+
+**Quality Tab:**
+- **Quality Summary panel** — Average score per dimension with visual bar indicators
+- **Recent Scores table** — Latest 50 scored conversations showing Task ID, composite score, per-dimension scores (Coherence, Naturalness, Engagement, Diversity, Consistency, Technical), flags, and scoring method
+- **Metrics bar indicators** — Average composite score with color coding (green ≥ 80, amber ≥ 60, red < 60), count of conversations below threshold, and most frequent flag
+
+**🔍 Review Tab:**
+- **Flagged Conversations table** — All conversations below the minimum score threshold, showing Task ID, score, lowest-scoring dimension, flags, source file, and timestamp
+- **Color coding** — Critical (red) for scores below 40, warning (amber) for scores 40–threshold
+- **Filter** — Type a search term to filter flagged items by task ID
+- **Double-click detail** — Opens a detail panel showing the full score breakdown with dimension bars, flags, and scoring metadata
+- **📤 Export Flagged → JSONL** — Exports all flagged conversations (with quality score metadata attached) to `output/quality_review_flagged.jsonl`
+- **✅ Dismiss All** — Clears all review flags after manual handling (does not delete output data)
+- **🔄 Refresh** — Manually refreshes the flagged items list
+- **Tab badge** — The Review tab label shows a count of currently flagged items (e.g., "🔍 Review (7)")
 
 ### Queue Management
 
@@ -820,6 +910,21 @@ In **Collaborative Mode**, a single file is produced:
 
 When **PostgreSQL** is enabled, conversations are stored in the `generated_conversations` table and file writing is skipped entirely. Use the **Export DB → JSONL** button to export.
 
+When **quality scoring is enabled**, flagged conversations exported via the Review tab include a `_quality_score` field:
+```json
+{
+  "id": "filename_chunk_at_1234",
+  "conversations": [...],
+  "_quality_score": {
+    "composite": 42.5,
+    "dimensions": {"coherence": 38, "naturalness": 55, "engagement": 40, "diversity": 62, "consistency": 45, "technical": 58},
+    "flags": ["below_threshold_50", "low_coherence"],
+    "scored_at": "2025-06-15 14:32:00",
+    "method": "hybrid"
+  }
+}
+```
+
 > **Note:** Conversations that contain detected refusals are **not** saved to output, ensuring dataset quality. Incomplete conversations (fewer turns than configured) are also excluded and requeued for retry.
 
 ---
@@ -832,6 +937,7 @@ readyart-dataset-generator/
 ├── generation.py            # Generation engine (worker logic, API calls)
 ├── detection.py             # Issue detection (refusals, slop, quotes, anti-slop)
 ├── text_utils.py            # Text post-processing utilities
+├── quality.py               # Quality scoring engine (heuristic + LLM)
 ├── config_loader.py          # Configuration management & profiles
 ├── api_handler.py            # Rate limiting, circuit breaker & Valkey caching
 ├── api_profiles.py           # Per-endpoint payload compatibility profiles
@@ -839,6 +945,7 @@ readyart-dataset-generator/
 ├── config_editor.py          # Configuration editor window
 ├── dashboard.py              # Dashboard/presentation layer
 ├── app_state.py              # Shared runtime state
+├── test_api_profiles.py      # Unit tests for API compatibility profiles
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   ├── api_profiles.yml     # API compatibility profile definitions
@@ -852,7 +959,8 @@ readyart-dataset-generator/
 ├── output/
 │   ├── output.jsonl         # Generated dataset (collaborative mode)
 │   ├── output_api_slot_0.jsonl  # Per-API output (duplication mode)
-│   ├── generation_state.json    # Crash recovery state
+│   ├── generation_state.json    # Crash recovery state (includes quality scores)
+│   ├── quality_review_flagged.jsonl  # Exported flagged conversations (from Review tab)
 │   ├── log.txt              # Application log
 │   ├── debug_prompt.jsonl        # Debug logs (collaborative mode)
 │   ├── debug_prompt_api_slot_0.jsonl  # Per-API debug logs (duplication mode)
@@ -877,9 +985,40 @@ readyart-dataset-generator/
    - Incomplete quotes → Retry with fix instruction, then programmatic auto-fix
 4. **User Continuation** — If multi-turn, an LLM generates the user's next message. Responses are also checked for malformed content
 5. **Repeat** — Steps 3–4 repeat for the configured number of turns
-6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, etc.)
-7. **Output** — Write to JSONL file or PostgreSQL database
-8. **State Save** — Update crash recovery state
+6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
+7. **Quality Scoring** — The completed conversation is scored across six dimensions (heuristic always; LLM optional). If the composite score is below the threshold, the task is flagged for review
+8. **Output** — Write to JSONL file or PostgreSQL database
+9. **State Save** — Update crash recovery state (including quality scores and review flags)
+
+### Quality Scoring Pipeline
+
+```
+Conversation Completed (≥ 2 messages)
+    │
+    ▼
+Heuristic Scoring (always runs, no API call)
+    ├── Diversity: TTR, sentence variance, trigram repetition, paragraph structure
+    └── Technical: quote balance, asterisks, em dashes, whitespace, lowercase check
+    │
+    ▼
+LLM Scoring (optional, if use_llm_scoring: true)
+    ├── Format conversation (truncate to max_chars_for_scoring)
+    ├── Send to scoring LLM with structured prompt
+    ├── Parse JSON response → coherence, naturalness, engagement, consistency
+    └── On failure → heuristic fallback estimates
+    │
+    ▼
+Composite Score = Σ (dimension_score × weight) / Σ weights
+    │
+    ▼
+Below min_score_threshold?
+    ├── Yes → Flag task_id in quality_review_ids, log WARNING
+    └── No  → Store score only
+    │
+    ▼
+Store in app_state.quality_scores[task_id]
+Persist in generation_state.json
+```
 
 ### Multi-Character Conversation Mode
 
@@ -955,11 +1094,16 @@ Check for remaining slop phrases
 
 ### Incomplete Quote Detection & Auto-Fix
 
-When the LLM returns a response with unbalanced quotation marks and retries are exhausted, the `normalize_quotes()` function applies programmatic fixes:
+When the LLM returns a response with unbalanced quotation marks and retries are exhausted, the text processing pipeline applies programmatic fixes:
 
-1. **Collapse runs** — Multiple consecutive quotes of the same type are collapsed to a single mark
-2. **Curly quotes (`"`, `"`)** — If left and right counts don't match, the missing openers are prepended or closers are appended to balance them
-3. **Straight quotes (`"`)** — Because the same glyph is used for both opening and closing, an odd count is ambiguous. The function deliberately **does not** guess where the missing quote belongs — this is handled by the detection and retry system instead
+1. **`repair_straight_quotes()`** — Applies structural heuristics for unbalanced straight quotes (odd count):
+   - If text ends with sentence punctuation and doesn't start with a quote → prepend opening quote
+   - If text starts with a capital word and doesn't end with a quote → append closing quote
+   - Fallback: append at end
+2. **`normalize_quotes()`** — Final normalization pass:
+   - **Collapse runs** — Multiple consecutive quotes of the same type are collapsed to a single mark
+   - **Curly quotes (`\u201c`, `\u201d`)** — If left and right counts don't match, the missing openers are prepended or closers are appended to balance them
+   - **Straight quotes (`"`)** — Because the same glyph is used for both opening and closing, an odd count is ambiguous. The function deliberately **does not** guess where the missing quote belongs — this is handled by the detection and retry system and `repair_straight_quotes()` instead
 
 This approach prevents the common bug where a trailing quote is force-appended to dialogue that intentionally lacks one (e.g., inch marks like `6"`).
 
@@ -1073,6 +1217,12 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
 | **Tasks stuck in Failed state** | Use **🔄 Retry Failed** in the Queue tab to re-queue them, or **🗑️ Purge Queue** to discard pending tasks |
 | **Queue tab not updating** | Click **🔄 Refresh View** in the Queue tab; the view auto-updates during active processing |
+| **Quality scoring not running** | Verify `quality.enabled: true` in config; check that the Quality tab in the dashboard shows scores |
+| **Quality LLM scoring failing** | Check `quality.scoring_api` URL/model/key are correct; the system falls back to heuristic estimates and logs a warning |
+| **Too many conversations flagged for review** | Increase `quality.min_score_threshold` or improve prompt quality; use the Review tab to inspect flagged items |
+| **Quality scores seem too low** | Heuristic-only scoring (no LLM) gives conservative estimates for coherence/naturalness/engagement; enable `use_llm_scoring` for more accurate scores |
+| **Review tab empty but scores exist** | The Review tab only shows conversations below `min_score_threshold`; check the Quality tab for all scores |
+| **Quality scoring slow** | LLM scoring adds an API call per conversation; disable `use_llm_scoring` for heuristic-only (instant) scoring, or use a fast/cheap model for the scoring API |
 
 ### Environment Variables
 
@@ -1123,6 +1273,11 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Use the `enable_thinking` sampler option** — Set to `"disable"` for reasoning models that output unwanted thinking tags
 - **Use the Queue tab** — Monitor task progress in real-time; use **Purge Queue** to abandon bad batches without stopping the entire job, or **Retry Failed** to recover from transient issues
 - **Export queue state** — Use **📤 Export Queue** to get a CSV snapshot of task status for external analysis
+- **Enable quality scoring** — Set `quality.enabled: true` to get per-conversation quality metrics; use heuristic-only mode (default) for zero overhead, or enable LLM scoring for deeper analysis
+- **Tune the quality threshold** — Start with `min_score_threshold: 50` and adjust based on the distribution of scores you see in the Quality tab; too low flags nothing, too high flags everything
+- **Use a dedicated cheap model for scoring** — Point `quality.scoring_api` at a fast, inexpensive model to minimize the cost impact of LLM-based scoring
+- **Export flagged conversations** — Use **📤 Export Flagged → JSONL** in the Review tab to get a clean file of low-quality outputs for manual inspection or re-processing
+- **Dismiss reviewed items** — After manually handling flagged conversations, use **✅ Dismiss All** to clear the review queue and keep the tab focused on new items
 
 ---
 
@@ -1189,7 +1344,7 @@ In collaborative mode, a single debug log is used:
 Each debug log entry is a JSON object containing:
 - `timestamp` — When the request was made
 - `thread_id` — Which worker thread made the request
-- `type` — Request type (`question_request`, `answer_request`, `user_continuation_request`, `slop_fix_request`, `anti_slop_request`)
+- `type` — Request type (`question_request`, `answer_request`, `user_continuation_request`, `slop_fix_request`, `anti_slop_request`, `quality_scoring_request`)
 - `api_slot_idx` — Which API slot was used
 - `attempt` — Retry attempt number
 - `source_file` — Input file that generated this task
@@ -1197,6 +1352,29 @@ Each debug log entry is a JSON object containing:
 - `model` — The model name used
 - `messages` — The full messages array sent to the API
 - `payload_dict` — The complete API payload including sampler settings
+
+### Quality Score Storage
+
+Quality scores are stored in-memory in `app_state.quality_scores` (a dict keyed by task_id) and persisted in `generation_state.json` for crash recovery. Each entry contains:
+
+```json
+{
+  "composite": 87.3,
+  "dimensions": {
+    "coherence": 90,
+    "naturalness": 85,
+    "engagement": 82,
+    "diversity": 95,
+    "consistency": 88,
+    "technical": 92
+  },
+  "flags": [],
+  "scored_at": "2025-06-15 14:32:00",
+  "method": "hybrid"
+}
+```
+
+The `method` field indicates which scoring path was used: `"heuristic_only"`, `"hybrid"`, or `"none"`.
 
 ---
 
@@ -1207,7 +1385,8 @@ The application is organized into focused modules with one-way dependencies:
 | Module | Purpose | Imports From |
 |--------|---------|--------------|
 | `generate.py` | Main GUI, orchestration, startup | All modules |
-| `generation.py` | Worker loop, LLM calls, answer generation | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `logging_config` |
+| `generation.py` | Worker loop, LLM calls, answer generation | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `quality`, `logging_config` |
+| `quality.py` | Quality scoring engine (heuristic + LLM) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
 | `config_editor.py` | Configuration editor window | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
 | `dashboard.py` | Dashboard UI, graphs, progress bars | `app_state`, `api_handler`, `logging_config` |
 | `detection.py` | Issue detection (refusals, slop, quotes) | `app_state` (for timestamps) |
@@ -1217,6 +1396,7 @@ The application is organized into focused modules with one-way dependencies:
 | `api_profiles.py` | Per-endpoint payload compatibility profiles | `logging_config` |
 | `app_state.py` | Shared runtime state & constants | `config_loader` |
 | `logging_config.py` | Centralized logging with colorama | None (stdlib only) |
+| `test_api_profiles.py` | Unit tests for API compatibility profiles | `api_profiles` |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root.
 
