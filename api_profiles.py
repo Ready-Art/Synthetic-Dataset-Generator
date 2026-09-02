@@ -9,10 +9,20 @@ A *profile* is an allow-list of body keys (plus optional key renames) applied to
 just before it is sent, chosen per API slot. Profiles are data -- see config/api_profiles.yml --
 so supporting another endpoint is a YAML edit, not a code change.
 
+THREAD SAFETY
+-------------
+Every API call from every worker thread funnels through apply_profile_for_slot(), while the main
+thread can re-enter load_profiles()/reset_slot_profiles()/set_slot_profile() (resume, recovery,
+restart). All module state (_profiles, _slot_profiles, _loaded) is therefore guarded by a single
+lock. The lock is a plain (non-reentrant) threading.Lock, so the public load_profiles() acquires
+it and delegates to a lock-free _load_unlocked(); _ensure_loaded() uses double-checked locking so
+it never calls a locking function while already holding the lock.
+
 This module is a dependency leaf (stdlib + PyYAML + logging_config only) so both generate.py and
 generation.py can import it without creating a cycle.
 """
 import os
+import threading
 import urllib.parse
 
 import yaml
@@ -45,6 +55,9 @@ _profiles = {}        # name -> {"label": str, "allow": set|None|"from_config", 
 _slot_profiles = {}   # slot_idx -> (profile_name, custom_allow_set_or_None)
 _loaded = False
 
+# Single lock guarding ALL module state above. Non-reentrant on purpose; see module docstring.
+_LOCK = threading.Lock()
+
 
 def _builtin_profiles():
     """Fallback registry used when config/api_profiles.yml is missing or unreadable."""
@@ -69,10 +82,8 @@ def _coerce_allow(raw, profile_name):
     return None
 
 
-def load_profiles(path=PROFILES_PATH):
-    """(Re)load the profile registry from YAML. Safe to call repeatedly (e.g. after an editor save)."""
-    global _profiles, _loaded
-
+def _build_profiles_from_yaml(path):
+    """Parse the YAML file into a fresh profiles dict. Pure; takes no lock. Returns {} on failure."""
     parsed = None
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -104,15 +115,29 @@ def load_profiles(path=PROFILES_PATH):
         profiles = _builtin_profiles()
     if DEFAULT_PROFILE not in profiles:
         profiles[DEFAULT_PROFILE] = _builtin_profiles()[DEFAULT_PROFILE]
+    return profiles
 
-    _profiles = profiles
+
+def _load_unlocked(path=PROFILES_PATH):
+    """Rebuild and install the profile registry. CALLER MUST HOLD _LOCK."""
+    global _profiles, _loaded
+    _profiles = _build_profiles_from_yaml(path)
     _loaded = True
     return _profiles
 
 
+def load_profiles(path=PROFILES_PATH):
+    """(Re)load the profile registry from YAML. Safe to call repeatedly (e.g. after an editor save)."""
+    with _LOCK:
+        return _load_unlocked(path)
+
+
 def _ensure_loaded():
+    """Idempotent, race-free lazy load (double-checked locking)."""
     if not _loaded:
-        load_profiles()
+        with _LOCK:
+            if not _loaded:
+                _load_unlocked(PROFILES_PATH)
 
 
 def list_profiles():
@@ -122,30 +147,35 @@ def list_profiles():
     options sit at the top, then every other profile alphabetically by label.
     """
     _ensure_loaded()
+    with _LOCK:
+        names = list(_profiles)
+        labels = {n: _profiles[n]["label"] for n in names}
 
     def sort_key(name):
         if name == DEFAULT_PROFILE:
             return (0, "")
         if name == "custom":
             return (1, "")
-        return (2, _profiles[name]["label"].lower())
+        return (2, labels[name].lower())
 
-    return [(n, _profiles[n]["label"]) for n in sorted(_profiles, key=sort_key)]
+    return [(n, labels[n]) for n in sorted(names, key=sort_key)]
 
 
 def get_profile(name):
     """Return the spec dict for `name`, falling back to the default profile."""
     _ensure_loaded()
-    return _profiles.get(name) or _profiles[DEFAULT_PROFILE]
+    with _LOCK:
+        return _profiles.get(name) or _profiles[DEFAULT_PROFILE]
 
 
 def known_param_keys():
     """Sorted union of every key any profile explicitly allows -- the menu for a 'custom' list."""
     _ensure_loaded()
-    keys = set(_BUILDER_EMITTED_KEYS)
-    for spec in _profiles.values():
-        if isinstance(spec["allow"], set):
-            keys |= spec["allow"]
+    with _LOCK:
+        keys = set(_BUILDER_EMITTED_KEYS)
+        for spec in _profiles.values():
+            if isinstance(spec["allow"], set):
+                keys |= spec["allow"]
     return sorted(keys)
 
 
@@ -160,7 +190,9 @@ def detect_profile(api_url):
         return None
     if not host:
         return None
-    for name, spec in _profiles.items():
+    with _LOCK:
+        items = list(_profiles.items())
+    for name, spec in items:
         for dh in spec["detect_hosts"]:
             if host == dh or host.endswith("." + dh):
                 return name
@@ -176,7 +208,9 @@ def set_slot_profile(slot_idx, profile_name, custom_allowed=None, api_url=None):
     passthrough profile.
     """
     _ensure_loaded()
-    name = profile_name if profile_name in _profiles else ""
+    with _LOCK:
+        known = set(_profiles)
+    name = profile_name if profile_name in known else ""
     if not name or name == DEFAULT_PROFILE:
         detected = detect_profile(api_url)
         if detected:
@@ -189,13 +223,15 @@ def set_slot_profile(slot_idx, profile_name, custom_allowed=None, api_url=None):
     custom = None
     if custom_allowed:
         custom = {str(k).strip() for k in custom_allowed if str(k).strip()}
-    _slot_profiles[slot_idx] = (name, custom)
+    with _LOCK:
+        _slot_profiles[slot_idx] = (name, custom)
     return name
 
 
 def reset_slot_profiles():
     """Forget all per-slot profile registrations (called at the start of each generation run)."""
-    _slot_profiles.clear()
+    with _LOCK:
+        _slot_profiles.clear()
 
 
 def _is_passthrough(spec):
@@ -203,6 +239,7 @@ def _is_passthrough(spec):
 
 
 def _apply(payload_dict, spec, custom_allow):
+    """Pure transform (no module state, no lock). Returns a new dict, or a filtered copy."""
     allow = spec["allow"]
     if allow == "from_config":
         allow = custom_allow  # None -> passthrough; set -> filter
@@ -244,7 +281,8 @@ def apply_profile_for_slot(payload_dict, slot_idx, api_url=None):
     Returns the same object unchanged when the resolved profile does no filtering or renaming.
     """
     _ensure_loaded()
-    entry = _slot_profiles.get(slot_idx)
+    with _LOCK:
+        entry = _slot_profiles.get(slot_idx)
     if entry is not None:
         name, custom = entry
     else:
