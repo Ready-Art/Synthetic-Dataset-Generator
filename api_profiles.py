@@ -116,10 +116,21 @@ def _ensure_loaded():
 
 
 def list_profiles():
-    """[(name, label), ...] for a dropdown -- default profile first, then alphabetical by label."""
+    """[(name, label), ...] for a dropdown.
+
+    Order: the default (passthrough) profile first, then 'custom' so the two most-reached-for
+    options sit at the top, then every other profile alphabetically by label.
+    """
     _ensure_loaded()
-    names = sorted(_profiles, key=lambda n: (n != DEFAULT_PROFILE, _profiles[n]["label"].lower()))
-    return [(n, _profiles[n]["label"]) for n in names]
+
+    def sort_key(name):
+        if name == DEFAULT_PROFILE:
+            return (0, "")
+        if name == "custom":
+            return (1, "")
+        return (2, _profiles[name]["label"].lower())
+
+    return [(n, _profiles[n]["label"]) for n in sorted(_profiles, key=sort_key)]
 
 
 def get_profile(name):
