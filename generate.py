@@ -403,72 +403,84 @@ def export_db_to_jsonl(output_path):
 # --- Tkinter UI Update and Control Functions ---
 
 def update_database_status():
-    """Updates the PostgreSQL and Valkey connection status icons and labels."""
+    """Refreshes the PostgreSQL and Valkey status icons WITHOUT blocking the Tk main thread.
 
-    if not app_state.root.winfo_exists():
+    The blocking health checks (psycopg2 SELECT 1, Valkey PING) run in a short-lived daemon thread;
+    only the widget .config() updates are posted back to the main thread via root.after(0, ...).
+    This keeps the mainloop responsive when the DB/cache is slow or unreachable -- which is what
+    was intermittently tripping the X server (a stalled mainloop fails X's client-liveness check).
+    """
+    root = app_state.root
+    if not root or not root.winfo_exists():
         return
 
-    # --- PostgreSQL Status ---
-    postgres_connected = False
-    postgres_active = False
+    def _check():
+        # --- PostgreSQL (blocking, off the main thread) ---
+        postgres_connected = False
+        postgres_active = False
+        if app_state.db_pool:
+            conn = None
+            try:
+                conn = app_state.db_pool.getconn()
+                if conn:
+                    postgres_connected = True
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                        cur.fetchone()
+                    postgres_active = True
+            except Exception as e:
+                postgres_connected = False
+                postgres_active = False
+                log_message(f"PostgreSQL status check failed: {e}", "DEBUG")
+            finally:
+                if conn is not None:
+                    try:
+                        app_state.db_pool.putconn(conn)
+                    except Exception:
+                        pass
 
-    if app_state.db_pool:
-        try:
-            conn = app_state.db_pool.getconn()
-            if conn:
-                postgres_connected = True
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    cur.fetchone()
-                postgres_active = True
-                app_state.db_pool.putconn(conn)
-        except Exception as e:
-            postgres_connected = False
-            postgres_active = False
-            log_message(f"PostgreSQL status check failed: {e}", "DEBUG")
+        # --- Valkey/Redis (blocking, off the main thread) ---
+        valkey_connected = False
+        valkey_active = False
+        if getattr(api_handler, 'valkey_client', None) is not None:
+            try:
+                if api_handler.valkey_client.ping():
+                    valkey_connected = True
+                    valkey_active = True
+            except Exception as e:
+                valkey_connected = False
+                valkey_active = False
+                log_message(f"Valkey status check failed: {e}", "DEBUG")
 
-    # Update PostgreSQL icon and label
-    if 'postgres_icon' in app_state.db_status_widgets and app_state.db_status_widgets['postgres_icon'].winfo_exists():
-        if postgres_connected and postgres_active:
-            app_state.db_status_widgets['postgres_icon'].config(text="✅", foreground="green")
-            app_state.db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected & Active", foreground="green")
-        elif postgres_connected:
-            app_state.db_status_widgets['postgres_icon'].config(text="⚠️", foreground="orange")
-            app_state.db_status_widgets['postgres_status'].config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
-        else:
-            app_state.db_status_widgets['postgres_icon'].config(text="❌", foreground="gray")
-            app_state.db_status_widgets['postgres_status'].config(text="PostgreSQL: Disconnected", foreground="gray")
+        pg_ok = postgres_connected and postgres_active
+        vk_ok = valkey_connected and valkey_active
 
-    # --- Valkey/Redis Status ---
-    valkey_connected = False
-    valkey_active = False
+        def _apply():
+            if not root.winfo_exists():
+                return
+            widgets = app_state.db_status_widgets or {}
 
-    # Check if valkey_client exists in api_handler module
-    if hasattr(api_handler, 'valkey_client') and api_handler.valkey_client is not None:
-        try:
-            ping_result = api_handler.valkey_client.ping()
-            log_message(f"Valkey status check PING result: {ping_result}", "DEBUG")
-            if ping_result:
-                valkey_connected = True
-                valkey_active = True
-        except Exception as e:
-            valkey_connected = False
-            valkey_active = False
-            log_message(f"Valkey status check failed: {e}", "DEBUG")
-    else:
-        log_message(f"Valkey client not available: hasattr={hasattr(api_handler, 'valkey_client')}, client={api_handler.valkey_client if hasattr(api_handler, 'valkey_client') else 'N/A'}", "DEBUG")
+            pi = widgets.get('postgres_icon'); ps = widgets.get('postgres_status')
+            if pi and ps and pi.winfo_exists() and ps.winfo_exists():
+                if pg_ok:
+                    pi.config(text="✅", foreground="green"); ps.config(text="PostgreSQL: Connected & Active", foreground="green")
+                elif postgres_connected:
+                    pi.config(text="⚠️", foreground="orange"); ps.config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
+                else:
+                    pi.config(text="❌", foreground="gray"); ps.config(text="PostgreSQL: Disconnected", foreground="gray")
 
-    # Update Valkey icon and label
-    if 'valkey_icon' in app_state.db_status_widgets and app_state.db_status_widgets['valkey_icon'].winfo_exists():
-        if valkey_connected and valkey_active:
-            app_state.db_status_widgets['valkey_icon'].config(text="✅", foreground="green")
-            app_state.db_status_widgets['valkey_status'].config(text="Valkey: Connected & Active", foreground="green")
-        elif valkey_connected:
-            app_state.db_status_widgets['valkey_icon'].config(text="⚠️", foreground="orange")
-            app_state.db_status_widgets['valkey_status'].config(text="Valkey: Connected (Inactive)", foreground="orange")
-        else:
-            app_state.db_status_widgets['valkey_icon'].config(text="❌", foreground="gray")
-            app_state.db_status_widgets['valkey_status'].config(text="Valkey: Disconnected", foreground="gray")
+            vi = widgets.get('valkey_icon'); vs = widgets.get('valkey_status')
+            if vi and vs and vi.winfo_exists() and vs.winfo_exists():
+                if vk_ok:
+                    vi.config(text="✅", foreground="green"); vs.config(text="Valkey: Connected & Active", foreground="green")
+                elif valkey_connected:
+                    vi.config(text="⚠️", foreground="orange"); vs.config(text="Valkey: Connected (Inactive)", foreground="orange")
+                else:
+                    vi.config(text="❌", foreground="gray"); vs.config(text="Valkey: Disconnected", foreground="gray")
+
+        root.after(0, _apply)
+
+    threading.Thread(target=_check, daemon=True).start()
 
 def _update_review_table():
     """Refreshes the Review tab table with currently flagged items."""
@@ -1738,7 +1750,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.4.0",
+    text="v9.4.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2783,6 +2795,7 @@ def init_database_pool():
             from psycopg2 import pool
             app_state.db_pool = pool.ThreadedConnectionPool(
                 minconn=2, maxconn=global_config.get('database.pool_size', 10),
+                connect_timeout=5,
                 host=global_config.get('database.host'), port=global_config.get('database.port'),
                 dbname=global_config.get('database.dbname'), user=global_config.get('database.user'),
                 password=global_config.get('database.password')
