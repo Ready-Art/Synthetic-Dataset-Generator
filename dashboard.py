@@ -25,6 +25,23 @@ from api_handler import (
 
 SPACING = 8  # UI padding constant (mirrors generate.py)
 
+
+def _active_dashboard_tab_text():
+    """Text label of the currently selected dashboard tab ('' if unavailable).
+
+    Per-tick Treeview rebuilds and matplotlib redraws each allocate X server
+    resources (pixmaps / GCs). Done for every tab at once, continuously, over a
+    multi-hour run they exhaust the X server and the connection is dropped
+    (``XIO: fatal IO error`` / errno 0). Refreshing only the visible tab keeps
+    that churn bounded.
+    """
+    try:
+        nb = app_state.dashboard_notebook
+        selected = nb.select()
+        return nb.tab(selected, "text") if selected else ""
+    except Exception:
+        return ""
+
 def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
     """Creates a modern, dark-themed Treeview inside an existing panel widget."""
     style = ttk.Style()
@@ -210,31 +227,35 @@ def draw_issue_graph(canvas_widget, height=400):
     canvas_widget.graph_ax = ax
 
 
-# Module-level throttle state for the issue graph (add near the top of dashboard.py,
-# after the existing imports, before any function definitions):
+# Module-level throttle state for the issue graph.
 _graph_last_draw = {"t": 0.0, "data_sig": None}
+
+# Minimum seconds between full graph redraws. The graph is a 6-bin view of the
+# last 60 minutes, so sub-minute refreshes add nothing but X server churn — each
+# matplotlib redraw blits through a Tk PhotoImage and accumulates pixmaps.
+_GRAPH_REDRAW_MIN_INTERVAL = 45.0
 
 
 def update_issue_graph(canvas_widget):
     """Updates an existing issue graph with new data without recreating the figure.
 
-    Throttled to at most one full redraw every 5 seconds (or when the underlying
-    timestamp data changes) to avoid flooding the X server with millions of
-    rasterise requests over a long run.
+    Throttled to at most one full redraw every ``_GRAPH_REDRAW_MIN_INTERVAL``
+    seconds (or when the underlying timestamp data changes) to avoid flooding the
+    X server with rasterise requests over a long run.
     """
     if not hasattr(canvas_widget, 'graph_canvas'):
         draw_issue_graph(canvas_widget)
         _graph_last_draw["t"] = time.time()
         return
 
-    # --- Throttle: skip redraw if < 5 s elapsed AND data is unchanged ---
+    # --- Throttle: skip redraw if interval not elapsed AND data is unchanged ---
     now = time.time()
     with app_state.issue_timestamps_lock:
         sig = tuple(
             len(app_state.issue_timestamps.get(k, []))
             for k in ("refusals", "user_speaking", "slop", "errors", "anti_slop")
         )
-    if (now - _graph_last_draw["t"]) < 5.0 and sig == _graph_last_draw["data_sig"]:
+    if (now - _graph_last_draw["t"]) < _GRAPH_REDRAW_MIN_INTERVAL and sig == _graph_last_draw["data_sig"]:
         return
     _graph_last_draw["t"] = now
     _graph_last_draw["data_sig"] = sig
@@ -419,22 +440,29 @@ def update_dashboard():
         text_widget.config(state=tk.DISABLED)
         text_widget.yview(tk.END)
 
-    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["refusals"], app_state.recent_refusals_total, is_total_tab=True)
-    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["user_speak"], app_state.recent_user_speaking_total, is_total_tab=True)
-    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, is_total_tab=True)
-    update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, is_total_tab=True)
+    # Only rebuild the issue panels / redraw the graph for the tab the user is
+    # actually looking at. The always-visible metric labels above are already
+    # updated unconditionally; these Treeview/matplotlib refreshes are the
+    # expensive, X-resource-leaking part.
+    active_tab = _active_dashboard_tab_text()
+
+    if active_tab == "Totals":
+        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["refusals"], app_state.recent_refusals_total, is_total_tab=True)
+        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["user_speak"], app_state.recent_user_speaking_total, is_total_tab=True)
+        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, is_total_tab=True)
+        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, is_total_tab=True)
 
     for i in range(6):
         api_tab_name = f"API {i+1}"
-        if api_tab_name in app_state.dashboard_notebook.tabs_widgets:
+        if active_tab == api_tab_name and api_tab_name in app_state.dashboard_notebook.tabs_widgets:
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["refusals"], app_state.recent_refusals_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["user_speak"], app_state.recent_user_speaking_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]))
 
-    # NEW: Update the graph on the Totals tab
-    if "Totals" in app_state.dashboard_notebook.tabs_widgets:
+    # Update the graph on the Totals tab — only while that tab is visible.
+    if active_tab == "Totals" and "Totals" in app_state.dashboard_notebook.tabs_widgets:
         graph_canvas_widget = app_state.dashboard_notebook.tabs_widgets["Totals"].get("graph_canvas")
         if graph_canvas_widget and hasattr(graph_canvas_widget, 'winfo_exists') and graph_canvas_widget.winfo_exists():
             try:

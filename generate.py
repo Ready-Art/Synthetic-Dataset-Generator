@@ -482,10 +482,29 @@ def update_database_status():
 
     threading.Thread(target=_check, daemon=True).start()
 
+def _active_dashboard_tab_text():
+    """Text label of the currently selected dashboard tab ('' if unavailable).
+
+    Used to skip expensive per-tick refreshes (Treeview rebuilds, matplotlib
+    redraws) for tabs the user isn't looking at. Those refreshes each allocate
+    X server resources (pixmaps / GCs); run continuously for hours across every
+    tab at once they eventually exhaust the X server, which drops the connection
+    (``XIO: fatal IO error`` / errno 0)."""
+    try:
+        nb = app_state.dashboard_notebook
+        selected = nb.select()
+        return nb.tab(selected, "text") if selected else ""
+    except Exception:
+        return ""
+
+
 def _update_review_table():
     """Refreshes the Review tab table with currently flagged items."""
     review_tab = "🔍 Review"
     if review_tab not in app_state.dashboard_notebook.tabs_widgets:
+        return
+    # Skip the Treeview rebuild unless the Review tab is actually on screen.
+    if "Review" not in _active_dashboard_tab_text():
         return
     widgets = app_state.dashboard_notebook.tabs_widgets[review_tab]
     review_tree = widgets.get('review_tree')
@@ -2644,6 +2663,24 @@ for tab_name in tab_names:
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)
 app_state.dashboard_notebook.add(queue_tab, text="📦 Queue")
+
+
+def _on_dashboard_tab_changed(_event=None):
+    """Refresh the newly-visible tab at once.
+
+    The per-tick issue-panel / graph / review-table refreshes are gated to the
+    currently selected tab (to keep X server resource use bounded), so on a tab
+    switch the incoming tab would otherwise show stale content until the next
+    update cycle.
+    """
+    try:
+        update_dashboard()
+        _update_review_table()
+    except Exception as e:
+        log_message(f"Dashboard tab-change refresh error: {e}", "ERROR")
+
+
+app_state.dashboard_notebook.bind("<<NotebookTabChanged>>", _on_dashboard_tab_changed)
 
 # Scrollable wrapper so all three panels are reachable when the tab is short
 queue_canvas = tk.Canvas(queue_tab, highlightthickness=0)
