@@ -315,21 +315,17 @@ Notes:
   `choices[].message.content` response). Native Anthropic / native Gemini APIs are a different
   request/response shape and are **not** covered by profile filtering alone.
 
-**Params the builders can emit** (a profile's `allow` list is drawn from these; the ones most
-often rejected by hosted APIs are marked ✂):
+**Params the request builders send** — a profile whose `allow` list omits one of these drops it
+before the request: `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `max_tokens`,
+`logit_bias`, `chat_template_kwargs`.
 
-| Param | | Param | | Param | |
-|-------|---|-------|---|-------|---|
-| `temperature` | | `top_p` | | `top_k` | ✂ |
-| `min_p` | ✂ | `repetition_penalty` | ✂ | `frequency_penalty` | |
-| `presence_penalty` | | `max_tokens` | | `max_completion_tokens` | |
-| `logit_bias` | ✂ | `chat_template_kwargs` | ✂ | `stop` | |
-| `seed` | | `random_seed` | | `response_format` | |
-| `n` | | `tools` | | `tool_choice` | |
-| `safe_prompt` | | `user` | | | |
+**Also recognised in an `allow` list** (passed straight through when a builder or a future change
+includes them): `frequency_penalty`, `presence_penalty`, `max_completion_tokens`, `stop`, `seed`,
+`random_seed`, `response_format`, `n`, `tools`, `tool_choice`, `safe_prompt`.
 
 **Using the `custom` profile:** set `api_profile: custom` for the slot and list exactly the params
-to send in `custom_allowed_params` (in the editor, the comma-separated box under the dropdown):
+you want sent in `custom_allowed_params` — it is an allow-list, and each slot's list is independent
+(in the editor, the comma-separated box under the dropdown):
 
 ```yaml
 apis:
