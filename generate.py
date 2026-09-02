@@ -1738,7 +1738,7 @@ title_label.pack(side=tk.LEFT)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.3.0",
+    text="v9.4.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
