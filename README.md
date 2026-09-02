@@ -315,6 +315,39 @@ Notes:
   `choices[].message.content` response). Native Anthropic / native Gemini APIs are a different
   request/response shape and are **not** covered by profile filtering alone.
 
+**Params the builders can emit** (a profile's `allow` list is drawn from these; the ones most
+often rejected by hosted APIs are marked ✂):
+
+| Param | | Param | | Param | |
+|-------|---|-------|---|-------|---|
+| `temperature` | | `top_p` | | `top_k` | ✂ |
+| `min_p` | ✂ | `repetition_penalty` | ✂ | `frequency_penalty` | |
+| `presence_penalty` | | `max_tokens` | | `max_completion_tokens` | |
+| `logit_bias` | ✂ | `chat_template_kwargs` | ✂ | `stop` | |
+| `seed` | | `random_seed` | | `response_format` | |
+| `n` | | `tools` | | `tool_choice` | |
+| `safe_prompt` | | `user` | | | |
+
+**Using the `custom` profile:** set `api_profile: custom` for the slot and list exactly the params
+to send in `custom_allowed_params` (in the editor, the comma-separated box under the dropdown):
+
+```yaml
+apis:
+  - url: "https://my-endpoint/v1/chat/completions"
+    api_profile: custom
+    custom_allowed_params: [temperature, top_p, max_tokens]
+```
+
+**Adding or changing a profile:** edit `config/api_profiles.yml` — no code change needed. Each entry:
+
+```yaml
+my_provider:
+  label: "My Provider"                    # shown in the editor dropdown
+  allow: [temperature, top_p, max_tokens] # accepted body keys; or `all` (send everything) / `from_config`
+  rename: {repetition_penalty: frequency_penalty}   # optional; applied before filtering
+  detect_hosts: [api.myprovider.com]      # optional; used by the Detect button and auto-detection
+```
+
 ### Generation Settings
 
 ```yaml

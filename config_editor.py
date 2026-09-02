@@ -215,8 +215,10 @@ class ConfigEditor(tk.Toplevel):
             ttk.Label(
                 compat_frame,
                 text="Trims the request body to what the chosen endpoint accepts, so requests don't "
-                     "fail on params it rejects (e.g. top_k on Mistral). Only the 'User Defined' "
-                     "profile uses the comma-separated param list above.",
+                     "fail on params it rejects — commonly top_k, min_p, repetition_penalty, "
+                     "logit_bias, chat_template_kwargs. The 'User Defined' profile instead sends only "
+                     "the comma-separated params you list above (e.g. temperature, top_p, max_tokens); "
+                     "model, messages and stream are always sent.",
                 style='Small.TLabel', wraplength=520, justify="left"
             ).grid(row=2, column=0, columnspan=2, padx=SPACING, pady=(0, SPACING), sticky="w")
 
