@@ -210,11 +210,35 @@ def draw_issue_graph(canvas_widget, height=400):
     canvas_widget.graph_ax = ax
 
 
+# Module-level throttle state for the issue graph (add near the top of dashboard.py,
+# after the existing imports, before any function definitions):
+_graph_last_draw = {"t": 0.0, "data_sig": None}
+
+
 def update_issue_graph(canvas_widget):
-    """Updates an existing issue graph with new data without recreating the figure."""
+    """Updates an existing issue graph with new data without recreating the figure.
+
+    Throttled to at most one full redraw every 5 seconds (or when the underlying
+    timestamp data changes) to avoid flooding the X server with millions of
+    rasterise requests over a long run.
+    """
     if not hasattr(canvas_widget, 'graph_canvas'):
         draw_issue_graph(canvas_widget)
+        _graph_last_draw["t"] = time.time()
         return
+
+    # --- Throttle: skip redraw if < 5 s elapsed AND data is unchanged ---
+    now = time.time()
+    with app_state.issue_timestamps_lock:
+        sig = tuple(
+            len(app_state.issue_timestamps.get(k, []))
+            for k in ("refusals", "user_speaking", "slop", "errors", "anti_slop")
+        )
+    if (now - _graph_last_draw["t"]) < 5.0 and sig == _graph_last_draw["data_sig"]:
+        return
+    _graph_last_draw["t"] = now
+    _graph_last_draw["data_sig"] = sig
+    # ------------------------------------------------------------------------
 
     fig = canvas_widget.graph_fig
     ax = canvas_widget.graph_ax
@@ -225,7 +249,6 @@ def update_issue_graph(canvas_widget):
     fig.patch.set_facecolor('#1e1e24')
     ax.set_facecolor('#2a2a35')
 
-    now = time.time()
     sixty_minutes_ago = now - 3600
     num_bins = 6
     bin_size = 3600 / num_bins

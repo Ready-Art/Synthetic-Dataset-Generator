@@ -1373,7 +1373,7 @@ def start_processing():
         if dashboard_pause_var.get():
             app_state.root.after(1000, update_gui_progress) # Check again in 1s
             return
-        if app_state.processing_active and not app_state.stop_processing: 
+        if app_state.processing_active and not app_state.stop_processing:
             check_budget_limit()
             try:
                 if time.time() - _psutil_state["last_check"] > PSUTIL_CHECK_INTERVAL:
@@ -1392,7 +1392,7 @@ def start_processing():
                 if app_state.task_queue and hasattr(app_state.task_queue, 'qsize'):
                     if app_state.task_queue.qsize() > 30000:
                         log_message(f"Queue size: {app_state.task_queue.qsize()}", "WARNING")
-                
+
                 if master_duplication_current and hasattr(app_state.task_queue, 'api_widgets'):
                     for api_idx, widgets in app_state.task_queue.api_widgets.items():
                         if widgets['bar'].winfo_exists():
@@ -1404,7 +1404,6 @@ def start_processing():
                                 progress_val = (processed_count_api_turns / app_state.task_queue.total_tasks_for_progress) * 100
                                 if progress_val > 100: progress_val = 100
                                 widgets['bar']['value'] = progress_val
-                                # Animated progress bar: update style and percentage label
                                 update_progress_bar_style(widgets['bar'], progress_val)
                                 pulse_progress_bar(widgets['bar'], f"api_{api_idx}", app_state.root)
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
@@ -1415,7 +1414,7 @@ def start_processing():
                                 widgets['time_label'].config(text="Time Rem: No tasks")
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
                                     widgets['percent_label'].config(text="N/A")
-                
+
                 elif hasattr(app_state.task_queue, 'overall_progress_bar') and app_state.task_queue.overall_progress_bar.winfo_exists():
                     with app_state.task_queue.processed_tasks_lock:
                         processed_count_overall_turns = app_state.task_queue.processed_tasks
@@ -1425,7 +1424,6 @@ def start_processing():
                         progress_val = (processed_count_overall_turns / app_state.task_queue.total_tasks_for_progress) * 100
                         if progress_val > 100: progress_val = 100
                         app_state.task_queue.overall_progress_bar['value'] = progress_val
-                        # Animated progress bar: update style and percentage label
                         update_progress_bar_style(app_state.task_queue.overall_progress_bar, progress_val)
                         pulse_progress_bar(app_state.task_queue.overall_progress_bar, "overall", app_state.root)
                         if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
@@ -1436,40 +1434,39 @@ def start_processing():
                         app_state.task_queue.overall_time_label.config(text="Time Rem: No tasks")
                         if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
                             app_state.task_queue.overall_percent_label.config(text="N/A")
-                
-                update_dashboard() # Refresh dashboard stats
-                update_api_response_time_labels()  # Dynamic color-coded response times
+
+                update_dashboard()
+                update_api_response_time_labels()
                 update_database_status()
                 update_queue_ui()
                 update_quality_display()
                 _update_review_table()
+            except Exception as e_gui:
+                log_message(f"GUI update error: {str(e_gui)}", "ERROR")
+            finally:
+                # Always reschedule so a transient X/Tcl error doesn't kill the loop
                 if app_state.root.winfo_exists():
-                    # ADAPTIVE UPDATE FREQUENCY
-                    is_active = app_state.processing_active and not app_state.stop_processing and not app_state.pause_processing
-                    has_work = app_state.task_queue and hasattr(app_state.task_queue, 'qsize') and app_state.task_queue.qsize() > 0
-
+                    is_active = (app_state.processing_active and not app_state.stop_processing
+                                 and not app_state.pause_processing)
+                    has_work = (app_state.task_queue and hasattr(app_state.task_queue, 'qsize')
+                                and app_state.task_queue.qsize() > 0)
                     delay = 500 if (is_active and has_work) else 2000
                     app_state.root.after(delay, update_gui_progress)
-            except Exception as e_gui: # Catch errors during GUI update
-                log_message(f"GUI update error: {str(e_gui)}", "ERROR")
-                if app_state.processing_active and not app_state.stop_processing and app_state.root.winfo_exists(): 
-                    app_state.root.after(1000, update_gui_progress) 
         else: # Processing stopped or completed
             start_button.config(state=tk.NORMAL)
             pause_button.config(state=tk.DISABLED); pause_button.config(text="Pause")
             stop_clear_button.config(state=tk.NORMAL)
             log_message("Processing stopped/completed. GUI updates halted.", "INFO")
-            update_dashboard() # Final dashboard update
+            update_dashboard()
             master_duplication_final_check = app_state.master_duplication_enabled_var.get()
             if hasattr(app_state.task_queue, 'total_tasks_for_progress') and app_state.task_queue.total_tasks_for_progress > 0:
                 if master_duplication_final_check and hasattr(app_state.task_queue, 'api_widgets'):
                     for api_idx, widgets in app_state.task_queue.api_widgets.items():
                         if widgets['bar'].winfo_exists():
                             with app_state.task_queue.processed_tasks_lock:
-                                processed_api_turns = app_state.task_queue.api_processed_tasks.get(api_idx,0)
+                                processed_api_turns = app_state.task_queue.api_processed_tasks.get(api_idx, 0)
                             if processed_api_turns >= app_state.task_queue.total_tasks_for_progress:
                                 widgets['bar']['value'] = 100
-                                # Animated: set to complete style
                                 update_progress_bar_style(widgets['bar'], 100)
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
                                     widgets['percent_label'].config(text="100%", foreground='#51cf66')
@@ -1479,12 +1476,11 @@ def start_processing():
                         processed_overall_turns = app_state.task_queue.processed_tasks
                     if processed_overall_turns >= app_state.task_queue.total_tasks_for_progress:
                         app_state.task_queue.overall_progress_bar['value'] = 100
-                        # Animated: set to complete style
                         update_progress_bar_style(app_state.task_queue.overall_progress_bar, 100)
                         if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
                             app_state.task_queue.overall_percent_label.config(text="100%", foreground='#51cf66')
                         app_state.task_queue.overall_time_label.config(text="Time Remaining: Done!")
-            save_generation_state() # Save final state
+            save_generation_state()
 
     if app_state.root.winfo_exists(): 
         app_state.root.after(100, update_gui_progress) # Start the GUI update loop
