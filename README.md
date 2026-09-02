@@ -109,6 +109,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings
 - **Configuration Profiles** — Save, load, and delete named configuration profiles
 - **Configuration Editor Search** — Search bar for quickly finding tabs and LabelFrame sections by name
+- **API Compatibility Profiles** — Per-slot payload profiles (OpenAI, Mistral, xAI, Gemini, Anthropic-compat, or user-defined) that trim the request body to what each endpoint accepts, so hosted APIs don't 400/422 on sampler params they don't support; profiles are editable data in `config/api_profiles.yml`, with URL-based auto-detection
 - **API Connection Testing** — Test API connectivity directly from the configuration editor
 - **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
 - **Real-Time Dashboard** — Monitor refusals, slop, errors, and API response times with time-series graphs, search, and copy functionality
@@ -267,6 +268,7 @@ api:
       enabled: true
       threads: 10
       rate_limit_rpm: 60
+      api_profile: openai_compatible   # payload compatibility profile (see below)
     # ... repeat for slots 2-6
 ```
 
@@ -276,8 +278,76 @@ api:
 - **`enabled`**: Whether this slot is active for generation (slots 1-4 only)
 - **`threads`**: Number of worker threads dedicated to this API (all slots)
 - **`rate_limit_rpm`**: Requests per minute limit for rate limiting (all slots)
+- **`api_profile`**: API compatibility profile for this slot (default `openai_compatible`; see below)
+- **`custom_allowed_params`**: list of body params to send — only used when `api_profile: custom`
 
-> **Tip:** Environment variables (`API_URL_1`, `MODEL_NAME_1`, `API_KEY_1`, etc.) take precedence over config.yml values.
+> **Tip:** Environment variables (`API_URL_1`, `MODEL_NAME_1`, `API_KEY_1`, `API_PROFILE_1`, etc.) take precedence over config.yml values.
+
+#### API Compatibility Profiles
+
+The request builders emit a permissive, vLLM/OpenAI-style JSON body (`top_k`, `min_p`,
+`repetition_penalty`, `chat_template_kwargs`, `logit_bias`, …). Local servers ignore params they
+don't recognise, but several hosted APIs **reject any unknown field with HTTP 400/422** — so a run
+that works against vLLM fails on every request against, e.g., Mistral.
+
+Each API slot picks a **compatibility profile** that trims the outgoing body to what that endpoint
+accepts. In the config editor's **API** tab each slot has an *API Compatibility* dropdown and a
+**Detect** button (guesses the profile from the URL host). Profiles are plain data in
+`config/api_profiles.yml` — add or adjust one there, no code change required.
+
+| Profile | Use for |
+|---------|---------|
+| `openai_compatible` *(default)* | vLLM, TGI, llama.cpp, koboldcpp, most local/self-hosted servers — sends everything, filters nothing |
+| `openai` | OpenAI API |
+| `mistral` | Mistral La Plateforme |
+| `xai_grok` | xAI Grok |
+| `gemini_openai` | Google Gemini's OpenAI-compatible endpoint |
+| `anthropic_openai` | Anthropic Claude via its OpenAI-compatible endpoint / a proxy |
+| `custom` | Pick the exact params to send via `custom_allowed_params` |
+
+Notes:
+- `model`, `messages` and `stream` are always sent regardless of profile.
+- `repetition_penalty` is remapped to `frequency_penalty` (`value − 1`, clamped to `[-2, 2]`) for
+  profiles that support the latter but not the former.
+- A slot left on the default profile whose URL host matches a known provider is auto-detected at
+  run start, so an existing config pointed at Mistral is handled without editing it.
+- The named provider profiles assume an OpenAI-**shaped** endpoint (same URL style, `Bearer` auth,
+  `choices[].message.content` response). Native Anthropic / native Gemini APIs are a different
+  request/response shape and are **not** covered by profile filtering alone.
+- Only `mistral` and `openai_compatible` have been verified against a live endpoint. The `openai`,
+  `xai_grok`, `gemini_openai` and `anthropic_openai` allow-lists are built from each provider's API
+  docs — they filter exactly as listed, but if a provider actually accepts a param that isn't in
+  its list, that param is dropped rather than sent. Adjust the list in `config/api_profiles.yml` if
+  you hit this; no code change is needed.
+
+**Params the request builders send** — a profile whose `allow` list omits one of these drops it
+before the request: `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `max_tokens`,
+`logit_bias`, `chat_template_kwargs`.
+
+**Also recognised in an `allow` list** (passed straight through when a builder or a future change
+includes them): `frequency_penalty`, `presence_penalty`, `max_completion_tokens`, `stop`, `seed`,
+`random_seed`, `response_format`, `n`, `tools`, `tool_choice`, `safe_prompt`.
+
+**Using the `custom` profile:** set `api_profile: custom` for the slot and list exactly the params
+you want sent in `custom_allowed_params` — it is an allow-list, and each slot's list is independent
+(in the editor, the comma-separated box under the dropdown):
+
+```yaml
+apis:
+  - url: "https://my-endpoint/v1/chat/completions"
+    api_profile: custom
+    custom_allowed_params: [temperature, top_p, max_tokens]
+```
+
+**Adding or changing a profile:** edit `config/api_profiles.yml` — no code change needed. Each entry:
+
+```yaml
+my_provider:
+  label: "My Provider"                    # shown in the editor dropdown
+  allow: [temperature, top_p, max_tokens] # accepted body keys; or `all` (send everything) / `from_config`
+  rename: {repetition_penalty: frequency_penalty}   # optional; applied before filtering
+  detect_hosts: [api.myprovider.com]      # optional; used by the Detect button and auto-detection
+```
 
 ### Generation Settings
 
@@ -764,12 +834,14 @@ readyart-dataset-generator/
 ├── text_utils.py            # Text post-processing utilities
 ├── config_loader.py          # Configuration management & profiles
 ├── api_handler.py            # Rate limiting, circuit breaker & Valkey caching
+├── api_profiles.py           # Per-endpoint payload compatibility profiles
 ├── logging_config.py          # Centralized logging with colorama
 ├── config_editor.py          # Configuration editor window
 ├── dashboard.py              # Dashboard/presentation layer
 ├── app_state.py              # Shared runtime state
 ├── config/
 │   ├── config.yml           # Main configuration file
+│   ├── api_profiles.yml     # API compatibility profile definitions
 │   └── profiles/            # Saved configuration profiles
 │       ├── fast_generation.yml
 │       └── high_quality.yml
@@ -969,6 +1041,7 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL, model, and key |
 | **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
 | **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators in the UI |
+| **Every request fails with HTTP 400/422** (e.g. `top_k sampling is not supported`) | The endpoint rejects a sampler param the payload sends. Set that slot's **API Compatibility** profile (API tab) to a matching provider, or click **Detect**. See [API Compatibility Profiles](#api-compatibility-profiles). |
 | **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers with exponential backoff (60s–600s) |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` in generation settings |
 | **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
@@ -1009,7 +1082,10 @@ API credentials can be set via environment variables, which take precedence over
 export API_URL_1="https://api.example.com/v1/chat/completions"
 export MODEL_NAME_1="gpt-4"
 export API_KEY_1="sk-..."
+export API_PROFILE_1="openai"   # optional: API compatibility profile for slot 1
 ```
+
+`API_URL_n`, `MODEL_NAME_n`, `API_KEY_n` and `API_PROFILE_n` are supported for slots 1–6.
 
 ### Debug Logging
 
@@ -1131,13 +1207,14 @@ The application is organized into focused modules with one-way dependencies:
 | Module | Purpose | Imports From |
 |--------|---------|--------------|
 | `generate.py` | Main GUI, orchestration, startup | All modules |
-| `generation.py` | Worker loop, LLM calls, answer generation | `app_state`, `api_handler`, `detection`, `text_utils`, `logging_config` |
-| `config_editor.py` | Configuration editor window | `config_loader`, `logging_config`, `api_handler` |
+| `generation.py` | Worker loop, LLM calls, answer generation | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `logging_config` |
+| `config_editor.py` | Configuration editor window | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
 | `dashboard.py` | Dashboard UI, graphs, progress bars | `app_state`, `api_handler`, `logging_config` |
 | `detection.py` | Issue detection (refusals, slop, quotes) | `app_state` (for timestamps) |
 | `text_utils.py` | Text post-processing utilities | None (stdlib only) |
 | `config_loader.py` | Configuration management & profiles | `logging_config` |
 | `api_handler.py` | Rate limiting, caching, circuit breaker | `logging_config` |
+| `api_profiles.py` | Per-endpoint payload compatibility profiles | `logging_config` |
 | `app_state.py` | Shared runtime state & constants | `config_loader` |
 | `logging_config.py` | Centralized logging with colorama | None (stdlib only) |
 
