@@ -313,12 +313,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             break
         # Enhanced pause check: threads sleep briefly while paused, allowing GUI to remain responsive
         while app_state.pause_processing and not app_state.stop_processing:
-            time.sleep(0.1) 
-            if hasattr(app_state.root, 'update') and app_state.root.winfo_exists(): # Keep Tkinter main loop alive if paused
-                try: app_state.root.update()
-                except tk.TclError: log_message(f"Thread {thread_id}: Root window closed during pause.", "DEBUG"); pass
-            if app_state.stop_processing: break
-
+            time.sleep(0.1)
+            if app_state.stop_processing:
+                break
         if app_state.stop_processing: break # Exit if stop signal received during pause
 
         try:
