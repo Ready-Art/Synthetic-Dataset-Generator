@@ -18,6 +18,8 @@ import api_profiles
 from config_loader import sanitize_input
 from logging_config import log_message
 from api_handler import global_rate_limiter
+from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
+                       bind_scroll_wheel, fit_window, scroll_to_widget, wrap_label)
 
 SPACING = 8  # UI padding constant (mirrors generate.py)
 QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate.py (UI label only)
@@ -31,6 +33,24 @@ def validate_url(url):
         return False
 
 
+def wrapped_checkbutton(parent, text, **kwargs):
+    """Keep long option descriptions readable without shrinking the checkbox."""
+    frame = ttk.Frame(parent)
+    frame.columnconfigure(1, weight=1)
+    button = ttk.Checkbutton(frame, **kwargs)
+    button.grid(row=0, column=0, sticky="nw", padx=(0, 4))
+    label = ttk.Label(frame, text=text, justify="left", wraplength=1)
+    label.grid(row=0, column=1, sticky="ew")
+    wrap_label(label, frame, padding=40)
+    def toggle(event):
+        button.focus_set()
+        button.invoke()
+    label.bind("<Button-1>", toggle)
+    # The real checkbutton keeps keyboard traversal and the original command/variable.
+    frame.checkbutton = button
+    return frame
+
+
 class ConfigEditor(tk.Toplevel):
     """A Toplevel window for editing all application configurations (config.yml and .env)."""
     def __init__(self, parent, global_config, master_duplication_enabled_var, no_user_impersonation_var, on_config_saved=None):
@@ -41,8 +61,9 @@ class ConfigEditor(tk.Toplevel):
         self.no_user_impersonation_var = no_user_impersonation_var
         self.on_config_saved = on_config_saved
         self.title("Configuration Editor")
-        self.geometry("1600x1000") # Adjusted for potentially more content
-        self.minsize(1600, 1000)
+        fit_window(self, preferred=(1280, 900), minimum=(760, 520))
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
         self.user_speaking_phrases_data = {"male": [], "female": [], "neutral": []} 
         self.user_speaking_fixes_data = {"male": [], "female": [], "neutral": []}
         self.active_display_gender = "female"
@@ -55,7 +76,7 @@ class ConfigEditor(tk.Toplevel):
 
         # --- NEW: Tab & Section Search Bar ---
         self.search_frame = ttk.Frame(self)
-        self.search_frame.pack(fill=tk.X, padx=SPACING, pady=(SPACING, 0))
+        self.search_frame.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(SPACING, 0))
         ttk.Label(self.search_frame, text="🔍 Search Tabs/Sections:").pack(side=tk.LEFT, padx=(0, 5))
         self.search_entry = ttk.Entry(self.search_frame)
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -63,7 +84,7 @@ class ConfigEditor(tk.Toplevel):
         self.search_entry.bind("<Return>", self.search_editor_tabs)
         # ------------------------------------
 
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
+        self.notebook.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=SPACING)
 
         # --- API Tab ---
         self.api_tab = ttk.Frame(self.notebook)
@@ -72,6 +93,7 @@ class ConfigEditor(tk.Toplevel):
         self.api_canvas = tk.Canvas(self.api_tab)
         self.api_scrollbar = tk.Scrollbar(self.api_tab, orient="vertical", command=self.api_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         self.api_content_frame = ttk.Frame(self.api_canvas)
+        self.api_content_frame.columnconfigure(1, weight=1)
 
         self.api_content_frame.bind(
             "<Configure>",
@@ -85,55 +107,56 @@ class ConfigEditor(tk.Toplevel):
         self.api_canvas.configure(yscrollcommand=self.api_scrollbar.set)
         self.api_scrollbar.pack(side="right", fill="y")
 
-        self.api_canvas.bind("<MouseWheel>", lambda e: self.api_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.api_canvas)
 
         # Pricing Input Field (now inside api_content_frame)
         ttk.Label(self.api_content_frame, text="Cost per 1k Tokens ($):").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="w")
         self.pricing_var = tk.StringVar()
         ttk.Entry(self.api_content_frame, width=10, textvariable=self.pricing_var).grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(self.api_content_frame, text="(Enter 0 if unknown)").grid(row=0, column=2, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(self.api_content_frame, text="(Enter 0 if unknown)").grid(row=1, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
 
-        ttk.Label(self.api_content_frame, text="API Budget Limit ($):").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(self.api_content_frame, text="API Budget Limit ($):").grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="w")
         self.budget_limit_var = tk.StringVar()
-        ttk.Entry(self.api_content_frame, width=10, textvariable=self.budget_limit_var).grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(self.api_content_frame, text="(Set to 0 to disable)").grid(row=1, column=2, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Entry(self.api_content_frame, width=10, textvariable=self.budget_limit_var).grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(self.api_content_frame, text="(Set to 0 to disable)").grid(row=3, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
 
         # Valkey Configuration Section (now inside api_content_frame)
         valkey_frame = ttk.LabelFrame(self.api_content_frame, text="Valkey Cache Settings")
-        valkey_frame.grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        valkey_frame.columnconfigure(1, weight=1)
+        valkey_frame.grid(row=4, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
 
         db_frame = ttk.LabelFrame(self.api_content_frame, text="PostgreSQL Database Settings")
-        db_frame.grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        db_frame.grid(row=5, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
 
         self.db_enabled_var = tk.BooleanVar()
-        ttk.Checkbutton(db_frame, text="Enable PostgreSQL Database", variable=self.db_enabled_var).pack(anchor="w", padx=SPACING, pady=SPACING)
+        wrapped_checkbutton(db_frame, text="Enable PostgreSQL Database", variable=self.db_enabled_var).pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         ttk.Label(db_frame, text="Host:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_host_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_host_var).pack(anchor="w", padx=SPACING, pady=SPACING)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_host_var).pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         ttk.Label(db_frame, text="Port:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_port_var = tk.StringVar()
-        ttk.Entry(db_frame, width=15, textvariable=self.db_port_var).pack(anchor="w", padx=SPACING, pady=SPACING)
+        ttk.Entry(db_frame, width=15, textvariable=self.db_port_var).pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         ttk.Label(db_frame, text="Database Name:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_dbname_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_dbname_var).pack(anchor="w", padx=SPACING, pady=SPACING)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_dbname_var).pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         ttk.Label(db_frame, text="User:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_user_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_user_var).pack(anchor="w", padx=SPACING, pady=SPACING)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_user_var).pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         ttk.Label(db_frame, text="Password:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_password_var = tk.StringVar()
-        ttk.Entry(db_frame, width=40, textvariable=self.db_password_var, show="*").pack(anchor="w", padx=SPACING, pady=SPACING)
+        ttk.Entry(db_frame, width=40, textvariable=self.db_password_var, show="*").pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         ttk.Label(db_frame, text="Connection Pool Size:").pack(anchor="w", padx=(15,0), pady=SPACING)
         self.db_pool_size_var = tk.StringVar()
-        ttk.Entry(db_frame, width=15, textvariable=self.db_pool_size_var).pack(anchor="w", padx=SPACING, pady=SPACING)
+        ttk.Entry(db_frame, width=15, textvariable=self.db_pool_size_var).pack(fill=tk.X, padx=SPACING, pady=SPACING)
 
         self.valkey_enabled_var = tk.BooleanVar()
-        ttk.Checkbutton(valkey_frame, text="Enable Valkey Caching", variable=self.valkey_enabled_var).grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        wrapped_checkbutton(valkey_frame, text="Enable Valkey Caching", variable=self.valkey_enabled_var).grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
 
         ttk.Label(valkey_frame, text="Host:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.valkey_host_var = tk.StringVar()
@@ -153,8 +176,8 @@ class ConfigEditor(tk.Toplevel):
 
         self.master_duplication_mode_var_editor = tk.BooleanVar(self)
         self.master_duplication_mode_var_editor.set(self.master_duplication_enabled_var.get())
-        master_duplication_check = ttk.Checkbutton(self.api_content_frame, text="Enable Master Duplication Mode (for enabled APIs 1-4)", variable=self.master_duplication_mode_var_editor, command=self._sync_global_duplication_var_from_editor)
-        master_duplication_check.grid(row=4, column=0, columnspan=2, padx=SPACING, pady=(10,5), sticky="w")
+        master_duplication_check = wrapped_checkbutton(self.api_content_frame, text="Enable Master Duplication Mode (for enabled APIs 1-4)", variable=self.master_duplication_mode_var_editor, command=self._sync_global_duplication_var_from_editor)
+        master_duplication_check.grid(row=6, column=0, columnspan=2, padx=SPACING, pady=(10,5), sticky="ew")
 
         num_api_slots = 6
         # (name, label) pairs for the per-slot "API Compatibility" dropdown; see api_profiles.py.
@@ -165,41 +188,45 @@ class ConfigEditor(tk.Toplevel):
             if i == 4: frame_text += " (Slop Fixer LLM - Not part of Duplication)"
             if i == 5: frame_text += " (Anti-Slop Fixer LLM - Independent Misc Option Not Part of Duplication)"
             
-            api_frame = ttk.LabelFrame(self.api_content_frame, text=frame_text) # Changed parent to self.api_content_frame
-            api_frame.grid(row=i + 5, column=0, padx=SPACING, pady=SPACING, sticky="ew")
-            self.api_tab.grid_columnconfigure(0, weight=1) 
+            api_frame = ttk.LabelFrame(self.api_content_frame, text=f"API Slot {i+1}")
+            api_frame._section_search_text = frame_text
+            api_frame.grid(row=i + 7, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+            description = ttk.Label(api_frame, text=frame_text, justify="left", wraplength=1)
+            description.grid(row=0, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+            wrap_label(description, api_frame, padding=2 * SPACING)
             
-            ttk.Label(api_frame, text="API URL:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="e")
-            url_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=url_var).grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+            ttk.Label(api_frame, text="API URL:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            url_var = tk.StringVar(); ttk.Entry(api_frame, width=1, textvariable=url_var).grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, f'api_url_var_{i+1}', url_var) 
             
-            ttk.Label(api_frame, text="Model Name:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
-            model_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=model_var).grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+            ttk.Label(api_frame, text="Model Name:").grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            model_var = tk.StringVar(); ttk.Entry(api_frame, width=1, textvariable=model_var).grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, f'api_model_var_{i+1}', model_var)
             
-            ttk.Label(api_frame, text="API Key:").grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="e")
-            key_var = tk.StringVar(); ttk.Entry(api_frame, width=60, textvariable=key_var, show="*").grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+            ttk.Label(api_frame, text="API Key:").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            key_var = tk.StringVar(); ttk.Entry(api_frame, width=1, textvariable=key_var, show="*").grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="ew")
             setattr(self, f'api_key_var_{i+1}', key_var)
 
             # Add status label and test button for API connection
             status_var = tk.StringVar(value="Not tested")
             status_label = ttk.Label(api_frame, textvariable=status_var, foreground="gray")
-            status_label.grid(row=6, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+            status_label.grid(row=7, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+            wrap_label(status_label, api_frame, padding=2 * SPACING)
             setattr(self, f'api_status_var_{i+1}', status_var)
             setattr(self, f'api_status_label_{i+1}', status_label)
             test_btn = ttk.Button(api_frame, text="Test Connection", command=lambda idx=i: self.test_api_connection(idx))  # This should already work since it's a lambda
-            test_btn.grid(row=7, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+            test_btn.grid(row=8, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
             setattr(self, f'api_test_btn_{i+1}', test_btn)
 
             # --- API Compatibility (payload param filtering per endpoint) ---
             compat_frame = ttk.LabelFrame(api_frame, text="API Compatibility")
-            compat_frame.grid(row=8, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 2), sticky="ew")
+            compat_frame.grid(row=9, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 2), sticky="ew")
             compat_frame.grid_columnconfigure(0, weight=1)
 
             profile_var = tk.StringVar()
             setattr(self, f'api_profile_var_{i+1}', profile_var)
             profile_combo = ttk.Combobox(
-                compat_frame, textvariable=profile_var, state="readonly", width=52,
+                compat_frame, textvariable=profile_var, state="readonly", width=1,
                 values=[lbl for _, lbl in self._api_profile_choices]
             )
             profile_combo.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
@@ -209,7 +236,7 @@ class ConfigEditor(tk.Toplevel):
 
             custom_params_var = tk.StringVar()
             setattr(self, f'api_custom_params_var_{i+1}', custom_params_var)
-            custom_params_entry = ttk.Entry(compat_frame, textvariable=custom_params_var, width=60)
+            custom_params_entry = ttk.Entry(compat_frame, textvariable=custom_params_var, width=1)
             custom_params_entry.grid(row=1, column=0, columnspan=2, padx=SPACING, pady=(0, 2), sticky="ew")
             setattr(self, f'api_custom_params_entry_{i+1}', custom_params_entry)
             ttk.Label(
@@ -225,32 +252,32 @@ class ConfigEditor(tk.Toplevel):
             if i < 4: # APIs 1-4 (indices 0-3) can be enabled/disabled for main generation
                 enabled_var = tk.BooleanVar(self, value=(i==0)) # API 1 defaults to enabled
                 setattr(self, f'api_enabled_var_{i+1}', enabled_var)
-                ttk.Checkbutton(api_frame, text="Enabled for Generation/Duplication", variable=enabled_var).grid(row=3, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+                wrapped_checkbutton(api_frame, text="Enabled for Generation/Duplication", variable=enabled_var).grid(row=4, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
 
                 # Add threads setting for each API
+                ttk.Label(api_frame, text="Number of Threads:").grid(row=5, column=0, padx=SPACING, pady=SPACING, sticky="e")
+                threads_var = tk.StringVar(value="10")  # Default value
+                setattr(self, f'api_threads_var_{i+1}', threads_var)
+                ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=5, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+                # NEW: Add rate limit setting for each API
+                ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=6, column=0, padx=SPACING, pady=SPACING, sticky="e")
+                rate_limit_var = tk.StringVar(value="60")  # Default 60 requests per minute
+                setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
+                ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=6, column=1, padx=SPACING, pady=SPACING, sticky="w")
+                ttk.Label(api_frame, text="(Requests/Min)").grid(row=6, column=2, padx=SPACING, pady=SPACING, sticky="w")
+            else: # API Slot 5 (Slop Fixer) and Slot 6 (Anti-Slop Fixer)
                 ttk.Label(api_frame, text="Number of Threads:").grid(row=4, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 threads_var = tk.StringVar(value="10")  # Default value
                 setattr(self, f'api_threads_var_{i+1}', threads_var)
                 ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
-                # NEW: Add rate limit setting for each API
+                # NEW: Add rate limit setting for Slop Fixer / Anti-Slop Fixer API
                 ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=5, column=0, padx=SPACING, pady=SPACING, sticky="e")
                 rate_limit_var = tk.StringVar(value="60")  # Default 60 requests per minute
                 setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
                 ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=5, column=1, padx=SPACING, pady=SPACING, sticky="w")
                 ttk.Label(api_frame, text="(Requests/Min)").grid(row=5, column=2, padx=SPACING, pady=SPACING, sticky="w")
-            else: # API Slot 5 (Slop Fixer) and Slot 6 (Anti-Slop Fixer)
-                ttk.Label(api_frame, text="Number of Threads:").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
-                threads_var = tk.StringVar(value="10")  # Default value
-                setattr(self, f'api_threads_var_{i+1}', threads_var)
-                ttk.Entry(api_frame, width=10, textvariable=threads_var).grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="w")
-
-                # NEW: Add rate limit setting for Slop Fixer / Anti-Slop Fixer API
-                ttk.Label(api_frame, text="Rate Limit (RPM):").grid(row=4, column=0, padx=SPACING, pady=SPACING, sticky="e")
-                rate_limit_var = tk.StringVar(value="60")  # Default 60 requests per minute
-                setattr(self, f'api_rate_limit_var_{i+1}', rate_limit_var)
-                ttk.Entry(api_frame, width=10, textvariable=rate_limit_var).grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
-                ttk.Label(api_frame, text="(Requests/Min)").grid(row=4, column=2, padx=SPACING, pady=SPACING, sticky="w")
 
                 # --- NEW: Independence note for Anti-Slop (Slot 6) ---
                 if i == 5:
@@ -262,7 +289,7 @@ class ConfigEditor(tk.Toplevel):
                         style='Small.TLabel',
                         wraplength=500,
                         justify="left"
-                    ).grid(row=5, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="w")
+                    ).grid(row=6, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="w")
                 # --- END independence note ---
 
             api_frame.grid_columnconfigure(1, weight=1) # Make entry fields expand
@@ -289,7 +316,7 @@ class ConfigEditor(tk.Toplevel):
         self.generation_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.generation_canvas.bind("<MouseWheel>", lambda e: self.generation_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.generation_canvas)
 
         # Allow the inner frame to expand horizontally
         gen_settings_frame.grid_columnconfigure(1, weight=1)
@@ -297,10 +324,18 @@ class ConfigEditor(tk.Toplevel):
         row_idx = 0
         def add_gen_setting(label_text, var_name, help_text=""): # Helper to add a setting row
             nonlocal row_idx
-            ttk.Label(gen_settings_frame, text=label_text).grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            field = ttk.Frame(gen_settings_frame)
+            field.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+            field.columnconfigure(0, weight=1)
+            label = ttk.Label(field, text=label_text, justify="left", wraplength=1)
+            label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+            wrap_label(label, field, padding=180)
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(gen_settings_frame, width=10, textvariable=var).grid(row=row_idx, column=1, padx=SPACING, pady=SPACING, sticky="w")
-            if help_text: ttk.Label(gen_settings_frame, text=help_text).grid(row=row_idx, column=2, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Entry(field, width=12, textvariable=var).grid(row=0, column=1, sticky="e")
+            if help_text:
+                help_label = ttk.Label(field, text=help_text, style='Small.TLabel', justify="left", wraplength=1)
+                help_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+                wrap_label(help_label, field)
             row_idx += 1
 
         add_gen_setting("Number of Random Chunks:", 'num_random_chunks_var', "(Total tasks to generate per run)")
@@ -322,63 +357,63 @@ class ConfigEditor(tk.Toplevel):
         row_idx += 1
 
         self.quality_enabled_var_editor = tk.BooleanVar(value=True)
-        ttk.Checkbutton(gen_settings_frame, text="Enable Quality Scoring", variable=self.quality_enabled_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+        wrapped_checkbutton(gen_settings_frame, text="Enable Quality Scoring", variable=self.quality_enabled_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
         self.quality_use_llm_var_editor = tk.BooleanVar(value=False)
-        ttk.Checkbutton(gen_settings_frame, text="Use LLM for Coherence/Naturalness/Engagement/Consistency (uses extra API calls)", variable=self.quality_use_llm_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+        wrapped_checkbutton(gen_settings_frame, text="Use LLM for Coherence/Naturalness/Engagement/Consistency (uses extra API calls)", variable=self.quality_use_llm_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
         self.quality_output_filter_var_editor = tk.BooleanVar(value=False)
-        ttk.Checkbutton(gen_settings_frame, text="Flag conversations below threshold (for post-filtering)", variable=self.quality_output_filter_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+        wrapped_checkbutton(gen_settings_frame, text="Flag conversations below threshold (for post-filtering)", variable=self.quality_output_filter_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
         add_gen_setting("Min Score Threshold (0-100):", 'quality_min_threshold_var', "(Conversations below this are flagged)")
         add_gen_setting("Max Chars for LLM Scoring:", 'quality_max_chars_var', "(Truncate conversation before sending to scoring LLM)")
 
         # Quality scoring API config
-        ttk.Label(gen_settings_frame, text="Quality Scoring API URL:").grid(row=row_idx, column=0, padx=SPACING, pady=2, sticky="e")
+        ttk.Label(gen_settings_frame, text="Quality Scoring API URL:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
         self.quality_api_url_var = tk.StringVar()
-        ttk.Entry(gen_settings_frame, width=40, textvariable=self.quality_api_url_var).grid(row=row_idx, column=1, columnspan=2, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+        ttk.Entry(gen_settings_frame, width=1, textvariable=self.quality_api_url_var).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
-        ttk.Label(gen_settings_frame, text="Quality Scoring Model:").grid(row=row_idx, column=0, padx=SPACING, pady=2, sticky="e")
+        ttk.Label(gen_settings_frame, text="Quality Scoring Model:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
         self.quality_api_model_var = tk.StringVar()
-        ttk.Entry(gen_settings_frame, width=40, textvariable=self.quality_api_model_var).grid(row=row_idx, column=1, columnspan=2, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+        ttk.Entry(gen_settings_frame, width=1, textvariable=self.quality_api_model_var).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
-        ttk.Label(gen_settings_frame, text="Quality Scoring API Key:").grid(row=row_idx, column=0, padx=SPACING, pady=2, sticky="e")
+        ttk.Label(gen_settings_frame, text="Quality Scoring API Key:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
         self.quality_api_key_var = tk.StringVar()
-        ttk.Entry(gen_settings_frame, width=40, textvariable=self.quality_api_key_var, show="*").grid(row=row_idx, column=1, columnspan=2, padx=SPACING, pady=2, sticky="w"); row_idx += 1
+        ttk.Entry(gen_settings_frame, width=1, textvariable=self.quality_api_key_var, show="*").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
-        ttk.Checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         self.remove_em_dash_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Em Dash (—) from output", variable=self.remove_em_dash_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Experimental: Remove Em Dash (—) from output", variable=self.remove_em_dash_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         self.ensure_space_after_line_break_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Ensure Space After Line Break (prevents words running together)", variable=self.ensure_space_after_line_break_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Experimental: Ensure Space After Line Break (prevents words running together)", variable=self.ensure_space_after_line_break_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         # NEW: Add checkbox for removing excessive asterisks
         self.remove_asterisks_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Excessive Asterisks (**, ****, etc.) from output", variable=self.remove_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Experimental: Remove Excessive Asterisks (**, ****, etc.) from output", variable=self.remove_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         # NEW: Add checkbox for removing "* *" pattern
         self.remove_asterisk_space_asterisk_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove '* *' Pattern (asterisk space asterisk) from output", variable=self.remove_asterisk_space_asterisk_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Experimental: Remove '* *' Pattern (asterisk space asterisk) from output", variable=self.remove_asterisk_space_asterisk_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         self.remove_all_asterisks_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove ALL Asterisks (including single *) from output", variable=self.remove_all_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Experimental: Remove ALL Asterisks (including single *) from output", variable=self.remove_all_asterisks_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         self.remove_markdown_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Experimental: Remove Markdown Formatting (Convert to plain text)", variable=self.remove_markdown_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Experimental: Remove Markdown Formatting (Convert to plain text)", variable=self.remove_markdown_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
 
         self.slop_to_anti_slop_fallback_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(gen_settings_frame, text="Slop → Anti-Slop Fallback (Use Anti-Slop API as final attempt if Slop Fixer fails)",
-                        variable=self.slop_to_anti_slop_fallback_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        wrapped_checkbutton(gen_settings_frame, text="Slop → Anti-Slop Fallback (Use Anti-Slop API as final attempt if Slop Fixer fails)",
+                        variable=self.slop_to_anti_slop_fallback_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
         
         ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.output_format_var = tk.StringVar(value="sharegpt")
         ttk.Label(gen_settings_frame, text="sharegpt").grid(row=row_idx, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(gen_settings_frame, text="(Format for output.jsonl files)").grid(row=row_idx, column=2, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
+        ttk.Label(gen_settings_frame, text="(Format for output.jsonl files)").grid(row=row_idx + 1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w"); row_idx+=1
 
         # --- Prompts Tab ---
         self.prompts_tab = ttk.Frame(self.notebook)
@@ -399,7 +434,7 @@ class ConfigEditor(tk.Toplevel):
         self.prompts_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.prompts_canvas.bind("<MouseWheel>", lambda e: self.prompts_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.prompts_canvas)
 
         # Define Boolean variables BEFORE they are used in Checkbuttons
         self.use_questions_file_var_editor = tk.BooleanVar()
@@ -409,14 +444,16 @@ class ConfigEditor(tk.Toplevel):
 
         def add_prompt_text_area(label_text, var_name, height=4): # Helper for text areas
             nonlocal prompts_row_idx
-            ttk.Label(self.prompts_content_frame, text=label_text).grid(row=prompts_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
-            text_widget = scrolledtext.ScrolledText(self.prompts_content_frame, wrap=tk.WORD, height=height, width=130, undo=True)
-            text_widget.grid(row=prompts_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+            label = ttk.Label(self.prompts_content_frame, text=label_text, justify="left", wraplength=1)
+            label.grid(row=prompts_row_idx, column=0, padx=SPACING, pady=(SPACING, 3), sticky="ew")
+            wrap_label(label, self.prompts_content_frame, padding=2 * SPACING)
+            text_widget = scrolledtext.ScrolledText(self.prompts_content_frame, wrap=tk.WORD, height=height, width=1, undo=True)
+            text_widget.grid(row=prompts_row_idx + 1, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
             setattr(self, var_name, text_widget)
-            prompts_row_idx += 1
+            prompts_row_idx += 2
 
-        ttk.Checkbutton(self.prompts_content_frame, text=f"Use '{os.path.basename(QUESTIONS_FILE_PATH)}' for questions (disables subject/context chunking)", variable=self.use_questions_file_var_editor).grid(row=prompts_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w"); prompts_row_idx+=1
-        ttk.Checkbutton(self.prompts_content_frame, text="Use Variable System Prompts (randomly chosen from list below)", variable=self.use_variable_system_var_editor).grid(row=prompts_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w"); prompts_row_idx+=1
+        wrapped_checkbutton(self.prompts_content_frame, text=f"Use '{os.path.basename(QUESTIONS_FILE_PATH)}' for questions (disables subject/context chunking)", variable=self.use_questions_file_var_editor).grid(row=prompts_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew"); prompts_row_idx+=1
+        wrapped_checkbutton(self.prompts_content_frame, text="Use Variable System Prompts (randomly chosen from list below)", variable=self.use_variable_system_var_editor).grid(row=prompts_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew"); prompts_row_idx+=1
 
         add_prompt_text_area("Top Level System Prompt (Applied to ALL prompts):", 'top_level_system_prompt_text', height=12)
         add_prompt_text_area("Base System Prompt (used if not variable, or as one of variations):", 'system_base_prompt_text', height=12)
@@ -443,16 +480,16 @@ class ConfigEditor(tk.Toplevel):
 
         self.lore_canvas.pack(side="left", fill="both", expand=True)
         self.lore_scrollbar.pack(side="right", fill="y")
-        self.lore_canvas.bind("<MouseWheel>", lambda e: self.lore_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.lore_canvas)
 
         # Lore UI Content
         ttk.Label(self.lore_content_frame, text="World Lore & Background Information:").grid(row=0, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
-        self.lore_text = scrolledtext.ScrolledText(self.lore_content_frame, wrap=tk.WORD, undo=True)
+        self.lore_text = scrolledtext.ScrolledText(self.lore_content_frame, wrap=tk.WORD, width=1, height=16, undo=True)
         self.lore_text.grid(row=1, column=0, padx=SPACING, pady=(0, SPACING), sticky="nsew")
         self.lore_content_frame.grid_columnconfigure(0, weight=1)
         self.lore_content_frame.grid_rowconfigure(1, weight=1)
 
-        self.prompts_content_frame.grid_columnconfigure(1, weight=1) # Make text areas expand
+        self.prompts_content_frame.grid_columnconfigure(0, weight=1) # Make text areas expand
 
         # --- Character Engine Tab ---
         self.character_engine_tab = ttk.Frame(self.notebook)
@@ -473,75 +510,70 @@ class ConfigEditor(tk.Toplevel):
         self.character_engine_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.character_engine_canvas.bind("<MouseWheel>", lambda e: self.character_engine_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.character_engine_canvas)
 
         character_engine_row_idx = 0
 
-        # Add number of characters setting
-        ttk.Label(self.character_engine_content_frame, text="Number of Characters per Conversation:").grid(
-            row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e"
-        )
-        self.num_characters_var_editor = tk.StringVar(value="1")
-        num_chars_entry = ttk.Entry(self.character_engine_content_frame, width=10, textvariable=self.num_characters_var_editor)
-        num_chars_entry.grid(row=character_engine_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(self.character_engine_content_frame, text="(1-10, requires enough character cards)").grid(
-            row=character_engine_row_idx, column=2, padx=SPACING, pady=SPACING, sticky="w"
-        )
+        # Keep the count control and its explanation on separate rows.
+        label = ttk.Label(self.character_engine_content_frame, text="Number of Characters per Conversation:", wraplength=1)
+        label.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        wrap_label(label, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
-
-        def add_character_engine_text_area(label_text, var_name, height=4):
-            nonlocal character_engine_row_idx
-            ttk.Label(self.character_engine_content_frame, text=label_text).grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
-            text_widget = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=height, width=130, undo=True)
-            text_widget.grid(row=character_engine_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="ew")
-            setattr(self, var_name, text_widget)
-            character_engine_row_idx += 1
+        self.num_characters_var_editor = tk.StringVar(value="1")
+        ttk.Entry(self.character_engine_content_frame, width=10, textvariable=self.num_characters_var_editor).grid(
+            row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, SPACING), sticky="w")
+        character_engine_row_idx += 1
+        count_help = ttk.Label(self.character_engine_content_frame, text="(1-10, requires enough character cards)", wraplength=1)
+        count_help.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(count_help, self.character_engine_content_frame, padding=2 * SPACING)
+        character_engine_row_idx += 1
 
         # Add checkbox to enable character engine
         self.enable_character_engine_var_editor = tk.BooleanVar()
         self.include_names_in_prompt_var_editor = tk.BooleanVar(value=True)
-        self.enable_character_checkbox = ttk.Checkbutton(
+        self.enable_character_checkbox = wrapped_checkbutton(
             self.character_engine_content_frame,
             text="Enable Character Engine (random character profiles in conversations)",
             variable=self.enable_character_engine_var_editor,
             command=self._toggle_character_engine_fields
         )
-        self.enable_character_checkbox.grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        self.enable_character_checkbox.grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
-        ttk.Checkbutton(
+        wrapped_checkbutton(
             self.character_engine_content_frame,
             text="Include Character Names in Prompt",
             variable=self.include_names_in_prompt_var_editor
-        ).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        ).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
         # Add checkbox to enable emotional states
         self.enable_emotional_states_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(self.character_engine_content_frame, text="Enable Emotional States (randomly assign to conversations)",
-                variable=self.enable_emotional_states_var_editor, command=self._toggle_emotional_states_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        wrapped_checkbutton(self.character_engine_content_frame, text="Enable Emotional States (randomly assign to conversations)",
+                variable=self.enable_emotional_states_var_editor, command=self._toggle_emotional_states_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
         # Add emotional states text area
         ttk.Label(self.character_engine_content_frame, text="Emotional States (one per line):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
-        emotional_states_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=130, undo=True)
-        emotional_states_text.grid(row=character_engine_row_idx, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+        character_engine_row_idx += 1
+        emotional_states_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=1, undo=True)
+        emotional_states_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
         setattr(self, 'emotional_states_text', emotional_states_text)
         character_engine_row_idx += 1
 
         self.enable_class_selection_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(self.character_engine_content_frame,
+        wrapped_checkbutton(self.character_engine_content_frame,
                         text="Enable Class Selection (fantasy classes like mage, warlock, rogue, etc.)",
                         variable=self.enable_class_selection_var_editor,
-                        command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+                        command=self._toggle_class_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
         # NEW: Add checkbox for Setting field
         self.enable_setting_selection_var_editor = tk.BooleanVar()
-        ttk.Checkbutton(self.character_engine_content_frame,
+        wrapped_checkbutton(self.character_engine_content_frame,
                         text="Enable Setting Selection (custom location/environment for each character)",
                         variable=self.enable_setting_selection_var_editor,
-                        command=self._toggle_setting_fields).grid(row=character_engine_row_idx, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+                        command=self._toggle_setting_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
         # --- Character Table (Card-based layout) ---
@@ -552,7 +584,7 @@ class ConfigEditor(tk.Toplevel):
             text="Character Profiles (Each card is one complete character)"
         )
         character_table_lf.grid(
-            row=character_engine_row_idx, column=0, columnspan=2,
+            row=character_engine_row_idx, column=0, columnspan=1,
             padx=SPACING, pady=SPACING, sticky="nsew"
         )
         character_engine_row_idx += 1
@@ -568,7 +600,7 @@ class ConfigEditor(tk.Toplevel):
             command=self._add_character_row
         )
         self.add_char_btn.grid(
-            row=character_engine_row_idx, column=0, columnspan=2,
+            row=character_engine_row_idx, column=0, columnspan=1,
             padx=SPACING, pady=SPACING, sticky="w"
         )
         character_engine_row_idx += 1
@@ -577,7 +609,7 @@ class ConfigEditor(tk.Toplevel):
         for _ in range(3):
             self._add_character_row()
 
-        self.character_engine_content_frame.grid_columnconfigure(1, weight=1)
+        self.character_engine_content_frame.grid_columnconfigure(0, weight=1)
 
         # --- Detection Tab ---
         self.detection_tab = ttk.Frame(self.notebook)
@@ -601,32 +633,49 @@ class ConfigEditor(tk.Toplevel):
         self.detection_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.detection_canvas.bind("<MouseWheel>", lambda e: self.detection_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.detection_canvas)
 
         self.gender_var_editor = tk.StringVar() # Editor's local var for gender
         gender_frame = ttk.Frame(self.detection_content_frame)
-        gender_frame.grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(gender_frame, text="Assistant Persona Gender (for user speaking detection):").pack(side=tk.LEFT, padx=(0,10))
-        ttk.Radiobutton(gender_frame, text="Female", variable=self.gender_var_editor, value="female", command=lambda: self.on_gender_change_editor_handler()).pack(side=tk.LEFT)
-        ttk.Radiobutton(gender_frame, text="Male", variable=self.gender_var_editor, value="male", command=lambda: self.on_gender_change_editor_handler).pack(side=tk.LEFT)
-        ttk.Radiobutton(gender_frame, text="Neutral", variable=self.gender_var_editor, value="neutral", command=lambda: self.on_gender_change_editor_handler).pack(side=tk.LEFT)
+        gender_frame.grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+        gender_frame.columnconfigure(0, weight=1)
+        gender_label = ttk.Label(gender_frame, text="Assistant Persona Gender (for user speaking detection):", wraplength=1)
+        gender_label.grid(row=0, column=0, sticky="ew")
+        wrap_label(gender_label, gender_frame)
+        gender_choices = ttk.Frame(gender_frame)
+        gender_choices.grid(row=1, column=0, sticky="w", pady=(5, 0))
+        for label, value in (("Female", "female"), ("Male", "male"), ("Neutral", "neutral")):
+            ttk.Radiobutton(gender_choices, text=label, variable=self.gender_var_editor, value=value,
+                            command=self.on_gender_change_editor_handler).pack(side=tk.LEFT, padx=(0, SPACING))
         
-        ttk.Checkbutton(self.detection_content_frame, text="Disable User Impersonation Detection (Globally)", variable=self.no_user_impersonation_var).grid(row=1, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="w")
+        wrapped_checkbutton(self.detection_content_frame, text="Disable User Impersonation Detection (Globally)", variable=self.no_user_impersonation_var).grid(row=1, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
 
-        col1_frame = ttk.Frame(self.detection_content_frame); col1_frame.grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="nsew")
-        col2_frame = ttk.Frame(self.detection_content_frame); col2_frame.grid(row=2, column=1, padx=SPACING, pady=SPACING, sticky="nsew")
-        self.detection_content_frame.grid_columnconfigure(0, weight=1); self.detection_content_frame.grid_columnconfigure(1, weight=1)
-        self.detection_content_frame.grid_rowconfigure(2, weight=1)
+        detection_panels = ttk.Frame(self.detection_content_frame)
+        detection_panels.grid(row=2, column=0, columnspan=2, sticky="ew")
+        col1_frame = ttk.Frame(detection_panels)
+        col2_frame = ttk.Frame(detection_panels)
+        self._detection_layout = ResponsiveGrid(detection_panels, [col1_frame, col2_frame],
+                                                min_width=420, max_columns=2, padx=4, pady=4)
+        self.detection_content_frame.grid_columnconfigure(0, weight=1)
         
         def add_detection_list_pair(parent_frame, lf_text, phrases_var_name, fixes_var_name): # Helper for detection list pairs
-            lf = ttk.LabelFrame(parent_frame, text=lf_text)
+            lf = ttk.LabelFrame(parent_frame, text=lf_text.split(" (")[0])
+            lf._section_search_text = lf_text
             lf.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
-            ttk.Label(lf, text="Detection Phrases (one per line):").pack(anchor="w")
-            phrases_text = scrolledtext.ScrolledText(lf, wrap=tk.WORD, height=12, undo=True)
+            if " (" in lf_text:
+                note = ttk.Label(lf, text=lf_text, justify="left", wraplength=1)
+                note.pack(fill="x", pady=(0, 5))
+                wrap_label(note, lf)
+            label = ttk.Label(lf, text="Detection Phrases (one per line):", wraplength=1)
+            label.pack(fill="x")
+            wrap_label(label, lf)
+            phrases_text = scrolledtext.ScrolledText(lf, wrap=tk.WORD, height=12, width=1, undo=True)
             phrases_text.pack(fill="both", expand=True, pady=(0,5))
             setattr(self, phrases_var_name, phrases_text)
-            ttk.Label(lf, text="Fixes (appended to system prompt or for fixer rotation):").pack(anchor="w")
-            fixes_text = scrolledtext.ScrolledText(lf, wrap=tk.WORD, height=12, undo=True)
+            label = ttk.Label(lf, text="Fixes (appended to system prompt or for fixer rotation):", wraplength=1)
+            label.pack(fill="x")
+            wrap_label(label, lf)
+            fixes_text = scrolledtext.ScrolledText(lf, wrap=tk.WORD, height=12, width=1, undo=True)
             fixes_text.pack(fill="both", expand=True)
             setattr(self, fixes_var_name, fixes_text)
 
@@ -658,6 +707,7 @@ class ConfigEditor(tk.Toplevel):
         self.samplers_canvas = tk.Canvas(self.samplers_tab)
         self.samplers_scrollbar = tk.Scrollbar(self.samplers_tab, orient="vertical", command=self.samplers_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
         sampler_params_frame = ttk.Frame(self.samplers_canvas)
+        sampler_params_frame.columnconfigure(0, weight=1)
 
         sampler_params_frame.bind(
             "<Configure>",
@@ -672,18 +722,25 @@ class ConfigEditor(tk.Toplevel):
         self.samplers_scrollbar.pack(side="right", fill="y")
 
         # Bind mouse wheel to canvas for scrolling
-        self.samplers_canvas.bind("<MouseWheel>", lambda e: self.samplers_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        bind_scroll_wheel(self.samplers_canvas)
 
         ttk.Label(sampler_params_frame, text="Sampler Priority (Order for API payload, one per line, e.g., temperature, top_p):").grid(row=0, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
-        self.sampler_priority_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=30, undo=True); self.sampler_priority_text.grid(row=1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        self.sampler_priority_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=1, undo=True); self.sampler_priority_text.grid(row=1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         
         sampler_row = 2 
         def add_sampler_param(label, var_name, example): # Helper for sampler parameters
             nonlocal sampler_row
-            ttk.Label(sampler_params_frame, text=label).grid(row=sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            field = ttk.Frame(sampler_params_frame)
+            field.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+            field.columnconfigure(0, weight=1)
+            caption = ttk.Label(field, text=label, justify="left", wraplength=1)
+            caption.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+            wrap_label(caption, field, padding=180)
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(sampler_params_frame, width=10, textvariable=var).grid(row=sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
-            ttk.Label(sampler_params_frame, text=example).grid(row=sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Entry(field, width=12, textvariable=var).grid(row=0, column=1, sticky="e")
+            help_label = ttk.Label(field, text=example, style='Small.TLabel', justify="left", wraplength=1)
+            help_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+            wrap_label(help_label, field)
             sampler_row += 1
 
         add_sampler_param("Temperature:", 'temperature_var', "(E.g., 0.7)")
@@ -696,19 +753,27 @@ class ConfigEditor(tk.Toplevel):
         add_sampler_param("Max Tokens (User Continuation):", 'max_tokens_user_reply_var', "(E.g., 256)")
         ttk.Label(sampler_params_frame, text="Logit Bias (JSON format, e.g., {\"15\": 100}):").grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
         sampler_row += 1
-        self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=50, undo=True)
+        self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=1, undo=True)
         self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         sampler_row += 1
         self.enable_thinking_mode_var = tk.StringVar(value="default")
         slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Slop Fixer LLM Sampler Overrides (API Slot 5 - Optional)")
         slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
+        slop_fixer_sampler_lf.columnconfigure(0, weight=1)
         sf_sampler_row = 0 
         def add_slop_fixer_param(label, var_name, example): # Helper for slop fixer sampler params
             nonlocal sf_sampler_row
-            ttk.Label(slop_fixer_sampler_lf, text=label).grid(row=sf_sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            field = ttk.Frame(slop_fixer_sampler_lf)
+            field.grid(row=sf_sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+            field.columnconfigure(0, weight=1)
+            caption = ttk.Label(field, text=label, justify="left", wraplength=1)
+            caption.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+            wrap_label(caption, field, padding=180)
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(slop_fixer_sampler_lf, width=10, textvariable=var).grid(row=sf_sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
-            ttk.Label(slop_fixer_sampler_lf, text=example).grid(row=sf_sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Entry(field, width=12, textvariable=var).grid(row=0, column=1, sticky="e")
+            help_label = ttk.Label(field, text=example, style='Small.TLabel', justify="left", wraplength=1)
+            help_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+            wrap_label(help_label, field)
             sf_sampler_row += 1
         add_slop_fixer_param("Temperature (Slop Fixer):", 'slop_fixer_temp_var', "(E.g., 0.5, uses main if blank)")
         add_slop_fixer_param("Top P (Slop Fixer):", 'slop_fixer_top_p_var', "(E.g., 0.95, uses main if blank)")
@@ -729,13 +794,21 @@ class ConfigEditor(tk.Toplevel):
 
         anti_slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Anti-Slop Fixer LLM Sampler Overrides (API Slot 6 - Optional)")
         anti_slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
+        anti_slop_fixer_sampler_lf.columnconfigure(0, weight=1)
         asf_sampler_row = 0
         def add_anti_slop_fixer_param(label, var_name, example): # Helper for anti-slop fixer sampler params
             nonlocal asf_sampler_row
-            ttk.Label(anti_slop_fixer_sampler_lf, text=label).grid(row=asf_sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
+            field = ttk.Frame(anti_slop_fixer_sampler_lf)
+            field.grid(row=asf_sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+            field.columnconfigure(0, weight=1)
+            caption = ttk.Label(field, text=label, justify="left", wraplength=1)
+            caption.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+            wrap_label(caption, field, padding=180)
             var = tk.StringVar(); setattr(self, var_name, var)
-            ttk.Entry(anti_slop_fixer_sampler_lf, width=10, textvariable=var).grid(row=asf_sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
-            ttk.Label(anti_slop_fixer_sampler_lf, text=example).grid(row=asf_sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
+            ttk.Entry(field, width=12, textvariable=var).grid(row=0, column=1, sticky="e")
+            help_label = ttk.Label(field, text=example, style='Small.TLabel', justify="left", wraplength=1)
+            help_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+            wrap_label(help_label, field)
             asf_sampler_row += 1
         add_anti_slop_fixer_param("Temperature (Anti-Slop):", 'anti_slop_fixer_temp_var', "(E.g., 0.5, uses main if blank)")
         add_anti_slop_fixer_param("Top P (Anti-Slop):", 'anti_slop_fixer_top_p_var', "(E.g., 0.95, uses main if blank)")
@@ -752,48 +825,69 @@ class ConfigEditor(tk.Toplevel):
             width=20
         )
         enable_thinking_combo.grid(row=sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(sampler_params_frame, text="(Controls chat_template_kwargs enable_thinking)").grid(row=sampler_row, column=2, padx=SPACING, pady=SPACING, sticky="w")
+        ttk.Label(sampler_params_frame, text="(Controls chat_template_kwargs enable_thinking)").grid(row=sampler_row + 1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
         sampler_row += 1
 
 
         # --- Profiles Tab ---
         self.profiles_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.profiles_tab, text="Profiles")
-        profiles_main_frame = ttk.Frame(self.profiles_tab)
-        profiles_main_frame.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
+        self.profiles_scroll = ScrollableFrame(self.profiles_tab)
+        self.profiles_scroll.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
+        profiles_main_frame = self.profiles_scroll.content
 
         load_profile_frame = ttk.LabelFrame(profiles_main_frame, text="Load Profile")
         load_profile_frame.pack(padx=SPACING, pady=SPACING, fill="x", expand=False)
-        ttk.Label(load_profile_frame, text="Available Profiles:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        ttk.Label(load_profile_frame, text="Available Profiles:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="w")
         self.profile_list_var = tk.StringVar()
-        self.profile_combobox = ttk.Combobox(load_profile_frame, textvariable=self.profile_list_var, width=40, state="readonly")
-        self.profile_combobox.grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
-        ttk.Button(load_profile_frame, text="Load Selected Profile to Editor & config.yml", command=self._load_selected_profile_handler).grid(row=0, column=2, padx=SPACING, pady=SPACING)
-        ttk.Button(load_profile_frame, text="Delete Selected Profile", command=self._delete_selected_profile_handler).grid(row=0, column=3, padx=SPACING, pady=SPACING)
-        load_profile_frame.grid_columnconfigure(1, weight=1) 
+        self.profile_combobox = ttk.Combobox(load_profile_frame, textvariable=self.profile_list_var, width=1, state="readonly")
+        self.profile_combobox.grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        ttk.Button(load_profile_frame, text="Load Selected Profile to Editor & config.yml", command=self._load_selected_profile_handler).grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        ttk.Button(load_profile_frame, text="Delete Selected Profile", command=self._delete_selected_profile_handler).grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        load_profile_frame.grid_columnconfigure(0, weight=1)
 
         save_profile_frame = ttk.LabelFrame(profiles_main_frame, text="Save Current Editor Configuration As Profile")
         save_profile_frame.pack(padx=SPACING, fill="x", expand=False, pady=(10,5))
-        ttk.Label(save_profile_frame, text="New Profile Name:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        ttk.Label(save_profile_frame, text="New Profile Name:").grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="w")
         self.new_profile_name_var = tk.StringVar()
-        ttk.Entry(save_profile_frame, textvariable=self.new_profile_name_var, width=43).grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
-        ttk.Button(save_profile_frame, text="Save Current Editor Config As Profile...", command=self._save_profile_as_handler).grid(row=0, column=2, padx=SPACING, pady=SPACING)
-        save_profile_frame.grid_columnconfigure(1, weight=1) 
+        ttk.Entry(save_profile_frame, textvariable=self.new_profile_name_var, width=1).grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        ttk.Button(save_profile_frame, text="Save Current Editor Config As Profile...", command=self._save_profile_as_handler).grid(row=2, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        save_profile_frame.grid_columnconfigure(0, weight=1)
         
-        # --- Editor Toolbar and Status Bar ---
-        self.status = ttk.Label(self, text="Ready", foreground="lightgray")  # Status bar at the bottom of editor
-        self.status.pack(side=tk.BOTTOM, fill=tk.X, padx=SPACING, pady=(0,5))
-        toolbar = ttk.Frame(self) # Toolbar for main editor actions
-        ttk.Button(toolbar, text="Save to config.yml", command=self.save_config_handler).pack(side=tk.LEFT, padx=SPACING)
-        ttk.Button(toolbar, text="Revert Changes (Reload from Files)", command=self.load_config_handler).pack(side=tk.LEFT, padx=SPACING)
-        ttk.Button(toolbar, text="Validate Current Editor Values", command=self.validate_config_handler).pack(side=tk.LEFT, padx=SPACING)
-        toolbar.pack(fill=tk.X, pady=SPACING, padx=SPACING)
-        
+        # The shell reserves search, navigation and actions; only the notebook grows.
+        self.tab_navigator = NotebookNavigator(self, self.notebook)
+        self.tab_navigator.grid(row=1, column=0, sticky="ew", padx=SPACING, pady=(4, 0))
+        self.tab_navigator.refresh()
+        toolbar = ttk.Frame(self)
+        toolbar.grid(row=3, column=0, sticky="ew", padx=SPACING, pady=(0, SPACING))
+        for column, (name, text, command) in enumerate((
+                ("save_button", "Save to config.yml", self.save_config_handler),
+                ("reload_button", "Reload from files", self.load_config_handler),
+                ("validate_button", "Validate values", self.validate_config_handler))):
+            toolbar.columnconfigure(column, weight=1)
+            button = ttk.Button(toolbar, text=text, command=command)
+            button.grid(row=0, column=column, sticky="ew", padx=4)
+            setattr(self, name, button)
+        self.status = ttk.Label(self, text="Ready", foreground="lightgray", wraplength=1)
+        self.status.grid(row=4, column=0, sticky="ew", padx=SPACING, pady=(0, 5))
+        wrap_label(self.status, self, padding=2 * SPACING)
+        self._wrap_existing_notes(self.notebook)
+
         self.load_config_handler() # Load initial config into editor UI
         self._populate_profile_list() # Populate profiles dropdown
         self.protocol("WM_DELETE_WINDOW", self.on_close_editor) # Handle editor close button
 
     # --- NEW: Tab & Section Search Methods ---
+    def _wrap_existing_notes(self, parent):
+        """Update explanatory labels after their containers receive real widths."""
+        for child in parent.winfo_children():
+            if isinstance(child, ttk.Label):
+                width = int(child.cget("wraplength") or 0)
+                if width >= 500 or (width == 0 and len(str(child.cget("text"))) > 60):
+                    child.configure(justify="left")
+                    wrap_label(child, parent, padding=2 * SPACING)
+            self._wrap_existing_notes(child)
+
     def search_editor_tabs(self, event=None):
         query = self.search_entry.get().strip().lower()
         if not query:
@@ -817,7 +911,7 @@ class ConfigEditor(tk.Toplevel):
 
     def _find_and_raise_label_frame(self, widget, query, tab_id):
         if isinstance(widget, ttk.LabelFrame):
-            lf_text = widget.cget("text").lower()
+            lf_text = getattr(widget, '_section_search_text', widget.cget("text")).lower()
             if query in lf_text:
                 self.notebook.select(tab_id)
                 widget.tkraise()
@@ -830,13 +924,10 @@ class ConfigEditor(tk.Toplevel):
         return False
 
     def _scroll_canvas_to(self, target_widget):
-        target_widget.update_idletasks()
         parent = target_widget.master
         while parent:
             if isinstance(parent, tk.Canvas):
-                # Calculate scroll fraction to bring widget near the top
-                y_pos = max(0, (target_widget.winfo_y() - 20) / parent.winfo_height())
-                parent.yview_moveto(min(1.0, y_pos))
+                scroll_to_widget(parent, target_widget)
                 return
             parent = parent.master
     # --- END NEW METHODS ---
@@ -980,15 +1071,6 @@ class ConfigEditor(tk.Toplevel):
     def on_close_editor(self):
         """Handles saving config when editor is closed via 'X' button."""
         log_message("ConfigEditor: Close button clicked. Saving configuration automatically.", "INFO")
-
-        # Unbind all mouse wheel bindings to prevent stale callbacks
-        self.samplers_canvas.unbind("<MouseWheel>")
-        self.api_canvas.unbind("<MouseWheel>")
-        self.generation_canvas.unbind("<MouseWheel>")
-        self.prompts_canvas.unbind("<MouseWheel>")
-        self.lore_canvas.unbind("<MouseWheel>")
-        self.character_engine_canvas.unbind("<MouseWheel>")
-        self.detection_canvas.unbind("<MouseWheel>")
 
         try:
             self.save_config_handler(silent=True)
@@ -1792,164 +1874,95 @@ class ConfigEditor(tk.Toplevel):
             log_message(f"Error updating canvas scrollregion: {e}", "ERROR")
 
     def _add_character_row(self, character_data=None):
-        """Adds a new character card with a clean, organized layout."""
+        """Create a card whose short fields reflow and long fields use its full width."""
         max_cards_str = self.max_character_cards_var.get()
         max_cards = int(max_cards_str) if max_cards_str and max_cards_str.strip() else 10
-
         if len(self.character_entries) >= max_cards:
             messagebox.showwarning("Limit Reached", f"Maximum {max_cards} character cards allowed.")
             return
-
-        if character_data is None:
-            character_data = {}
-
+        character_data = character_data or {}
         row_index = len(self.character_entries)
-
-        # === Card Container ===
-        card_frame = ttk.LabelFrame(
-            self.character_cards_frame,
-            text=f"  ✦ Character {row_index + 1}  ",
-            padding=15
-        )
-        card_frame.pack(fill=tk.X, pady=15, padx=15)
-
+        card_frame = ttk.LabelFrame(self.character_cards_frame,
+                                    text=f"  ✦ Character {row_index + 1}  ", padding=8)
+        card_frame.pack(fill=tk.X, pady=8, padx=8)
+        card_frame.columnconfigure(0, weight=1)
         entry_vars = {}
+        label_font = ('Segoe UI', 9, 'bold')
+        entry_font = ('Segoe UI', 9)
 
-        # === Styling Constants ===
-        LABEL_FONT = ('Segoe UI', 9, 'bold')
-        ENTRY_FONT = ('Segoe UI', 9)
-        LABEL_FG = '#e0e0e0'
-        ENTRY_BG = '#2a2a35'
-        ENTRY_FG = '#ffffff'
+        short_fields = ttk.Frame(card_frame)
+        short_fields.grid(row=0, column=0, sticky="ew")
+        groups = []
+        for key, caption in (("name", "Name:"), ("age", "Age:"), ("race", "Race:"),
+                             ("job", "Job:"), ("gender", "Gender:")):
+            group = ttk.Frame(short_fields)
+            group.columnconfigure(0, weight=1)
+            label = ttk.Label(group, text=caption, font=label_font, foreground='#e0e0e0')
+            label.grid(row=0, column=0, sticky="w", pady=(0, 3))
+            default = '25' if key == 'age' else ''
+            var = tk.StringVar(value=character_data.get(key, default))
+            widget = ttk.Entry(group, textvariable=var, width=1, font=entry_font)
+            widget.grid(row=1, column=0, sticky="ew")
+            entry_vars[key] = var
+            entry_vars[f'{key}_label'] = label
+            entry_vars[f'{key}_widget'] = widget
+            groups.append(group)
+        entry_vars['short_layout'] = ResponsiveGrid(short_fields, groups, min_width=180,
+                                                    max_columns=3, padx=4, pady=5)
 
-        # === Helper: Create a labeled field ===
-        def create_field(parent, label_text, var_key, row, col,
-                        width=25, is_multiline=False, height=3, colspan=1):
-            # Label
-            lbl = ttk.Label(parent, text=label_text, font=LABEL_FONT, foreground=LABEL_FG)
-            lbl.grid(row=row, column=col*2, padx=(10, 5), pady=8, sticky="ne")
-            entry_vars[f'{var_key}_label'] = lbl  # Store label reference in entry_vars
-
-            var = tk.StringVar(value=character_data.get(var_key, ''))
-
-            if is_multiline:
-                widget = tk.Text(parent, width=width, height=height,
-                                font=ENTRY_FONT, bg=ENTRY_BG, fg=ENTRY_FG,
-                                wrap=tk.WORD, relief=tk.SOLID, borderwidth=1)
-                widget.insert("1.0", character_data.get(var_key, ''))
-                widget.grid(row=row, column=col*2+1, padx=5, pady=8, sticky="ew", columnspan=colspan)
-
-                def on_change(e=None):
-                    var.set(widget.get("1.0", tk.END).strip())
-                widget.bind("<KeyRelease>", on_change)
-                widget.bind("<FocusOut>", on_change)
-            else:
-                widget = ttk.Entry(parent, textvariable=var, width=width,
-                                font=ENTRY_FONT)
-                widget.grid(row=row, column=col*2+1, padx=5, pady=8, sticky="ew", columnspan=colspan)
-
-            entry_vars[var_key] = var
-            entry_vars[f'{var_key}_widget'] = widget
-            return widget
-
-        # Configure grid columns (even = labels, odd = fields)
-        for i in range(10):
-            card_frame.columnconfigure(i, weight=1 if i % 2 == 1 else 0)
-
-        # === Row 0: Name and Age ===
-        create_field(card_frame, "Name:", 'name', row=0, col=0, width=20)
-
-        # === FIX: Age field with proper label reference ===
-        age_var = tk.StringVar(value=character_data.get('age', '25'))
-        age_label = ttk.Label(card_frame, text="Age:", font=LABEL_FONT, foreground=LABEL_FG)
-        age_label.grid(row=0, column=5, padx=(10, 5), pady=8, sticky="ne")
-
-        age_widget = ttk.Entry(card_frame, textvariable=age_var, width=5, font=ENTRY_FONT)
-        age_widget.grid(row=0, column=6, padx=5, pady=8, sticky="w")
-
-        def validate_age(new_value):
-            if not new_value:  # Allow empty for typing
+        def validate_age(value):
+            if not value:
                 return True
             try:
-                age = int(new_value)
-                # Currently allows 0-999 for typing flexibility
-                return 0 <= age <= 999
+                return 0 <= int(value) <= 999
             except ValueError:
                 return False
+        entry_vars['age_widget'].configure(
+            validate='key', validatecommand=(card_frame.register(validate_age), '%P'))
 
-        validation_cmd = card_frame.register(validate_age)
-        age_widget.config(validate="key", validatecommand=(validation_cmd, "%P"))
+        next_row = 1
+        for key, caption, height in (("clothing", "Clothing:", 2),
+                                     ("appearance", "Appearance:", 2),
+                                     ("backstory", "Backstory:", 3),
+                                     ("personality", "Personality:", 3),
+                                     ("traits", "Traits:", 2),
+                                     ("setting", "Setting:", 2)):
+            label = ttk.Label(card_frame, text=caption, font=label_font, foreground='#e0e0e0')
+            label.grid(row=next_row, column=0, sticky="w", padx=4, pady=(8, 3))
+            var = tk.StringVar(value=character_data.get(key, ''))
+            widget = tk.Text(card_frame, width=1, height=height, font=entry_font,
+                             bg='#2a2a35', fg='#ffffff', wrap=tk.WORD,
+                             relief=tk.SOLID, borderwidth=1)
+            widget.insert('1.0', character_data.get(key, ''))
+            widget.grid(row=next_row + 1, column=0, sticky="ew", padx=4, pady=(0, 4))
+            def on_change(event=None, text_widget=widget, value_var=var):
+                value_var.set(text_widget.get('1.0', tk.END).strip())
+            widget.bind('<KeyRelease>', on_change)
+            widget.bind('<FocusOut>', on_change)
+            entry_vars[key] = var
+            entry_vars[f'{key}_label'] = label
+            entry_vars[f'{key}_widget'] = widget
+            next_row += 2
 
-        # Store references in entry_vars
-        entry_vars['age'] = age_var
-        entry_vars['age_widget'] = age_widget
-        entry_vars['age_label'] = age_label  # FIX: Use age_label, not lbl
-
-        # === Row 1: Race and Job ===
-        create_field(card_frame, "Race:", 'race', row=1, col=0, width=18)
-        create_field(card_frame, "Job:", 'job', row=1, col=2, width=18)
-        create_field(card_frame, "Gender:", 'gender', row=1, col=4, width=12)
-
-        # === Row 2: Clothing (full width) ===
-        create_field(card_frame, "Clothing:", 'clothing', row=2, col=0,
-                    width=50, is_multiline=True, height=2, colspan=4)
-
-        # === Row 3: Appearance (full width) ===
-        create_field(card_frame, "Appearance:", 'appearance', row=3, col=0,
-                    width=50, is_multiline=True, height=2, colspan=4)
-
-        # === Row 4: Backstory (full width) ===
-        create_field(card_frame, "Backstory:", 'backstory', row=4, col=0,
-                    width=50, is_multiline=True, height=3, colspan=4)
-
-        # === Row 5: Personality (full width) ===
-        create_field(card_frame, "Personality:", 'personality', row=5, col=0,
-                    width=50, is_multiline=True, height=3, colspan=4)
-
-        # === Row 6: Traits (full width) ===
-        create_field(card_frame, "Traits:", 'traits', row=6, col=0,
-                    width=50, is_multiline=True, height=2, colspan=4)
-
-        # === Row 7: Setting (full width) - Hidden by default ===
-        create_field(card_frame, "Setting:", 'setting', row=7, col=0,
-                    width=50, is_multiline=True, height=2, colspan=4)
-        entry_vars['setting_label'].grid_remove()
-        entry_vars['setting_widget'].grid_remove()
-
-        # === Row 8: Class & Actions (separate row at bottom) ===
         action_row_frame = ttk.Frame(card_frame)
-        action_row_frame.grid(row=8, column=0, columnspan=10, sticky="ew", pady=(15, 5))
-        action_row_frame.columnconfigure(0, weight=0)
-        action_row_frame.columnconfigure(1, weight=0)
-        action_row_frame.columnconfigure(2, weight=1)
-
-        class_lbl = ttk.Label(action_row_frame, text="⚔ Class:", font=LABEL_FONT, foreground=LABEL_FG)
-        class_lbl.grid(row=0, column=0, padx=(10, 5), sticky="w")
-        entry_vars['class_label'] = class_lbl
-
+        action_row_frame.grid(row=next_row, column=0, sticky="ew", padx=4, pady=(8, 4))
+        action_row_frame.columnconfigure(0, weight=1)
+        class_label = ttk.Label(action_row_frame, text="⚔ Class:", font=label_font, foreground='#e0e0e0')
+        class_label.grid(row=0, column=0, sticky="w", pady=(0, 3))
         class_var = tk.StringVar(value=character_data.get('class', ''))
-        class_entry = ttk.Entry(action_row_frame, textvariable=class_var, width=20, font=ENTRY_FONT)
-        class_entry.grid(row=0, column=1, padx=5, sticky="w")
-        entry_vars['class'] = class_var
-        entry_vars['class_entry'] = class_entry
-
-        # Spacer
-        ttk.Label(action_row_frame, text="").grid(row=0, column=2)
-
-        # Delete button - far right
-        delete_btn = ttk.Button(
-            card_frame, text="✕ Remove Character",
-            command=lambda idx=row_index: self._remove_character_row(idx),
-            style='Danger.TButton'
-        )
-        delete_btn.grid(row=9, column=0, columnspan=10, padx=(20, 10), pady=(5, 15), sticky="e")
-        entry_vars['delete_btn'] = delete_btn
-        entry_vars['class_frame'] = action_row_frame
-
+        class_entry = ttk.Entry(action_row_frame, textvariable=class_var, width=1, font=entry_font)
+        class_entry.grid(row=1, column=0, sticky="ew")
+        entry_vars.update({'class': class_var, 'class_label': class_label,
+                           'class_entry': class_entry, 'class_frame': action_row_frame})
+        delete_button = ttk.Button(card_frame, text="✕ Remove Character",
+                                   command=lambda idx=row_index: self._remove_character_row(idx),
+                                   style='Danger.TButton')
+        delete_button.grid(row=next_row + 1, column=0, sticky="e", padx=4, pady=(8, 4))
+        entry_vars['delete_btn'] = delete_button
         entry_vars['frame'] = card_frame
         self.character_entries.append(entry_vars)
-
         self._update_character_card_labels()
+        self._toggle_character_engine_fields()
         self._update_canvas_scrollregion(self.character_engine_canvas)
 
     def _validate_character_ages(self):

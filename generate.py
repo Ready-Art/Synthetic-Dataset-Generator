@@ -35,6 +35,7 @@ from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
 from config_editor import ConfigEditor
+from ui_layout import fit_window, ScrollableFrame, ResponsiveGrid, NotebookNavigator, wrap_label
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -711,10 +712,10 @@ def update_quality_display():
             break
 
     if review_tab_widget:
-        if review_count > 0:
-            app_state.dashboard_notebook.tab(review_tab_widget, text=f"🔍 Review ({review_count})")
-        else:
-            app_state.dashboard_notebook.tab(review_tab_widget, text="🔍 Review")
+        label = f"🔍 Review ({review_count})" if review_count > 0 else "🔍 Review"
+        if app_state.dashboard_notebook.tab(review_tab_widget, "text") != label:
+            app_state.dashboard_notebook.tab(review_tab_widget, text=label)
+            dashboard_navigator.refresh()
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Thread-safe function to update the Rich Prompt Viewer from worker threads."""
@@ -1270,7 +1271,8 @@ def start_processing():
                 active_api_count_for_progress_ui +=1
                 api_name_label = ttk.Label(progress_frame, text=f"API Slot {api_idx+1} ({api_conf.get('model', 'N/A')}):",
                                            style='Header.TLabel')
-                api_name_label.pack(pady=(5,0), anchor='w')
+                api_name_label.pack(pady=(5,0), anchor='w', fill='x')
+                wrap_label(api_name_label, progress_frame, padding=2 * SPACING)
                 bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate",
                                        style="Low.Horizontal.TProgressbar")
                 bar.pack(pady=SPACING, fill='x', expand=True)
@@ -1695,10 +1697,10 @@ ACCENT_CYAN = '#17a2b8'  # Teal/cyan accent for superhero theme
 
 app_state.root = ttkbs.Window(themename="superhero")
 app_state.root.title("Main UI")
-app_state.root.minsize(1100, 700)  # Prevents layout breakage on resize
+fit_window(app_state.root, preferred=(1280, 900), minimum=(760, 520))
 toast = ToastManager(app_state.root)
 app_state.root.grid_columnconfigure(0, weight=1)
-app_state.root.grid_rowconfigure(0, weight=1)
+app_state.root.grid_rowconfigure(2, weight=1)
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
     try:
@@ -1757,7 +1759,8 @@ valkey_active_var = tk.BooleanVar(value=False)
 app_state.db_status_widgets = {}
 
 header_frame = ttk.Frame(app_state.root)
-header_frame.pack(pady=(10, 5), padx=SPACING, fill="x")
+header_frame.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(SPACING, 4))
+header_frame.columnconfigure(0, weight=1)
 
 title_label = ttk.Label(
     header_frame,
@@ -1765,7 +1768,8 @@ title_label = ttk.Label(
     font=('Segoe UI', 16, 'bold'),
     foreground=ACCENT_CYAN
 )
-title_label.pack(side=tk.LEFT)
+title_label.grid(row=0, column=0, sticky="w")
+wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
@@ -1773,26 +1777,41 @@ version_label = ttk.Label(
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
-version_label.pack(side=tk.LEFT, padx=(10, 0))
+version_label.grid(row=0, column=1, sticky="e", padx=(10, 0))
 
-ttk.Separator(app_state.root, orient='horizontal').pack(fill='x', padx=SPACING, pady=(0, SPACING))
+ttk.Separator(header_frame, orient='horizontal').grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
-# --- UI Controls Frame ---
-controls_frame = ttk.Frame(app_state.root); controls_frame.pack(pady=SPACING, padx=SPACING, fill="x")
-# Threads input removed from main window - now configured per API in the config editor
+# The working area owns the expanding root row. Monitoring details and progress
+# scroll inside Overview, so adding progress bars cannot displace run controls.
+dashboard_outer_frame = ttk.Frame(app_state.root)
+dashboard_outer_frame.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(4, SPACING))
+dashboard_outer_frame.columnconfigure(0, weight=1)
+dashboard_outer_frame.rowconfigure(1, weight=1)
+app_state.dashboard_notebook = ttk.Notebook(dashboard_outer_frame)
+app_state.dashboard_notebook.grid(row=1, column=0, sticky="nsew")
+app_state.dashboard_notebook.tabs_widgets = {}
+
+overview_tab = ScrollableFrame(app_state.dashboard_notebook)
+app_state.dashboard_notebook.add(overview_tab, text="Overview")
+overview_content = overview_tab.content
+app_state.dashboard_notebook.tabs_widgets['Overview'] = {'canvas': overview_tab.canvas}
+
 
 # --- Metrics Display Frame ---
-metrics_frame = ttk.Frame(app_state.root)
+metrics_frame = ttk.Frame(overview_content)
 metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 def _create_ttkbs_metric(parent, title, icon, default_text="0 (0.0%)"):
     """Helper to create consistent ttkbootstrap Card metrics"""
     card = ttk.Frame(parent, borderwidth=0, padding=10)
-    card.pack(side=tk.LEFT, padx=SPACING, fill="both", expand=True)
+    if not hasattr(parent, '_metric_cards'):
+        parent._metric_cards = []
+    parent._metric_cards.append(card)
 
     ttk.Label(card, text=f"{icon} {title}", style='Header.TLabel').pack(pady=(0, 2))
-    val_lbl = ttk.Label(card, text=default_text, style='MetricValue.TLabel')
-    val_lbl.pack(pady=(0, 4))
+    val_lbl = ttk.Label(card, text=default_text, style='MetricValue.TLabel', wraplength=220)
+    val_lbl.pack(pady=(0, 4), fill="x")
+    wrap_label(val_lbl, card, padding=20)
     return val_lbl
 
 app_state.refusal_percent_label = _create_ttkbs_metric(metrics_frame, "Refusals", "🚫")
@@ -1801,7 +1820,7 @@ app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
 app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 
 # Secondary metrics row
-metrics_row2 = ttk.Frame(app_state.root)
+metrics_row2 = ttk.Frame(overview_content)
 metrics_row2.pack(pady=(0, SPACING), padx=SPACING, fill="x")
 
 app_state.token_label = _create_ttkbs_metric(metrics_row2, "Tokens", "🔢", default_text="0")
@@ -1810,17 +1829,19 @@ app_state.budget_label = _create_ttkbs_metric(metrics_row2, "Budget", "📊", de
 app_state.thread_status_label = _create_ttkbs_metric(metrics_row2, "Threads", "🧵", default_text="Threads: 0 spawned, 0 active")
 
 # --- Quality Metrics Row ---
-metrics_row3 = ttk.Frame(app_state.root)
+metrics_row3 = ttk.Frame(overview_content)
 metrics_row3.pack(pady=(0, SPACING), padx=SPACING, fill="x")
 
 app_state.quality_score_label = _create_ttkbs_metric(metrics_row3, "Quality Score", "⭐", default_text="N/A")
 app_state.quality_threshold_label = _create_ttkbs_metric(metrics_row3, "Below Threshold", "📉", default_text="0")
 app_state.quality_flag_label = _create_ttkbs_metric(metrics_row3, "Top Flag", "🏳️", default_text="None")
 
+metric_layouts = [ResponsiveGrid(frame, frame._metric_cards, min_width=180, max_columns=4)
+                  for frame in (metrics_frame, metrics_row2, metrics_row3)]
 # --- End of Metrics Display Frame ---
 
 # --- Database Connection Status Frame ---
-db_status_frame = ttk.LabelFrame(app_state.root, text="🗄️ Database & Cache Status")
+db_status_frame = ttk.LabelFrame(overview_content, text="🗄️ Database & Cache Status")
 db_status_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 # Add refresh button to db_status_frame
@@ -1829,18 +1850,18 @@ db_refresh_btn = ttk.Button(
     text="🔄 Refresh Status",
     command=update_database_status
 )
-db_refresh_btn.pack(side=tk.RIGHT, padx=SPACING, pady=SPACING)
+
 
 db_test_btn = ttk.Button(
     db_status_frame,
     text="🔍 Test Valkey",
     command=test_valkey_connection
 )
-db_test_btn.pack(side=tk.RIGHT, padx=SPACING, pady=SPACING)
+
 
 # PostgreSQL Status
 postgres_status_frame = ttk.Frame(db_status_frame)
-postgres_status_frame.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
+
 
 postgres_icon_label = ttk.Label(
     postgres_status_frame,
@@ -1860,7 +1881,7 @@ postgres_status_label.pack(side=tk.LEFT, padx=SPACING)
 
 # Valkey/Redis Status
 valkey_status_frame = ttk.Frame(db_status_frame)
-valkey_status_frame.pack(side=tk.LEFT, padx=SPACING, pady=SPACING)
+
 
 valkey_icon_label = ttk.Label(
     valkey_status_frame,
@@ -1878,6 +1899,12 @@ valkey_status_label = ttk.Label(
 )
 valkey_status_label.pack(side=tk.LEFT, padx=SPACING)
 
+database_layout = ResponsiveGrid(db_status_frame,
+    [postgres_status_frame, valkey_status_frame, db_test_btn, db_refresh_btn],
+    min_width=180, max_columns=4, pady=SPACING)
+wrap_label(postgres_status_label, postgres_status_frame, padding=48)
+wrap_label(valkey_status_label, valkey_status_frame, padding=48)
+
 # Store references for updates
 app_state.db_status_widgets = {
     'postgres_icon': postgres_icon_label,
@@ -1887,20 +1914,13 @@ app_state.db_status_widgets = {
 }
 
 # --- API Response Time Display Frame ---
-api_response_times_frame = ttk.LabelFrame(app_state.root, text="⚡ API Response Times")
+api_response_times_frame = ttk.LabelFrame(overview_content, text="⚡ API Response Times")
 api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
-# 3-column grid: 6 slots in 2 rows
-for col in range(3):
-    api_response_times_frame.columnconfigure(col, weight=1, uniform="api_rt")
-api_response_times_frame.rowconfigure(0, weight=1)
-api_response_times_frame.rowconfigure(1, weight=1)
-
+api_response_cards = []
 for slot_idx in range(6):
-    row, col = divmod(slot_idx, 3)
-
     card = ttk.Frame(api_response_times_frame, padding=6)
-    card.grid(row=row, column=col, padx=4, pady=3, sticky="nsew")
+    api_response_cards.append(card)
 
     slot_label_name = f"api_response_time_label_{slot_idx+1}"
     slot_label = ttk.Label(
@@ -1911,7 +1931,10 @@ for slot_idx in range(6):
         anchor="w"
     )
     slot_label.pack(fill="x")
+    wrap_label(slot_label, card, padding=12)
     app_state.slot_widgets[slot_label_name] = slot_label
+api_response_layout = ResponsiveGrid(api_response_times_frame, api_response_cards,
+                                    min_width=200, max_columns=3)
 # --- End of API Response Time Display Frame ---
 
 # --- API Response Time Dynamic Color Coding ---
@@ -1973,23 +1996,23 @@ def update_api_response_time_labels():
 # --- End API Response Time Dynamic Color Coding ---
 
 # --- Progress Bars Frame ---
-progress_frame = ttk.Frame(app_state.root); progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
+progress_frame = ttk.Frame(overview_content)
+progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
+maintenance_frame = ttk.LabelFrame(overview_content, text="Tools")
+maintenance_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 # --- Main Action Buttons Frame ---
-button_frame = ttkbs.Frame(app_state.root, padding=10)
-button_frame.pack(pady=SPACING, fill=tk.X)
-
-for i in range(4):
-    button_frame.columnconfigure(i, weight=1, uniform="btn")
+button_frame = ttkbs.Frame(app_state.root)
+button_frame.grid(row=1, column=0, sticky="ew", padx=SPACING)
 
 start_button = ttk.Button(button_frame, text="🚀 Start Generation", command=start_processing, style="Accent.TButton")
-start_button.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+
 
 pause_button = ttk.Button(button_frame, text="⏸️ Pause", command=toggle_pause, state=tk.DISABLED)
-pause_button.grid(row=0, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+
 
 dashboard_pause_var = tk.BooleanVar(value=False)
-ttk.Checkbutton(metrics_frame, text="⏸️ Pause UI Updates", variable=dashboard_pause_var).pack(side=tk.RIGHT, padx=SPACING)
+pause_updates_check = ttk.Checkbutton(maintenance_frame, text="⏸️ Pause UI Updates", variable=dashboard_pause_var)
 
 def toggle_debug_logging():
     # Update the flag in the logging module
@@ -2086,14 +2109,16 @@ def finalize_stop_and_clear_ui():
     log_message("Stop & Clear: UI reset. Ready for a new job.", "INFO")
 
 stop_clear_button = ttk.Button(button_frame, text="🛑 Stop & Clear Job", command=stop_and_clear_processing_job, state=tk.DISABLED)
-stop_clear_button.grid(row=0, column=2, padx=SPACING, pady=SPACING, sticky="ew")
+
 # --- End of Stop and Clear Job Functionality ---
 
 config_button = ttk.Button(button_frame, text="⚙️ Edit Config", command=open_config_editor)
-config_button.grid(row=0, column=3, padx=SPACING, pady=SPACING, sticky="ew")
 
-debug_log_check = ttk.Checkbutton(button_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
-debug_log_check.grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+
+debug_log_check = ttk.Checkbutton(maintenance_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
+primary_actions_layout = ResponsiveGrid(button_frame,
+    [start_button, pause_button, stop_clear_button, config_button],
+    min_width=170, max_columns=4, pady=4)
 
 def quit_application():
     """Handles graceful shutdown of the application when Quit button or window X is clicked."""
@@ -2147,12 +2172,13 @@ def quit_application():
         log_message("Application shutdown sequence complete. Exiting process.", "INFO")
         sys.exit(0) # Terminate the script
 
-quit_button = ttk.Button(button_frame, text="❌ Quit Application", command=quit_application)
-quit_button.grid(row=2, column=0, columnspan=4, padx=SPACING, pady=SPACING, sticky="ew")
+quit_button = ttk.Button(maintenance_frame, text="❌ Quit Application", command=quit_application)
+
 app_state.root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
 app_state.status_bar = ttk.Label(app_state.root, text="Ready", foreground="lightgray", anchor="w")
-app_state.status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=SPACING, pady=SPACING)
+app_state.status_bar.grid(row=3, column=0, sticky="ew", padx=SPACING, pady=(0, 4))
+wrap_label(app_state.status_bar, app_state.root, padding=2 * SPACING)
 
 def force_recovery():
     """Bypasses config checks and forces state reload + thread restart."""
@@ -2189,26 +2215,24 @@ def trigger_export():
 
     threading.Thread(target=run_export, daemon=True).start()
 
-export_button = ttk.Button(button_frame, text="📤 Export DB → JSONL", command=trigger_export)
-export_button.grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="ew")
+export_button = ttk.Button(maintenance_frame, text="📤 Export DB → JSONL", command=trigger_export)
 
-clear_db_button = ttk.Button(button_frame, text="🗑️ Clear Database", command=clear_database)
-clear_db_button.grid(row=1, column=2, padx=SPACING, pady=SPACING, sticky="ew")
 
-recovery_button = ttk.Button(button_frame, text="🔄 Force Recovery", command=force_recovery)
-recovery_button.grid(row=1, column=3, padx=SPACING, pady=SPACING, sticky="ew")
+clear_db_button = ttk.Button(maintenance_frame, text="🗑️ Clear Database", command=clear_database)
 
-# --- Dashboard Setup ---
-dashboard_outer_frame = ttk.Frame(app_state.root); dashboard_outer_frame.pack(pady=SPACING, padx=SPACING, fill=tk.BOTH, expand=True)
 
-dashboard_toolbar = ttk.Frame(dashboard_outer_frame)
-dashboard_toolbar.pack(fill=tk.X, pady=(0, 5))
-clear_dash_btn = ttk.Button(dashboard_toolbar, text="🧹 Clear Dashboard", command=clear_dashboard)
-clear_dash_btn.pack(side=tk.RIGHT, padx=SPACING)
+recovery_button = ttk.Button(maintenance_frame, text="🔄 Force Recovery", command=force_recovery)
 
-app_state.dashboard_notebook = ttk.Notebook(dashboard_outer_frame)
-app_state.dashboard_notebook.pack(fill=tk.BOTH, expand=True)
-app_state.dashboard_notebook.tabs_widgets = {} # To store references to text areas in tabs
+
+# Secondary actions share the scrollable Overview area.
+clear_dash_btn = ttk.Button(maintenance_frame, text="🧹 Clear Dashboard", command=clear_dashboard)
+maintenance_layout = ResponsiveGrid(maintenance_frame,
+    [export_button, clear_db_button, recovery_button, clear_dash_btn,
+     quit_button, debug_log_check, pause_updates_check], min_width=190, max_columns=3)
+
+# Narrow windows use a view selector so every page remains reachable.
+dashboard_navigator = NotebookNavigator(dashboard_outer_frame, app_state.dashboard_notebook)
+dashboard_navigator.grid(row=0, column=0, sticky="ew", pady=(0, 4))
 
 highlight_colors = {
     "highlight_refusal": {"foreground": "#FF6B6B", "font": ('TkDefaultFont', 9, 'bold')},  # Bright red
@@ -2245,11 +2269,13 @@ stats_label.pack(side=tk.RIGHT)
 # Second toolbar: search + actions
 preview_actions_bar = ttk.Frame(preview_tab)
 preview_actions_bar.pack(fill=tk.X, padx=SPACING, pady=(2, SPACING))
+preview_search_group = ttk.Frame(preview_actions_bar)
+preview_copy_group = ttk.Frame(preview_actions_bar)
 
 # Search
 preview_search_var = tk.StringVar()
-preview_search_entry = ttk.Entry(preview_actions_bar, textvariable=preview_search_var, width=25)
-preview_search_entry.pack(side=tk.LEFT, padx=(0, 5))
+preview_search_entry = ttk.Entry(preview_search_group, textvariable=preview_search_var, width=20)
+preview_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
 
 def _preview_search():
     """Highlight all occurrences of the search term in the prompt viewer."""
@@ -2282,8 +2308,8 @@ def _preview_search():
     prompt_preview_text.config(state=tk.DISABLED)
 
 preview_search_entry.bind('<Return>', lambda e: _preview_search())
-ttk.Button(preview_actions_bar, text="🔍", width=3, command=_preview_search).pack(side=tk.LEFT, padx=2)
-ttk.Button(preview_actions_bar, text="Clear", width=5,
+ttk.Button(preview_search_group, text="🔍", width=3, command=_preview_search).pack(side=tk.LEFT, padx=2)
+ttk.Button(preview_search_group, text="Clear", width=5,
            command=lambda: (preview_search_var.set(''), _preview_search())).pack(side=tk.LEFT, padx=2)
 
 # Copy buttons
@@ -2331,17 +2357,20 @@ def _copy_all():
     app_state.root.clipboard_append(content)
     toast.show("Full prompt copied.", "success")
 
-ttk.Button(preview_actions_bar, text="📋 System", width=10, command=_copy_system_prompt).pack(side=tk.RIGHT, padx=2)
-ttk.Button(preview_actions_bar, text="📋 Latest", width=10, command=_copy_latest_message).pack(side=tk.RIGHT, padx=2)
-ttk.Button(preview_actions_bar, text="📋 All", width=8, command=_copy_all).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_copy_group, text="📋 System", width=10, command=_copy_system_prompt).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_copy_group, text="📋 Latest", width=10, command=_copy_latest_message).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_copy_group, text="📋 All", width=8, command=_copy_all).pack(side=tk.RIGHT, padx=2)
 
 # Auto-scroll toggle
 prompt_preview_autoscroll_var = tk.BooleanVar(value=True)
-ttk.Checkbutton(preview_actions_bar, text="Auto-scroll", variable=prompt_preview_autoscroll_var).pack(side=tk.RIGHT, padx=8)
+ttk.Checkbutton(preview_copy_group, text="Auto-scroll", variable=prompt_preview_autoscroll_var).pack(side=tk.RIGHT, padx=8)
+preview_actions_layout = ResponsiveGrid(preview_actions_bar,
+    [preview_search_group, preview_copy_group], min_width=300, max_columns=2, padx=0, pady=2)
+wrap_label(meta_label, preview_toolbar, padding=200)
 
 # Main rich text area
 prompt_preview_text = scrolledtext.ScrolledText(
-    preview_tab, wrap=tk.WORD, state=tk.NORMAL,
+    preview_tab, wrap=tk.WORD, state=tk.NORMAL, width=1, height=8,
     font=('Consolas', 10), spacing1=2, spacing3=2,
     background='#1a1a2e', foreground='#e0e0e0',
     insertbackground='#ffffff', selectbackground='#2a4a6a',
@@ -2374,6 +2403,18 @@ prompt_preview_text.insert(tk.END,
 prompt_preview_text.config(state=tk.DISABLED)
 # --- End Rich Prompt Viewer Tab Setup ---
 
+def _grid_scrollable_table(container, tree):
+    """Retain readable columns while allowing either table axis to overflow."""
+    container.columnconfigure(0, weight=1)
+    container.rowconfigure(0, weight=1)
+    vertical = ttk.Scrollbar(container, orient="vertical", command=tree.yview)
+    horizontal = ttk.Scrollbar(container, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+    tree.grid(row=0, column=0, sticky="nsew")
+    vertical.grid(row=0, column=1, sticky="ns")
+    horizontal.grid(row=1, column=0, sticky="ew")
+
+
 for tab_name in tab_names:
     tab_frame = ttk.Frame(app_state.dashboard_notebook)
     app_state.dashboard_notebook.add(tab_frame, text=tab_name)
@@ -2400,87 +2441,22 @@ for tab_name in tab_names:
     app_state.dashboard_notebook.tabs_widgets[tab_name]['search_var'] = search_var
     app_state.dashboard_notebook.tabs_widgets[tab_name]['search_entry'] = search_entry
 
-    # 2. Determine parent frame and configure grids
-    if tab_name == "Totals":
-        canvas = tk.Canvas(tab_frame)
-        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
-                                 width=20, highlightthickness=0, bd=0,
-                                 bg='#999999', troughcolor='#555555',
-             activebackground='#bbbbbb', relief='flat')
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        def _on_canvas_configure(event, c=canvas, wid=canvas_window_id):
-            if event.width > 1:
-                c.itemconfig(wid, width=event.width)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        tab_frame.columnconfigure(0, weight=1)
-        tab_frame.columnconfigure(1, weight=0)  # Pin scrollbar to right
-        tab_frame.rowconfigure(1, weight=1)
-
-        canvas.grid(row=1, column=0, sticky="nsew")
-        scrollbar.grid(row=1, column=1, sticky="ns")
-
-        scrollable_frame.columnconfigure(0, weight=1)
-        scrollable_frame.columnconfigure(1, weight=1)
-        for r in range(3): scrollable_frame.rowconfigure(r, weight=1)
-
-        parent_frame = scrollable_frame
-        panel_row_offset = 0
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
-        canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1*(e.delta/120)), "units"))
-
-    elif tab_name.startswith("API "):
-        # Wrap API tabs in Canvas + Scrollbar
-        canvas = tk.Canvas(tab_frame)
-        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
-                                 width=20, highlightthickness=0, bd=0,
-                                 bg='#2d2d2d', troughcolor='#1a1a1a',
-                                 activebackground='#5bc0de', relief='flat')
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        def _on_canvas_configure(event, c=canvas, wid=canvas_window_id):
-            if event.width > 1:
-                c.itemconfig(wid, width=event.width)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        # Grid setup: Canvas expands, scrollbar pinned to far right
-        tab_frame.columnconfigure(0, weight=1)
-        tab_frame.columnconfigure(1, weight=0)
-        tab_frame.rowconfigure(0, weight=0)  # Search bar (fixed height)
-        tab_frame.rowconfigure(1, weight=1)  # Canvas area (expands)
-
-        canvas.grid(row=1, column=0, sticky="nsew")
-        scrollbar.grid(row=1, column=1, sticky="ns")
-
-        scrollable_frame.columnconfigure(0, weight=1)
-        scrollable_frame.columnconfigure(1, weight=1)
-        for r in range(3): scrollable_frame.rowconfigure(r, weight=1)
-
-        parent_frame = scrollable_frame
-        panel_row_offset = 0  # Panels now start at row 0 inside scrollable_frame
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
-        canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1*(e.delta/120)), "units"))
-
-    else:
-        parent_frame = tab_frame
-        panel_row_offset = 1
-        tab_frame.rowconfigure(1, weight=1)
-        tab_frame.rowconfigure(2, weight=1)
-        tab_frame.rowconfigure(3, weight=1)
+    # Each page has an independent scroll region and one expanding viewport.
+    page_scroll = ScrollableFrame(tab_frame)
+    page_scroll.grid(row=1, column=0, columnspan=2, sticky="nsew")
+    tab_frame.rowconfigure(1, weight=1)
+    canvas = page_scroll.canvas
+    scrollable_frame = page_scroll.content
+    scrollable_frame.columnconfigure(0, weight=1)
+    parent_frame = scrollable_frame
+    app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
+    app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
 
     # 3. Create Issue Panels (skip for custom tabs)
     if tab_name not in ("Quality", "🔍 Review"):
+        panels_frame = ttk.Frame(parent_frame)
+        panels_frame.grid(row=0, column=0, sticky="ew")
+        panels = []
         for idx, issue_type_title in enumerate(issue_types):
             if tab_name == "Totals" and idx == 4:  # Skip "Errors" for Totals tab
                 continue
@@ -2490,19 +2466,21 @@ for tab_name in tab_names:
             color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
                          "anti_slop": "#ffd43b", "errors": "#fc8181"}
 
-            panel = ttk.LabelFrame(parent_frame, text=f"Recent {issue_type_title}")
-            base_row, col = divmod(idx, 2)
-            panel.grid(row=base_row + panel_row_offset, column=col, padx=SPACING, pady=SPACING, sticky="nsew")
+            panel = ttk.LabelFrame(panels_frame, text=f"Recent {issue_type_title}")
+            panels.append(panel)
 
             panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
             app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['panel_layout'] = ResponsiveGrid(
+            panels_frame, panels, min_width=540, max_columns=2, padx=SPACING, pady=SPACING)
 
     # 4. Add Graph to Totals Tab
     if tab_name == "Totals":
         graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
-        graph_frame.grid(row=2, column=0, columnspan=2, padx=SPACING, pady=(20, 5), sticky="nsew")
+        graph_frame.grid(row=1, column=0, padx=SPACING, pady=(12, 5), sticky="ew")
 
-        graph_canvas_widget = tk.Canvas(graph_frame, height=400, bg='#1a1a1a')
+        graph_canvas_widget = tk.Canvas(graph_frame, width=1, height=320, highlightthickness=0, bg='#1a1a1a')
+        graph_canvas_widget.pack_propagate(False)
         graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
         draw_issue_graph(graph_canvas_widget)
@@ -2513,51 +2491,18 @@ for tab_name in tab_names:
         parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
 
     elif tab_name == "Quality":
-        # Quality tab: scrollable frame with score table + dimension bars
-        canvas = tk.Canvas(tab_frame)
-        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
-                                 width=20, highlightthickness=0, bd=0,
-                                 bg='#999999', troughcolor='#555555',
-                                 activebackground='#bbbbbb', relief='flat')
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        def _on_quality_canvas_configure(event, c=canvas, wid=canvas_window_id):
-            if event.width > 1:
-                c.itemconfig(wid, width=event.width)
-        canvas.bind("<Configure>", _on_quality_canvas_configure)
-
-        tab_frame.columnconfigure(0, weight=1)
-        tab_frame.columnconfigure(1, weight=0)
-        tab_frame.rowconfigure(0, weight=0)
-        tab_frame.rowconfigure(1, weight=1)
-        tab_frame.rowconfigure(2, weight=0)
-        tab_frame.rowconfigure(3, weight=0)
-
-        canvas.grid(row=1, column=0, sticky="nsew")
-        scrollbar.grid(row=1, column=1, sticky="ns")
-
-        scrollable_frame.columnconfigure(0, weight=1)
-
-        parent_frame = scrollable_frame
-        panel_row_offset = 0
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
-        canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1*(e.delta/120)), "units"))
-
         # Quality summary panel
         quality_summary_lf = ttk.LabelFrame(parent_frame, text="Quality Summary")
         quality_summary_lf.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
 
-        # Dimension average labels
-        for dim_idx, dim_name in enumerate(quality.SCORING_DIMENSIONS.keys()):
-            row, col = divmod(dim_idx, 3)
+        # Summary fields reflow independently of the wide score table.
+        dimension_labels = []
+        for dim_name in quality.SCORING_DIMENSIONS:
             dim_label = ttk.Label(quality_summary_lf, text=f"{dim_name.title()}: N/A")
-            dim_label.grid(row=row, column=col, padx=SPACING, pady=2, sticky="w")
+            dimension_labels.append(dim_label)
             app_state.dashboard_notebook.tabs_widgets[tab_name].setdefault('dimension_labels', {})[dim_name] = dim_label
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['dimension_layout'] = ResponsiveGrid(
+            quality_summary_lf, dimension_labels, min_width=180, max_columns=3)
 
         # Score table
         quality_table_lf = ttk.LabelFrame(parent_frame, text="Recent Scores (latest 50)")
@@ -2567,62 +2512,36 @@ for tab_name in tab_names:
         quality_tree = ttk.Treeview(quality_table_lf, columns=quality_cols, show="headings", height=15)
         for col in quality_cols:
             quality_tree.heading(col, text=col)
-            quality_tree.column(col, width=100, anchor="w")
-        quality_tree.column("Task ID", width=200)
-        quality_tree.column("Flags", width=200)
+            quality_tree.column(col, width=100, minwidth=100, stretch=False, anchor="w")
+        quality_tree.column("Task ID", width=200, minwidth=160)
+        quality_tree.column("Flags", width=200, minwidth=160)
 
-        q_vsb = tk.Scrollbar(quality_table_lf, orient="vertical", command=quality_tree.yview, width=18)
-        quality_tree.configure(yscrollcommand=q_vsb.set)
-        quality_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        q_vsb.pack(side=tk.RIGHT, fill="y")
+        _grid_scrollable_table(quality_table_lf, quality_tree)
 
         app_state.dashboard_notebook.tabs_widgets[tab_name]['quality_tree'] = quality_tree
 
     elif tab_name == "🔍 Review":
-        # Review tab: scrollable list of flagged conversations with action buttons
-        canvas = tk.Canvas(tab_frame)
-        scrollbar = tk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview,
-                                 width=20, highlightthickness=0, bd=0,
-                                 bg='#999999', troughcolor='#555555',
-                                 activebackground='#bbbbbb', relief='flat')
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        def _on_review_canvas_configure(event, c=canvas, wid=canvas_window_id):
-            if event.width > 1:
-                c.itemconfig(wid, width=event.width)
-        canvas.bind("<Configure>", _on_review_canvas_configure)
-
-        tab_frame.columnconfigure(0, weight=1)
-        tab_frame.columnconfigure(1, weight=0)
-        tab_frame.rowconfigure(0, weight=0)
-        tab_frame.rowconfigure(1, weight=1)
-        tab_frame.rowconfigure(2, weight=0)
-        tab_frame.rowconfigure(3, weight=0)
-
-        canvas.grid(row=1, column=0, sticky="nsew")
-        scrollbar.grid(row=1, column=1, sticky="ns")
-
-        scrollable_frame.columnconfigure(0, weight=1)
-
         # --- Toolbar: filter + actions ---
         review_toolbar = ttk.Frame(scrollable_frame)
         review_toolbar.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 5))
 
         review_filter_var = tk.StringVar()
         review_filter_entry = ttk.Entry(review_toolbar, textvariable=review_filter_var, width=30)
-        review_filter_entry.pack(side=tk.LEFT, padx=(0, 5))
+        review_toolbar.columnconfigure(0, weight=1)
+        review_filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         review_filter_entry.bind("<Return>", lambda e: _update_review_table())
-        ttk.Button(review_toolbar, text="🔍 Filter", command=_update_review_table).pack(side=tk.LEFT, padx=2)
-        ttk.Button(review_toolbar, text="📤 Export Flagged → JSONL", command=_export_flagged_review).pack(side=tk.LEFT, padx=2)
-        ttk.Button(review_toolbar, text="✅ Dismiss All", command=_dismiss_all_review).pack(side=tk.LEFT, padx=2)
-        ttk.Button(review_toolbar, text="🔄 Refresh", command=_update_review_table).pack(side=tk.LEFT, padx=2)
-
+        ttk.Button(review_toolbar, text="🔍 Filter", command=_update_review_table).grid(row=0, column=1)
+        review_actions = ttk.Frame(review_toolbar)
+        review_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=4)
+        review_action_buttons = [
+            ttk.Button(review_actions, text="📤 Export Flagged → JSONL", command=_export_flagged_review),
+            ttk.Button(review_actions, text="✅ Dismiss All", command=_dismiss_all_review),
+            ttk.Button(review_actions, text="🔄 Refresh", command=_update_review_table),
+        ]
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['action_layout'] = ResponsiveGrid(
+            review_actions, review_action_buttons, min_width=190, max_columns=3)
         review_count_label = ttk.Label(review_toolbar, text="", foreground="#ff6b6b", font=('Segoe UI', 10, 'bold'))
-        review_count_label.pack(side=tk.RIGHT, padx=5)
+        review_count_label.grid(row=2, column=0, columnspan=2, sticky="w")
         app_state.dashboard_notebook.tabs_widgets[tab_name]['review_count_label'] = review_count_label
 
         # --- Flagged items table ---
@@ -2633,14 +2552,11 @@ for tab_name in tab_names:
         review_tree = ttk.Treeview(review_table_lf, columns=review_cols, show="headings", height=12)
         for col in review_cols:
             review_tree.heading(col, text=col)
-            review_tree.column(col, width=120, anchor="w")
+            review_tree.column(col, width=120, minwidth=100, stretch=False, anchor="w")
         review_tree.column("Task ID", width=220)
         review_tree.column("Flags", width=250)
 
-        r_vsb = tk.Scrollbar(review_table_lf, orient="vertical", command=review_tree.yview, width=18)
-        review_tree.configure(yscrollcommand=r_vsb.set)
-        review_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        r_vsb.pack(side=tk.RIGHT, fill="y")
+        _grid_scrollable_table(review_table_lf, review_tree)
 
         review_tree.tag_configure("critical", foreground="#ff6b6b")
         review_tree.tag_configure("warning", foreground="#fcc419")
@@ -2655,7 +2571,7 @@ for tab_name in tab_names:
         detail_lf = ttk.LabelFrame(scrollable_frame, text="Conversation Detail (double-click a row above)")
         detail_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
 
-        detail_text = scrolledtext.ScrolledText(detail_lf, wrap=tk.WORD, height=15, font=('Consolas', 9),
+        detail_text = scrolledtext.ScrolledText(detail_lf, wrap=tk.WORD, width=1, height=10, font=('Consolas', 9),
                                                  bg='#1a1a2e', fg='#e0e0e0', relief=tk.FLAT)
         detail_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['detail_text'] = detail_text
@@ -2680,34 +2596,13 @@ def _on_dashboard_tab_changed(_event=None):
         log_message(f"Dashboard tab-change refresh error: {e}", "ERROR")
 
 
-app_state.dashboard_notebook.bind("<<NotebookTabChanged>>", _on_dashboard_tab_changed)
+app_state.dashboard_notebook.bind("<<NotebookTabChanged>>", _on_dashboard_tab_changed, add="+")
 
-# Scrollable wrapper so all three panels are reachable when the tab is short
-queue_canvas = tk.Canvas(queue_tab, highlightthickness=0)
-queue_scrollbar = tk.Scrollbar(queue_tab, orient="vertical", command=queue_canvas.yview,
-                               width=20, highlightthickness=0, bd=0,
-                               bg='#999999', troughcolor='#555555',
-                               activebackground='#bbbbbb', relief='flat')
-queue_scrollable_frame = ttk.Frame(queue_canvas)
-
-queue_scrollable_frame.bind("<Configure>",
-    lambda e: queue_canvas.configure(scrollregion=queue_canvas.bbox("all")))
-queue_canvas_win = queue_canvas.create_window((0, 0), window=queue_scrollable_frame, anchor="nw")
-queue_canvas.configure(yscrollcommand=queue_scrollbar.set)
-
-def _on_queue_canvas_configure(event, c=queue_canvas, wid=queue_canvas_win):
-    if event.width > 1:
-        c.itemconfig(wid, width=event.width)
-queue_canvas.bind("<Configure>", _on_queue_canvas_configure)
-
-queue_tab.columnconfigure(0, weight=1)
-queue_tab.columnconfigure(1, weight=0)
-queue_tab.rowconfigure(0, weight=1)
-
-queue_canvas.grid(row=0, column=0, sticky="nsew")
-queue_scrollbar.grid(row=0, column=1, sticky="ns")
-queue_canvas.bind("<MouseWheel>",
-    lambda e, c=queue_canvas: c.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+# The queue shares the same scoped scroll/focus behavior as other pages.
+queue_scroll = ScrollableFrame(queue_tab)
+queue_scroll.pack(fill=tk.BOTH, expand=True)
+queue_canvas = queue_scroll.canvas
+queue_scrollable_frame = queue_scroll.content
 
 def create_queue_panel(parent, title, columns):
     frame = ttk.LabelFrame(parent, text=title)
@@ -2720,7 +2615,8 @@ def create_queue_panel(parent, title, columns):
     inner.rowconfigure(0, weight=1)
 
     # Override theme compression with explicit font and row spacing
-    style.configure('Queue.Treeview', font=('Segoe UI', 10), rowheight=28)
+    style.configure('Queue.Treeview', font=('Segoe UI', 10),
+                    rowheight=font.Font(family='Segoe UI', size=10).metrics('linespace') + 8)
     style.configure('Queue.Treeview.Heading', font=('Segoe UI', 10, 'bold'))
 
     tree = ttk.Treeview(inner, columns=columns, show="headings", height=12, style='Queue.Treeview')
@@ -2812,16 +2708,21 @@ def export_queue():
 
 queue_btn_frame = ttk.Frame(queue_scrollable_frame)
 queue_btn_frame.pack(fill=tk.X, padx=SPACING, pady=SPACING)
-ttk.Button(queue_btn_frame, text="🗑️ Purge Queue", command=purge_queue).pack(side=tk.LEFT, padx=5)
-ttk.Button(queue_btn_frame, text="🔄 Retry Failed", command=retry_failed_tasks).pack(side=tk.LEFT, padx=5)
-ttk.Button(queue_btn_frame, text="📤 Export Queue", command=export_queue).pack(side=tk.LEFT, padx=5)
-ttk.Button(queue_btn_frame, text="🔄 Refresh View", command=update_queue_ui).pack(side=tk.LEFT, padx=5)
+queue_actions = [
+    ttk.Button(queue_btn_frame, text="🗑️ Purge Queue", command=purge_queue),
+    ttk.Button(queue_btn_frame, text="🔄 Retry Failed", command=retry_failed_tasks),
+    ttk.Button(queue_btn_frame, text="📤 Export Queue", command=export_queue),
+    ttk.Button(queue_btn_frame, text="🔄 Refresh View", command=update_queue_ui),
+]
+queue_action_layout = ResponsiveGrid(queue_btn_frame, queue_actions, min_width=150, max_columns=4)
 
 queue_cols = ("Task ID", "Source File", "Retries")
 app_state.queue_trees['pending']   = create_queue_panel(queue_scrollable_frame, "Pending", queue_cols)
 app_state.queue_trees['completed'] = create_queue_panel(queue_scrollable_frame, "Completed", queue_cols)
 app_state.queue_trees['failed']    = create_queue_panel(queue_scrollable_frame, "Failed", queue_cols)
 # --- End Queue Management Tab ---
+
+dashboard_navigator.refresh()
 
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 
