@@ -577,7 +577,12 @@ class ConfigEditor(tk.Toplevel):
         character_engine_row_idx += 1
 
         # --- Character Table (Card-based layout) ---
-        self.character_entries = []  # List of dicts with StringVar per field per character
+        self.character_entries = []  # All cards retain their variables, including off-page cards.
+        self.character_page_size = 3
+        self.character_page = 0
+        self._loading_character_cards = False
+        self._character_scroll_job = None
+        self.bind("<Destroy>", self._cancel_character_scroll, add="+")
 
         character_table_lf = ttk.LabelFrame(
             self.character_engine_content_frame,
@@ -589,7 +594,26 @@ class ConfigEditor(tk.Toplevel):
         )
         character_engine_row_idx += 1
 
-        # Container for character cards (NO nested canvas, outer tab canvas handles scrolling)
+        # Bound the native frame height, not just the canvas viewport. Ttk draws
+        # full-widget backing pixmaps on X11, so only one page may be managed.
+        page_controls = self.character_page_controls = ttk.Frame(character_table_lf)
+        page_controls.pack(fill=tk.X, padx=SPACING, pady=SPACING)
+        page_controls.columnconfigure(3, weight=1)
+        self.character_previous_button = ttk.Button(
+            page_controls, text="Previous", command=lambda: self._show_character_page(self.character_page - 1))
+        self.character_previous_button.grid(row=0, column=0, padx=(0, SPACING), sticky="w")
+        ttk.Label(page_controls, text="Page:").grid(row=0, column=1, padx=(0, 4), sticky="w")
+        self.character_page_selector = ttk.Combobox(page_controls, state="readonly", width=10)
+        self.character_page_selector.grid(row=0, column=2, sticky="w")
+        self.character_page_selector.bind("<<ComboboxSelected>>", self._select_character_page)
+        self.character_next_button = ttk.Button(
+            page_controls, text="Next", command=lambda: self._show_character_page(self.character_page + 1))
+        self.character_next_button.grid(row=0, column=4, padx=(SPACING, 0), sticky="e")
+        self.character_page_summary = ttk.Label(page_controls, text="No characters", wraplength=1)
+        self.character_page_summary.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(5, 0))
+        wrap_label(self.character_page_summary, page_controls)
+
+        # Off-page cards stay alive but unmanaged, preserving edit/undo state.
         self.character_cards_frame = ttk.Frame(character_table_lf)
         self.character_cards_frame.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
 
@@ -605,9 +629,7 @@ class ConfigEditor(tk.Toplevel):
         )
         character_engine_row_idx += 1
 
-        # Add 3 default empty character slots
-        for _ in range(3):
-            self._add_character_row()
+        # load_config_handler creates the saved cards, or the default empty cards.
 
         self.character_engine_content_frame.grid_columnconfigure(0, weight=1)
 
@@ -914,6 +936,7 @@ class ConfigEditor(tk.Toplevel):
             lf_text = getattr(widget, '_section_search_text', widget.cget("text")).lower()
             if query in lf_text:
                 self.notebook.select(tab_id)
+                self._reveal_character_page_for(widget)
                 widget.tkraise()
                 self._scroll_canvas_to(widget)
                 self.search_entry.config(foreground="green")
@@ -1136,6 +1159,7 @@ class ConfigEditor(tk.Toplevel):
 
     def _get_current_editor_config_data(self):
         """Gathers all configuration data currently entered in the editor fields into a dictionary suitable for YAML."""
+        self._sync_character_text_values()
         self.on_gender_change_editor_handler(save_current=True)
 
         apis_list_to_save = []
@@ -1684,18 +1708,24 @@ class ConfigEditor(tk.Toplevel):
                             'class': old_class[i] if i < len(old_class) else ''
                         })
 
-            # Populate UI with loaded data (limit to MAX_CHARACTER_CARDS)
-            if characters_list:
-                for i, char_data in enumerate(characters_list):
-                    if i >= int(self.max_character_cards_var.get()):
-                        log_message(f"Skipping character {i+1} - limit reached", "WARNING")
-                        break
-                    self._add_character_row(character_data=char_data)
-            else:
-                # Add 3 empty rows if config is empty
-               default_empty_rows = min(3, int(self.max_character_cards_var.get()))
-               for _ in range(default_empty_rows):
-                   self._add_character_row()
+            # Construct loaded cards without ever managing the entire list.
+            self._cancel_character_scroll()
+            self._loading_character_cards = True
+            try:
+                if characters_list:
+                    for i, char_data in enumerate(characters_list):
+                        if i >= int(self.max_character_cards_var.get()):
+                            log_message(f"Skipping character {i+1} - limit reached", "WARNING")
+                            break
+                        self._add_character_row(character_data=char_data)
+                else:
+                    for _ in range(min(3, int(self.max_character_cards_var.get()))):
+                        self._add_character_row()
+            finally:
+                self._loading_character_cards = False
+                self._update_character_card_labels()
+                self._show_character_page(0, scroll_to_top=False)
+                self.character_engine_canvas.yview_moveto(0)
 
             # Apply the enabled/disabled state and class visibility
             self._toggle_character_engine_fields()
@@ -1852,26 +1882,80 @@ class ConfigEditor(tk.Toplevel):
             log_message(f"ConfigEditor Validation (OtherError): {str(e_other)}", "WARNING")
         return False
 
-    def _update_canvas_scrollregion(self, canvas_widget):
-        """Safely update canvas scrollregion with bounds checking."""
-        try:
-            canvas_widget.update_idletasks()
-            bbox = canvas_widget.bbox("all")
+    def _sync_character_text_values(self, visible_only=False):
+        """Capture paste/programmatic edits even if no key/focus event fired."""
+        for data in self.character_entries:
+            if visible_only and data['frame'].winfo_manager() != 'pack':
+                continue
+            for key in ('clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting'):
+                widget = data[f'{key}_widget']
+                if widget.winfo_exists():
+                    data[key].set(widget.get('1.0', tk.END).strip())
 
-            if bbox and len(bbox) == 4:
-                x1, y1, x2, y2 = bbox
+    def _cancel_character_scroll(self, event=None):
+        if event is not None and event.widget != self:
+            return
+        if self._character_scroll_job is not None:
+            self.after_cancel(self._character_scroll_job)
+            self._character_scroll_job = None
 
-                # Sanity check - reject unreasonably large values
-                MAX_CANVAS_SIZE = 50000  # pixels
-                if all(0 <= val <= MAX_CANVAS_SIZE for val in bbox):
-                    # Add small padding
-                    padding = 10
-                    canvas_widget.configure(scrollregion=(x1 - padding, y1 - padding,
-                                                           x2 + padding, y2 + padding))
-                else:
-                    log_message(f"Canvas bbox out of bounds: {bbox}", "WARNING")
-        except Exception as e:
-            log_message(f"Error updating canvas scrollregion: {e}", "ERROR")
+    def _queue_character_scroll(self, widget):
+        self._cancel_character_scroll()
+        def reveal():
+            self._character_scroll_job = None
+            if widget.winfo_exists() and widget.winfo_manager() == 'pack':
+                self._scroll_canvas_to(widget)
+        self._character_scroll_job = self.after_idle(reveal)
+
+    def _select_character_page(self, event=None):
+        page = self.character_page_selector.current()
+        if page >= 0:
+            self._show_character_page(page)
+
+    def _show_character_page(self, page, scroll_to_top=True):
+        """Keep at most three card windows managed; retain every card's state."""
+        self._cancel_character_scroll()
+        self._sync_character_text_values(visible_only=True)
+        count = len(self.character_entries)
+        pages = max(1, (count + self.character_page_size - 1) // self.character_page_size)
+        self.character_page = max(0, min(int(page), pages - 1))
+        first = self.character_page * self.character_page_size
+        last = min(first + self.character_page_size, count)
+        for data in self.character_entries:
+            data['frame'].pack_forget()
+        for data in self.character_entries[first:last]:
+            data['frame'].pack(fill=tk.X, pady=8, padx=8)
+        if count:
+            self.character_cards_frame.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
+        else:
+            # An empty pack container retains its previous requested height.
+            self.character_cards_frame.pack_forget()
+        self.character_page_selector.configure(
+            values=tuple(f"{index + 1} / {pages}" for index in range(pages)),
+            state='readonly' if count else 'disabled')
+        self.character_page_selector.current(self.character_page)
+        self.character_page_summary.configure(
+            text=f"Characters {first + 1} to {last} of {count}" if count else "No characters")
+        self.character_previous_button.configure(state='normal' if self.character_page else 'disabled')
+        self.character_next_button.configure(state='normal' if self.character_page + 1 < pages else 'disabled')
+        if scroll_to_top:
+            # Keep the pager visible instead of jumping above the engine settings.
+            self._queue_character_scroll(self.character_page_controls)
+        # The existing content <Configure> binding updates the scrollregion.
+        # Do not call update_idletasks here: bulk loading must remain bounded
+        # before Tk can draw any intermediate layout.
+
+    def _reveal_character_page_for(self, widget):
+        """Section search can find an unmanaged card on a different page."""
+        ancestor = widget
+        while ancestor is not None and ancestor != self.character_cards_frame:
+            for index, data in enumerate(self.character_entries):
+                if ancestor == data['frame']:
+                    page = index // self.character_page_size
+                    if page != self.character_page:
+                        self._show_character_page(page, scroll_to_top=False)
+                    return
+            ancestor = ancestor.master
 
     def _add_character_row(self, character_data=None):
         """Create a card whose short fields reflow and long fields use its full width."""
@@ -1884,7 +1968,7 @@ class ConfigEditor(tk.Toplevel):
         row_index = len(self.character_entries)
         card_frame = ttk.LabelFrame(self.character_cards_frame,
                                     text=f"  ✦ Character {row_index + 1}  ", padding=8)
-        card_frame.pack(fill=tk.X, pady=8, padx=8)
+        # _show_character_page is the only place that manages card frames.
         card_frame.columnconfigure(0, weight=1)
         entry_vars = {}
         label_font = ('Segoe UI', 9, 'bold')
@@ -1936,7 +2020,8 @@ class ConfigEditor(tk.Toplevel):
             widget.insert('1.0', character_data.get(key, ''))
             widget.grid(row=next_row + 1, column=0, sticky="ew", padx=4, pady=(0, 4))
             def on_change(event=None, text_widget=widget, value_var=var):
-                value_var.set(text_widget.get('1.0', tk.END).strip())
+                if text_widget.winfo_exists():
+                    value_var.set(text_widget.get('1.0', tk.END).strip())
             widget.bind('<KeyRelease>', on_change)
             widget.bind('<FocusOut>', on_change)
             entry_vars[key] = var
@@ -1961,9 +2046,11 @@ class ConfigEditor(tk.Toplevel):
         entry_vars['delete_btn'] = delete_button
         entry_vars['frame'] = card_frame
         self.character_entries.append(entry_vars)
-        self._update_character_card_labels()
-        self._toggle_character_engine_fields()
-        self._update_canvas_scrollregion(self.character_engine_canvas)
+        if not self._loading_character_cards:
+            self._update_character_card_labels()
+            self._toggle_character_engine_fields()
+            self._show_character_page(row_index // self.character_page_size)
+            self._queue_character_scroll(card_frame)
 
     def _validate_character_ages(self):
         """Highlights age fields that are outside the 18-60 range."""
@@ -1983,6 +2070,8 @@ class ConfigEditor(tk.Toplevel):
     def _remove_character_row(self, row_index):
         """Removes a character card from the table."""
         if 0 <= row_index < len(self.character_entries):
+            self._cancel_character_scroll()
+            self._sync_character_text_values(visible_only=True)
             entry_data = self.character_entries[row_index]
             entry_data['frame'].destroy()
             self.character_entries.pop(row_index)
@@ -1994,8 +2083,7 @@ class ConfigEditor(tk.Toplevel):
                 )
 
             self._update_character_card_labels()
-            # Update scroll region (with safety check)
-            self._update_canvas_scrollregion(self.character_engine_canvas)
+            self._show_character_page(self.character_page)
 
     def _update_character_card_labels(self):
         """Updates the text on each character card frame to match its index."""

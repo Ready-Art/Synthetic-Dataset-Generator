@@ -331,6 +331,10 @@ class NotebookNavigator(ttk.Frame):
 def wrap_label(label, container=None, padding=16):
     """Wrap a label to the allocated container width, without shrinking fonts."""
     container = container or label.master
+    # Geometry runs before the first Configure/idle callback. A one-pixel wrap
+    # can request one character per line and inflate an embedded native frame.
+    if int(label.cget("wraplength") or 0) <= 1:
+        label.configure(wraplength=_pixels(label, 320))
     def resize(event=None):
         if label.winfo_exists():
             width = max(1, container.winfo_width() - _pixels(container, padding))

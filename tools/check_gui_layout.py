@@ -280,6 +280,144 @@ def check_navigation(report, root, window, notebook, label):
     settle(root)
 
 
+def check_character_profiles(report, root, editor, expected, sizes, screenshots):
+    """Exercise a real collection, including off-page edits and native sizes.
+
+    X11 can terminate the process (not raise a Python exception) when a themed
+    frame requests an oversized pixmap. Run --character-count 100 to catch the
+    former all-cards-in-one-native-window layout as well as data-loss regressions.
+    """
+    from ui_layout import scroll_to_widget
+
+    label = "character profiles"
+    count = len(expected)
+    entries = editor.character_entries
+    check(report, f"{label}: all fixture profiles loaded", len(entries) == count,
+          {"expected": count, "actual": len(entries)})
+    if not entries or not hasattr(editor, "character_page_selector"):
+        check(report, f"{label}: bounded page navigation available", False)
+        return
+    select_tab(editor.notebook, "Character Engine")
+    settle(root)
+    selector = editor.character_page_selector
+    page_count = len(selector.cget("values"))
+    measurements = report["character_profile_cases"]
+    seen = set()
+
+    def measure(case_label):
+        settle(root)
+        widgets = list(descendants(editor.character_engine_canvas))
+        tallest = max(widgets, key=lambda widget: widget.winfo_height())
+        widest = max(widgets, key=lambda widget: widget.winfo_width())
+        displayed = [index for index, entry in enumerate(entries)
+                     if entry["frame"].winfo_manager()]
+        seen.update(displayed)
+        details = {"case": case_label,
+                   "client_size": [editor.winfo_width(), editor.winfo_height()],
+                   "page": editor.character_page, "displayed_indices": displayed,
+                   "content_size": [editor.character_engine_content_frame.winfo_width(),
+                                    editor.character_engine_content_frame.winfo_height()],
+                   "largest_native_width": widest.winfo_width(),
+                   "largest_native_height": tallest.winfo_height()}
+        measurements.append(details)
+        check(report, f"{label}/{case_label}: native dimensions below X11 limit",
+              max(details["largest_native_width"], details["largest_native_height"]) < 32768,
+              details)
+        check(report, f"{label}/{case_label}: bounded visible card count",
+              1 <= len(displayed) <= 3, displayed)
+        return details
+
+    def choose(page):
+        selector.current(page)
+        selector.event_generate("<<ComboboxSelected>>")
+        settle(root)
+
+    choose(0)
+    first = entries[0]
+    first["name"].set("Edited first profile")
+    first["backstory_widget"].delete("1.0", "end")
+    first["backstory_widget"].insert("1.0", "Pasted backstory\nwithout a key event.")
+    # Deliberately omit KeyRelease/FocusOut; page changes must preserve pasted text.
+    choose(page_count - 1)
+    check(report, f"{label}: page change preserves unsaved multiline edit",
+          first["backstory"].get() == "Pasted backstory\nwithout a key event.")
+    last = entries[-1]
+    last["traits_widget"].delete("1.0", "end")
+    last["traits_widget"].insert("1.0", "Edited last profile traits")
+    data = editor._get_current_editor_config_data()["prompts"]["character"]["characters"]
+    check(report, f"{label}: gathered config retains every profile and current edits",
+          len(data) == count and data[0]["name"] == "Edited first profile"
+          and data[0]["backstory"] == "Pasted backstory\nwithout a key event."
+          and data[-1]["traits"] == "Edited last profile traits"
+          and all(data[index]["name"] == expected[index]["name"] for index in range(1, count)))
+
+    for page in range(page_count):
+        choose(page)
+        measure(f"page {page + 1}")
+    check(report, f"{label}: every profile reachable", seen == set(range(count)),
+          {"reached": len(seen), "expected": count})
+    check(report, f"{label}: next disabled on last page",
+          editor.character_next_button.instate(["disabled"]))
+    if page_count > 1:
+        editor.character_previous_button.invoke()
+        settle(root)
+        check(report, f"{label}: Previous changes page", editor.character_page == page_count - 2)
+        editor.character_next_button.invoke()
+        settle(root)
+        check(report, f"{label}: Next changes page", editor.character_page == page_count - 1)
+    choose(0)
+    check(report, f"{label}: previous disabled on first page",
+          editor.character_previous_button.instate(["disabled"]))
+
+    for index, (width, height) in enumerate(sizes):
+        editor.geometry(f"{width}x{height}+0+0")
+        choose(0 if index % 2 == 0 else page_count - 1)
+        scroll_to_widget(editor.character_engine_canvas, selector.master)
+        details = measure(f"resize {index} {width}x{height}")
+        check(report, f"{label}/resize {index}: page selector visible",
+              fully_visible(widget_info(selector, editor)))
+        if screenshots:
+            details["screenshot"] = take_screenshot(
+                editor, screenshots / f"characters_{index}_{width}x{height}.png", report["errors"])
+
+    # Search should reveal the requested card even if its page is hidden.
+    choose(0)
+    editor.search_entry.delete(0, "end")
+    editor.search_entry.insert(0, f"Character {count}")
+    editor.search_editor_tabs()
+    settle(root)
+    found = widget_info(entries[-1]["frame"], editor)
+    check(report, f"{label}: search reveals an off-page profile",
+          found["mapped"] and min(found["visible_size_in_window"]) > 0,
+          found["visible_size_in_window"])
+    editor.search_entry.delete(0, "end")
+
+    # Deleting the last card must clamp the page; Add must reveal the new card.
+    entries[-1]["delete_btn"].invoke()
+    settle(root)
+    check(report, f"{label}: remove updates the collection", len(entries) == count - 1)
+    editor.add_char_btn.invoke()
+    settle(root)
+    added = widget_info(entries[-1]["frame"], editor)
+    check(report, f"{label}: add reveals new profile",
+          len(entries) == count and added["mapped"] and min(added["visible_size_in_window"]) > 0,
+          added["visible_size_in_window"])
+    measure("after remove/add")
+    gathered = editor._get_current_editor_config_data()["prompts"]["character"]["characters"]
+    check(report, f"{label}: remove/add retains other unsaved edits",
+          len(gathered) == count and (count == 1 or
+              (gathered[0]["name"] == "Edited first profile"
+               and gathered[0]["backstory"] == "Pasted backstory\nwithout a key event.")))
+
+    # Reload only the temporary fixture, verifying rebuilding does not stack all cards.
+    editor.load_config_handler()
+    settle(root)
+    check(report, f"{label}: reload restores complete fixture on first page",
+          editor.character_page == 0 and len(entries) == count
+          and all(entry["name"].get() == value["name"] for entry, value in zip(entries, expected)))
+    measure("after reload")
+
+
 def run(args):
     repo = args.repo.resolve()
     output = args.output.resolve()
@@ -308,6 +446,7 @@ def run(args):
         ],
         "errors": [], "dialogs": [], "blocked_network": [], "checks": [],
         "main_window_cases": [], "config_editor_cases": [],
+        "character_profile_cases": [], "fixture_character_count": args.character_count,
     }
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(repo))
@@ -333,13 +472,24 @@ def run(args):
         with tempfile.TemporaryDirectory(prefix="sdg-layout-") as scratch, working_directory(scratch):
             Path("config").mkdir()
             # JSON is valid YAML; only harmless fixture values are loaded.
+            characters = [
+                {"name": f"Layout character {index + 1}", "age": "25", "race": "Human",
+                 "gender": "Nonbinary", "job": "Researcher", "class": "Explorer",
+                 "clothing": "A coat and comfortable boots.", "appearance": "A synthetic test profile.",
+                 "personality": "Curious and patient.", "traits": "Observant, practical.",
+                 "setting": "An imaginary research station.",
+                 "backstory": "Long, wrapped fixture text keeps each editor scrollable.\n" * 12}
+                for index in range(args.character_count)
+            ]
             fixture = {
                 "database": {"enabled": False}, "valkey": {"enabled": False},
                 "api": {"pricing": {"cost_per_1k_tokens": 0, "budget_limit": 0},
                         "apis": [{"enabled": True, "url": "https://example.invalid",
                                   "model": "Layout probe", "key": "", "threads": 1,
                                   "rate_limit_rpm": 60} for _ in range(6)]},
-                "generation": {"max_character_cards": 1},
+                "generation": {"max_character_cards": 100},
+                "prompts": {"character": {"enabled": True, "class_enabled": True,
+                                           "setting_enabled": True, "characters": characters}},
             }
             Path("config/config.yml").write_text(json.dumps(fixture), encoding="utf-8")
             if (repo / "config/api_profiles.yml").is_file():
@@ -500,6 +650,8 @@ def run(args):
                               None if info is None else
                               {"actual": info["rect_in_window"][2:], "requested": info["requested_size"]})
                 check_navigation(report, root, editor, editor.notebook, "editor")
+                check_character_profiles(report, root, editor, characters, sizes,
+                                         output if args.screenshots else None)
                 editor.destroy()  # Deliberately bypass the close handler, which saves config.
             root.destroy()  # Likewise bypass Quit Application and its state-saving behavior.
             root = None
@@ -540,11 +692,15 @@ def main():
     parser.add_argument("--scale", type=float, help="Tk pixels/point scale, not Windows DPI emulation")
     parser.add_argument("--screenshots", action="store_true")
     parser.add_argument("--config-editor", action="store_true")
+    parser.add_argument("--character-count", type=int, default=10,
+                        help="Fixture profiles for --config-editor (1-100, default: 10)")
     parser.add_argument("--allow-below-minimum", action="store_true",
                         help="Explicit diagnostic override of production window minima")
     args = parser.parse_args()
     if args.scale is not None and args.scale <= 0:
         parser.error("--scale must be positive")
+    if not 1 <= args.character_count <= 100:
+        parser.error("--character-count must be between 1 and 100")
     return run(args)
 
 

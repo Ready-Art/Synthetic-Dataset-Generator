@@ -1244,7 +1244,9 @@ This opens the actual GUI with temporary fixture configuration, exercises idle,
 single-API, and four-API progress layouts, and resizes from 900×600 through
 1024×700, 1366×700, and 1916×1126 before returning to the smallest size. It checks
 primary controls, dashboard space, view selection, scrolling, and the editor's
-Save/Validate footer. It does not start generation or connect to APIs/databases.
+Save/Validate footer. The editor fixture includes 10 character profiles and checks
+page navigation, resizing, editing, adding, removing, searching, and reloading.
+It does not start generation or connect to APIs/databases.
 Application configuration and generation state are not saved.
 
 The report and optional screenshots are written to `layout-check/`; use
@@ -1255,6 +1257,23 @@ repeat `--size`, for example:
 ```bash
 python tools/check_gui_layout.py --check --config-editor --size 760x520 --size 1366x700
 ```
+
+Character Profiles displays up to three cards per page. Use Previous, Next, or
+the page selector to reach the remaining cards; unsaved edits are retained when
+changing pages, and Save includes every profile. Adding a character opens its
+page. This bounds the height of native drawing surfaces: stacking large numbers
+of full cards in one frame can terminate Tk on Linux/X11 with
+`BadAlloc` or `BadValue` from `X_CreatePixmap`, even when the visible window is
+small. To test the supported maximum collection size:
+
+```bash
+python tools/check_gui_layout.py --check --config-editor --character-count 100 --screenshots
+```
+
+`--character-count` accepts 1–100 and uses synthetic profiles in temporary files;
+it does not load or change your saved characters. The report records the largest
+native widget dimensions on each page as well as checking that every profile is
+reachable and that off-page edits are included when gathering configuration data.
 
 Window minima are DPI-aware and limited to the available screen area. The report
 records actual sizes, fonts, Tk scaling, and dependency versions, so a clamped
