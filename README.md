@@ -733,15 +733,22 @@ The state file tracks:
 
 ### Dashboard & Monitoring
 
+The four main controls (**Start Generation**, **Pause**, **Stop & Clear Job**, and
+**Edit Config**) remain above the dashboard. Monitoring details scroll inside the
+**Overview** tab, so additional API progress bars do not push the working area
+off the window. On narrow windows, a **View** selector replaces the tab strip;
+it includes every dashboard or configuration view.
+
 The real-time dashboard provides:
 
+- **Overview tab** — Metrics, database/cache status, API response times, and generation progress. Its **Tools** section contains export, recovery, database maintenance, Clear Dashboard, Debug Logs, Pause UI Updates, and Quit Application.
 - **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes (10-minute bins)
 - **Per-API tabs (API 1–4)** — Individual API statistics and recent issues for each generation slot
 - **Quality tab** — Quality scoring summary, dimension averages, and a table of the latest 50 scored conversations
 - **🔍 Review tab** — Flagged conversations (below threshold) with filter, export, dismiss, and detail view
 - **Prompt Viewer tab** — Real-time view of prompts being sent to APIs with rich formatting
 - **Queue tab** — Live view of pending, completed, and failed tasks with management actions
-- **Metrics bar** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
+- **Overview metrics** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
 - **Quality metrics** — Average composite score (color-coded), below-threshold count, top flag
 - **Budget indicator** — Current spend vs. budget limit with color-coded status (turns red when exceeded)
 - **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
@@ -1199,7 +1206,7 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Resume incompatibility warning** | Critical settings changed since last run; choose to start fresh or proceed with caution |
 | **Need to force resume** | Click **🔄 Force Recovery** to bypass config checks and reload state |
 | **Want to clear all data** | Use **Stop & Clear Job** to reset progress, or **Clear Database** for PostgreSQL data |
-| **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in the toolbar to disable verbose logging |
+| **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in **Overview → Tools** to disable verbose logging |
 | **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
 | **Reasoning models outputting thinking blocks** | Set `enable_thinking` to `"disable"` in samplers config to add `chat_template_kwargs` to API payload |
@@ -1224,6 +1231,40 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Review tab empty but scores exist** | The Review tab only shows conversations below `min_score_threshold`; check the Quality tab for all scores |
 | **Quality scoring slow** | LLM scoring adds an API call per conversation; disable `use_llm_scoring` for heuristic-only (instant) scoring, or use a fast/cheap model for the scoring API |
 
+### Checking layouts on smaller displays
+
+You can test smaller windows on a large monitor without changing the monitor's
+resolution. With the normal application dependencies installed, run:
+
+```bash
+python tools/check_gui_layout.py --check --config-editor --screenshots
+```
+
+This opens the actual GUI with temporary fixture configuration, exercises idle,
+single-API, and four-API progress layouts, and resizes from 900×600 through
+1024×700, 1366×700, and 1916×1126 before returning to the smallest size. It checks
+primary controls, dashboard space, view selection, scrolling, and the editor's
+Save/Validate footer. It does not start generation or connect to APIs/databases.
+Application configuration and generation state are not saved.
+
+The report and optional screenshots are written to `layout-check/`; use
+`--output PATH` to choose another directory. `--check` exits with a nonzero code
+if an assertion fails. To target particular client sizes (excluding title bars),
+repeat `--size`, for example:
+
+```bash
+python tools/check_gui_layout.py --check --config-editor --size 760x520 --size 1366x700
+```
+
+Window minima are DPI-aware and limited to the available screen area. The report
+records actual sizes, fonts, Tk scaling, and dependency versions, so a clamped
+size is not mistaken for a successful test at the requested size. `--scale`
+changes Tk's pixels-per-point setting for diagnostics; it does not emulate
+Windows display scaling. Validate on Windows at the affected display scaling,
+including moving the application between monitors, before claiming native DPI
+coverage. On Linux, the same check can run under `xvfb-run -a` when Xvfb is
+installed.
+
 ### Environment Variables
 
 API credentials can be set via environment variables, which take precedence over `config.yml`:
@@ -1242,7 +1283,7 @@ export API_PROFILE_1="openai"   # optional: API compatibility profile for slot 1
 The application supports two levels of logging:
 
 - **Normal** — INFO, WARNING, ERROR, and CRITICAL messages are always logged
-- **Debug** — Verbose DEBUG messages are hidden by default; enable with the **🐛 Debug Logs** checkbox in the toolbar
+- **Debug** — Verbose DEBUG messages are hidden by default; enable with the **🐛 Debug Logs** checkbox in **Overview → Tools**
 
 All logs are written to `output/log.txt` regardless of the debug toggle.
 

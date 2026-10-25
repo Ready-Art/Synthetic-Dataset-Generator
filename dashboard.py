@@ -43,15 +43,17 @@ def _active_dashboard_tab_text():
         return ""
 
 def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
-    """Creates a modern, dark-themed Treeview inside an existing panel widget."""
+    """Keep issue columns readable; scroll when the panel is narrower than them."""
     style = ttk.Style()
-
-    # --- Treeview styles (unchanged) ---
+    scale = panel_widget.winfo_fpixels("1i") / 96.0
+    body_font = font.Font(root=panel_widget, font=('Segoe UI', 9))
+    heading_font = font.Font(root=panel_widget, font=('Segoe UI', 10, 'bold'))
+    row_height = body_font.metrics("linespace") + max(6, round(8 * scale))
     style.configure("Issue.Treeview",
                     background="#2a2a35",
                     fieldbackground="#2a2a35",
                     foreground="#e0e0e0",
-                    rowheight=28,
+                    rowheight=row_height,
                     font=('Segoe UI', 9))
     style.configure("Issue.Treeview.Heading",
                     background="#1e1e24",
@@ -63,35 +65,33 @@ def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
 
     tree = ttk.Treeview(panel_widget, columns=columns, show="headings",
                         height=8, style="Issue.Treeview")
-
     col_widths = {"Time": 80, "API": 60, "Phrase": 140, "Context": 380}
+    min_widths = {"Time": 72, "API": 60, "Phrase": 120, "Context": 240}
     for col in columns:
-        tree.heading(col, text=col.replace('_', ' ').title())
-        tree.column(col, width=col_widths.get(col, 120), anchor='w')
+        label = col.replace('_', ' ').title()
+        minimum = max(round(min_widths.get(col, 100) * scale),
+                      heading_font.measure(label) + round(16 * scale))
+        tree.heading(col, text=label)
+        tree.column(col, width=max(minimum, round(col_widths.get(col, 120) * scale)),
+                    minwidth=minimum, stretch=col not in ("Time", "API"), anchor='w')
 
-    # --- Scrollbar (tk, not ttk — width is respected) ---
-    vsb = tk.Scrollbar(
-        panel_widget,
-        orient="vertical",
-        command=tree.yview,
-        width=18,
-        background="#7a7a9a",
-        troughcolor="#16161c",
-        activebackground="#b0b0d0",
-        highlightthickness=0,
-        borderwidth=0,
-        relief="flat"
-    )
-    tree.configure(yscrollcommand=vsb.set)
-    # ----------------------------------------------------
-
-    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 2), pady=5)
-    vsb.pack(side=tk.RIGHT, fill="y", padx=(2, 5), pady=5)
+    scrollbar_options = dict(width=max(14, round(18 * scale)), background="#7a7a9a",
+                             troughcolor="#16161c", activebackground="#b0b0d0",
+                             highlightthickness=0, borderwidth=0, relief="flat")
+    vsb = tk.Scrollbar(panel_widget, orient="vertical", command=tree.yview,
+                       **scrollbar_options)
+    hsb = tk.Scrollbar(panel_widget, orient="horizontal", command=tree.xview,
+                       **scrollbar_options)
+    tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    panel_widget.columnconfigure(0, weight=1)
+    panel_widget.rowconfigure(0, weight=1)
+    tree.grid(row=0, column=0, sticky="nsew", padx=(5, 2), pady=(5, 2))
+    vsb.grid(row=0, column=1, sticky="ns", padx=(2, 5), pady=(5, 2))
+    hsb.grid(row=1, column=0, sticky="ew", padx=(5, 2), pady=(2, 5))
 
     tree.tag_configure("issue_highlight",
                        background="#3a3a45", foreground=highlight_color,
                        font=('Segoe UI', 9, 'italic'))
-
     return tree
 
 def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight", is_total_tab=False):
@@ -137,12 +137,30 @@ def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight
     if children:
         tree.see(children[-1])
 
+def _fit_issue_graph(fig, ax):
+    """Fit labels to the allocated figure without changing its requested size."""
+    # Inches keep the breakpoint consistent when TkAgg changes the figure DPI.
+    compact = fig.get_figwidth() < 6.4
+    ax.title.set_fontsize(12 if compact else 15)
+    ax.xaxis.label.set_fontsize(10 if compact else 12)
+    ax.yaxis.label.set_fontsize(10 if compact else 12)
+    ax.tick_params(axis='both', labelsize=8 if compact else 10)
+    legend = ax.get_legend()
+    if legend is not None:
+        for label in legend.get_texts():
+            label.set_fontsize(8 if compact else 10)
+    # Tiny transient allocations occur while changing tabs or resizing a window.
+    if fig.bbox.width >= 300 and fig.bbox.height >= 220:
+        fig.tight_layout(pad=1.0)
+
+
 def draw_issue_graph(canvas_widget, height=400):
     """Draws a modern, detailed time-series graph showing issue counts over the last 60 minutes."""
     canvas_widget.delete("all")
 
     # Modern dark theme setup
-    fig = Figure(figsize=(12, 4.5), dpi=120, facecolor='#1e1e24')
+    fig = Figure(figsize=(7.5, max(280, min(height, 400)) / 100),
+                 dpi=100, facecolor='#1e1e24')
     fig.patch.set_facecolor('#1e1e24')
     ax = fig.add_subplot(111)
     ax.set_facecolor('#2a2a35')
@@ -212,7 +230,7 @@ def draw_issue_graph(canvas_widget, height=400):
 
     ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
               edgecolor='#444444', labelcolor='#e0e0e0')
-    fig.tight_layout()
+    _fit_issue_graph(fig, ax)
 
     # Embed in Tkinter
     canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
@@ -225,6 +243,28 @@ def draw_issue_graph(canvas_widget, height=400):
     canvas_widget.graph_canvas = canvas
     canvas_widget.graph_fig = fig
     canvas_widget.graph_ax = ax
+    canvas_widget._graph_resize_after = None
+
+    def fit_after_resize():
+        canvas_widget._graph_resize_after = None
+        if canvas_widget.winfo_exists():
+            _fit_issue_graph(fig, ax)
+            canvas.draw_idle()
+
+    def schedule_fit(_event):
+        if canvas_widget._graph_resize_after is not None:
+            canvas_widget.after_cancel(canvas_widget._graph_resize_after)
+        canvas_widget._graph_resize_after = canvas_widget.after(150, fit_after_resize)
+
+    def cancel_fit(event):
+        if event.widget == canvas_widget and canvas_widget._graph_resize_after is not None:
+            canvas_widget.after_cancel(canvas_widget._graph_resize_after)
+            canvas_widget._graph_resize_after = None
+
+    # Preserve TkAgg's own Configure binding; it resizes the existing figure.
+    canvas.get_tk_widget().bind("<Configure>", schedule_fit, add="+")
+    canvas_widget.bind("<Destroy>", cancel_fit, add="+")
+    fit_after_resize()
 
 
 # Module-level throttle state for the issue graph.
@@ -326,7 +366,7 @@ def update_issue_graph(canvas_widget):
 
     ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
               edgecolor='#444444', labelcolor='#e0e0e0')
-    fig.tight_layout()
+    _fit_issue_graph(fig, ax)
     canvas_widget.graph_canvas.draw()
 
 
