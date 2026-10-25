@@ -1246,6 +1246,8 @@ single-API, and four-API progress layouts, and resizes from 900×600 through
 primary controls, dashboard space, view selection, scrolling, and the editor's
 Save/Validate footer. The editor fixture includes 10 character profiles and checks
 page navigation, resizing, editing, adding, removing, searching, and reloading.
+Prompt checks exercise mouse clicks and text editing without moving the outer
+form, as well as keyboard navigation to fields outside the visible area.
 It does not start generation or connect to APIs/databases.
 Application configuration and generation state are not saved.
 
@@ -1257,6 +1259,11 @@ repeat `--size`, for example:
 ```bash
 python tools/check_gui_layout.py --check --config-editor --size 760x520 --size 1366x700
 ```
+
+Clicking a prompt box leaves the outer form in place so the insertion cursor
+stays at the clicked text. Keyboard navigation still brings the destination
+control into view. In a prompt text box, Ctrl+Tab moves focus forward and
+Ctrl+Shift+Tab moves it backward; Tab retains its text-editing behavior.
 
 Character Profiles displays up to three cards per page. Use Previous, Next, or
 the page selector to reach the remaining cards; unsaved edits are retained when

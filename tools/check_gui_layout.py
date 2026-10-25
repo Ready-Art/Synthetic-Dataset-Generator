@@ -418,6 +418,188 @@ def check_character_profiles(report, root, editor, expected, sizes, screenshots)
     measure("after reload")
 
 
+def check_prompt_interactions(report, root, editor):
+    """Exercise native Tk bindings; generated events never warp the user's pointer."""
+    # Interaction checks need a scrollable viewport even for a large-only size run.
+    minimum = editor.minsize()
+    editor.geometry(f"{max(900, minimum[0])}x{max(600, minimum[1])}+0+0")
+    names = ("system_base_prompt_text", "question_prompt_text", "answer_prompt_text",
+             "user_continuation_prompt_text")
+    text_fixture = "\n".join(
+        f"Line {line:02}: This synthetic prompt makes caret placement measurable."
+        for line in range(1, 81))
+    select_tab(editor.notebook, "Prompts")
+    canvas = editor.prompts_canvas
+    editor.focus_force()
+    cases = report.setdefault("prompt_interaction_cases", [])
+    stamp = 1000000
+    for name in names:
+        text = getattr(editor, name)
+        text.delete("1.0", "end")
+        text.insert("1.0", text_fixture)
+    settle(root)
+    report["prompt_interaction_client_size"] = [editor.winfo_width(), editor.winfo_height()]
+
+    def visible(widget):
+        return intersect(rect(widget), rect(canvas))
+
+    def position(widget, edge):
+        if widget.winfo_class() == "Text":
+            widget.yview_moveto(0)
+        settle(root)
+        content_y = canvas.canvasy(widget.winfo_rooty() - canvas.winfo_rooty())
+        desired = {"visible": 8, "top": -min(60, widget.winfo_height() // 3),
+                   "bottom": canvas.winfo_height() - 65,
+                   "hidden": canvas.winfo_height() + 20}[edge]
+        region = canvas.bbox("all")
+        canvas.yview_moveto((content_y - desired - region[1]) / (region[3] - region[1]))
+        settle(root)
+
+    def layout(widget):
+        return {"canvas_yview": list(canvas.yview()), "root_origin": rect(widget)[:2]}
+
+    def point(widget, index=None):
+        if index is None:
+            box = visible(widget)
+            index = widget.index(f"@80,{box[1] + box[3] // 2 - widget.winfo_rooty()}")
+        glyph = widget.bbox(index)
+        if glyph is None:
+            raise RuntimeError(f"No visible glyph for prompt click: {index}")
+        # A glyph's left quarter avoids Tk's nearest-gap rounding at its right half.
+        return [widget.winfo_rootx() + glyph[0] + max(1, glyph[2] // 4),
+                widget.winfo_rooty() + glyph[1] + glyph[3] // 2]
+
+    def gap(widget, screen_point):
+        return str(widget.tk.call("tk::TextClosestGap", widget._w,
+                                  screen_point[0] - widget.winfo_rootx(),
+                                  screen_point[1] - widget.winfo_rooty()))
+
+    def mouse(widget, sequence, screen_point, when, state=0):
+        widget.event_generate(sequence, x=screen_point[0] - widget.winfo_rootx(),
+                              y=screen_point[1] - widget.winfo_rooty(),
+                              rootx=screen_point[0], rooty=screen_point[1],
+                              state=state, time=when)
+        settle(root)
+
+    for name in names:
+        text = getattr(editor, name)
+        exercised = set()
+        for edge in ("visible", "top", "bottom"):
+            for already_focused in (False, True):
+                editor.search_entry.focus_set()
+                settle(root)
+                if already_focused:
+                    text.focus_set()
+                    settle(root)
+                position(text, edge)
+                height = visible(text)[3]
+                # Near the document ends, canvas confinement can prevent an edge case.
+                if height < 12 or (edge != "visible" and height >= text.winfo_height() - 2):
+                    continue
+                if edge == "visible" and height < text.winfo_height() - 2:
+                    continue
+                exercised.add("visible" if edge == "visible" else "clipped")
+                text.tag_remove("sel", "1.0", "end")
+                text.mark_set("insert", "1.0")
+                click = point(text)
+                expected_index = gap(text, click)
+                expected_text = text.get("1.0", expected_index) + "z" + text.get(expected_index, "end-1c")
+                before = layout(text)
+                mouse(text, "<ButtonPress-1>", click, stamp)
+                # The release stays at the original screen point even if a regression moved the field.
+                mouse(text, "<ButtonRelease-1>", click, stamp + 20, state=256)
+                after = layout(text)
+                case = {"kind": "click", "target": name, "edge": edge,
+                        "already_focused": already_focused, "screen_point": click,
+                        "before": before, "after": after, "expected_index": expected_index,
+                        "insert": text.index("insert"), "index_at_final_point": gap(text, click)}
+                cases.append(case)
+                label = f"prompt/{name}/{edge}/focused={already_focused}"
+                check(report, f"{label}: click keeps the field stationary", before == after, case)
+                check(report, f"{label}: caret stays at clicked point",
+                      case["insert"] == expected_index == case["index_at_final_point"], case)
+                text.event_generate("<KeyPress>", keysym="z", time=stamp + 30)
+                text.event_generate("<KeyRelease>", keysym="z", time=stamp + 40)
+                settle(root)
+                check(report, f"{label}: typing inserts at the clicked index",
+                      text.get("1.0", "end-1c") == expected_text)
+                stamp += 2000
+        check(report, f"prompt/{name}: visible and clipped clicks exercised",
+              exercised == {"visible", "clipped"}, sorted(exercised))
+
+    text = editor.question_prompt_text
+    text.delete("1.0", "end")
+    text.insert("1.0", text_fixture)
+    text.tag_remove("sel", "1.0", "end")
+    editor.search_entry.focus_set()
+    settle(root)
+    position(text, "visible")
+    before = layout(text)
+    click = point(text, text.search("synthetic", "1.0"))
+    for offset in (0, 100):
+        mouse(text, "<ButtonPress-1>", click, stamp + offset)
+        mouse(text, "<ButtonRelease-1>", click, stamp + offset + 20, state=256)
+    selected = text.get("sel.first", "sel.last") if text.tag_ranges("sel") else ""
+    check(report, "prompt: native double-click selects the word without moving the field",
+          selected == "synthetic" and before == layout(text), {"selected": selected})
+    stamp += 2000
+
+    text.tag_remove("sel", "1.0", "end")
+    editor.search_entry.focus_set()
+    settle(root)
+    position(text, "visible")
+    start, end = point(text, "2.2"), point(text, "2.22")
+    expected_selection = text.get(gap(text, start), gap(text, end))
+    before = layout(text)
+    mouse(text, "<ButtonPress-1>", start, stamp)
+    mouse(text, "<B1-Motion>", end, stamp + 30, state=256)
+    mouse(text, "<ButtonRelease-1>", end, stamp + 60, state=256)
+    selected = text.get("sel.first", "sel.last") if text.tag_ranges("sel") else ""
+    check(report, "prompt: native drag selects the intended range without moving the field",
+          selected == expected_selection and before == layout(text),
+          {"expected": expected_selection, "selected": selected})
+    stamp += 2000
+
+    text.yview_moveto(0)
+    settle(root)
+    outer_before, inner_before = layout(text), text.yview()
+    # Tk 9 normalizes X11 wheel events to MouseWheel; older Tk also binds Button-5.
+    if text.bind_class("Text", "<MouseWheel>"):
+        text.event_generate("<MouseWheel>", x=40, y=40, delta=-120, time=stamp)
+    else:
+        text.event_generate("<Button-5>", x=40, y=40, time=stamp)
+    settle(root)
+    check(report, "prompt: wheel scrolls the Text without moving its outer canvas",
+          layout(text) == outer_before and text.yview()[0] > inner_before[0],
+          {"before": inner_before, "after": text.yview()})
+
+    # Follow actual Tk traversal order; ScrolledText scrollbars can be neighbors.
+    traversals = [(text.tk_focusPrev(), text, False), (text.tk_focusNext(), text, True),
+                  (text, text.tk_focusNext(), False), (text, text.tk_focusPrev(), True)]
+    for source, target, backwards in traversals:
+        source.focus_set()
+        settle(root)
+        position(target, "hidden")
+        before = {"visible_height": visible(target)[3], **layout(target)}
+        modifiers = ("Control-" if source.winfo_class() == "Text" else "")
+        modifiers += "Shift-" if backwards else ""
+        sequence = "<" + modifiers + "KeyPress-Tab>"
+        source.event_generate(sequence, time=stamp)
+        settle(root)
+        case = {"kind": "keyboard", "sequence": sequence, "source": source._w,
+                "target": target._w, "before": before,
+                "after": {"visible_height": visible(target)[3], **layout(target)}}
+        cases.append(case)
+        info = widget_info(target, editor)
+        # A canvas border/increment can clip one pixel while all text remains visible.
+        revealed = info["mapped"] and all(
+            shown >= actual - 2 for shown, actual in
+            zip(info["visible_size_in_window"], info["rect_in_window"][2:]))
+        check(report, f"prompt: {sequence} reveals its native focus destination",
+              editor.focus_get() == target and revealed, case)
+        stamp += 2000
+
+
 def run(args):
     repo = args.repo.resolve()
     output = args.output.resolve()
@@ -652,6 +834,7 @@ def run(args):
                 check_navigation(report, root, editor, editor.notebook, "editor")
                 check_character_profiles(report, root, editor, characters, sizes,
                                          output if args.screenshots else None)
+                check_prompt_interactions(report, root, editor)
                 editor.destroy()  # Deliberately bypass the close handler, which saves config.
             root.destroy()  # Likewise bypass Quit Application and its state-saving behavior.
             root = None
