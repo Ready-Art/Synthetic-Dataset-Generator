@@ -2,19 +2,18 @@
 import re
 
 # --- Pre-compiled regex patterns for better performance ---
-_EM_DASH_PATTERN = re.compile(r'\\—')
+_EM_DASH_PATTERN = re.compile(r'[ \t]*—+[ \t]*')
 # NEW: Pattern to match two or more asterisks in a row
 _EXCESSIVE_ASTERISKS_PATTERN = re.compile(r'\*{2,}')
 # --- End of pre-compiled patterns ---
 
 def remove_reasoning_text(text):
-    """Removes ... style reasoning blocks from text if configured."""
-    if re.search(r'', text, re.IGNORECASE) and not re.search(r'', text, re.IGNORECASE):
-        return None
-    match = re.search(r'\s*(.*)', text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    return text
+    """Removes <think>...</think> style reasoning blocks from text if configured."""
+    text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # A </think> with no opening tag: everything before it is reasoning
+    text = re.split(r'</think>', text, flags=re.IGNORECASE)[-1]
+    # An unclosed <think> (e.g. cut off at max tokens) is reasoning to the end
+    return re.split(r'<think>', text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
 
 def remove_em_dash(text):
     """Removes em dash (—) characters from text."""
