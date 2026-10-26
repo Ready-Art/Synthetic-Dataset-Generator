@@ -722,7 +722,8 @@ def check_slop_bad_words(slot_idx, conf, phrases):
 
     Accepted only when the slot's profile keeps bad_words, its /v1/models reports owned_by "vllm", and
     a one-token request carrying the list succeeds. vLLM rejects a list over its per-request limits
-    (VLLM_MAX_NUM_BAD_WORDS, default 128 token sequences; VLLM_MAX_BAD_WORDS_TOTAL_TOKENS, default 1024).
+    (VLLM_MAX_NUM_BAD_WORDS, default 128 token sequences; VLLM_MAX_BAD_WORDS_TOTAL_TOKENS, default 1024;
+    vLLM 0.28.0 and later).
     """
     url = conf.get('url', '')
     if 'bad_words' not in api_profiles.apply_profile_for_slot({'bad_words': []}, slot_idx, url):

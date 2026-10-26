@@ -1077,10 +1077,12 @@ Requests sent before the check finishes carry no `bad_words`. A confirmed slot s
 list the check tested: slop phrases edited during a run are used for detection at once, and as
 `bad_words` from the next run start.
 
-vLLM limits `bad_words` per request to 128 token sequences (`VLLM_MAX_NUM_BAD_WORDS`) and 1024
-tokens in total (`VLLM_MAX_BAD_WORDS_TOTAL_TOKENS`). Each phrase counts once without and once with
-a leading space, so a list longer than about 60 phrases may exceed them. vLLM then fails step 3:
-raise those environment variables on the vLLM server, or shorten the list.
+Since vLLM 0.28.0, `bad_words` is limited per request to 128 token sequences
+(`VLLM_MAX_NUM_BAD_WORDS`) and 1024 tokens in total (`VLLM_MAX_BAD_WORDS_TOTAL_TOKENS`); earlier
+versions have no limit. Each phrase becomes one or two sequences (as written, plus a leading-space
+form when it tokenizes differently), so the first limit allows between 64 and 128 phrases depending
+on the tokenizer, and long phrases can reach the token total sooner. A list over a limit fails
+step 3: raise those environment variables on the vLLM server, or shorten the list.
 
 vLLM matches differently from slop detection:
 - It is case-sensitive: `Shivers down` at the start of a sentence is not banned by `shivers down`.
