@@ -1436,28 +1436,28 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     else:
                         return None
 
-                    newline_count = user_reply_text.count('\n')
-                    text_length = len(user_reply_text)
+                newline_count = user_reply_text.count('\n')
+                text_length = len(user_reply_text)
 
-                    # --- NEW SETTINGS START ---
-                    max_newlines = global_config.get('generation.max_newlines_malformed', 16)
-                    max_text_length = global_config.get('generation.max_text_length_malformed', 5000)
-                    # --- NEW SETTINGS END ---
+                # --- NEW SETTINGS START ---
+                max_newlines = global_config.get('generation.max_newlines_malformed', 16)
+                max_text_length = global_config.get('generation.max_text_length_malformed', 5000)
+                # --- NEW SETTINGS END ---
 
-                    if newline_count > max_newlines or text_length > max_text_length:
-                        log_message(
-                            f"Thread {thread_id}: User reply response appears malformed. "
-                            f"Newlines: {newline_count} (Max: {max_newlines}), Length: {text_length} (Max: {max_text_length}). "
-                            f"Snippet: '{user_reply_text[:100]}...'",
-                            "WARNING"
-                        )
-                        sleep_dur = random.uniform(0.5, 1.5)
-                        if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
-                            time.sleep(sleep_dur)
-                            current_attempt_wait += sleep_dur
-                            continue
-                        else:
-                            return None  # Cap reached, abort continuation
+                if newline_count > max_newlines or text_length > max_text_length:
+                    log_message(
+                        f"Thread {thread_id}: User reply response appears malformed. "
+                        f"Newlines: {newline_count} (Max: {max_newlines}), Length: {text_length} (Max: {max_text_length}). "
+                        f"Snippet: '{user_reply_text[:100]}...'",
+                        "WARNING"
+                    )
+                    sleep_dur = random.uniform(0.5, 1.5)
+                    if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                        time.sleep(sleep_dur)
+                        current_attempt_wait += sleep_dur
+                        continue
+                    else:
+                        return None  # Cap reached, abort continuation
                 # --- FIX END ---
                 return user_reply_text
             else: # API call failed
