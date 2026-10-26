@@ -360,6 +360,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         initial_user_question = None
         raw_subject_content_for_debug = ""
         raw_context_content_for_debug = ""
+        turns_counted_this_attempt = 0            # Progress turns this attempt added (non-duplication mode)
         start_time_task_overall = time.time() # For timing the whole task processing
 
         with output_data_lock:
@@ -818,7 +819,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
                                     if q.processed_tasks < q.total_tasks_for_progress:
                                         q.processed_tasks += 1
-                                        turn_incremented = True
+                                        turns_counted_this_attempt += 1
+                                    # At the cap there is nothing to add; retrying would loop forever
+                                    turn_incremented = True
                                 finally:
                                     q.processed_tasks_lock.release()
                             else:
@@ -997,7 +1000,13 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 err_summary = f"T{thread_id} TaskErr: {str(e)[:30]}" # Short summary
                 if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
                 app_state.recent_errors_total.append((err_summary, -1)) # -1 indicates a general task error not tied to a specific API call error
-        
+
+        # An attempt that was not saved (paused, requeued, failed) gives back the turns it counted,
+        # so its rerun does not count them twice and 100% means every conversation is written
+        if turns_counted_this_attempt and task_id not in app_state.completed_task_ids:
+            with q.processed_tasks_lock:
+                q.processed_tasks = max(0, q.processed_tasks - turns_counted_this_attempt)
+
         end_time_task_overall = time.time()
         task_duration_overall = end_time_task_overall - start_time_task_overall
 
