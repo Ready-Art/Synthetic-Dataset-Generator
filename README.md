@@ -390,6 +390,7 @@ generation:
   output_format: "sharegpt"       # Output format for JSONL files
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
   slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
+  discard_refused_conversations: false  # Don't save a conversation if any reply needed a jailbreak
 
   # Text post-processing flags
   remove_reasoning: false
@@ -932,7 +933,7 @@ When **quality scoring is enabled**, flagged conversations exported via the Revi
 }
 ```
 
-> **Note:** Conversations that contain detected refusals are **not** saved to output, ensuring dataset quality. Incomplete conversations (fewer turns than configured) are also excluded and requeued for retry.
+> **Note:** A conversation in which a reply was refused and a jailbreak then fixed it is saved. Set `discard_refused_conversations: true` to discard and requeue such conversations instead. Incomplete conversations (fewer turns than configured) are also excluded and requeued for retry.
 
 ---
 

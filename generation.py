@@ -354,6 +354,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         conversation_history_for_output = []      # Stores full conversation for writing to file
         current_llm_conversation_context = []     # Stores conversation history passed to LLM
         refusal_detected_in_task = False          # Track refusals for this specific task
+        discard_refused_conversations = global_config.get('generation.discard_refused_conversations', False)
         any_issue_detected_in_task = False        # Track any issues for this specific task
 
         initial_user_question = None
@@ -699,7 +700,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             # CRITICAL FIX: Check if this specific answer had a refusal
                             # We need to track refusals per API call, not just overall
                             # For now, skip writing if any refusal was detected in this task
-                            if not refusal_detected_in_task:
+                            if not (refusal_detected_in_task and discard_refused_conversations):
                                 # Create a temporary history for this specific API's output for this turn
                                 temp_conv_history_for_api_output_turn = list(current_llm_conversation_context) # Contains user's current message
                                 temp_conv_history_for_api_output_turn.append({"role": "assistant", "content": ans_text})
@@ -885,7 +886,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # In non-duplication mode, conversation_history_for_output contains the full conversation.
                 if conversation_history_for_output and len(conversation_history_for_output) >= 2: # Ensure at least one Q/A pair
                     # CRITICAL FIX: Don't save if a refusal was detected at any point
-                    if refusal_detected_in_task:
+                    if refusal_detected_in_task and discard_refused_conversations:
                         log_message(f"Thread {thread_id}: Task {task_id} contained a refusal. NOT saving to output.jsonl.", "WARNING")
                         # Do NOT add to completed_task_ids - this task should not be marked complete
                         # Requeue the task for retry
