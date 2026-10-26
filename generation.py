@@ -168,6 +168,37 @@ def enqueue_opening_tasks(count):
     return total
 
 
+OPENING_PLACEHOLDER = "[Start a new chat]"  # SillyTavern's Strict-mode placeholder (promptPlaceholder)
+
+
+def opening_speaker(opening_chars, include_names=True):
+    """Who the greeting is written as, for the greeting prompt's {speaker}.
+
+    One character speaks for themself; with several, a narrator brings each into the scene, since no
+    one character can set the scene for the others. With no profile in the prompt, the greeting is
+    written as the character the system prompt describes.
+    """
+    if not opening_chars:
+        return "the character you are playing"
+    names = [c.get('name', '').strip() for c in opening_chars]
+    if len(opening_chars) == 1:
+        return names[0] if include_names else "the character described above"
+    if include_names:
+        return f"the narrator, bringing {', '.join(names[:-1])} and {names[-1]} into the scene"
+    return "the narrator, bringing each character described above into the scene"
+
+
+def _requeue_or_fail(q, task, task_id, thread_id, reason):
+    """Requeue a task that produced no row; past MAX_TASK_REQUEUES, mark it failed."""
+    if requeue_task(q, task, task_id):
+        log_message(f"Thread {thread_id}: Requeued task {task_id} ({reason}).", "WARNING")
+    else:
+        log_message(f"Thread {thread_id}: Task {task_id} exceeded {MAX_TASK_REQUEUES} requeues ({reason}); giving up.", "ERROR")
+        with app_state.task_queue_ui_lock:
+            app_state.pending_task_ids.discard(task_id)
+            app_state.failed_task_ids.add(task_id)
+
+
 def opening_mode_conflict(opening_mode, use_questions_file, duplication_enabled):
     """Return why a run cannot start with opening mode on, or None."""
     if not opening_mode:
@@ -223,7 +254,8 @@ def save_generation_state():
                     'generation.num_turns': global_config.get('generation.num_turns', 1),
                     'generation.subject_size': global_config.get('generation.subject_size', 1000),
                     'generation.context_size': global_config.get('generation.context_size', 3000),
-                    'api.master_duplication_mode': global_config.get('api.master_duplication_mode', False)
+                    'api.master_duplication_mode': global_config.get('api.master_duplication_mode', False),
+                    'prompts.opening_mode': bool(global_config.get('prompts.opening_mode', False)),
                 },
                 'quality_scores': {k: v for k, v in app_state.quality_scores.items()},
             }
@@ -350,7 +382,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            no_user_impersonation_local,
            current_api_request_timeout,
            current_slop_to_anti_slop_fallback,
-           current_lore):
+           current_lore,
+           opening_mode_local=False,
+           greeting_prompt_local="",
+           first_line_prompt_local="",
+           placeholder_share_local=0.0):
     """
     The main function executed by each worker thread.
     It fetches tasks from the queue, processes them by interacting with LLMs 
@@ -491,6 +527,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 log_message(f"Thread {thread_id}: Injected lore ({len(current_lore)} chars) for task {task_id}", "DEBUG")
 
             character_injection = ""
+            opening_chars = []  # Profiles actually added to the scene prompt (opening mode's greeting speaker)
             if enable_character_engine_local and character_list:
                 # Select multiple characters based on num_characters_local using round-robin
                 num_chars_to_select = min(num_characters_local, len(character_list))
@@ -577,6 +614,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"--- END CHARACTER {idx+1} PROFILE ---\n"
                         )
                         character_profiles.append(character_profile)
+                        opening_chars.append(selected_char)
 
                     # Finalize Injection
                     if character_profiles:
@@ -609,6 +647,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             initial_user_question = None
             raw_subject_content_for_debug = "" # For debug logging
             raw_context_content_for_debug = "" # For debug logging
+            has_greeting = False # Opening mode: the conversation starts with the character's greeting
+            leading_placeholder = None # Opening mode: optional Strict-mode user turn before the greeting
 
             # --- API Selection Logic ---
             api_config_for_this_task = None # Holds the config for the API used by this task/thread in non-duplication
@@ -628,8 +668,49 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # Instead, the answer generation loop iterates through all_api_configs_local.
             # Question/Continuation generation in duplication mode uses the primary API (slot 0).
 
+            # --- Opening mode: the character's greeting, then the user's first line ---
+            # (start_processing refuses opening mode with duplication mode or the questions file)
+            if opening_mode_local:
+                include_names = global_config.get('prompts.character.include_names_in_prompt', True)
+                profile_greeting = (opening_chars[0].get('greeting') or '').strip() if len(opening_chars) == 1 else ''
+                if profile_greeting:
+                    greeting_text = profile_greeting # Used as-is: no request, no checks, no chunk
+                else:
+                    greeting_text = generate_greeting(
+                        current_system_prompt_for_task, greeting_prompt_local,
+                        opening_speaker(opening_chars, include_names), task[4] if len(task) > 4 else "",
+                        thread_id, api_config_for_this_task.get('sampler_settings', {}),
+                        api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
+                        api_config_for_this_task.get('key'), api_slot_idx_for_this_task,
+                        current_max_attempts, current_api_request_timeout, file_name=file_name,
+                        refusal_phrases_local=current_refusal_phrases, slop_phrases_local=current_slop_phrases,
+                        user_speaking_phrases_local=current_user_speaking_phrases,
+                        no_user_impersonation_local=no_user_impersonation_local,
+                    )
+                    if app_state.stop_processing: q.task_done(); continue
+                if greeting_text:
+                    initial_user_question = generate_first_line(
+                        greeting_text, first_line_prompt_local, thread_id,
+                        api_config_for_this_task.get('sampler_settings', {}),
+                        api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
+                        api_config_for_this_task.get('key'), api_slot_idx_for_this_task,
+                        current_max_attempts, current_api_request_timeout, file_name=file_name,
+                        refusal_phrases_local=current_refusal_phrases, slop_phrases_local=current_slop_phrases,
+                    )
+                    if app_state.stop_processing: q.task_done(); continue
+                if not greeting_text or not initial_user_question:
+                    _requeue_or_fail(q, task, task_id, thread_id,
+                                     "no greeting" if not greeting_text else "no first user line")
+                    q.task_done(); continue
+                has_greeting = True
+                current_llm_conversation_context.append({"role": "assistant", "content": greeting_text})
+                conversation_history_for_output.append({"role": "assistant", "content": greeting_text})
+                if random.random() < placeholder_share_local:
+                    leading_placeholder = OPENING_PLACEHOLDER
+                # The first line is appended below, like a generated question.
+
             # --- Initial Question Generation ---
-            if use_questions_file_local:
+            elif use_questions_file_local:
                 question_as_segment = task[3] # The question text is part of the task tuple
                 initial_user_question = question_as_segment 
             else: # Generate question from subject/context
@@ -952,7 +1033,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # --- Write Completed Conversation (Non-Duplication Mode) or Mark Task Complete (Duplication Mode) ---
             if not master_duplication_enabled_local:
                 # In non-duplication mode, conversation_history_for_output contains the full conversation.
-                if conversation_history_for_output and len(conversation_history_for_output) >= 2: # Ensure at least one Q/A pair
+                # Ensure at least one Q/A pair; an opening conversation needs one reply after greeting and first line
+                if conversation_history_for_output and len(conversation_history_for_output) >= (3 if has_greeting else 2):
                     # CRITICAL FIX: Don't save if a refusal was detected at any point
                     if refusal_detected_in_task and discard_refused_conversations:
                         log_message(f"Thread {thread_id}: Task {task_id} contained a refusal. NOT saving to output.jsonl.", "WARNING")
@@ -967,24 +1049,26 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 app_state.failed_task_ids.add(task_id)
                     else:
                         # ✅ VERIFY TURN COUNT BEFORE MARKING COMPLETE
-                        expected_messages = current_num_turns * 2
+                        expected_messages = current_num_turns * 2 + (1 if has_greeting else 0)
                         actual_messages = len(conversation_history_for_output)
 
-                        if conversation_is_complete(conversation_history_for_output, current_num_turns, has_greeting=False):
+                        if conversation_is_complete(conversation_history_for_output, current_num_turns, has_greeting=has_greeting):
                             with output_data_lock:
                                 if task_id not in app_state.completed_task_ids:
                                     write_conversation(None, conversation_history_for_output, current_remove_reasoning,
                                         current_remove_em_dash, current_remove_asterisks,
                                         current_remove_asterisk_space_asterisk, current_remove_all_asterisks,
                                         current_ensure_space_after_line_break, current_remove_markdown,
-                                        current_output_format, task_id, api_slot_idx_for_output_file=None)
+                                        current_output_format, task_id, api_slot_idx_for_output_file=None,
+                                        mask_greeting=has_greeting, leading_placeholder=leading_placeholder)
                                     app_state.completed_task_ids.add(task_id)
                                     log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
                                     # --- Quality Scoring ---
                                     if app_state.quality_enabled:
                                         try:
                                             quality_result = quality.score_conversation(
-                                                conversation_history_for_output,
+                                                # The greeting is not a reply, so score from the first user turn
+                                                conversation_history_for_output[1:] if has_greeting else conversation_history_for_output,
                                                 task_id,
                                                 thread_id,
                                                 api_slot_idx=api_slot_idx_for_this_task,
@@ -1027,8 +1111,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {expected_messages} messages, got {actual_messages}. NOT saving to output.jsonl.", "WARNING")
                             # Do NOT add to completed_task_ids - this task should be retried.
+                            # Opening mode marks a task failed once its requeues run out, so it stays retryable
+                            if has_greeting:
+                                _requeue_or_fail(q, task, task_id, thread_id,
+                                                 f"incomplete, {actual_messages}/{expected_messages} messages")
                             # If the host is down, requeue it so it's retried once the host recovers
-                            if api_host_is_down(worker_api_slot):
+                            elif api_host_is_down(worker_api_slot):
                                 if requeue_task(q, task, task_id):
                                     log_message(f"Thread {thread_id}: API Slot {worker_api_slot+1} down; requeued incomplete task {task_id} for retry.", "WARNING")
                                 else:

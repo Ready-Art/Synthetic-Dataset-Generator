@@ -7,6 +7,7 @@ OpenAI-compatible server (a replacement for requests.post) that records every re
 each reply from the request's content, so retries cannot shift which reply goes where.
 Exits non-zero if any check fails.
 """
+import ast
 import atexit
 import json
 import os
@@ -547,6 +548,249 @@ def test_opening_task_helpers():
           mismatch({'prompts.opening_mode': True}, False) is not None)
 
 
+# --- (3) Opening mode through the worker ------------------------------------------------------
+
+BOOK_CHUNK = "Captain Harrow counted the lifeboats twice before the storm reached the Meridian."
+OPENING_BOOK_TASK = ("opening_book.txt_chunk_at_0", "book.txt", 0, "Captain Harrow counted.", BOOK_CHUNK)
+OPENING_TASK = ("opening_0", "opening", 0, "", "")
+
+
+def opening_kwargs(**overrides):
+    kwargs = dict(opening_mode_local=True, greeting_prompt_local=GREETING_PROMPT,
+                  first_line_prompt_local=FIRST_LINE_PROMPT, placeholder_share_local=0.0)
+    kwargs.update(overrides)
+    return kwargs
+
+
+def run_opening(task=OPENING_TASK, **overrides):
+    return run_worker(task, **opening_kwargs(**overrides))
+
+
+def roles(body):
+    return [m["role"] for m in body["messages"]]
+
+
+def test_opening_requests():
+    reset_state()
+    left, unfinished = run_opening(OPENING_BOOK_TASK, current_num_turns=2)
+    check("opening task at num_turns 2 sends greeting, first line, answer, continuation, answer",
+          ROUTER.kinds() == ["greeting", "first_line", "answer", "continuation", "answer"])
+    greet, line = ROUTER.bodies("greeting")[0], ROUTER.bodies("first_line")[0]
+    answer1, cont, answer2 = ROUTER.bodies("answer")[0], ROUTER.bodies("continuation")[0], ROUTER.bodies("answer")[1]
+    check("greeting request is [system, user]", roles(greet) == ["system", "user"])
+    check("first-line request is [system, user(greeting)]",
+          roles(line) == ["system", "user"] and line["messages"][1]["content"] == GOOD_GREETING)
+    check("first-line request does not carry the scene prompt",
+          "SCENE: a ferry landing" not in json.dumps(line["messages"]))
+    check("answer request is [system, assistant, user, user]",
+          roles(answer1) == ["system", "assistant", "user", "user"]
+          and answer1["messages"][1]["content"] == GOOD_GREETING
+          and answer1["messages"][2]["content"] == GOOD_LINE)
+    check("continuation request is [system, assistant, user, assistant, user]",
+          roles(cont) == ["system", "assistant", "user", "assistant", "user"])
+    check("second answer request is [system, assistant, user, assistant, user, user]",
+          roles(answer2) == ["system", "assistant", "user", "assistant", "user", "user"])
+    check("only the greeting request carries the book chunk",
+          [kind for kind, body in ROUTER.requests if BOOK_CHUNK in json.dumps(body)] == ["greeting"])
+    check("no sent message carries a train key",
+          all(set(m) == {"role", "content"} for _, body in ROUTER.requests for m in body["messages"]))
+    check("only the existing answer path reads the response cache, once per answer request",
+          [c[0] for c in CACHE_CALLS] == ["get"] * len(ROUTER.bodies("answer")))
+    check("opening worker calls task_done once per task", unfinished == 0 and left == [])
+
+
+def test_opening_rows():
+    for turns, shape in ((1, ["gpt", "human", "gpt"]), (2, ["gpt", "human", "gpt", "human", "gpt"])):
+        reset_state()
+        left, unfinished = run_opening(OPENING_BOOK_TASK, current_num_turns=turns)
+        rows = read_rows()
+        convo = rows[0]["conversations"] if rows else []
+        check(f"num_turns {turns}: one row shaped {', '.join(shape)}",
+              len(rows) == 1 and [m["from"] for m in convo] == shape)
+        check(f"num_turns {turns}: greeting carries train false and nothing else does",
+              convo and convo[0].get("train") is False and all("train" not in m for m in convo[1:]))
+        check(f"num_turns {turns}: the book chunk appears in no row", BOOK_CHUNK not in json.dumps(rows))
+        check(f"num_turns {turns}: task completed and no longer pending",
+              app_state.completed_task_ids == {OPENING_BOOK_TASK[0]} and not app_state.pending_task_ids
+              and unfinished == 0 and left == [])
+    check("row id is the opening task id", rows[0]["id"] == OPENING_BOOK_TASK[0])
+    check("row's first message is the greeting, second the first line",
+          rows[0]["conversations"][0]["value"].startswith("Rain drums")
+          and rows[0]["conversations"][1]["value"].startswith("I hurry down the ramp."))
+
+    reset_state()
+    run_opening(placeholder_share_local=1.0)
+    convo = read_rows()[0]["conversations"]
+    check("placeholder share 1.0: the row starts with human [Start a new chat]",
+          convo[0] == {"from": "human", "value": "[Start a new chat]"})
+    check("placeholder share 1.0: the greeting follows with train false",
+          convo[1]["from"] == "gpt" and convo[1].get("train") is False
+          and [m["from"] for m in convo] == ["human", "gpt", "human", "gpt"])
+    check("placeholder is never sent to the server", "Start a new chat" not in json.dumps(ROUTER.requests))
+    reset_state()
+    run_opening(placeholder_share_local=0.0)
+    check("placeholder share 0.0: no placeholder", read_rows()[0]["conversations"][0]["from"] == "gpt")
+
+
+def test_opening_failures():
+    scenarios = [
+        ("greeting exhausted", {"greeting": ["I cannot help with that."]}, 1),
+        ("first line exhausted", {"first_line": ["I cannot help with that."]}, 1),
+        ("greeting and first line but no reply", {"answer": [(500, "server error")]}, 1),
+        ("failure on the last answer at num_turns 2",
+         {"answer": ["She nods. \"First reply.\"", (500, "server error")]}, 2),
+        # Ends on a reply with two assistant messages: only the greeting-aware count rejects it.
+        ("continuation exhausted at num_turns 2", {"continuation": ["I cannot help with that."]}, 2),
+    ]
+    for name, script, turns in scenarios:
+        for share in (0.0, 1.0):
+            label = f"{name}, placeholder share {share}"
+            reset_state()
+            ROUTER.script.update(script)
+            left, unfinished = run_opening(current_num_turns=turns, placeholder_share_local=share)
+            check(f"{label}: no row written", read_rows() == [])
+            # The worker takes the sentinel next and exits, so a requeued task is what is left.
+            check(f"{label}: task requeued", left == [OPENING_TASK[0]] and unfinished == 0)
+            check(f"{label}: task not completed", not app_state.completed_task_ids)
+            reset_state()
+            ROUTER.script.update(script)
+            g.MAX_TASK_REQUEUES = 0
+            left, unfinished = run_opening(current_num_turns=turns, placeholder_share_local=share)
+            check(f"{label}: past MAX_TASK_REQUEUES the task is failed and no longer pending",
+                  app_state.failed_task_ids == {OPENING_TASK[0]} and not app_state.pending_task_ids
+                  and left == [] and unfinished == 0 and read_rows() == [])
+
+    reset_state()
+    ROUTER.on_request = lambda kind, body: setattr(app_state, "stop_processing", kind == "greeting" or app_state.stop_processing)
+    left, unfinished = run_opening()
+    check("stop during the greeting request: no first-line request", ROUTER.kinds() == ["greeting"])
+    check("stop during the greeting request: no row", read_rows() == [] and not app_state.completed_task_ids)
+    check("stop during the greeting request: task_done still balanced", unfinished == 0)
+
+
+def test_opening_speakers():
+    def greeting_text():
+        return ROUTER.bodies("greeting")[0]["messages"][1]["content"]
+
+    reset_state()
+    run_opening(character_list=CHARACTERS, num_characters_local=2)
+    check("several characters: the narrator speaks and brings in each by name",
+          "as the narrator, bringing Ines and Oren into the scene." in greeting_text())
+    check("several characters: both profiles are in the scene prompt",
+          all(f"Name: {n}" in ROUTER.bodies("greeting")[0]["messages"][0]["content"] for n in ("Ines", "Oren")))
+    reset_state()
+    CONFIG['prompts.character.include_names_in_prompt'] = False
+    run_opening(character_list=CHARACTERS, num_characters_local=2)
+    check("several characters without names: the narrator brings in each character described above",
+          "the narrator, bringing each character described above into the scene" in greeting_text())
+    reset_state()
+    CONFIG['prompts.character.include_names_in_prompt'] = False
+    run_opening()
+    check("one character without names: the character described above",
+          "as the character described above." in greeting_text())
+    reset_state()
+    run_opening()
+    check("one character: speaks as their name", "Open the scene as Ines." in greeting_text())
+    reset_state()
+    run_opening(enable_character_engine_local=False)
+    check("character engine off: the character you are playing",
+          "as the character you are playing." in greeting_text())
+    reset_state()
+    unnamed = [dict(CHARACTERS[0], name="  "), CHARACTERS[1]]
+    run_opening(character_list=unnamed, num_characters_local=2)
+    check("a profile skipped for an empty name is not a speaker: Oren speaks alone",
+          "Open the scene as Oren." in greeting_text())
+
+    profile_greeting = "Ines looks up from the mooring rope. \"You're late. Get in.\""
+    with_greeting = [dict(CHARACTERS[0], greeting=profile_greeting), CHARACTERS[1]]
+    reset_state()
+    run_opening(OPENING_BOOK_TASK, character_list=with_greeting)
+    rows = read_rows()
+    check("one character with a profile greeting: no greeting request",
+          ROUTER.kinds() == ["first_line", "answer"])
+    check("one character with a profile greeting: it is the first message, masked",
+          rows and rows[0]["conversations"][0]["value"].startswith("Ines looks up from the mooring rope.")
+          and rows[0]["conversations"][0].get("train") is False)
+    check("profile greeting: the first-line call answers it",
+          ROUTER.bodies("first_line")[0]["messages"][1]["content"] == profile_greeting)
+    check("profile greeting: no request carries the book chunk", BOOK_CHUNK not in json.dumps(ROUTER.requests))
+    reset_state()
+    run_opening(character_list=with_greeting, num_characters_local=2)
+    check("several characters: a profile greeting is not used", ROUTER.kinds()[0] == "greeting")
+
+
+def test_opening_quality_scoring():
+    reset_state()
+    scored = []
+    real_score = g.quality.score_conversation
+    g.quality.score_conversation = lambda conv, *a, **k: (scored.append(conv), {"composite": 90, "method": "stub", "flags": []})[1]
+    app_state.quality_enabled = True
+    try:
+        run_opening(current_num_turns=2)
+        check("opening rows are scored from the first user turn, without the greeting",
+              len(scored) == 1 and [m["role"] for m in scored[0]] == ["user", "assistant", "user", "assistant"]
+              and scored[0][0]["content"] == GOOD_LINE)
+        reset_state()
+        del scored[:]
+        run_worker(chunk_task(), current_num_turns=1)
+        check("ordinary rows are scored whole", len(scored) == 1 and [m["role"] for m in scored[0]] == ["user", "assistant"])
+    finally:
+        g.quality.score_conversation = real_score
+        app_state.quality_enabled = False
+
+
+def test_config_defaults():
+    import yaml
+    with open(os.path.join(REPO, "config", "config.yml"), encoding="utf-8") as f:
+        shipped = yaml.safe_load(f)
+    check("shipped config has opening mode off", shipped["prompts"]["opening_mode"] is False)
+    check("shipped config's greeting prompt is the default", shipped["prompts"]["greeting"] == g.DEFAULT_GREETING_PROMPT)
+    check("shipped config's first-line prompt is the default", shipped["prompts"]["first_line"] == g.DEFAULT_FIRST_LINE_PROMPT)
+    check("shipped config's placeholder share is 0", shipped["generation"]["placeholder_share"] == 0.0)
+
+
+def _function(tree, name):
+    return next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name)
+
+
+def _calls(node, name):
+    return [n for n in ast.walk(node) if isinstance(n, ast.Call)
+            and ((isinstance(n.func, ast.Name) and n.func.id == name)
+                 or (isinstance(n.func, ast.Attribute) and n.func.attr == name))]
+
+
+def test_generate_wiring():
+    with open(os.path.join(REPO, "generate.py"), encoding="utf-8") as f:
+        generate_tree = ast.parse(f.read())
+    with open(os.path.join(REPO, "generation.py"), encoding="utf-8") as f:
+        generation_tree = ast.parse(f.read())
+    start = _function(generate_tree, "start_processing")
+    threads = [c for c in _calls(start, "Thread")
+               if any(k.arg == "target" and isinstance(k.value, ast.Name) and k.value.id == "worker" for k in c.keywords)]
+    passed = set()
+    for call in threads:
+        for kw in call.keywords:
+            if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
+                passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
+    check("start_processing passes the four opening keywords to the worker",
+          passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local"})
+    conflict = _calls(start, "opening_mode_conflict")
+    questions_read = [c for c in _calls(start, "read_txt")]
+    check("start_processing checks opening_mode_conflict before reading the questions file",
+          conflict and questions_read and conflict[0].lineno < questions_read[0].lineno)
+    check("start_processing passes the run's duplication flag to opening_mode_conflict",
+          conflict and isinstance(conflict[0].args[2], ast.Name) and conflict[0].args[2].id == "master_duplication_enabled")
+    check("start_processing queues book-less opening tasks with enqueue_opening_tasks",
+          len(_calls(start, "enqueue_opening_tasks")) == 1)
+    check("start_processing prefixes opening chunk-task IDs with opening_",
+          any(isinstance(n, ast.Constant) and n.value == "opening_" for n in ast.walk(start)))
+    check("load_generation_state uses opening_mode_mismatch",
+          len(_calls(_function(generate_tree, "load_generation_state"), "opening_mode_mismatch")) == 1)
+    save = _function(generation_tree, "save_generation_state")
+    check("save_generation_state writes prompts.opening_mode in the snapshot",
+          any(isinstance(n, ast.Constant) and n.value == "prompts.opening_mode" for n in ast.walk(save)))
+
+
 def main():
     print("(1) completion check")
     test_conversation_is_complete()
@@ -557,6 +801,14 @@ def main():
     test_opening_payloads()
     test_opening_rejections()
     test_opening_task_helpers()
+    print("(3) opening mode through the worker")
+    test_opening_requests()
+    test_opening_rows()
+    test_opening_failures()
+    test_opening_speakers()
+    test_opening_quality_scoring()
+    test_config_defaults()
+    test_generate_wiring()
     if FAILURES:
         print(f"\n{len(FAILURES)} opening-mode test(s) failed")
         sys.exit(1)

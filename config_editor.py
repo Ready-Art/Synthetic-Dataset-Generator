@@ -16,6 +16,7 @@ from tkinter import ttk, scrolledtext, messagebox
 
 import api_profiles
 from config_loader import sanitize_input
+from generation import DEFAULT_FIRST_LINE_PROMPT, DEFAULT_GREETING_PROMPT
 from logging_config import log_message
 from api_handler import global_rate_limiter
 from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
@@ -344,6 +345,7 @@ class ConfigEditor(tk.Toplevel):
         add_gen_setting("Context Size (chars):", 'context_size_var', "(Total size of text (subject + surrounding) for Q/A gen if not using questions.txt)")
         add_gen_setting("Max Attempts (per Q/A turn):", 'max_attempts_var', "(Main retries for a valid answer per turn per API; also for Q/UserCont/SlopFixer API calls)") # MODIFIED HELP TEXT
         add_gen_setting("Number of Turns (per conversation):", 'num_turns_var', "(Total Q/A pairs, e.g., 1 for single Q/A)")
+        add_gen_setting("Placeholder Share (0 to 1):", 'placeholder_share_var', "(Opening mode: share of rows that start with a [Start a new chat] user turn, as SillyTavern's Strict mode sends)")
         add_gen_setting("History Size (questions):", 'history_size_var', "(# recent initial questions to avoid repetition in question gen)")
         add_gen_setting("API Request Timeout (seconds):", 'api_request_timeout_var', "(For connect and read timeout, e.g., 300)")
         add_gen_setting("Max Newlines (Malformed):", 'max_newlines_malformed_var', "(Max newlines in a reply before it's considered malformed)")
@@ -443,6 +445,7 @@ class ConfigEditor(tk.Toplevel):
         # Define Boolean variables BEFORE they are used in Checkbuttons
         self.use_questions_file_var_editor = tk.BooleanVar()
         self.use_variable_system_var_editor = tk.BooleanVar()
+        self.opening_mode_var_editor = tk.BooleanVar()
 
         prompts_row_idx = 0
 
@@ -458,6 +461,7 @@ class ConfigEditor(tk.Toplevel):
 
         wrapped_checkbutton(self.prompts_content_frame, text=f"Use '{os.path.basename(QUESTIONS_FILE_PATH)}' for questions (disables subject/context chunking)", variable=self.use_questions_file_var_editor).grid(row=prompts_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew"); prompts_row_idx+=1
         wrapped_checkbutton(self.prompts_content_frame, text="Use Variable System Prompts (randomly chosen from list below)", variable=self.use_variable_system_var_editor).grid(row=prompts_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew"); prompts_row_idx+=1
+        wrapped_checkbutton(self.prompts_content_frame, text="Opening Mode (each sample starts with the character's greeting, then a first line from the user's seat; runs with or without input files; not with the questions file or duplication mode)", variable=self.opening_mode_var_editor).grid(row=prompts_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew"); prompts_row_idx+=1
 
         add_prompt_text_area("Top Level System Prompt (Applied to ALL prompts):", 'top_level_system_prompt_text', height=12)
         add_prompt_text_area("Base System Prompt (used if not variable, or as one of variations):", 'system_base_prompt_text', height=12)
@@ -465,6 +469,8 @@ class ConfigEditor(tk.Toplevel):
         add_prompt_text_area("Question Prompt (use {recent_questions}, {subject}, {context}):", 'question_prompt_text', height=12)
         add_prompt_text_area("Answer Prompt (instruction for the assistant's turn):", 'answer_prompt_text', height=12)
         add_prompt_text_area("User Continuation Prompt (use {last_assistant_message} for user's next turn):", 'user_continuation_prompt_text', height=12)
+        add_prompt_text_area("Greeting Prompt (opening mode; use {speaker} and {context}, the book chunk when there is one; saved exactly as typed):", 'greeting_prompt_text', height=8)
+        add_prompt_text_area("First Line Prompt (opening mode; system prompt for the user's first line, use {style}; saved exactly as typed):", 'first_line_prompt_text', height=8)
 
         # --- NEW: Lore Tab ---
         self.lore_tab = ttk.Frame(self.notebook)
@@ -1242,6 +1248,7 @@ class ConfigEditor(tk.Toplevel):
                 'subject_size': int(self.subject_size_var.get()), 'context_size': int(self.context_size_var.get()),
                 'max_attempts': int(self.max_attempts_var.get()),
                 'num_turns': int(self.num_turns_var.get()),
+                'placeholder_share': float(self.placeholder_share_var.get() or 0),
                 'history_size': int(self.history_size_var.get()),
                 'num_random_chunks': int(self.num_random_chunks_var.get()),
                 'sanitize_input_max_length': int(self.sanitize_input_max_length_var.get()),
@@ -1283,6 +1290,10 @@ class ConfigEditor(tk.Toplevel):
                 'answer': sanitize_input(self.answer_prompt_text.get("1.0", tk.END).strip()),
                 'user_continuation_prompt': sanitize_input(self.user_continuation_prompt_text.get("1.0", tk.END).strip()),
                 'use_questions_file': self.use_questions_file_var_editor.get(),
+                # Opening-mode prompts are saved as typed: quotes and markup are legitimate in roleplay prompts
+                'opening_mode': self.opening_mode_var_editor.get(),
+                'greeting': self.greeting_prompt_text.get("1.0", "end-1c"),
+                'first_line': self.first_line_prompt_text.get("1.0", "end-1c"),
                 'lore': sanitize_input(self.lore_text.get("1.0", tk.END).strip()),
             'character': {
                 'enabled': self.enable_character_engine_var_editor.get(),
@@ -1303,10 +1314,11 @@ class ConfigEditor(tk.Toplevel):
                         'backstory': sanitize_input(data['backstory'].get().strip()),
                         'personality': sanitize_input(data['personality'].get().strip()),
                         'setting': sanitize_input(data['setting'].get().strip()) if self.enable_setting_selection_var_editor.get() else '',
-                        'class': sanitize_input(data['class'].get().strip())
+                        'class': sanitize_input(data['class'].get().strip()),
+                        'greeting': data['greeting'].get().strip(),  # Saved as typed, like the opening-mode prompts
                     }
                         for data in self.character_entries
-                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender'])
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
                     ]
                 },
                 'emotional_states': {
@@ -1611,6 +1623,7 @@ class ConfigEditor(tk.Toplevel):
             self.enable_thinking_mode_var.set(new_val)
             self.max_attempts_var.set(str(gen_config.get('max_attempts', samplers_config_load.get('max_attempts',5))))
             self.num_turns_var.set(str(gen_config.get('num_turns', 1)))
+            self.placeholder_share_var.set(str(gen_config.get('placeholder_share', 0.0)))
             self.history_size_var.set(str(gen_config.get('history_size', samplers_config_load.get('history_size',10))))
             self.api_request_timeout_var.set(str(gen_config.get('api_request_timeout', 300)))
             self.remove_reasoning_var_editor.set(gen_config.get('remove_reasoning', False))
@@ -1649,6 +1662,9 @@ class ConfigEditor(tk.Toplevel):
             self.question_prompt_text.delete(1.0, tk.END); self.question_prompt_text.insert(tk.END, prompts_config.get('question', 'Generate a question... {subject} ... {context} ... {recent_questions}'))
             self.answer_prompt_text.delete(1.0, tk.END); self.answer_prompt_text.insert(tk.END, prompts_config.get('answer', 'Answer the question.'))
             self.user_continuation_prompt_text.delete(1.0, tk.END); self.user_continuation_prompt_text.insert(tk.END, prompts_config.get('user_continuation_prompt', 'Continue based on: {last_assistant_message}'))
+            self.opening_mode_var_editor.set(prompts_config.get('opening_mode', False))
+            self.greeting_prompt_text.delete(1.0, tk.END); self.greeting_prompt_text.insert(tk.END, prompts_config.get('greeting', DEFAULT_GREETING_PROMPT))
+            self.first_line_prompt_text.delete(1.0, tk.END); self.first_line_prompt_text.insert(tk.END, prompts_config.get('first_line', DEFAULT_FIRST_LINE_PROMPT))
 
             self.lore_text.delete(1.0, tk.END)
             self.lore_text.insert(tk.END, config.get('prompts', {}).get('lore', ''))
@@ -1691,6 +1707,7 @@ class ConfigEditor(tk.Toplevel):
                 old_traits = character_conf.get('traits', [])
                 old_setting = character_conf.get('setting', [])
                 old_class = character_conf.get('class', [])
+                old_greeting = character_conf.get('greeting', [])
 
                 if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class, old_genders]):
                     max_len = max(
@@ -1711,7 +1728,8 @@ class ConfigEditor(tk.Toplevel):
                             'personality': old_personality[i] if i < len(old_personality) else '',
                             'traits': old_traits[i] if i < len(old_traits) else '',
                             'setting': old_setting[i] if i < len(old_setting) else '',
-                            'class': old_class[i] if i < len(old_class) else ''
+                            'class': old_class[i] if i < len(old_class) else '',
+                            'greeting': old_greeting[i] if i < len(old_greeting) else ''
                         })
 
             # Construct loaded cards without ever managing the entire list.
@@ -1818,6 +1836,7 @@ class ConfigEditor(tk.Toplevel):
             int(self.db_port_var.get())
             int(self.db_pool_size_var.get())
             num_turns_val = int(self.num_turns_var.get()); assert num_turns_val > 0, "Number of turns must be > 0"
+            placeholder_share_val = float(self.placeholder_share_var.get() or 0); assert 0 <= placeholder_share_val <= 1, "Placeholder share must be between 0 and 1"
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())
             float(self.temperature_var.get()); float(self.top_p_var.get()); float(self.min_p_var.get()); int(self.top_k_var.get())
             float(self.repetition_penalty_var.get());
@@ -1893,7 +1912,7 @@ class ConfigEditor(tk.Toplevel):
         for data in self.character_entries:
             if visible_only and data['frame'].winfo_manager() != 'pack':
                 continue
-            for key in ('clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting'):
+            for key in ('clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'greeting'):
                 widget = data[f'{key}_widget']
                 if widget.winfo_exists():
                     data[key].set(widget.get('1.0', tk.END).strip())
@@ -2016,7 +2035,8 @@ class ConfigEditor(tk.Toplevel):
                                      ("backstory", "Backstory:", 3),
                                      ("personality", "Personality:", 3),
                                      ("traits", "Traits:", 2),
-                                     ("setting", "Setting:", 2)):
+                                     ("setting", "Setting:", 2),
+                                     ("greeting", "Greeting (optional, opening mode):", 3)):
             label = ttk.Label(card_frame, text=caption, font=label_font, foreground='#e0e0e0')
             label.grid(row=next_row, column=0, sticky="w", padx=4, pady=(8, 3))
             var = tk.StringVar(value=character_data.get(key, ''))
