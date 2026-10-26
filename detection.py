@@ -27,11 +27,11 @@ def _candidate_patterns(phrases, cleaned_sentences):
     """Returns, in list order, the compiled phrases whose index word appears in a sentence.
     A phrase only matches on word boundaries, so each of its words must appear whole."""
     compiled, by_word, no_words = _compile_phrases(tuple(phrases))
-    if not all(s.isascii() for s in cleaned_sentences):
-        return compiled
     candidates = set(no_words)
     for sentence in cleaned_sentences:
         for word in set(re.findall(r'\w+', sentence)):
+            if not word.isascii():
+                return compiled  # see _compile_phrases: search every phrase
             candidates.update(by_word.get(word, ()))
     return [compiled[i] for i in sorted(candidates)]
 
