@@ -254,6 +254,21 @@ def verify_turn_completion(conversation_history, expected_turns):
     return complete_turns >= expected_turns, complete_turns, expected_turns
 
 
+def conversation_is_complete(conversation_history, num_turns, has_greeting=False):
+    """True when the conversation ends on an assistant reply and holds at least `num_turns` replies.
+
+    A greeting that opens the conversation is an assistant message but not a reply, so it is not
+    counted. Counting replies instead of messages keeps a conversation that failed on its last
+    answer from passing: greeting, user is two messages but no reply.
+    """
+    if not conversation_history or conversation_history[-1].get("role") != "assistant":
+        return False
+    replies = sum(1 for msg in conversation_history if msg.get("role") == "assistant")
+    if has_greeting:
+        replies -= 1
+    return replies >= num_turns
+
+
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
            use_variable_system_local,
            all_api_configs_local,
@@ -909,7 +924,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         expected_messages = current_num_turns * 2
                         actual_messages = len(conversation_history_for_output)
 
-                        if actual_messages >= expected_messages:
+                        if conversation_is_complete(conversation_history_for_output, current_num_turns, has_greeting=False):
                             with output_data_lock:
                                 if task_id not in app_state.completed_task_ids:
                                     write_conversation(None, conversation_history_for_output, current_remove_reasoning,
@@ -2728,12 +2743,19 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
                        task_id_for_output="unknown",
                        api_slot_idx_for_output_file=None, # For per-API files in duplication mode
                        is_duplication_turn=False, # Flag if this write is for a single turn in duplication mode
-                       turn_number_for_duplication=0 # Turn number (1-based) for duplication mode output ID
+                       turn_number_for_duplication=0, # Turn number (1-based) for duplication mode output ID
+                       *,
+                       mask_greeting=False,
+                       leading_placeholder=None,
                        ):
     """
     Writes a completed conversation (or a single turn in duplication mode) to the output JSONL file.
     - If api_slot_idx_for_output_file is provided AND master duplication is ON, writes to a per-API file.
     - Otherwise (non-duplication, or duplication off), writes to the main output.jsonl.
+    - mask_greeting: mark the first "gpt" record with "train": false, so trainers that honour a
+      per-message training flag (Axolotl's message_field_training) keep it out of the loss.
+    - leading_placeholder: put a "human" record with this text before the rest of the conversation.
+    The history passed in is not modified.
     """
     processed_conversation_turns = []
     for turn in conversation_history:
@@ -2756,6 +2778,14 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         # Convert roles for ShareGPT format
         sg_role = "human" if role == "user" else "gpt" if role == "assistant" else role
         processed_conversation_turns.append({"from": sg_role, "value": processed_content})
+
+    if mask_greeting:
+        for record in processed_conversation_turns:
+            if record["from"] == "gpt":
+                record["train"] = False
+                break
+    if leading_placeholder is not None:
+        processed_conversation_turns.insert(0, {"from": "human", "value": leading_placeholder})
 
     output_data_id = task_id_for_output
     if is_duplication_turn and app_state.master_duplication_enabled_var.get(): # Check global var for safety
