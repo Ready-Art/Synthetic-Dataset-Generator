@@ -1,10 +1,39 @@
 # detection.py
+import collections
+import functools
 import re
 import time
 
 # These will be set by generate.py after import
 issue_timestamps = None
 issue_timestamps_lock = None
+
+@functools.lru_cache(maxsize=32)
+def _compile_phrases(phrases):
+    """Compiles a phrase list once, and indexes each phrase by its rarest word in the list."""
+    compiled = [(p, re.compile(r'\b' + re.escape(p) + r'\b', re.IGNORECASE)) for p in phrases]
+    phrase_words = [set(re.findall(r'\w+', p)) for p in phrases]
+    word_counts = collections.Counter(w for words in phrase_words for w in words)
+    by_word, no_words = {}, []
+    for idx, words in enumerate(phrase_words):
+        # Non-ASCII words are always searched: IGNORECASE folds some letters (ſ/s, ı/i, ς/σ) that lower() keeps apart
+        if words and all(w.isascii() for w in words):
+            by_word.setdefault(min(words, key=word_counts.__getitem__), []).append(idx)
+        else:
+            no_words.append(idx)
+    return compiled, by_word, no_words
+
+def _candidate_patterns(phrases, cleaned_sentences):
+    """Returns, in list order, the compiled phrases whose index word appears in a sentence.
+    A phrase only matches on word boundaries, so each of its words must appear whole."""
+    compiled, by_word, no_words = _compile_phrases(tuple(phrases))
+    if not all(s.isascii() for s in cleaned_sentences):
+        return compiled
+    candidates = set(no_words)
+    for sentence in cleaned_sentences:
+        for word in set(re.findall(r'\w+', sentence)):
+            candidates.update(by_word.get(word, ()))
+    return [compiled[i] for i in sorted(candidates)]
 
 def is_refusal(answer, refusal_phrases_list):
     PUNCTUATION = '.,!?\"\'*()[]{};:'
@@ -27,8 +56,8 @@ def is_refusal(answer, refusal_phrases_list):
     processed_phrases = [p.lower().strip() for p in refusal_phrases_list if p.strip()]
     cleaned_sentences = [clean_sentence_for_match(s) for s in original_sentences]
 
-    # Pre-compile regex patterns ONCE per call
-    compiled_patterns = [(p, re.compile(r'\b' + re.escape(p) + r'\b', re.IGNORECASE)) for p in processed_phrases]
+    # Compiled once per phrase list; only phrases that could match are searched
+    compiled_patterns = _candidate_patterns(processed_phrases, cleaned_sentences)
 
     detected_info = []
     for phrase_lower, pattern in compiled_patterns:
@@ -66,8 +95,8 @@ def is_user_speaking(answer, user_speaking_phrases_list):
     processed_phrases = [p.lower().strip() for p in user_speaking_phrases_list if p.strip()]
     cleaned_sentences = [clean_sentence_for_match(s) for s in original_sentences]
 
-    # Pre-compile regex patterns ONCE per call
-    compiled_patterns = [(p, re.compile(r'\b' + re.escape(p) + r'\b', re.IGNORECASE)) for p in processed_phrases]
+    # Compiled once per phrase list; only phrases that could match are searched
+    compiled_patterns = _candidate_patterns(processed_phrases, cleaned_sentences)
 
     detected_info = []
     for phrase_lower, pattern in compiled_patterns:
@@ -104,8 +133,8 @@ def is_slop(answer, slop_phrases_list):
     processed_phrases = [p.lower().strip() for p in slop_phrases_list if p.strip()]
     cleaned_sentences = [clean_sentence_for_match(s) for s in processed_original_sentences]
 
-    # Pre-compile regex patterns ONCE per call
-    compiled_patterns = [(p, re.compile(r'\b' + re.escape(p) + r'\b', re.IGNORECASE)) for p in processed_phrases]
+    # Compiled once per phrase list; only phrases that could match are searched
+    compiled_patterns = _candidate_patterns(processed_phrases, cleaned_sentences)
 
     detected_info = []
     for phrase_lower, pattern in compiled_patterns:
@@ -143,8 +172,8 @@ def is_anti_slop(answer, anti_slop_phrases_list):
     processed_phrases = [p.lower().strip() for p in anti_slop_phrases_list if p.strip()]
     cleaned_sentences = [clean_sentence_for_match(s) for s in processed_original_sentences]
 
-    # Pre-compile regex patterns ONCE per call
-    compiled_patterns = [(p, re.compile(r'\b' + re.escape(p) + r'\b', re.IGNORECASE)) for p in processed_phrases]
+    # Compiled once per phrase list; only phrases that could match are searched
+    compiled_patterns = _candidate_patterns(processed_phrases, cleaned_sentences)
 
     detected_info = []
     for phrase_lower, pattern in compiled_patterns:
