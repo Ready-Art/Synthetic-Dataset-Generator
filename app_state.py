@@ -107,7 +107,9 @@ quality_review_ids = set()  # task_ids flagged for human review
 quality_review_lock = Lock()
 master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
 live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
-bad_words_slots = frozenset()  # API slot indexes confirmed at run start to accept the slop list as vLLM bad_words
+bad_words_by_slot = {}  # API slot index -> the slop phrases (tuple) the run-start check confirmed that slot's vLLM server accepts as bad_words
+bad_words_run = 0  # incremented at each run start; a check thread publishes only while its run is current
+bad_words_lock = Lock()  # guards bad_words_by_slot and bad_words_run
 
 # --- dashboard widget handles (step 4) ---
 

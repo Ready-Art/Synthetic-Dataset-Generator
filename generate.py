@@ -752,14 +752,17 @@ def check_slop_bad_words(slot_idx, conf, phrases):
                                   "needs VLLM_MAX_NUM_BAD_WORDS or VLLM_MAX_BAD_WORDS_TOTAL_TOKENS raised on the server")
     return True, "INFO", f"vLLM accepts the slop list ({len(phrases)} phrases); sending it as bad_words"
 
-def enable_slop_bad_words(slots, phrases):
-    """Check each (slot_idx, conf) pair and publish the accepted slots in app_state.bad_words_slots."""
-    accepted = set()
+def enable_slop_bad_words(slots, phrases, run):
+    """Check each (slot_idx, conf) pair and publish each accepted slot, with the exact list checked, in
+    app_state.bad_words_by_slot. Stops without publishing once a later run start has replaced `run`."""
     for slot_idx, conf in slots:
         ok, level, detail = check_slop_bad_words(slot_idx, conf, phrases)
+        with app_state.bad_words_lock:
+            if app_state.bad_words_run != run:
+                return
+            if ok:
+                app_state.bad_words_by_slot = {**app_state.bad_words_by_slot, slot_idx: phrases}
         if ok:
-            accepted.add(slot_idx)
-            app_state.bad_words_slots = frozenset(accepted)
             log_message(f"API Slot {slot_idx+1}: {detail}.", level)
         else:
             log_message(f"API Slot {slot_idx+1}: slop list used for detection only, because {detail}.", level)
@@ -962,13 +965,17 @@ def start_processing():
 
     # The slop list is also sent as vLLM's bad_words by the worker slots (1-4) and the slop fixers (5-6)
     # that the check confirms. Until it has, they send none. It probes each server off the Tk thread so
-    # an unreachable host cannot freeze the GUI.
-    app_state.bad_words_slots = frozenset()
+    # an unreachable host cannot freeze the GUI; a new run number discards a previous run's check.
+    with app_state.bad_words_lock:
+        app_state.bad_words_run += 1
+        app_state.bad_words_by_slot = {}
+        bad_words_run = app_state.bad_words_run
     slop_phrases = slop_phrases_as_bad_words()
     if slop_phrases:
         bad_words_candidates = [(i, c) for i, c in enumerate(all_api_configs_runtime[:6])
                                 if c.get('url') and (c.get('enabled') if i < 4 else c.get('model'))]
-        threading.Thread(target=enable_slop_bad_words, args=(bad_words_candidates, slop_phrases), daemon=True).start()
+        threading.Thread(target=enable_slop_bad_words, args=(bad_words_candidates, slop_phrases, bad_words_run),
+                         daemon=True).start()
 
     master_duplication_enabled = app_state.master_duplication_enabled_var.get() 
 

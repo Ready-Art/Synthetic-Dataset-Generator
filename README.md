@@ -1073,7 +1073,9 @@ At run start, a background check confirms each enabled slot before it sends the 
 3. A one-token request carrying the whole list succeeds.
 
 A slot that fails any step uses the slop list for detection only, as before, and the log says why.
-Requests sent before the check finishes carry no `bad_words`.
+Requests sent before the check finishes carry no `bad_words`. A confirmed slot sends exactly the
+list the check tested: slop phrases edited during a run are used for detection at once, and as
+`bad_words` from the next run start.
 
 vLLM limits `bad_words` per request to 128 token sequences (`VLLM_MAX_NUM_BAD_WORDS`) and 1024
 tokens in total (`VLLM_MAX_BAD_WORDS_TOTAL_TOKENS`). Each phrase counts once without and once with

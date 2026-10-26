@@ -51,20 +51,22 @@ def sanitize_payload_for_endpoint(payload_dict, api_url, slot_idx):
 
 
 def slop_phrases_as_bad_words():
-    """detection.slop.phrases as a list of non-blank strings for vLLM's bad_words.
+    """detection.slop.phrases as a tuple of stripped, non-blank strings for vLLM's bad_words.
 
     Blank entries are dropped because vLLM rejects the whole request when an entry tokenizes to
     nothing (SamplingParams.update_from_tokenizer).
     """
-    return [str(p) for p in global_config.get('detection.slop.phrases', []) or [] if str(p).strip()]
+    return tuple(str(p).strip() for p in global_config.get('detection.slop.phrases', []) or [] if str(p).strip())
 
 
 def slop_bad_words(slot_idx):
-    """The slop list to send as bad_words from API slot `slot_idx`, or [] when the run-start check in
-    generate.py has not confirmed that slot as a vLLM server that accepts it."""
-    if slot_idx not in app_state.bad_words_slots:
-        return []
-    return slop_phrases_as_bad_words()
+    """The slop list to send as bad_words from API slot `slot_idx`: exactly the list the run-start check
+    in generate.py confirmed that slot's vLLM server accepts, or [] when it has not confirmed one.
+
+    Slop phrases edited mid-run reach bad_words at the next run start, not before, because vLLM
+    rejects every request whose list exceeds its per-request limits.
+    """
+    return list(app_state.bad_words_by_slot.get(slot_idx, ()))
 
 
 def check_budget_limit():
