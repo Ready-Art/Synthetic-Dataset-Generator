@@ -591,7 +591,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     api_slot_idx=q_gen_api_slot_idx,
                     current_max_attempts_param=current_max_attempts,
                     api_request_timeout_param=current_api_request_timeout,
-                    file_name=file_name
+                    file_name=file_name,
+                    refusal_phrases_local=current_refusal_phrases,
+                    slop_phrases_local=current_slop_phrases,
                 )
             
             if not initial_user_question:
@@ -867,6 +869,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     current_max_attempts_param=current_max_attempts,
                     api_request_timeout_param=current_api_request_timeout,
                     file_name=file_name,
+                    refusal_phrases_local=current_refusal_phrases,
+                    slop_phrases_local=current_slop_phrases,
                 )
 
                 if not user_continuation_reply:
@@ -1030,7 +1034,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       history_size_local_param,
                       raw_subject_chunk, raw_context_chunk,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                      file_name=""):
+                      file_name="", refusal_phrases_local=(), slop_phrases_local=()):
     """Generates an initial question using the LLM, with retries for API call failures."""
 
     if not api_url_local:
@@ -1227,6 +1231,15 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                         continue
                     else:
                         return None
+                refusal_detected, _ = detection.is_refusal(generated_question_text, refusal_phrases_local)
+                slop_detected, _ = detection.is_slop(generated_question_text, slop_phrases_local)
+                if refusal_detected or slop_detected:
+                    log_message(f"Thread {thread_id}: Question contains {'a refusal' if refusal_detected else 'slop'}. Snippet: '{generated_question_text[:100]}...'", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
 
                 # Update question history with timeout
                 lock_acquired_qh_update = app_state.question_history_lock.acquire(timeout=7.0)
@@ -1317,7 +1330,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
 def generate_user_continuation(system_prompt, conversation_history_for_llm, user_continuation_prompt_template,
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                               file_name=""):
+                               file_name="", refusal_phrases_local=(), slop_phrases_local=()):
     """Generates the user's continuation reply, with retries for API call failures."""
 
 
@@ -1459,6 +1472,15 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                         continue
                     else:
                         return None  # Cap reached, abort continuation
+                refusal_detected, _ = detection.is_refusal(user_reply_text, refusal_phrases_local)
+                slop_detected, _ = detection.is_slop(user_reply_text, slop_phrases_local)
+                if refusal_detected or slop_detected:
+                    log_message(f"Thread {thread_id}: User reply contains {'a refusal' if refusal_detected else 'slop'}. Snippet: '{user_reply_text[:100]}...'", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
                 # --- FIX END ---
                 return user_reply_text
             else: # API call failed
