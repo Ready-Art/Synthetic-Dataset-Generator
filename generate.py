@@ -924,8 +924,8 @@ def start_processing():
     anti_slop_fixer_api_config_runtime = all_api_configs_runtime[5]
     # Define the param variable to match the runtime one
     anti_slop_fixer_api_config_param = anti_slop_fixer_api_config_runtime
-    if slop_fixer_api_config_runtime.get('url') and (not slop_fixer_api_config_runtime.get('model') or not slop_fixer_api_config_runtime.get('key')):
-        log_message("Warning: Slop Fixer API URL (API Slot 5) is set, but Model or Key is missing. Sentence-level slop fixing will be disabled.", "WARNING")
+    if slop_fixer_api_config_runtime.get('url') and not slop_fixer_api_config_runtime.get('model'):
+        log_message("Warning: Slop Fixer API URL (API Slot 5) is set, but Model is missing. Sentence-level slop fixing will be disabled.", "WARNING")
         slop_fixer_api_config_runtime['url'] = None 
     elif not slop_fixer_api_config_runtime.get('url'):
         log_message("Info: Slop Fixer API (API Slot 5) not configured. Fallback system prompt slop handling will be used if slop is detected.", "INFO")
