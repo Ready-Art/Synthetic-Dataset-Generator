@@ -344,7 +344,7 @@ Notes:
 
 **Params the request builders send** — a profile whose `allow` list omits one of these drops it
 before the request: `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `max_tokens`,
-`logit_bias`, `chat_template_kwargs`, `bad_words` (vLLM only, from `samplers.banned_words`).
+`logit_bias`, `chat_template_kwargs`, `bad_words` (vLLM only; see [Banning slop phrases at generation](#banning-slop-phrases-at-generation-vllm-only)).
 
 **Also recognised in an `allow` list** (passed straight through when a builder or a future change
 includes them): `frequency_penalty`, `presence_penalty`, `max_completion_tokens`, `stop`, `seed`,
@@ -584,7 +584,6 @@ samplers:
   max_tokens_user_reply: 256
   enable_thinking: "default"    # "default", "enable", or "disable"
   logit_bias: ""                # JSON format, e.g., {"15": 100}
-  banned_words: []              # vLLM only; sent as bad_words, e.g., ["ministrations", "shivers down"]
 
   # Slop Fixer LLM overrides (API Slot 5)
   slop_fixer_params:
@@ -606,8 +605,6 @@ samplers:
 ```
 
 - **`logit_bias`** — JSON object mapping token IDs to bias values. Passed directly to the API payload. Leave empty (`""`) to disable.
-- **`banned_words`** — *vLLM only.* A list of words or phrases the model may not generate, sent as vLLM's `bad_words` on question, answer and user-reply requests, and to the slop and anti-slop fixers so a rewrite cannot reintroduce a banned entry. vLLM bans each entry with and without a leading space, case-sensitively, so list each casing you need. For a phrase it blocks only the last token, once the earlier tokens have been generated: banning `"shivers down her spine"` stops `spine` after `shivers down her`, so the model may write `back` instead. Leave empty (`[]`) to disable.
-  - Other servers do not support it: llama.cpp ignores the field, and the hosted-API compatibility profiles drop it. At run start the generator checks each enabled worker slot (1–4) and each configured fixer slot (5–6), and logs a warning when the slot's profile drops `bad_words`, or when its server's `/v1/models` does not report `owned_by: "vllm"`.
 - **`enable_thinking`** — Controls chain-of-thought output in reasoning models:
   - `"default"` — Don't send `chat_template_kwargs` parameter
   - `"enable"` — Send `{"chat_template_kwargs": {"enable_thinking": true}}`
@@ -1059,6 +1056,37 @@ Call Slop Fixer LLM (API Slot 5) to rewrite paragraph
             └── All fixes exhausted → Accept with slop remaining
 ```
 
+### Banning slop phrases at generation (vLLM only)
+
+On a vLLM server, the slop list (`detection.slop.phrases`) is also sent as vLLM's `bad_words`. The
+model then avoids those phrases while it writes, with the whole conversation in context, and the
+slop fixer above only has to handle what still gets through. The list goes out with question,
+answer and user-reply requests (slots 1–4) and with the slop and anti-slop fixers' rewrites (slots
+5–6). There is no setting: it applies whenever the slop list is non-empty and a slot passes the
+check below.
+
+At run start, a background check confirms each enabled slot before it sends the list:
+
+1. The slot's API compatibility profile keeps `bad_words` (`openai_compatible` and a `custom`
+   profile listing it do; the hosted-API profiles drop it).
+2. `GET …/v1/models` reports `owned_by: "vllm"`.
+3. A one-token request carrying the whole list succeeds.
+
+A slot that fails any step uses the slop list for detection only, as before, and the log says why.
+Requests sent before the check finishes carry no `bad_words`.
+
+vLLM limits `bad_words` per request to 128 token sequences (`VLLM_MAX_NUM_BAD_WORDS`) and 1024
+tokens in total (`VLLM_MAX_BAD_WORDS_TOTAL_TOKENS`). Each phrase counts once without and once with
+a leading space, so a list longer than about 60 phrases may exceed them. vLLM then fails step 3:
+raise those environment variables on the vLLM server, or shorten the list.
+
+vLLM matches differently from slop detection:
+- It is case-sensitive: `Shivers down` at the start of a sentence is not banned by `shivers down`.
+  Detection still catches it.
+- For a phrase, vLLM blocks only its last token, once the earlier tokens have been generated.
+  Banning `shivers down her spine` stops `spine` after `shivers down her`, so the model may write
+  `back` instead.
+
 ### Anti-Slop Fixing Flow
 
 ```
@@ -1213,7 +1241,6 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in **Overview → Tools** to disable verbose logging |
 | **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
-| **`banned_words` ignored, or every request fails with HTTP 400** (`samplers.banned_words is set but only vLLM supports it` in the log) | Only vLLM honors `bad_words`; other servers ignore it, and a strict one may reject it. Point the slot at a vLLM server on the default `openai_compatible` profile, pick a compatibility profile that drops `bad_words`, or clear the list. |
 | **Reasoning models outputting thinking blocks** | Set `enable_thinking` to `"disable"` in samplers config to add `chat_template_kwargs` to API payload |
 | **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` field is populated in character entries |
 | **Characters not getting settings** | Ensure `setting_enabled: true` in the character config and that `setting` field is populated in character entries |
