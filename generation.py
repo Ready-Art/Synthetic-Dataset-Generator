@@ -818,7 +818,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
                                     if q.processed_tasks < q.total_tasks_for_progress:
                                         q.processed_tasks += 1
-                                        turn_incremented = True
+                                    # At the cap there is nothing to add; retrying would loop forever
+                                    turn_incremented = True
                                 finally:
                                     q.processed_tasks_lock.release()
                             else:
