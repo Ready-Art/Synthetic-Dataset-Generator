@@ -50,6 +50,18 @@ def sanitize_payload_for_endpoint(payload_dict, api_url, slot_idx):
     return api_profiles.apply_profile_for_slot(payload_dict, slot_idx, api_url)
 
 
+def configured_banned_words(sampler_settings):
+    """samplers.banned_words as a list of non-blank strings for vLLM's bad_words.
+
+    A bare string counts as one entry. Blank entries are dropped because vLLM rejects the whole
+    request when an entry tokenizes to nothing (SamplingParams.update_from_tokenizer).
+    """
+    words = sampler_settings.get('banned_words') or []
+    if isinstance(words, str):
+        words = [words]
+    return [str(w) for w in words if str(w).strip()]
+
+
 def check_budget_limit():
     if app_state.stop_processing:
         return False
@@ -1117,6 +1129,9 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     payload_dict['logit_bias'] = json.loads(logit_bias_str)
                 except json.JSONDecodeError:
                     log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
+            banned_words = configured_banned_words(sampler_settings_local)
+            if banned_words:
+                payload_dict['bad_words'] = banned_words # vLLM-only parameter; llama.cpp ignores it, restrictive API profiles drop it
             thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
             if thinking_mode == 'enable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
@@ -1398,6 +1413,9 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     payload_dict['logit_bias'] = json.loads(logit_bias_str)
                 except json.JSONDecodeError:
                     log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
+            banned_words = configured_banned_words(sampler_settings_local)
+            if banned_words:
+                payload_dict['bad_words'] = banned_words # vLLM-only parameter; llama.cpp ignores it, restrictive API profiles drop it
             thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
             if thinking_mode == 'enable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
@@ -1659,6 +1677,9 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 **final_slop_fixer_params,
                 "stream": False
             }
+            banned_words = configured_banned_words(global_config.get('samplers', {}))
+            if banned_words:
+                payload_data['bad_words'] = banned_words # vLLM-only parameter; keeps a rewrite from reintroducing a banned word
             payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_slop_fixer)
             payload = json.dumps(payload_data)
             headers = {
@@ -1879,6 +1900,9 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 **final_anti_slop_params,
                 "stream": False
             }
+            banned_words = configured_banned_words(global_config.get('samplers', {}))
+            if banned_words:
+                payload_data['bad_words'] = banned_words # vLLM-only parameter; keeps a rewrite from reintroducing a banned word
             payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_anti_slop)
             payload = json.dumps(payload_data)
             headers = {
@@ -2125,6 +2149,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         payload_dict_ans['logit_bias'] = json.loads(logit_bias_str)
                     except json.JSONDecodeError:
                         log_message(f"Thread {thread_id}: Invalid logit_bias JSON. Skipping.", "WARNING")
+                banned_words = configured_banned_words(sampler_settings_local)
+                if banned_words:
+                    payload_dict_ans['bad_words'] = banned_words # vLLM-only parameter; llama.cpp ignores it, restrictive API profiles drop it
 
                 thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
                 if thinking_mode == 'enable':

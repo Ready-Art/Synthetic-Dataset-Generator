@@ -29,7 +29,7 @@ import matplotlib.ticker as ticker
 import api_handler
 import api_profiles
 import app_state
-from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
+from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state, configured_banned_words
 from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
@@ -717,6 +717,35 @@ def update_quality_display():
             app_state.dashboard_notebook.tab(review_tab_widget, text=label)
             dashboard_navigator.refresh()
 
+def banned_words_unsupported_reason(slot_idx, conf):
+    """Why samplers.banned_words cannot take effect on an API slot, or None when the slot sends
+    bad_words to a server that reports itself as vLLM (owned_by "vllm" on /v1/models)."""
+    url = conf.get('url', '')
+    if 'bad_words' not in api_profiles.apply_profile_for_slot({'bad_words': []}, slot_idx, url):
+        return "its API compatibility profile drops bad_words"
+    marker = url.find('/chat/completions')
+    if marker == -1:
+        return "its URL does not contain /chat/completions, so the server could not be identified"
+    models_url = url[:marker] + '/models'
+    headers = {'Authorization': f"Bearer {conf['key']}"} if conf.get('key') else {}
+    try:
+        response = requests.get(models_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        owners = {m.get('owned_by') for m in response.json().get('data', []) if isinstance(m, dict)}
+    except (requests.RequestException, ValueError, AttributeError) as exc:
+        return f"{models_url} could not be read ({exc}), so the server could not be identified"
+    if 'vllm' not in owners:
+        return f"{models_url} reports owned_by {sorted(map(str, owners)) or 'nothing'}, not vllm"
+    return None
+
+def warn_unsupported_banned_words(worker_slots):
+    """Log a warning for each (slot_idx, conf) pair where samplers.banned_words will be ignored."""
+    for slot_idx, conf in worker_slots:
+        reason = banned_words_unsupported_reason(slot_idx, conf)
+        if reason:
+            log_message(f"API Slot {slot_idx+1}: samplers.banned_words is set but only vLLM supports it, and {reason}. "
+                        "This slot's server may ignore bad_words, or reject requests that carry it.", "WARNING")
+
 def update_live_prompt_preview(messages_list, metadata=None):
     """Thread-safe function to update the Rich Prompt Viewer from worker threads."""
     if dashboard_pause_var.get():
@@ -912,6 +941,13 @@ def start_processing():
             slot_idx, conf.get('api_profile'), conf.get('custom_allowed_params'), conf.get('url'))
         if conf.get('url'):
             log_message(f"API Slot {slot_idx+1} compatibility profile: {resolved}", "INFO")
+
+    # samplers.banned_words is sent as vLLM's bad_words by the worker slots (1-4) and the slop fixers
+    # (5-6); the check probes each server off the Tk thread so an unreachable host cannot freeze the GUI.
+    if configured_banned_words(global_config.get('samplers', {})):
+        banned_words_slots = [(i, c) for i, c in enumerate(all_api_configs_runtime[:6])
+                              if c.get('url') and (c.get('enabled') if i < 4 else c.get('model'))]
+        threading.Thread(target=warn_unsupported_banned_words, args=(banned_words_slots,), daemon=True).start()
 
     master_duplication_enabled = app_state.master_duplication_enabled_var.get() 
 

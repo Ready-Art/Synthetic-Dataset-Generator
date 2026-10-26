@@ -187,6 +187,7 @@ samplers:
   max_tokens_user_reply: 256
   enable_thinking: default
   logit_bias: ''
+  banned_words: []
   slop_fixer_params: {}
   anti_slop_params: {}
 gender: female

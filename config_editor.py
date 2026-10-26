@@ -782,6 +782,11 @@ class ConfigEditor(tk.Toplevel):
         self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=1, undo=True)
         self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         sampler_row += 1
+        ttk.Label(sampler_params_frame, text="Banned Words (vLLM only, sent as bad_words; one word or phrase per line):").grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        sampler_row += 1
+        self.banned_words_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=1, undo=True)
+        self.banned_words_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        sampler_row += 1
         self.enable_thinking_mode_var = tk.StringVar(value="default")
         slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Slop Fixer LLM Sampler Overrides (API Slot 5 - Optional)")
         slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
@@ -1344,6 +1349,7 @@ class ConfigEditor(tk.Toplevel):
                 'max_tokens_user_reply': int(self.max_tokens_user_reply_var.get()),
                 'enable_thinking': self.enable_thinking_mode_var.get(),
                 'logit_bias': self.logit_bias_text.get("1.0", tk.END).strip(),
+                'banned_words': [line.strip() for line in self.banned_words_text.get("1.0", tk.END).split('\n') if line.strip()],
                 'slop_fixer_params': slop_fixer_params_to_save,
                 'anti_slop_params': anti_slop_fixer_params_to_save
             },
@@ -1783,6 +1789,8 @@ class ConfigEditor(tk.Toplevel):
             self.max_tokens_user_reply_var.set(str(samplers_config_load.get('max_tokens_user_reply', 256)))
             self.logit_bias_text.delete("1.0", tk.END)
             self.logit_bias_text.insert("1.0", samplers_config_load.get('logit_bias', ''))
+            self.banned_words_text.delete("1.0", tk.END)
+            self.banned_words_text.insert("1.0", "\n".join(samplers_config_load.get('banned_words') or []))
 
             slop_fixer_sampler_conf = samplers_config_load.get('slop_fixer_params', {})
             self.slop_fixer_temp_var.set(str(slop_fixer_sampler_conf.get('temperature', '')))

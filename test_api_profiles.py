@@ -24,6 +24,7 @@ def full_payload():
         "temperature": 0.5, "top_p": 0.9, "top_k": 50, "min_p": 0.0,
         "repetition_penalty": 1.1, "max_tokens": 128,
         "logit_bias": {"5": 1}, "chat_template_kwargs": {"enable_thinking": False},
+        "bad_words": ["ministrations"],
     }
 
 
@@ -42,7 +43,7 @@ def main():
 
     # --- mistral profile drops non-OpenAI params and maps repetition_penalty ---
     out = api_profiles.apply_profile(full_payload(), "mistral")
-    for k in ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias"):
+    for k in ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias", "bad_words"):
         check(f"mistral drops {k}", k not in out)
     check("mistral keeps temperature", out.get("temperature") == 0.5)
     check("mistral keeps model/messages/stream",
@@ -54,6 +55,7 @@ def main():
     out = api_profiles.apply_profile(full_payload(), "openai")
     check("openai keeps logit_bias", "logit_bias" in out)
     check("openai drops top_k", "top_k" not in out)
+    check("openai drops vLLM-only bad_words", "bad_words" not in out)
     check("openai maps repetition_penalty -> frequency_penalty", out.get("frequency_penalty") == 0.1)
 
     # --- an explicit frequency_penalty is not overwritten by the rename ---
