@@ -964,9 +964,10 @@ def start_processing():
         if conf.get('url'):
             log_message(f"API Slot {slot_idx+1} compatibility profile: {resolved}", "INFO")
 
-    # The slop list is also sent as vLLM's bad_words by the worker slots (1-4) and the slop fixers (5-6)
-    # that the check confirms. Until it has, they send none. It probes each server off the Tk thread so
-    # an unreachable host cannot freeze the GUI; a new run number discards a previous run's check.
+    # With detection.slop.vllm_bad_words true, the slop list is also sent as vLLM's bad_words by the worker
+    # slots (1-4) and the slop fixers (5-6) that the check confirms. Until it has, they send none. It probes
+    # each server off the Tk thread so an unreachable host cannot freeze the GUI; a new run number
+    # discards a previous run's check.
     with app_state.bad_words_lock:
         app_state.bad_words_run += 1
         app_state.bad_words_by_slot = {}

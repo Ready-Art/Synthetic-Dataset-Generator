@@ -51,11 +51,14 @@ def sanitize_payload_for_endpoint(payload_dict, api_url, slot_idx):
 
 
 def slop_phrases_as_bad_words():
-    """detection.slop.phrases as a tuple of stripped, non-blank strings for vLLM's bad_words.
+    """detection.slop.phrases as a tuple of stripped, non-blank strings for vLLM's bad_words, or ()
+    unless detection.slop.vllm_bad_words is true (default false).
 
     Blank entries are dropped because vLLM rejects the whole request when an entry tokenizes to
     nothing (SamplingParams.update_from_tokenizer).
     """
+    if global_config.get('detection.slop.vllm_bad_words', False) is not True:
+        return ()
     return tuple(str(p).strip() for p in global_config.get('detection.slop.phrases', []) or [] if str(p).strip())
 
 

@@ -506,6 +506,7 @@ detection:
   slop:
     phrases: ["test phrase", "another phrase"]
     fixes: ["Rewrite without using that phrase."]
+    vllm_bad_words: false   # true: also ban these phrases at generation on vLLM (see below)
 
   anti_slop:
     phrases: ["additional phrase"]
@@ -1058,12 +1059,12 @@ Call Slop Fixer LLM (API Slot 5) to rewrite paragraph
 
 ### Banning slop phrases at generation (vLLM only)
 
-On a vLLM server, the slop list (`detection.slop.phrases`) is also sent as vLLM's `bad_words`. The
-model then avoids those phrases while it writes, with the whole conversation in context, and the
-slop fixer above only has to handle what still gets through. The list goes out with question,
-answer and user-reply requests (slots 1–4) and with the slop and anti-slop fixers' rewrites (slots
-5–6). There is no setting: it applies whenever the slop list is non-empty and a slot passes the
-check below.
+With `detection.slop.vllm_bad_words: true` (off by default; in the editor, the checkbox under
+**Slop Detection**), the slop list (`detection.slop.phrases`) is also sent to vLLM servers as
+`bad_words`. The model then avoids those phrases while it writes, with the whole conversation in
+context, and the slop fixer above only has to handle what still gets through. The list goes out
+with question, answer and user-reply requests (slots 1–4) and with the slop and anti-slop fixers'
+rewrites (slots 5–6). Off, nothing is sent or probed, and the slop list is used for detection only.
 
 At run start, a background check confirms each enabled slot before it sends the list:
 

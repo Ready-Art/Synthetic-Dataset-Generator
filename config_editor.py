@@ -708,6 +708,9 @@ class ConfigEditor(tk.Toplevel):
         add_detection_list_pair(col1_frame, "Refusal Detection", 'refusal_phrases_text', 'refusal_fixes_text')
         add_detection_list_pair(col1_frame, "User Speaking Detection (Phrases/Fixes are Gender Specific)", 'user_speaking_phrases_text', 'user_speaking_fixes_text')
         add_detection_list_pair(col2_frame, "Slop Detection", 'slop_phrases_text', 'slop_fixes_text')
+        self.slop_vllm_bad_words_var = tk.BooleanVar()
+        wrapped_checkbutton(col2_frame, text="Also send the slop phrases to vLLM as bad_words, so the model avoids them while writing (vLLM servers only)",
+                            variable=self.slop_vllm_bad_words_var).pack(padx=SPACING, pady=(0, SPACING), fill="x")
         add_detection_list_pair(col2_frame, "Anti-Slop Detection", 'anti_slop_phrases_text', 'anti_slop_fixes_text')
 
         anti_slop_note_frame = ttk.Frame(col2_frame)
@@ -1331,7 +1334,8 @@ class ConfigEditor(tk.Toplevel):
                 },
                 'slop': {
                     'phrases': [sanitize_input(line.strip()) for line in self.slop_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
-                    'fixes': [sanitize_input(line.strip()) for line in self.slop_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
+                    'fixes': [sanitize_input(line.strip()) for line in self.slop_fixes_text.get("1.0", tk.END).split('\n') if line.strip()],
+                    'vllm_bad_words': self.slop_vllm_bad_words_var.get()
                 }
             },
             'samplers': {
@@ -1764,6 +1768,7 @@ class ConfigEditor(tk.Toplevel):
             slop_conf = detection_conf.get('slop', {})
             self.slop_phrases_text.delete(1.0, tk.END); self.slop_phrases_text.insert(tk.END, "\n".join(slop_conf.get('phrases', [])))
             self.slop_fixes_text.delete(1.0, tk.END); self.slop_fixes_text.insert(tk.END, "\n".join(slop_conf.get('fixes', [])))
+            self.slop_vllm_bad_words_var.set(bool(slop_conf.get('vllm_bad_words', False)))
 
             # Anti-slop configuration loading
             anti_slop_conf = detection_conf.get('anti_slop', {})

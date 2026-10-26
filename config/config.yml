@@ -170,6 +170,7 @@ detection:
   slop:
     phrases: []
     fixes: []
+    vllm_bad_words: false
 samplers:
   priority:
   - repetition_penalty
