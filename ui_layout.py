@@ -87,7 +87,11 @@ class _WheelRouter:
         self.canvases = {}
         self.bindings = [(sequence, toplevel.bind(sequence, self._wheel, add="+"))
                          for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>")]
-        self.bindings.append(("<FocusIn>", toplevel.bind("<FocusIn>", self._focus, add="+")))
+        # Mouse focus must not move the field after Tk places its caret/selection.
+        self.bindings.append(("<<TraverseIn>>", toplevel.bind("<<TraverseIn>>", self._focus, add="+")))
+        # Text's native Ctrl+Tab bindings set focus directly, without TraverseIn.
+        self.bindings.extend((sequence, toplevel.bind(sequence, self._text_traverse, add="+"))
+                             for sequence in ("<Control-Tab>", "<Control-Shift-Tab>"))
 
     def register(self, canvas):
         if canvas in self.canvases:
@@ -142,11 +146,26 @@ class _WheelRouter:
         return None
 
     def _focus(self, event):
+        """Reveal a widget entered through Tk's keyboard traversal event."""
+        self._reveal_focus(event.widget)
+
+    def _text_traverse(self, event):
+        # Toplevel bindings run after the Text class has moved keyboard focus.
+        # Do not replace its native key behavior or schedule a later mouse jump.
         try:
-            for canvas in self._ancestors(event.widget):
-                y = event.widget.winfo_rooty() - canvas.winfo_rooty()
-                if y < 0 or y + event.widget.winfo_height() > canvas.winfo_height():
-                    scroll_to_widget(canvas, event.widget)
+            if event.widget.winfo_class() == "Text":
+                target = self.toplevel.focus_get()
+                if target is not None and target != event.widget:
+                    self._reveal_focus(target)
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _reveal_focus(self, widget):
+        try:
+            for canvas in self._ancestors(widget):
+                y = widget.winfo_rooty() - canvas.winfo_rooty()
+                if y < 0 or y + widget.winfo_height() > canvas.winfo_height():
+                    scroll_to_widget(canvas, widget)
         except (AttributeError, tk.TclError):
             pass
 
@@ -331,6 +350,10 @@ class NotebookNavigator(ttk.Frame):
 def wrap_label(label, container=None, padding=16):
     """Wrap a label to the allocated container width, without shrinking fonts."""
     container = container or label.master
+    # Geometry runs before the first Configure/idle callback. A one-pixel wrap
+    # can request one character per line and inflate an embedded native frame.
+    if int(label.cget("wraplength") or 0) <= 1:
+        label.configure(wraplength=_pixels(label, 320))
     def resize(event=None):
         if label.winfo_exists():
             width = max(1, container.winfo_width() - _pixels(container, padding))
