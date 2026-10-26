@@ -1555,7 +1555,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
     api_slot_idx_slop_fixer = 4 # Slop fixer is always API slot 5 (index 4)
 
     if not slop_fixer_api_config or not slop_fixer_api_config.get('url') or \
-       not slop_fixer_api_config.get('model') or not slop_fixer_api_config.get('key'):
+       not slop_fixer_api_config.get('model'):
         log_message(f"Thread {thread_id}: Slop Fixer LLM (API Slot {api_slot_idx_slop_fixer+1}) not fully configured. Cannot call.", "WARNING")
         return None, text_context # Return None for rewritten, and original sentence
 
@@ -1766,7 +1766,7 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
     api_slot_idx_anti_slop = 5
 
     if not anti_slop_api_config or not anti_slop_api_config.get('url') or \
-       not anti_slop_api_config.get('model') or not anti_slop_api_config.get('key'):
+       not anti_slop_api_config.get('model'):
         log_message(f"Thread {thread_id}: Anti-Slop LLM not fully configured. Cannot call.", "WARNING")
         return None, text_context
 

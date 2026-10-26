@@ -1189,8 +1189,8 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 |-------|----------|
 | **"No APIs enabled"** error | Ensure at least one API slot (1-4) has a valid URL and is enabled |
 | **High refusal rate** | Add more jailbreak fixes in Detection → Refusal → Fixes |
-| **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL, model, and key |
-| **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL, model, and key |
+| **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL and model (and key, if the endpoint needs one) |
+| **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL and model (and key, if the endpoint needs one) |
 | **Rate limit errors (429)** | Lower `rate_limit_rpm` for the affected API slot; check rate limit status indicators in the UI |
 | **Every request fails with HTTP 400/422** (e.g. `top_k sampling is not supported`) | The endpoint rejects a sampler param the payload sends. Set that slot's **API Compatibility** profile (API tab) to a matching provider, or click **Detect**. See [API Compatibility Profiles](#api-compatibility-profiles). |
 | **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers with exponential backoff (60s–600s) |
