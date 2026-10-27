@@ -571,6 +571,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         random_gender = selected_char.get('gender', 'Unknown')
                         random_race = selected_char.get('race', 'Unknown')
                         random_job = selected_char.get('job', 'Unknown')
+                        random_eye_color = selected_char.get('eye_color', 'Unknown')
+                        random_hair = selected_char.get('hair', 'Unknown')
+                        random_hair_color = selected_char.get('hair_color', 'Unknown')
                         random_clothing = selected_char.get('clothing', 'Unknown')
                         random_jewelry = selected_char.get('jewelry', 'Unknown')
                         random_appearance = selected_char.get('appearance', 'Unknown')
@@ -607,6 +610,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"Race: {random_race}\n"
                             f"Age: {random_age}\n"
                             f"Job: {random_job}\n"
+                            f"Eye Color: {random_eye_color}\n"
+                            f"Hair: {random_hair}\n"
+                            f"Hair Color: {random_hair_color}\n"
                             f"Clothing: {random_clothing}\n"
                             f"Jewelry: {random_jewelry}\n"
                             f"Appearance: {random_appearance}\n"

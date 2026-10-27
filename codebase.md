@@ -22,7 +22,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Opening mode → `prompts.opening_mode`, `prompts.greeting_context`, `prompts.first_line_styles`
 - Detection phrases → `detection.refusal.phrases`, `detection.slop.phrases`, `detection.user_speaking.*.phrases`
 - Sampler params → `samplers.temperature`, `samplers.top_p`, `samplers.repetition_penalty`
-- Character profiles → `prompts.character.characters[]` (name, race, job, clothing, appearance, traits, backstory, setting)
+- Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, traits, backstory, setting)
 
 ### `config/api_profiles.yml` [2]
 **Purpose:** API compatibility profiles for request payload filtering per endpoint

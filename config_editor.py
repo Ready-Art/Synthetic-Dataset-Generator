@@ -1313,6 +1313,9 @@ class ConfigEditor(tk.Toplevel):
                         'gender': sanitize_input(data['gender'].get().strip()),
                         'race': sanitize_input(data['race'].get().strip()),
                         'job': sanitize_input(data['job'].get().strip()),
+                        'eye_color': sanitize_input(data['eye_color'].get().strip()),
+                        'hair': sanitize_input(data['hair'].get().strip()),
+                        'hair_color': sanitize_input(data['hair_color'].get().strip()),
                         'clothing': sanitize_input(data['clothing'].get().strip()),
                         'jewelry': sanitize_input(data['jewelry'].get().strip()),
                         'appearance': sanitize_input(data['appearance'].get().strip()),
@@ -1324,7 +1327,7 @@ class ConfigEditor(tk.Toplevel):
                         'greeting': data['greeting'].get().strip(),  # Saved as typed, like the opening-mode prompts
                     }
                         for data in self.character_entries
-                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'jewelry', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'eye_color', 'hair', 'hair_color', 'clothing', 'jewelry', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
                     ]
                 },
                 'emotional_states': {
@@ -1495,6 +1498,7 @@ class ConfigEditor(tk.Toplevel):
             'character_name_text',
             'character_race_text',
             'character_job_text',
+            'character_eye_color_text',
             'character_clothing_text',
             'character_appearance_text',
             'character_backstory_text',
@@ -1709,6 +1713,9 @@ class ConfigEditor(tk.Toplevel):
                 old_genders = character_conf.get('gender', [])
                 old_races = character_conf.get('race', [])
                 old_jobs = character_conf.get('job', [])
+                old_eye_colors = character_conf.get('eye_color', [])
+                old_hair = character_conf.get('hair', [])
+                old_hair_color = character_conf.get('hair_color', [])
                 old_clothing = character_conf.get('clothing', [])
                 old_jewelry = character_conf.get('jewelry', [])
                 old_appearance = character_conf.get('appearance', [])
@@ -1719,11 +1726,11 @@ class ConfigEditor(tk.Toplevel):
                 old_class = character_conf.get('class', [])
                 old_greeting = character_conf.get('greeting', [])
 
-                if any([old_names, old_races, old_jobs, old_clothing, old_jewelry, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class, old_genders]):
+                if any([old_names, old_races, old_jobs, old_eye_colors, old_hair, old_hair_color, old_clothing, old_jewelry, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class, old_genders]):
                     max_len = max(
-                        len(old_names), len(old_races), len(old_jobs), len(old_clothing),
-                        len(old_jewelry), len(old_appearance), len(old_backstory), len(old_personality),
-                        len(old_traits), len(old_setting), len(old_class), len(old_genders)
+                        len(old_names), len(old_races), len(old_jobs), len(old_eye_colors), len(old_hair), len(old_hair_color),
+                        len(old_clothing), len(old_jewelry), len(old_appearance), len(old_backstory),
+                        len(old_personality), len(old_traits), len(old_setting), len(old_class), len(old_genders)
                     )
                     for i in range(max_len):
                         characters_list.append({
@@ -1732,6 +1739,9 @@ class ConfigEditor(tk.Toplevel):
                             'gender': old_genders[i] if i < len(old_genders) else '',
                             'race': old_races[i] if i < len(old_races) else '',
                             'job': old_jobs[i] if i < len(old_jobs) else '',
+                            'eye_color': old_eye_colors[i] if i < len(old_eye_colors) else '',
+                            'hair': old_hair[i] if i < len(old_hair) else '',
+                            'hair_color': old_hair_color[i] if i < len(old_hair_color) else '',
                             'clothing': old_clothing[i] if i < len(old_clothing) else '',
                             'jewelry': old_jewelry[i] if i < len(old_jewelry) else '',
                             'appearance': old_appearance[i] if i < len(old_appearance) else '',
@@ -2014,7 +2024,7 @@ class ConfigEditor(tk.Toplevel):
         short_fields.grid(row=0, column=0, sticky="ew")
         groups = []
         for key, caption in (("name", "Name:"), ("age", "Age:"), ("race", "Race:"),
-                             ("job", "Job:"), ("gender", "Gender:")):
+                             ("job", "Job:"), ("eye_color", "Eye Color:"), ("gender", "Gender:"), ("hair", "Hair:"), ("hair_color", "Hair Color:")):
             group = ttk.Frame(short_fields)
             group.columnconfigure(0, weight=1)
             label = ttk.Label(group, text=caption, font=label_font, foreground='#e0e0e0')
