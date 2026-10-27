@@ -213,17 +213,22 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ### Python Dependencies
 
+Install via `pip install -r requirements.txt`:
+
 ```
-requests
-redis
-psycopg2-binary
-PyYAML
-colorama
-ttkbootstrap
+requests==2.31.0
+python-dotenv==1.0.0
+PyYAML==6.0.1
+tk==0.1.0
 matplotlib
 psutil
-tkinter (usually included with Python)
+colorama
+redis
+ttkbootstrap
+psycopg2-binary
 ```
+
+**Note:** `tkinter` is usually included with Python installations but may need to be installed separately on some Linux distributions (e.g., `sudo apt-get install python3-tk`).
 
 ---
 
@@ -370,6 +375,13 @@ my_provider:
   rename: {repetition_penalty: frequency_penalty}   # optional; applied before filtering
   detect_hosts: [api.myprovider.com]      # optional; used by the Detect button and auto-detection
 ```
+
+**Profile Types:**
+- `all` — Send the payload untouched (no filtering or renaming)
+- `from_config` — Use the slot's `custom_allowed_params` list from the config editor
+- `[list]` — Explicit allow-list of parameter names to include in the request
+
+**Key Renames:** The only value-aware rename is `repetition_penalty` → `frequency_penalty`, which transforms the value using `(v - 1)` clamped to `[-2, 2]`. All other renames are direct key substitutions.
 
 ### Generation Settings
 
@@ -993,41 +1005,37 @@ When **quality scoring is enabled**, flagged conversations exported via the Revi
 
 ```
 readyart-dataset-generator/
-├── generate.py              # Main application (GUI, orchestration)
-├── generation.py            # Generation engine (worker logic, API calls)
-├── detection.py             # Issue detection (refusals, slop, quotes, anti-slop)
-├── text_utils.py            # Text post-processing utilities
-├── quality.py               # Quality scoring engine (heuristic + LLM)
-├── config_loader.py          # Configuration management & profiles
-├── api_handler.py            # Rate limiting, circuit breaker & Valkey caching
-├── api_profiles.py           # Per-endpoint payload compatibility profiles
-├── logging_config.py          # Centralized logging with colorama
-├── config_editor.py          # Configuration editor window
-├── dashboard.py              # Dashboard/presentation layer
-├── app_state.py              # Shared runtime state
-├── test_api_profiles.py      # Unit tests for API compatibility profiles
-├── test_opening_mode.py      # Tests for opening mode (worker run against a fake server)
+├── generate.py              # Main application (GUI, orchestration, worker threads)
+├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
+├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes)
+├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal)
+├── quality.py               # Quality scoring engine (hybrid: heuristic + optional LLM, 6 dimensions)
+├── config_loader.py         # Configuration management, profiles, YAML load/save
+├── api_handler.py           # Rate limiting, Valkey/Redis caching, response time tracking
+├── api_profiles.py          # Per-endpoint payload compatibility profiles (thread-safe, auto-detection)
+├── logging_config.py        # Centralized logging with colorama (colored console + file output)
+├── config_editor.py         # Configuration editor GUI (tabbed interface with search, validation)
+├── dashboard.py             # Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview)
+├── app_state.py             # Shared runtime state (counters, locks, task queue, quality scores, circuit breaker)
+├── test_api_profiles.py     # Unit tests for API compatibility profiles
+├── test_opening_mode.py     # Integration tests for opening mode
+├── tools/
+│   └── check_gui_layout.py  # GUI layout testing utility for small displays
 ├── config/
 │   ├── config.yml           # Main configuration file
-│   ├── api_profiles.yml     # API compatibility profile definitions
-│   └── profiles/            # Saved configuration profiles
-│       ├── fast_generation.yml
-│       └── high_quality.yml
+│   └── api_profiles.yml     # API compatibility profile definitions (OpenAI, Mistral, xAI, Gemini, Anthropic, custom)
 ├── input/
-│   ├── source_book_1.txt    # Source text files for chunking
-│   ├── source_book_2.txt
-│   └── questions.txt        # Optional predefined questions
+│   └── *.txt                # Source text files for chunking
 ├── output/
 │   ├── output.jsonl         # Generated dataset (collaborative mode)
-│   ├── output_api_slot_0.jsonl  # Per-API output (duplication mode)
+│   ├── output_api_slot_*.jsonl  # Per-API output (duplication mode)
 │   ├── generation_state.json    # Crash recovery state (includes quality scores)
-│   ├── quality_review_flagged.jsonl  # Exported flagged conversations (from Review tab)
+│   ├── quality_review_flagged.jsonl  # Exported flagged conversations
 │   ├── log.txt              # Application log
-│   ├── debug_prompt.jsonl        # Debug logs (collaborative mode)
-│   ├── debug_prompt_api_slot_0.jsonl  # Per-API debug logs (duplication mode)
-│   ├── queue_export.csv          # Queue state export (from Queue tab)
-│   └── output_data_backup_*.zip # Auto-backups of previous runs
-└── taskbar.png              # Application icon (optional)
+│   ├── debug_prompt*.jsonl  # Per-API debug logs
+│   ├── queue_export.csv     # Queue state export
+│   └── output_data_backup_*.zip # Auto-backups
+└── requirements.txt         # Python dependencies
 ```
 
 ---
@@ -1285,14 +1293,37 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Review tab empty but scores exist** | The Review tab only shows conversations below `min_score_threshold`; check the Quality tab for all scores |
 | **Quality scoring slow** | LLM scoring adds an API call per conversation; disable `use_llm_scoring` for heuristic-only (instant) scoring, or use a fast/cheap model for the scoring API |
 
-### Checking layouts on smaller displays
+### GUI Layout Testing
 
-You can test smaller windows on a large monitor without changing the monitor's
-resolution. With the normal application dependencies installed, run:
+The `tools/check_gui_layout.py` utility tests the GUI layout on various display sizes to ensure compatibility with smaller screens:
 
 ```bash
+# Test with default sizes (900×600 through 1916×1126)
 python tools/check_gui_layout.py --check --config-editor --screenshots
+
+# Test specific sizes (excluding title bars)
+python tools/check_gui_layout.py --check --config-editor --size 760x520 --size 1366x700
+
+# Test with maximum character count (100 profiles)
+python tools/check_gui_layout.py --check --config-editor --character-count 100 --screenshots
+
+# Custom output directory
+python tools/check_gui_layout.py --check --config-editor --output /path/to/results
 ```
+
+**Features:**
+- Tests primary controls, dashboard space, view selection, and scrolling
+- Exercises the configuration editor's page navigation, resizing, editing, adding, removing, and searching
+- Validates prompt text box behavior (mouse clicks, keyboard navigation, Ctrl+Tab focus movement)
+- Records actual window sizes, fonts, Tk scaling, and dependency versions
+- Generates screenshots and a detailed report in `layout-check/` (or custom `--output` path)
+- Exits with nonzero code if any assertion fails (when `--check` is used)
+
+**Notes:**
+- Window minima are DPI-aware and limited to available screen area
+- Use `--scale` to change Tk's pixels-per-point setting for diagnostics
+- On Linux, run under `xvfb-run -a` when Xvfb is available for headless testing
+- Application configuration and generation state are not modified
 
 This opens the actual GUI with temporary fixture configuration, exercises idle,
 single-API, and four-API progress layouts, and resizes from 900×600 through
@@ -1399,6 +1430,7 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Use a dedicated cheap model for scoring** — Point `quality.scoring_api` at a fast, inexpensive model to minimize the cost impact of LLM-based scoring
 - **Export flagged conversations** — Use **📤 Export Flagged → JSONL** in the Review tab to get a clean file of low-quality outputs for manual inspection or re-processing
 - **Dismiss reviewed items** — After manually handling flagged conversations, use **✅ Dismiss All** to clear the review queue and keep the tab focused on new items
+- **Test GUI layouts** — Use `tools/check_gui_layout.py` to validate the UI on smaller display sizes before deployment
 
 ---
 
@@ -1501,25 +1533,27 @@ The `method` field indicates which scoring path was used: `"heuristic_only"`, `"
 
 ## 🔄 Module Architecture
 
-The application is organized into focused modules with one-way dependencies:
+The application is organized into focused modules with one-way dependencies to prevent circular imports:
 
 | Module | Purpose | Imports From |
 |--------|---------|--------------|
-| `generate.py` | Main GUI, orchestration, startup | All modules |
-| `generation.py` | Worker loop, LLM calls, answer generation | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `quality`, `logging_config` |
-| `quality.py` | Quality scoring engine (heuristic + LLM) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
-| `config_editor.py` | Configuration editor window | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
-| `dashboard.py` | Dashboard UI, graphs, progress bars | `app_state`, `api_handler`, `logging_config` |
-| `detection.py` | Issue detection (refusals, slop, quotes) | `app_state` (for timestamps) |
-| `text_utils.py` | Text post-processing utilities | None (stdlib only) |
-| `config_loader.py` | Configuration management & profiles | `logging_config` |
-| `api_handler.py` | Rate limiting, caching, circuit breaker | `logging_config` |
-| `api_profiles.py` | Per-endpoint payload compatibility profiles | `logging_config` |
-| `app_state.py` | Shared runtime state & constants | `config_loader` |
-| `logging_config.py` | Centralized logging with colorama | None (stdlib only) |
+| `generate.py` | Main GUI, orchestration, worker thread management, startup | All modules (root of dependency tree) |
+| `generation.py` | Worker loop, LLM calls, answer generation, task processing | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `quality`, `logging_config` |
+| `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 6 dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
+| `config_editor.py` | Configuration editor GUI (tabbed interface, validation, search) | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
+| `dashboard.py` | Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview) | `app_state`, `api_handler`, `logging_config` |
+| `detection.py` | Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes) | `app_state` (for timestamps, issue tracking) |
+| `text_utils.py` | Text post-processing (quote normalization, reasoning removal, markdown stripping) | None (stdlib only) |
+| `config_loader.py` | Configuration management, profiles, YAML load/save | `logging_config` |
+| `api_handler.py` | Rate limiting, Valkey/Redis caching, response time tracking | `logging_config` |
+| `api_profiles.py` | Per-endpoint payload compatibility profiles (thread-safe, auto-detection) | `logging_config` |
+| `app_state.py` | Shared runtime state (counters, locks, task queue, quality scores, circuit breaker) | `config_loader` |
+| `logging_config.py` | Centralized logging with colorama (colored console + file output) | None (stdlib only) |
 | `test_api_profiles.py` | Unit tests for API compatibility profiles | `api_profiles` |
+| `test_opening_mode.py` | Integration tests for opening mode (worker run against fake server) | `generation`, `app_state`, `logging_config` |
+| `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
 
-**Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root.
+**Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.
 
 ---
 
