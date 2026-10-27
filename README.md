@@ -1091,10 +1091,12 @@ and nothing rewrites it:
 - It matches exact tokens, case-sensitively: `Shivers down` at the start of a sentence is not
   banned by `shivers down`, and text that tokenizes differently in context (for example after
   `*` or other punctuation) is not banned either. Slop detection ignores case and punctuation.
-- For a phrase, vLLM blocks only its last token, once the earlier tokens have been generated.
-  Banning `shivers down her spine` stops `spine` after `shivers down her`, so the model may write
-  `back` instead, or repeat a word to get past the ban (`air filled, filled with` avoids a ban on
-  `air filled with`). Single words and short phrases ban more cleanly than long ones.
+- For an entry of more than one token, vLLM blocks only its last token, and only right after the
+  entry's other tokens. Banning `shivers down her spine` stops `spine` after `shivers down her`, so
+  the model may write `back` instead, or repeat a word to get past the ban (`air filled, filled with`
+  avoids a ban on `air filled with`). Many single words are several tokens and behave the same way:
+  the model can start the word and then has to finish it differently. Only an entry that is exactly
+  one token is banned outright.
 
 ### Anti-Slop Fixing Flow
 
