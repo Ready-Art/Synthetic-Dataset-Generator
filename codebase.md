@@ -23,6 +23,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Detection phrases → `detection.refusal.phrases`, `detection.slop.phrases`, `detection.user_speaking.*.phrases`
 - Sampler params → `samplers.temperature`, `samplers.top_p`, `samplers.repetition_penalty`
 - Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, traits, backstory, setting)
+- Random names → `prompts.random_names.enabled`, `prompts.random_names.names[]` (optional list of names to randomly assign to characters, overrides character Name field when enabled)
 
 ### `config/api_profiles.yml` [2]
 **Purpose:** API compatibility profiles for request payload filtering per endpoint
@@ -177,6 +178,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Modify API profile params | `config/api_profiles.yml` (`allow`, `rename` lists), `api_profiles.py` (if transform logic changes) |
 | Add character profile | `config/config.yml` (`prompts.character.characters[]`), `config_editor.py` (UI fields) |
 | Modify opening mode prompts | `config/config.yml` (`prompts.greeting`, `prompts.first_line`, `prompts.greeting_context`, `prompts.first_line_styles`) |
+| Add random names feature | `config/config.yml` (`prompts.random_names.enabled`, `prompts.random_names.names[]`), `config_editor.py` (UI toggle + text area), `generate.py` (load config + pass to worker), `generation.py` (use random names in character profile) |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
 
 ## Key State Variables (`app_state.py`)

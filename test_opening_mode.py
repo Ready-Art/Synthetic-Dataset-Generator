@@ -231,7 +231,8 @@ def worker_kwargs(**overrides):
         enable_class_selection_local=False, enable_setting_selection_local=False,
         character_list=CHARACTERS[:1], enable_emotional_states_local=False, emotional_states_list_local=[],
         num_characters_local=1, no_user_impersonation_local=False, current_api_request_timeout=5,
-        current_slop_to_anti_slop_fallback=False, current_lore="")
+        current_slop_to_anti_slop_fallback=False, current_lore="",
+        enable_random_names_local=False, random_names_list_local=None)
     kwargs.update(overrides)
     return kwargs
 

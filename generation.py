@@ -383,6 +383,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_api_request_timeout,
            current_slop_to_anti_slop_fallback,
            current_lore,
+           enable_random_names_local=False,
+           random_names_list_local=None,
            opening_mode_local=False,
            greeting_prompt_local="",
            first_line_prompt_local="",
@@ -560,7 +562,14 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                     for idx, selected_char in enumerate(selected_chars):
                         # EXPLICIT NAME VALIDATION: Get name, strip whitespace, check if empty
-                        random_name = selected_char.get('name', '').strip()
+                        character_name = selected_char.get('name', '').strip()
+
+                        # If random names is enabled, override with a random name from the list
+                        if enable_random_names_local and random_names_list_local:
+                            random_name = random.choice(random_names_list_local)
+                            log_message(f"Thread {thread_id}: Using random name '{random_name}' for character {idx+1}", "DEBUG")
+                        else:
+                            random_name = character_name
 
                         if not random_name:
                             log_message(f"Thread {thread_id}: Character {idx+1} has empty/whitespace name. Skipping.", "WARNING")

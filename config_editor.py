@@ -574,6 +574,20 @@ class ConfigEditor(tk.Toplevel):
         setattr(self, 'emotional_states_text', emotional_states_text)
         character_engine_row_idx += 1
 
+        # Add checkbox to enable random names
+        self.enable_random_names_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(self.character_engine_content_frame, text="Enable Random Names (overrides character Name field with random names from list below)",
+                variable=self.enable_random_names_var_editor, command=self._toggle_random_names_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        character_engine_row_idx += 1
+
+        # Add random names text area
+        ttk.Label(self.character_engine_content_frame, text="Random Names (one per line, randomly selected when enabled):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        character_engine_row_idx += 1
+        random_names_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=1, undo=True)
+        random_names_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        setattr(self, 'random_names_text', random_names_text)
+        character_engine_row_idx += 1
+
         self.enable_class_selection_var_editor = tk.BooleanVar()
         wrapped_checkbutton(self.character_engine_content_frame,
                         text="Enable Class Selection (fantasy classes like mage, warlock, rogue, etc.)",
@@ -1334,6 +1348,10 @@ class ConfigEditor(tk.Toplevel):
                     'enabled': self.enable_emotional_states_var_editor.get(),
                     'states': [sanitize_input(line.strip()) for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
+                'random_names': {
+                    'enabled': self.enable_random_names_var_editor.get(),
+                    'names': [sanitize_input(line.strip()) for line in self.random_names_text.get("1.0", tk.END).split('\n') if line.strip()]
+                },
             },
             'detection': {
                 'no_user_impersonation': self.no_user_impersonation_var.get(), # Get from global Tkinter var
@@ -1449,6 +1467,23 @@ class ConfigEditor(tk.Toplevel):
                 field_widget.config(state='disabled')
 
         log_message(f"Emotional States fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
+
+    def _toggle_random_names_fields(self):
+        """Enables/disables random names text field based on checkbox state."""
+        is_enabled = self.enable_random_names_var_editor.get()
+
+        random_names_fields = [
+            'random_names_text'
+        ]
+
+        for field_name in random_names_fields:
+            field_widget = getattr(self, field_name)
+            if is_enabled:
+                field_widget.config(state='normal')
+            else:
+                field_widget.config(state='disabled')
+
+        log_message(f"Random Names fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 
     def _toggle_class_fields(self):
         """Enables/disables class selection text field based on checkbox state."""
@@ -1784,6 +1819,13 @@ class ConfigEditor(tk.Toplevel):
             self.emotional_states_text.insert(tk.END, "\n".join(emotional_states_conf.get('states', [])))
             self._toggle_emotional_states_fields()
 
+            # NEW: Load random names
+            random_names_conf = prompts_config.get('random_names', {})
+            self.enable_random_names_var_editor.set(random_names_conf.get('enabled', False))
+            self.random_names_text.delete(1.0, tk.END)
+            self.random_names_text.insert(tk.END, "\n".join(random_names_conf.get('names', [])))
+            self._toggle_random_names_fields()
+
             detection_conf = config.get('detection', {})
             self.no_user_impersonation_var.set(detection_conf.get('no_user_impersonation', False)) # Set global var
             refusal_conf = detection_conf.get('refusal', {})
@@ -1904,6 +1946,9 @@ class ConfigEditor(tk.Toplevel):
 
             if self.enable_emotional_states_var_editor.get():
                 get_text_as_list(self.emotional_states_text)
+            
+            if self.enable_random_names_var_editor.get():
+                get_text_as_list(self.random_names_text)
             
             max_cards_val = int(self.max_character_cards_var.get())
             assert max_cards_val > 0, "Max character cards must be > 0"

@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v9.6.8
+# ReadyArt Synthetic Dataset Generator v9.7.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -489,6 +489,15 @@ prompts:
       - "neutral"
       - "excited"
       - "contemplative"
+
+  random_names:
+    enabled: false              # Enable random name assignment (overrides character Name field)
+    names:                      # List of names to randomly select from when enabled
+      - "Alice"
+      - "Bob"
+      - "Charlie"
+      - "Diana"
+      - "Eve"
 ```
 
 **Character Configuration Notes:**
@@ -502,6 +511,7 @@ prompts:
 - **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
 - **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept.
+- **`random_names`:** Optional feature that overrides character names with randomly selected names from a configured list. When `prompts.random_names.enabled` is true, each character's name in the prompt is replaced with a random name from `prompts.random_names.names[]`. Names are selected independently for each character (not in order), allowing for varied name assignments across conversations. This is useful for generating diverse datasets without manually creating many character profiles.
 
 **Template Variables** (each is optional; the shipped question prompt uses only `{context}`):
 - `{recent_questions}` — Recent question history to avoid repetition

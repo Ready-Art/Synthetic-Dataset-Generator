@@ -1107,6 +1107,18 @@ def start_processing():
 
     log_message(f"Emotional states enabled: {enable_emotional_states}, States: {emotional_states_list}", "INFO")
 
+    # NEW: Load random names configuration
+    random_names_config = global_config.get('prompts.random_names', {})
+    enable_random_names = random_names_config.get('enabled', False)
+    random_names_list = random_names_config.get('names', [])
+
+    if enable_random_names and not random_names_list:
+        log_message("Warning: Random names enabled but no names defined. Disabling random names.", "WARNING")
+        enable_random_names = False
+        random_names_list = []
+
+    log_message(f"Random names enabled: {enable_random_names}, Names count: {len(random_names_list)}", "INFO")
+
     base_sys_prompt = global_config.get('prompts.system.base', "You are a helpful assistant.")
     app_state.system_prompts_list = []
     if current_use_variable_system:
@@ -1448,6 +1460,8 @@ def start_processing():
             current_api_request_timeout,
             current_slop_to_anti_slop_fallback,
             current_lore,
+            enable_random_names,
+            random_names_list,
         ), kwargs={
             'opening_mode_local': current_opening_mode,
             'greeting_prompt_local': current_greeting_prompt,
@@ -1836,7 +1850,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.6.8",
+    text="v9.7.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
