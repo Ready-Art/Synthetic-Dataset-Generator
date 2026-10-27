@@ -375,7 +375,7 @@ my_provider:
 
 ```yaml
 generation:
-  num_random_chunks: 12000        # Total tasks to generate per run
+  num_random_chunks: 12000        # Total tasks to generate per run (also opening mode's task count without input files)
   subject_size: 1000              # Characters for the "subject" portion
   context_size: 3000              # Total characters (subject + surrounding context)
   max_attempts: 5                 # Retries per Q/A turn
@@ -391,6 +391,7 @@ generation:
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
   slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
   discard_refused_conversations: false  # Don't save a conversation if any reply needed a jailbreak
+  placeholder_share: 0.0          # Opening mode: share of rows (0 to 1) that start with a [Start a new chat] user turn
 
   # Text post-processing flags
   remove_reasoning: false
@@ -407,6 +408,16 @@ generation:
 ```yaml
 prompts:
   use_questions_file: false       # Use input/questions.txt instead of LLM-generated questions
+  opening_mode: false             # Start each sample with the character's greeting (see Opening Mode below)
+  greeting: "Write the opening message of this roleplay as {speaker}, ...\n{context}"  # Opening mode's greeting prompt
+  greeting_context: "Source material for the setting. Take from it only the kind of place, the objects, the weather and the mood.\n---\n{chunk}\n---\nNone of the source's people, names, ships, places or events exist in this scene: ..."  # Opening mode: the greeting's {context} when there is a book chunk
+  first_line: "You are the user in a roleplay chat, not any of the characters in it. ... Write only your own next message: {style}. ..."  # Opening mode's first-line prompt
+  first_line_styles:              # Opening mode: one is picked at random for the first-line prompt's {style}
+    - "an action"
+    - "a line of dialogue"
+    - "an action with a line of dialogue"
+    - "a short reply"
+    - "a question to the character"
   question: "Generate a question based on the provided text. Recent questions to avoid: {recent_questions}\n\nSubject: {subject}\n\nContext: {context}"
   answer: "Provide an answer to the last question."
   user_continuation_prompt: "Continue the conversation naturally based on the assistant's last response: {last_assistant_message}"
@@ -440,6 +451,7 @@ prompts:
         traits: "Meticulous, cynical, resilient, stubborn; taps thumb against index finger rhythmically when thinking, refuses hot beverages without lids"
         setting: "Cluttered repair counter in dimly lit pawn shop, 6:45 PM Tuesday, heavy rain lashing windows, smells of brass polish and damp wool"
         class: ""
+        greeting: ""                 # Optional: opening mode uses it as the first message
       - name: "Bob"
         age: "150"
         gender: "Male"
@@ -475,12 +487,26 @@ prompts:
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
 - **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
+- **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept.
 
 **Template Variables:**
 - `{recent_questions}` — Recent question history to avoid repetition
 - `{subject}` — The subject text chunk
-- `{context}` — The broader context surrounding the subject
+- `{context}` — The broader context surrounding the subject (in the greeting prompt: `greeting_context` with the book chunk in its `{chunk}`, or empty when the task has no book; the shipped `greeting_context` tells the model to take only the kind of place, objects, weather and mood from the chunk and none of its people, names or events)
 - `{last_assistant_message}` — The assistant's previous response (for continuations)
+- `{speaker}` — Greeting prompt: who the greeting is written as (see below)
+- `{chunk}` — Greeting context: the book chunk
+- `{style}` — First-line prompt: one of `first_line_styles`, picked at random
+
+**Opening Mode:** With `opening_mode: true`, each sample opens the way a SillyTavern chat does, with the character's greeting:
+
+1. **Greeting.** The scene prompt (system prompt, lore, character profiles, emotional state) is sent with the `greeting` prompt, which gets the book chunk in `{context}` when the run has input files. It uses `max_tokens_answer` and is retried on refusal, slop, the configured user-speaking phrases (unless `no_user_impersonation` is on), a short reply or a malformed one. `{speaker}` is the character's name with one character (or "the character described above" when `include_names_in_prompt` is false), "the narrator, bringing ... into the scene" with several, and "the character you are playing" when no profile is in the prompt.
+2. **First user line.** The `first_line` prompt is the system message and the greeting is sent as the other party's turn, without the scene prompt, so the line is written from the user's seat. It uses `max_tokens_user_reply` and is retried on refusal, slop, a short reply or a malformed one.
+3. **Replies and later turns.** The existing answer and continuation path, with every check and fixer, starting from the greeting and first line. Later user turns still come from `user_continuation_prompt`. `num_turns` counts replies; the greeting does not count.
+
+Neither new request uses the Valkey response cache, so a retry gets a new reply. A sample costs one request more than in chunk mode. Without input files, a run queues `num_random_chunks` opening tasks (12000 by default); with input files, opening tasks are book chunks, with IDs starting `opening_` so finished chunk-mode tasks do not suppress them. A greeting or first line that fails every attempt, or a conversation that ends short, is requeued, and marked failed once `MAX_TASK_REQUEUES` is reached. Quality scoring scores the conversation from the first user line. Opening mode cannot run with `use_questions_file` or `master_duplication_mode` on.
+
+The editor saves the `greeting`, `greeting_context` and `first_line` prompts, the first-line styles and each character's `greeting` with their quotes, apostrophes, angle brackets and backslashes, which dialogue and markup need. The system, question, answer, continuation and lore prompts still have those characters removed when saved.
 
 ### Detection & Quality Control
 
@@ -695,7 +721,7 @@ Rate limits can be adjusted mid-run by pausing generation, editing the config, a
 
 ### Starting a Generation Run
 
-1. Place source `.txt` files in the `input/` directory (or create `input/questions.txt` for predefined questions)
+1. Place source `.txt` files in the `input/` directory (or create `input/questions.txt` for predefined questions). Opening mode also runs with no input files. It refuses to start with the questions file or duplication mode on.
 2. Configure APIs and settings via **Edit Config**
 3. Click **Start Generation**
 4. If a previous state file exists, you'll be prompted to resume or start fresh
@@ -716,7 +742,7 @@ The state file tracks:
 - Quality scores and review flags
 - Configuration snapshot (warns if settings changed since last run)
 
-**Configuration Incompatibility Detection:** When resuming, the application compares critical settings (`use_questions_file`, `num_turns`, `subject_size`, `context_size`, `master_duplication_mode`) between the saved state and current config. If they differ, a warning dialog presents the differences and lets you choose whether to proceed or start fresh.
+**Configuration Incompatibility Detection:** When resuming, the application compares critical settings (`use_questions_file`, `num_turns`, `subject_size`, `context_size`, `master_duplication_mode`, `opening_mode`) between the saved state and current config. If they differ, a warning dialog presents the differences and lets you choose whether to proceed or start fresh.
 
 **Pause & Reload:** When you pause generation and resume, the configuration is automatically reloaded from `config.yml`, allowing you to make mid-run adjustments to rate limits and other settings without restarting.
 
@@ -908,6 +934,31 @@ Toasts auto-dismiss after 4 seconds and stack vertically.
 }
 ```
 
+In **opening mode**, a row starts with the character's greeting, marked `"train": false`; with `placeholder_share` above 0, that share of rows puts a `[Start a new chat]` user turn first, as SillyTavern's Strict prompt post-processing sends:
+```json
+{
+  "id": "opening_0",
+  "conversations": [
+    {"from": "gpt", "value": "Rain drums on the ferry's tin roof. Ines looks up from the mooring rope. \"Last crossing. You coming?\"", "train": false},
+    {"from": "human", "value": "I hurry down the ramp. \"Wait for me!\""},
+    {"from": "gpt", "value": "..."}
+  ]
+}
+```
+
+`"train": false` keeps the greeting in the model's input but out of the loss only when the trainer reads it. In Axolotl, add `message_field_training: train` to the dataset entry; without it, Axolotl trains on the greeting like any other `gpt` turn:
+```yaml
+datasets:
+  - path: output.jsonl
+    type: chat_template
+    field_messages: conversations
+    message_property_mappings: {role: from, content: value}
+    roles: {user: [human], assistant: [gpt]}
+    roles_to_train: [assistant]
+    message_field_training: train
+train_on_inputs: false
+```
+
 In **Duplication Mode**, output files are named per API slot:
 - `output/output_api_slot_0.jsonl`
 - `output/output_api_slot_1.jsonl`
@@ -954,6 +1005,7 @@ readyart-dataset-generator/
 ├── dashboard.py              # Dashboard/presentation layer
 ├── app_state.py              # Shared runtime state
 ├── test_api_profiles.py      # Unit tests for API compatibility profiles
+├── test_opening_mode.py      # Tests for opening mode (worker run against a fake server)
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   ├── api_profiles.yml     # API compatibility profile definitions

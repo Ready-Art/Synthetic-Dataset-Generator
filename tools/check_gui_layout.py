@@ -5,8 +5,9 @@ Run with the application's normal Python dependencies and a desktop display:
     python tools/check_gui_layout.py --check --config-editor
 Linux CI can use xvfb-run with the same command. Reports go to ./layout-check
 unless --output specifies another directory. --screenshots adds PNG captures.
-Only temporary fixture configuration is loaded. No API/DB connections or workers
-are started, and no application configuration or generation state is saved.
+Only temporary fixture configuration is loaded, and only it is saved (the
+opening-mode round trip). No API/DB connections or workers are started, and no
+application configuration or generation state is saved.
 Production source is executed in memory through its UI-construction boundary.
 Tk scaling is recorded; --scale is a diagnostic, not Windows DPI emulation.
 """
@@ -416,6 +417,102 @@ def check_character_profiles(report, root, editor, expected, sizes, screenshots)
           editor.character_page == 0 and len(entries) == count
           and all(entry["name"].get() == value["name"] for entry, value in zip(entries, expected)))
     measure("after reload")
+
+
+def check_opening_mode_round_trip(report, root, editor):
+    """Opening-mode fields survive paste, page change, gather, save, reload and close exactly.
+
+    Saves only the temporary fixture config. Ends by closing the editor through its close handler.
+    """
+    import yaml
+
+    label = "opening mode"
+    entries = editor.character_entries
+    check(report, f"{label}: fixture profiles without a greeting load it empty",
+          all(entry["greeting"].get() == "" and entry["greeting_widget"].get("1.0", "end-1c") == ""
+              for entry in entries))
+    select_tab(editor.notebook, "Character Engine")
+    settle(root)
+    selector = editor.character_page_selector
+
+    def choose(page):
+        selector.current(page)
+        selector.event_generate("<<ComboboxSelected>>")
+        settle(root)
+
+    greeting = ("Mara sets down the lamp. \"You're soaked,\" she says. 'Sit.'\n"
+                "<b>The storm</b> rattles the shutters.")
+    prompt_greeting = ("Open as {speaker}: \"quotes\", it's <i>tagged</i>, {braces} stay.\n"
+                       "{context}\n  indented last line")
+    prompt_first_line = "Reply with {style}.\nDon't use <angle> \"quotes\" {here}."
+    prompt_greeting_context = "Take the mood from <src>:\n{chunk}\nDon't name \"anyone\" in it."
+    styles = ["a glance", "a 'quoted' line"]
+    choose(0)
+    entries[0]["greeting_widget"].delete("1.0", "end")
+    entries[0]["greeting_widget"].insert("1.0", greeting)
+    # Deliberately omit KeyRelease/FocusOut, as for the backstory paste above.
+    choose(len(selector.cget("values")) - 1)
+    check(report, f"{label}: page change preserves an unsaved greeting paste",
+          entries[0]["greeting"].get() == greeting)
+    select_tab(editor.notebook, "Prompts")
+    for name, text in (("greeting_prompt_text", prompt_greeting), ("first_line_prompt_text", prompt_first_line),
+                       ("greeting_context_text", prompt_greeting_context),
+                       ("first_line_styles_text", "\n".join(styles) + "\n\n")):
+        widget = getattr(editor, name)
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+    editor.opening_mode_var_editor.set(True)
+    editor.placeholder_share_var.set("0.25")
+
+    gathered = editor._get_current_editor_config_data()
+    prompts = gathered["prompts"]
+    check(report, f"{label}: gathered greeting and prompts are exact",
+          prompts["character"]["characters"][0]["greeting"] == greeting
+          and prompts["greeting"] == prompt_greeting and prompts["first_line"] == prompt_first_line
+          and prompts["greeting_context"] == prompt_greeting_context and prompts["first_line_styles"] == styles)
+    check(report, f"{label}: other profiles gather an empty greeting",
+          all(c["greeting"] == "" for c in prompts["character"]["characters"][1:]))
+
+    editor.placeholder_share_var.set("1.5")
+    check(report, f"{label}: placeholder share above 1 fails validation",
+          not editor.validate_config_handler(show_success_message=False))
+    editor.placeholder_share_var.set("0.25")
+
+    editor.save_config_handler(silent=True)
+    with open(editor.global_config.path, encoding="utf-8") as f:
+        saved = yaml.safe_load(f)
+    check(report, f"{label}: save writes the greeting, prompts and settings exactly",
+          saved["prompts"]["character"]["characters"][0]["greeting"] == greeting
+          and saved["prompts"]["greeting"] == prompt_greeting
+          and saved["prompts"]["first_line"] == prompt_first_line
+          and saved["prompts"]["greeting_context"] == prompt_greeting_context
+          and saved["prompts"]["first_line_styles"] == styles
+          and saved["prompts"]["opening_mode"] is True
+          and saved["generation"]["placeholder_share"] == 0.25,
+          {"status": editor.status.cget("text")})
+
+    editor.load_config_handler()
+    settle(root)
+    check(report, f"{label}: reload restores the greeting exactly",
+          entries[0]["greeting"].get() == greeting
+          and entries[0]["greeting_widget"].get("1.0", "end-1c") == greeting)
+    check(report, f"{label}: reload restores the prompts exactly",
+          editor.greeting_prompt_text.get("1.0", "end-1c") == prompt_greeting
+          and editor.first_line_prompt_text.get("1.0", "end-1c") == prompt_first_line
+          and editor.greeting_context_text.get("1.0", "end-1c") == prompt_greeting_context
+          and editor.first_line_styles_text.get("1.0", "end-1c") == "\n".join(styles))
+    check(report, f"{label}: reload restores the switch and placeholder share",
+          editor.opening_mode_var_editor.get() is True and float(editor.placeholder_share_var.get()) == 0.25)
+
+    editor.opening_mode_var_editor.set(False)
+    editor.placeholder_share_var.set("0.5")
+    editor.on_close_editor()  # The close handler saves, then destroys the editor.
+    settle(root)
+    with open(editor.global_config.path, encoding="utf-8") as f:
+        closed = yaml.safe_load(f)
+    check(report, f"{label}: close saves the switch and placeholder share",
+          closed["prompts"]["opening_mode"] is False and closed["generation"]["placeholder_share"] == 0.5
+          and closed["prompts"]["character"]["characters"][0]["greeting"] == greeting)
 
 
 def check_prompt_interactions(report, root, editor):
@@ -835,7 +932,8 @@ def run(args):
                 check_character_profiles(report, root, editor, characters, sizes,
                                          output if args.screenshots else None)
                 check_prompt_interactions(report, root, editor)
-                editor.destroy()  # Deliberately bypass the close handler, which saves config.
+                check_opening_mode_round_trip(report, root, editor)  # Saves the fixture config and closes the editor
+                editor.destroy()  # Already closed; harmless if the round trip stopped early.
             root.destroy()  # Likewise bypass Quit Application and its state-saving behavior.
             root = None
             check(report, "no Tk callback or capture errors", not report["errors"], report["errors"])
