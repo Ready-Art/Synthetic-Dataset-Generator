@@ -410,7 +410,14 @@ prompts:
   use_questions_file: false       # Use input/questions.txt instead of LLM-generated questions
   opening_mode: false             # Start each sample with the character's greeting (see Opening Mode below)
   greeting: "Write the opening message of this roleplay as {speaker}, ...\n{context}"  # Opening mode's greeting prompt
+  greeting_context: "Source material for the setting. Take from it only the kind of place, the objects, the weather and the mood.\n---\n{chunk}\n---\nNone of the source's people, names, ships, places or events exist in this scene: ..."  # Opening mode: the greeting's {context} when there is a book chunk
   first_line: "You are the user in a roleplay chat, not any of the characters in it. ... Write only your own next message: {style}. ..."  # Opening mode's first-line prompt
+  first_line_styles:              # Opening mode: one is picked at random for the first-line prompt's {style}
+    - "an action"
+    - "a line of dialogue"
+    - "an action with a line of dialogue"
+    - "a short reply"
+    - "a question to the character"
   question: "Generate a question based on the provided text. Recent questions to avoid: {recent_questions}\n\nSubject: {subject}\n\nContext: {context}"
   answer: "Provide an answer to the last question."
   user_continuation_prompt: "Continue the conversation naturally based on the assistant's last response: {last_assistant_message}"
@@ -485,10 +492,11 @@ prompts:
 **Template Variables:**
 - `{recent_questions}` — Recent question history to avoid repetition
 - `{subject}` — The subject text chunk
-- `{context}` — The broader context surrounding the subject (in the greeting prompt: the book chunk, inside a block that tells the model to take only the kind of place, objects, weather and mood from it and none of its people, names or events, or empty when the task has no book)
+- `{context}` — The broader context surrounding the subject (in the greeting prompt: `greeting_context` with the book chunk in its `{chunk}`, or empty when the task has no book; the shipped `greeting_context` tells the model to take only the kind of place, objects, weather and mood from the chunk and none of its people, names or events)
 - `{last_assistant_message}` — The assistant's previous response (for continuations)
 - `{speaker}` — Greeting prompt: who the greeting is written as (see below)
-- `{style}` — First-line prompt: one of "an action", "a line of dialogue", "an action with a line of dialogue", "a short reply" or "a question to the character", picked at random
+- `{chunk}` — Greeting context: the book chunk
+- `{style}` — First-line prompt: one of `first_line_styles`, picked at random
 
 **Opening Mode:** With `opening_mode: true`, each sample opens the way a SillyTavern chat does, with the character's greeting:
 
@@ -498,7 +506,7 @@ prompts:
 
 Neither new request uses the Valkey response cache, so a retry gets a new reply. A sample costs one request more than in chunk mode. Without input files, a run queues `num_random_chunks` opening tasks (12000 by default); with input files, opening tasks are book chunks, with IDs starting `opening_` so finished chunk-mode tasks do not suppress them. A greeting or first line that fails every attempt, or a conversation that ends short, is requeued, and marked failed once `MAX_TASK_REQUEUES` is reached. Quality scoring scores the conversation from the first user line. Opening mode cannot run with `use_questions_file` or `master_duplication_mode` on.
 
-The editor saves the `greeting` and `first_line` prompts and each character's `greeting` with their quotes, apostrophes, angle brackets and backslashes, which dialogue and markup need. The system, question, answer, continuation and lore prompts still have those characters removed when saved.
+The editor saves the `greeting`, `greeting_context` and `first_line` prompts, the first-line styles and each character's `greeting` with their quotes, apostrophes, angle brackets and backslashes, which dialogue and markup need. The system, question, answer, continuation and lore prompts still have those characters removed when saved.
 
 ### Detection & Quality Control
 

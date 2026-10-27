@@ -480,7 +480,21 @@ def test_opening_payloads():
           and line_body["messages"][1]["content"] == GOOD_GREETING
           and "SCENE" not in json.dumps(line_body["messages"]))
     style = line_body["messages"][0]["content"][len("FIRSTLINE-PROMPT Write your next message: "):-1]
-    check("first-line prompt fills {style} from the style list", style in g.OPENING_FIRST_LINE_STYLES)
+    check("first-line prompt fills {style} from the default style list", style in g.DEFAULT_FIRST_LINE_STYLES)
+
+    reset_state()
+    g.generate_greeting(
+        "SCENE: a ferry landing at night.", GREETING_PROMPT, "Ines", "The ferryman's ledger listed three names.", 0,
+        SLOT["sampler_settings"], SLOT["url"], SLOT["model"], SLOT["key"], 0, 4, 5, file_name="opening",
+        context_template="CONTEXT-TEMPLATE <<{chunk}>> \"kept\"")
+    check("a configured greeting context replaces the default block, with the chunk in {chunk}",
+          ROUTER.bodies("greeting")[0]["messages"][1]["content"].endswith(
+              "{braces}.\nCONTEXT-TEMPLATE <<The ferryman's ledger listed three names.>> \"kept\""))
+    g.generate_first_line(
+        GOOD_GREETING, FIRST_LINE_PROMPT, 0, SLOT["sampler_settings"], SLOT["url"], SLOT["model"], SLOT["key"], 0,
+        4, 5, file_name="opening", styles=["ONLY-STYLE"])
+    check("configured first-line styles replace the default list",
+          ROUTER.bodies("first_line")[0]["messages"][0]["content"] == "FIRSTLINE-PROMPT Write your next message: ONLY-STYLE.")
 
 
 def test_opening_rejections():
@@ -746,6 +760,10 @@ def test_config_defaults():
     check("shipped config has opening mode off", shipped["prompts"]["opening_mode"] is False)
     check("shipped config's greeting prompt is the default", shipped["prompts"]["greeting"] == g.DEFAULT_GREETING_PROMPT)
     check("shipped config's first-line prompt is the default", shipped["prompts"]["first_line"] == g.DEFAULT_FIRST_LINE_PROMPT)
+    check("shipped config's greeting context is the default",
+          shipped["prompts"]["greeting_context"] == g.DEFAULT_GREETING_CONTEXT)
+    check("shipped config's first-line styles are the default",
+          shipped["prompts"]["first_line_styles"] == list(g.DEFAULT_FIRST_LINE_STYLES))
     check("shipped config's placeholder share is 0", shipped["generation"]["placeholder_share"] == 0.0)
 
 
@@ -772,8 +790,9 @@ def test_generate_wiring():
         for kw in call.keywords:
             if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
                 passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
-    check("start_processing passes the four opening keywords to the worker",
-          passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local"})
+    check("start_processing passes the six opening keywords to the worker",
+          passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local",
+                     "greeting_context_local", "first_line_styles_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",

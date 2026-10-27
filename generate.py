@@ -30,7 +30,8 @@ import api_handler
 import api_profiles
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
-from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
+from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
+                        DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
                         opening_mode_conflict, opening_mode_mismatch)
 from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
@@ -1006,6 +1007,17 @@ def start_processing():
     if not current_first_line_prompt or not current_first_line_prompt.strip():
         current_first_line_prompt = DEFAULT_FIRST_LINE_PROMPT
         if current_opening_mode: log_message("First line prompt was empty in config. Using default prompt.", "WARNING")
+    current_greeting_context = global_config.get('prompts.greeting_context', DEFAULT_GREETING_CONTEXT)
+    if not isinstance(current_greeting_context, str) or not current_greeting_context.strip():
+        current_greeting_context = DEFAULT_GREETING_CONTEXT
+        if current_opening_mode: log_message("Greeting context was empty in config. Using default.", "WARNING")
+    current_first_line_styles = global_config.get('prompts.first_line_styles', list(DEFAULT_FIRST_LINE_STYLES))
+    if isinstance(current_first_line_styles, str):
+        current_first_line_styles = [current_first_line_styles]
+    current_first_line_styles = [str(s).strip() for s in (current_first_line_styles or []) if str(s).strip()]
+    if not current_first_line_styles:
+        current_first_line_styles = list(DEFAULT_FIRST_LINE_STYLES)
+        if current_opening_mode: log_message("First line styles were empty in config. Using defaults.", "WARNING")
     try:
         current_placeholder_share = min(1.0, max(0.0, float(global_config.get('generation.placeholder_share', 0.0) or 0.0)))
     except (TypeError, ValueError):
@@ -1427,6 +1439,8 @@ def start_processing():
             'greeting_prompt_local': current_greeting_prompt,
             'first_line_prompt_local': current_first_line_prompt,
             'placeholder_share_local': current_placeholder_share,
+            'greeting_context_local': current_greeting_context,
+            'first_line_styles_local': current_first_line_styles,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()

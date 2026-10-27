@@ -445,6 +445,8 @@ def check_opening_mode_round_trip(report, root, editor):
     prompt_greeting = ("Open as {speaker}: \"quotes\", it's <i>tagged</i>, {braces} stay.\n"
                        "{context}\n  indented last line")
     prompt_first_line = "Reply with {style}.\nDon't use <angle> \"quotes\" {here}."
+    prompt_greeting_context = "Take the mood from <src>:\n{chunk}\nDon't name \"anyone\" in it."
+    styles = ["a glance", "a 'quoted' line"]
     choose(0)
     entries[0]["greeting_widget"].delete("1.0", "end")
     entries[0]["greeting_widget"].insert("1.0", greeting)
@@ -453,7 +455,9 @@ def check_opening_mode_round_trip(report, root, editor):
     check(report, f"{label}: page change preserves an unsaved greeting paste",
           entries[0]["greeting"].get() == greeting)
     select_tab(editor.notebook, "Prompts")
-    for name, text in (("greeting_prompt_text", prompt_greeting), ("first_line_prompt_text", prompt_first_line)):
+    for name, text in (("greeting_prompt_text", prompt_greeting), ("first_line_prompt_text", prompt_first_line),
+                       ("greeting_context_text", prompt_greeting_context),
+                       ("first_line_styles_text", "\n".join(styles) + "\n\n")):
         widget = getattr(editor, name)
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
@@ -464,7 +468,8 @@ def check_opening_mode_round_trip(report, root, editor):
     prompts = gathered["prompts"]
     check(report, f"{label}: gathered greeting and prompts are exact",
           prompts["character"]["characters"][0]["greeting"] == greeting
-          and prompts["greeting"] == prompt_greeting and prompts["first_line"] == prompt_first_line)
+          and prompts["greeting"] == prompt_greeting and prompts["first_line"] == prompt_first_line
+          and prompts["greeting_context"] == prompt_greeting_context and prompts["first_line_styles"] == styles)
     check(report, f"{label}: other profiles gather an empty greeting",
           all(c["greeting"] == "" for c in prompts["character"]["characters"][1:]))
 
@@ -480,6 +485,8 @@ def check_opening_mode_round_trip(report, root, editor):
           saved["prompts"]["character"]["characters"][0]["greeting"] == greeting
           and saved["prompts"]["greeting"] == prompt_greeting
           and saved["prompts"]["first_line"] == prompt_first_line
+          and saved["prompts"]["greeting_context"] == prompt_greeting_context
+          and saved["prompts"]["first_line_styles"] == styles
           and saved["prompts"]["opening_mode"] is True
           and saved["generation"]["placeholder_share"] == 0.25,
           {"status": editor.status.cget("text")})
@@ -491,7 +498,9 @@ def check_opening_mode_round_trip(report, root, editor):
           and entries[0]["greeting_widget"].get("1.0", "end-1c") == greeting)
     check(report, f"{label}: reload restores the prompts exactly",
           editor.greeting_prompt_text.get("1.0", "end-1c") == prompt_greeting
-          and editor.first_line_prompt_text.get("1.0", "end-1c") == prompt_first_line)
+          and editor.first_line_prompt_text.get("1.0", "end-1c") == prompt_first_line
+          and editor.greeting_context_text.get("1.0", "end-1c") == prompt_greeting_context
+          and editor.first_line_styles_text.get("1.0", "end-1c") == "\n".join(styles))
     check(report, f"{label}: reload restores the switch and placeholder share",
           editor.opening_mode_var_editor.get() is True and float(editor.placeholder_share_var.get()) == 0.25)
 

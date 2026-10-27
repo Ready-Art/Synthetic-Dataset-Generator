@@ -16,7 +16,8 @@ from tkinter import ttk, scrolledtext, messagebox
 
 import api_profiles
 from config_loader import sanitize_input
-from generation import DEFAULT_FIRST_LINE_PROMPT, DEFAULT_GREETING_PROMPT
+from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
+                        DEFAULT_GREETING_PROMPT)
 from logging_config import log_message
 from api_handler import global_rate_limiter
 from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
@@ -470,7 +471,9 @@ class ConfigEditor(tk.Toplevel):
         add_prompt_text_area("Answer Prompt (instruction for the assistant's turn):", 'answer_prompt_text', height=12)
         add_prompt_text_area("User Continuation Prompt (use {last_assistant_message} for user's next turn):", 'user_continuation_prompt_text', height=12)
         add_prompt_text_area("Greeting Prompt (opening mode; use {speaker} and {context}, the book chunk when there is one; saved exactly as typed):", 'greeting_prompt_text', height=8)
+        add_prompt_text_area("Greeting Context (opening mode; fills the greeting prompt's {context} when there is a book chunk, use {chunk} for the chunk; saved exactly as typed):", 'greeting_context_text', height=8)
         add_prompt_text_area("First Line Prompt (opening mode; system prompt for the user's first line, use {style}; saved exactly as typed):", 'first_line_prompt_text', height=8)
+        add_prompt_text_area("First Line Styles (opening mode; one per line, one is picked at random for {style}):", 'first_line_styles_text', height=6)
 
         # --- NEW: Lore Tab ---
         self.lore_tab = ttk.Frame(self.notebook)
@@ -1293,7 +1296,9 @@ class ConfigEditor(tk.Toplevel):
                 # Opening-mode prompts are saved as typed: quotes and markup are legitimate in roleplay prompts
                 'opening_mode': self.opening_mode_var_editor.get(),
                 'greeting': self.greeting_prompt_text.get("1.0", "end-1c"),
+                'greeting_context': self.greeting_context_text.get("1.0", "end-1c"),
                 'first_line': self.first_line_prompt_text.get("1.0", "end-1c"),
+                'first_line_styles': [line.strip() for line in self.first_line_styles_text.get("1.0", "end-1c").split('\n') if line.strip()],
                 'lore': sanitize_input(self.lore_text.get("1.0", tk.END).strip()),
             'character': {
                 'enabled': self.enable_character_engine_var_editor.get(),
@@ -1664,7 +1669,10 @@ class ConfigEditor(tk.Toplevel):
             self.user_continuation_prompt_text.delete(1.0, tk.END); self.user_continuation_prompt_text.insert(tk.END, prompts_config.get('user_continuation_prompt', 'Continue based on: {last_assistant_message}'))
             self.opening_mode_var_editor.set(prompts_config.get('opening_mode', False))
             self.greeting_prompt_text.delete(1.0, tk.END); self.greeting_prompt_text.insert(tk.END, prompts_config.get('greeting', DEFAULT_GREETING_PROMPT))
+            self.greeting_context_text.delete(1.0, tk.END); self.greeting_context_text.insert(tk.END, prompts_config.get('greeting_context', DEFAULT_GREETING_CONTEXT))
             self.first_line_prompt_text.delete(1.0, tk.END); self.first_line_prompt_text.insert(tk.END, prompts_config.get('first_line', DEFAULT_FIRST_LINE_PROMPT))
+            styles_conf = prompts_config.get('first_line_styles', list(DEFAULT_FIRST_LINE_STYLES))
+            self.first_line_styles_text.delete(1.0, tk.END); self.first_line_styles_text.insert(tk.END, "\n".join(styles_conf if isinstance(styles_conf, list) else [str(styles_conf)]))
 
             self.lore_text.delete(1.0, tk.END)
             self.lore_text.insert(tk.END, config.get('prompts', {}).get('lore', ''))
