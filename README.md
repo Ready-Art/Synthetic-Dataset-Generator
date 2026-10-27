@@ -382,7 +382,7 @@ generation:
   num_turns: 1                    # Q/A pairs per conversation
   history_size: 10               # Recent questions to avoid repetition
   api_request_timeout: 300       # Seconds for API connect/read timeout
-  max_newlines_malformed: 16      # Max newlines before considering response malformed
+  max_newlines_malformed: 32      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
   max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing
   max_anti_slop_fix_iterations: 10     # Iterations for sentence-level anti-slop fixing
@@ -408,6 +408,9 @@ generation:
 ```yaml
 prompts:
   use_questions_file: false       # Use input/questions.txt instead of LLM-generated questions
+  question: "Write the user's first message in a roleplay drawn from the passage below. Write only the message itself, as the user, not as any other character.\n\n{context}"
+  answer: "Write your next message in the roleplay. Write only the message itself."
+  user_continuation_prompt: "Write the user's next message. Write only as the user, not as any other character."
   opening_mode: false             # Start each sample with the character's greeting (see Opening Mode below)
   greeting: "Write the opening message of this roleplay as {speaker}, ...\n{context}"  # Opening mode's greeting prompt
   greeting_context: "Source material for the setting. Take from it only the kind of place, the objects, the weather and the mood.\n---\n{chunk}\n---\nNone of the source's people, names, ships, places or events exist in this scene: ..."  # Opening mode: the greeting's {context} when there is a book chunk
@@ -424,11 +427,9 @@ prompts:
 
   system:
     top_level_system_prompt: ""   # Prepended to ALL system prompts
-    base: "You are a helpful assistant."
+    base: "You are an excellent role-player."
     variable: false               # Enable random system prompt selection
-    variations:                   # One per line; used when variable: true
-      - "You are a knowledgeable professor."
-      - "You are a friendly chatbot."
+    variations: []                # One per line; used when variable: true
 
   lore: ""                        # World lore injected into every system prompt
 
@@ -466,7 +467,7 @@ prompts:
         class: "rogue"
 
   emotional_states:
-    enabled: true
+    enabled: false
     states:
       - "happy"
       - "sad"
@@ -489,7 +490,7 @@ prompts:
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
 - **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept.
 
-**Template Variables:**
+**Template Variables** (each is optional; the shipped question prompt uses only `{context}`):
 - `{recent_questions}` — Recent question history to avoid repetition
 - `{subject}` — The subject text chunk
 - `{context}` — The broader context surrounding the subject (in the greeting prompt: `greeting_context` with the book chunk in its `{chunk}`, or empty when the task has no book; the shipped `greeting_context` tells the model to take only the kind of place, objects, weather and mood from the chunk and none of its people, names or events)
@@ -603,11 +604,11 @@ samplers:
   temperature: 0.5
   top_p: 0.9
   top_k: 50
-  min_p: 0.05
-  repetition_penalty: 1.1
-  max_tokens_question: 256
+  min_p: 0.0
+  repetition_penalty: 1.0
+  max_tokens_question: 1024
   max_tokens_answer: 1024
-  max_tokens_user_reply: 256
+  max_tokens_user_reply: 1024
   enable_thinking: "default"    # "default", "enable", or "disable"
   logit_bias: ""                # JSON format, e.g., {"15": 100}
 
@@ -617,7 +618,7 @@ samplers:
     top_p: 0.95
     min_p: 0.0
     top_k: 50
-    repetition_penalty: 1.1
+    repetition_penalty: 1.0
     max_tokens: 200
 
   # Anti-Slop Fixer LLM overrides (API Slot 6)
@@ -626,7 +627,7 @@ samplers:
     top_p: 0.95
     min_p: 0.0
     top_k: 50
-    repetition_penalty: 1.1
+    repetition_penalty: 1.0
     max_tokens: 200
 ```
 
@@ -1229,7 +1230,7 @@ Budget is checked at the start of each worker loop iteration with thread-safe ac
 
 The application checks for malformed LLM responses using two configurable thresholds:
 
-- **`max_newlines_malformed`** (default: 16) — If a response contains more newlines than this threshold, it's considered malformed and the attempt is retried
+- **`max_newlines_malformed`** (32 in the shipped `config.yml`) — If a response contains more newlines than this threshold, it's considered malformed and the attempt is retried
 - **`max_text_length_malformed`** (default: 5000) — If a response exceeds this character length, it's considered malformed and the attempt is retried
 
 This catches cases where the LLM generates excessively long or poorly formatted output, such as dumping entire documents or generating repetitive text.
