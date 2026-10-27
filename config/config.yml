@@ -83,6 +83,7 @@ generation:
   max_text_length_malformed: 5000
   slop_to_anti_slop_fallback: false
   discard_refused_conversations: false
+  use_conversation_history_for_fixers: true
 quality:
   enabled: true
   use_llm_scoring: false
