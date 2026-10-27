@@ -121,6 +121,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Opening mode → `generate_greeting()`, `generate_first_line()`, `enqueue_opening_tasks()`
 - Quality scoring → `quality.score_conversation()` call after conversation complete
 - Turn completion check → `conversation_is_complete()` (line 200+)
+- Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
 
 ### `logging_config.py` [13]
 **Purpose:** Shared logging utility

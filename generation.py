@@ -1995,8 +1995,21 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                         slop_fixer_api_config,
                         main_sampler_settings, thread_id, additional_fix_instructions="",
                         current_max_attempts_param=5, api_request_timeout_param=300,
-                        file_name=""):
-    """Calls a dedicated LLM (API Slot 5, index 4) to rewrite a sentence containing "slop", with retries."""
+                        file_name="", conversation_history=None):
+    """Calls a dedicated LLM (API Slot 5, index 4) to rewrite a sentence containing "slop", with retries.
+    
+    Args:
+        text_context: The paragraph/sentence context containing the slop phrase
+        slop_phrase: The specific slop phrase to fix
+        slop_fixer_api_config: API configuration for the slop fixer
+        main_sampler_settings: Sampler settings for generation
+        thread_id: Worker thread ID
+        additional_fix_instructions: Optional additional instructions
+        current_max_attempts_param: Maximum retry attempts
+        api_request_timeout_param: API request timeout in seconds
+        file_name: Source file name
+        conversation_history: Full conversation history for context (list of {role, content} dicts)
+    """
 
     api_slot_idx_slop_fixer = 4 # Slop fixer is always API slot 5 (index 4)
 
@@ -2022,7 +2035,20 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             app_state.total_attempts_per_api[api_slot_idx_slop_fixer] +=1
 
         try:
-            # UPDATED PROMPT: Explicitly instruct to preserve quotes & provide paragraph context
+            # Build conversation context for better coherence
+            conversation_context = ""
+            if conversation_history and len(conversation_history) > 0:
+                conversation_context = "\n\n<conversation_context>\n"
+                for msg in conversation_history[-6:]:  # Last 6 messages for context
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    if role == 'user':
+                        conversation_context += f"User: {content}\n"
+                    elif role == 'assistant':
+                        conversation_context += f"Assistant: {content}\n"
+                conversation_context += "</conversation_context>"
+
+            # UPDATED PROMPT: Explicitly instruct to preserve quotes & provide paragraph context + full conversation
             user_rewrite_instruction = (
                 f"The following text contains an undesirable phrase: '{slop_phrase}'. "
                 f"Rewrite the text to remove or rephrase this specific undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. "
@@ -2036,9 +2062,11 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 "\n\nCRITICAL RULES:\n"
                 "1. Preserve ALL existing quotation marks exactly where they appear structurally.\n"
                 "2. If you must add or remove a quote, ensure every opening mark has a matching closing mark.\n"
-                "3. Do not wrap the entire output in quotes."
+                "3. Do not wrap the entire output in quotes.\n"
+                "4. Use the conversation context to understand the topic and maintain coherence when rephrasing."
             )
 
+            user_rewrite_instruction += conversation_context
             user_rewrite_instruction += f"\n\n<original_text>\n{text_context}\n</original_text>"
 
             messages = [
@@ -2207,8 +2235,23 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                        current_max_attempts_param=5,
                        master_duplication_enabled=False,
                        api_request_timeout_param=300,
-                       file_name=""):
-    """Calls a dedicated LLM to rewrite a sentence containing anti-slop phrases."""
+                       file_name="",
+                       conversation_history=None):
+    """Calls a dedicated LLM to rewrite a sentence containing anti-slop phrases.
+    
+    Args:
+        text_context: The paragraph/sentence context containing the anti-slop phrase
+        anti_slop_phrase: The specific anti-slop phrase to fix
+        anti_slop_api_config: API configuration for the anti-slop fixer
+        main_sampler_settings: Sampler settings for generation
+        thread_id: Worker thread ID
+        additional_fix_instructions: Optional additional instructions
+        current_max_attempts_param: Maximum retry attempts
+        master_duplication_enabled: Whether duplication mode is enabled
+        api_request_timeout_param: API request timeout in seconds
+        file_name: Source file name
+        conversation_history: Full conversation history for context (list of {role, content} dicts)
+    """
     api_slot_idx_anti_slop = 5
 
     if not anti_slop_api_config or not anti_slop_api_config.get('url') or \
@@ -2243,7 +2286,20 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             return None, text_context
 
         try:
-            # UPDATED PROMPT
+            # Build conversation context for better coherence
+            conversation_context = ""
+            if conversation_history and len(conversation_history) > 0:
+                conversation_context = "\n\n<conversation_context>\n"
+                for msg in conversation_history[-6:]:  # Last 6 messages for context
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    if role == 'user':
+                        conversation_context += f"User: {content}\n"
+                    elif role == 'assistant':
+                        conversation_context += f"Assistant: {content}\n"
+                conversation_context += "</conversation_context>"
+
+            # UPDATED PROMPT: Include full conversation context for coherence
             user_rewrite_instruction = (
                 f"The following text contains an undesirable phrase: '{anti_slop_phrase}'. "
                 f"Rewrite the text to remove or rephrase this specific undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. "
@@ -2257,9 +2313,11 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 "\n\nCRITICAL RULES:\n"
                 "1. Preserve ALL existing quotation marks exactly where they appear structurally.\n"
                 "2. If you must add or remove a quote, ensure every opening mark has a matching closing mark.\n"
-                "3. Do not wrap the entire output in quotes."
+                "3. Do not wrap the entire output in quotes.\n"
+                "4. Use the conversation context to understand the topic and maintain coherence when rephrasing."
             )
 
+            user_rewrite_instruction += conversation_context
             user_rewrite_instruction += f"\n\n<original_text>\n{text_context}\n</original_text>"
 
             messages = [
@@ -2876,7 +2934,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             thread_id,
                             additional_fix_instructions=additional_instructions_for_llm_fixer,
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
-                            file_name=file_name
+                            file_name=file_name,
+                            conversation_history=conversation_history_for_llm  # Pass full conversation context
                         )
 
                         if rewritten_sentence_part and original_sentence_part:
@@ -2937,7 +2996,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             additional_fix_instructions="This is a SLOP phrase that needs to be rephrased. Remove or rephrase this undesirable phrase while preserving the original meaning, tone, and ALL quotation marks. ONLY output the rewritten text.",
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
                             master_duplication_enabled=master_duplication_enabled_local,
-                            file_name=file_name
+                            file_name=file_name,
+                            conversation_history=conversation_history_for_llm  # Pass full conversation context
                         )
 
                         if rewritten_fb and original_fb:
@@ -3045,7 +3105,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             additional_fix_instructions=additional_instructions,
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
                             master_duplication_enabled=master_duplication_enabled_local,
-                            file_name=file_name
+                            file_name=file_name,
+                            conversation_history=conversation_history_for_llm  # Pass full conversation context
                         )
 
                         if rewritten_sentence and original_sentence:

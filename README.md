@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v9.7.0
+# ReadyArt Synthetic Dataset Generator v9.7.2
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -1117,6 +1117,9 @@ Extract paragraph context around slop phrase
     ▼
 Call Slop Fixer LLM (API Slot 5) to rewrite paragraph
     │
+    ├── Includes last 6 messages of conversation history for context
+    │   (helps LLM understand topic and maintain coherence)
+    │
     ├── Success → Check for incomplete quotes
     │       │
     │       ├── Quotes balanced → Replace in text
@@ -1138,6 +1141,9 @@ Extract paragraph context around anti-slop phrase
     │
     ▼
 Call Anti-Slop Fixer LLM (API Slot 6) to rewrite paragraph
+    │
+    ├── Includes last 6 messages of conversation history for context
+    │   (helps LLM understand topic and maintain coherence)
     │
     ├── Success → Check for incomplete quotes
     │       │
