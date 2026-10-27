@@ -102,6 +102,7 @@ quality_lock = Lock()
 quality_scores = {}  # {task_id: {"composite": float, "dimensions": {...}, "flags": [...], "scored_at": str, "method": str}}
 quality_enabled = True  # Master toggle (overridden by config)
 quality_output_filter = False  # If True, only write conversations meeting the threshold to output
+use_conversation_history_for_fixers = True  # If True, pass conversation history to slop/anti-slop fixers
 # --- Quality Review Queue ---
 quality_review_ids = set()  # task_ids flagged for human review
 quality_review_lock = Lock()

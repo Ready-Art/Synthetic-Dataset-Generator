@@ -416,6 +416,10 @@ class ConfigEditor(tk.Toplevel):
         self.discard_refused_conversations_var_editor = tk.BooleanVar()
         wrapped_checkbutton(gen_settings_frame, text="Discard Refused Conversations (Don't save a conversation if any reply needed a jailbreak)",
                         variable=self.discard_refused_conversations_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
+
+        self.use_conversation_history_for_fixers_var_editor = tk.BooleanVar(value=True)
+        wrapped_checkbutton(gen_settings_frame, text="Use Conversation History for Fixers (Pass conversation context to slop/anti-slop fixer LLMs for coherent rephrasing)",
+                        variable=self.use_conversation_history_for_fixers_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
         
         ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.output_format_var = tk.StringVar(value="sharegpt")
@@ -1282,7 +1286,8 @@ class ConfigEditor(tk.Toplevel):
                 'max_newlines_malformed': int(self.max_newlines_malformed_var.get()),
                 'max_text_length_malformed': int(self.max_text_length_malformed_var.get()),
                 'slop_to_anti_slop_fallback': self.slop_to_anti_slop_fallback_var_editor.get(),
-                'discard_refused_conversations': self.discard_refused_conversations_var_editor.get()
+                'discard_refused_conversations': self.discard_refused_conversations_var_editor.get(),
+                'use_conversation_history_for_fixers': self.use_conversation_history_for_fixers_var_editor.get()
             },
             'quality': {
                 'enabled': self.quality_enabled_var_editor.get(),
@@ -1683,6 +1688,7 @@ class ConfigEditor(tk.Toplevel):
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
             self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
             self.discard_refused_conversations_var_editor.set(gen_config.get('discard_refused_conversations', False))
+            self.use_conversation_history_for_fixers_var_editor.set(gen_config.get('use_conversation_history_for_fixers', True))
             # Load quality scoring config
             quality_conf = config.get('quality', {})
             self.quality_enabled_var_editor.set(quality_conf.get('enabled', True))

@@ -24,6 +24,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Sampler params → `samplers.temperature`, `samplers.top_p`, `samplers.repetition_penalty`
 - Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, traits, backstory, setting)
 - Random names → `prompts.random_names.enabled`, `prompts.random_names.names[]` (optional list of names to randomly assign to characters, overrides character Name field when enabled)
+- Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
 
 ### `config/api_profiles.yml` [2]
 **Purpose:** API compatibility profiles for request payload filtering per endpoint
@@ -180,6 +181,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add character profile | `config/config.yml` (`prompts.character.characters[]`), `config_editor.py` (UI fields) |
 | Modify opening mode prompts | `config/config.yml` (`prompts.greeting`, `prompts.first_line`, `prompts.greeting_context`, `prompts.first_line_styles`) |
 | Add random names feature | `config/config.yml` (`prompts.random_names.enabled`, `prompts.random_names.names[]`), `config_editor.py` (UI toggle + text area), `generate.py` (load config + pass to worker), `generation.py` (use random names in character profile) |
+| Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
 
 ## Key State Variables (`app_state.py`)
@@ -194,7 +196,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 **GUI handles:** `root`, `dashboard_notebook`, `slot_widgets`, `rate_limit_labels`, `quality_*_label`
 
-**Flags:** `stop_processing`, `pause_processing`, `processing_active`, `quality_enabled`, `quality_output_filter`
+**Flags:** `stop_processing`, `pause_processing`, `processing_active`, `quality_enabled`, `quality_output_filter`, `use_conversation_history_for_fixers`
 
 ## API Slots Index
 - **0-3:** Main generation APIs (duplication mode)

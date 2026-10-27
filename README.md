@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v9.7.2
+# ReadyArt Synthetic Dataset Generator v9.7.5
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -90,6 +90,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
 - **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness and rotating fix instructions
 - **Slop → Anti-Slop Fallback** — When the Slop Fixer fails to fully resolve slop, the Anti-Slop Fixer LLM is used as a final attempt before accepting the output
+- **Conversation History for Fixers** — Slop and anti-slop fixer LLMs can optionally receive the full conversation context (last 6 messages) for more coherent rephrasing (configurable via `generation.use_conversation_history_for_fixers`)
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
 - **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds (`max_newlines_malformed`, `max_text_length_malformed`)
 
@@ -403,6 +404,7 @@ generation:
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
   slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
   discard_refused_conversations: false  # Don't save a conversation if any reply needed a jailbreak
+  use_conversation_history_for_fixers: true  # Pass conversation context to slop/anti-slop fixer LLMs for coherent rephrasing
   placeholder_share: 0.0          # Opening mode: share of rows (0 to 1) that start with a [Start a new chat] user turn
 
   # Text post-processing flags
@@ -1438,6 +1440,7 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Use emotional states** — Enable `emotional_states` to add tonal variety to conversations
 - **Add character traits** — Use the `traits` field in character entries to add more depth to character personas
 - **Enable slop → anti-slop fallback** — Set `slop_to_anti_slop_fallback: true` to use the Anti-Slop Fixer as a final attempt when the Slop Fixer fails
+- **Toggle conversation history for fixers** — Set `generation.use_conversation_history_for_fixers: false` to disable passing conversation context to slop/anti-slop fixer LLMs (reduces token usage but may affect coherence)
 - **Adjust malformed response thresholds** — Tune `max_newlines_malformed` and `max_text_length_malformed` to catch poorly formatted LLM output without rejecting valid responses
 - **Use the `enable_thinking` sampler option** — Set to `"disable"` for reasoning models that output unwanted thinking tags
 - **Use the Queue tab** — Monitor task progress in real-time; use **Purge Queue** to abandon bad batches without stopping the entire job, or **Retry Failed** to recover from transient issues

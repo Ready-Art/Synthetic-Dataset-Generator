@@ -2927,6 +2927,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                         log_message(f"Thread {thread_id}: Fixing slop paragraph (Iter {slop_iter_num+1}): '{phrase_to_fix_iter}' in context...", "DEBUG")
 
+                        # Conditionally pass conversation history based on config
+                        conv_history_for_slop_fixer = conversation_history_for_llm if app_state.use_conversation_history_for_fixers else None
                         rewritten_sentence_part, original_sentence_part = call_slop_fixer_llm(
                             context_for_fixer, phrase_to_fix_iter, # Pass paragraph instead of single sentence
                             slop_fixer_api_config_param,
@@ -2935,7 +2937,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             additional_fix_instructions=additional_instructions_for_llm_fixer,
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
                             file_name=file_name,
-                            conversation_history=conversation_history_for_llm  # Pass full conversation context
+                            conversation_history=conv_history_for_slop_fixer  # Pass conversation context if enabled
                         )
 
                         if rewritten_sentence_part and original_sentence_part:
@@ -2989,6 +2991,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                         log_message(f"Thread {thread_id}: Anti-Slop fallback attempting to fix: '{fb_phrase}' in context...", "DEBUG")
 
+                        # Conditionally pass conversation history based on config
+                        conv_history_for_anti_slop = conversation_history_for_llm if app_state.use_conversation_history_for_fixers else None
                         rewritten_fb, original_fb = call_anti_slop_llm(
                             fb_context, fb_phrase,
                             anti_slop_fixer_api_config_param,
@@ -2997,7 +3001,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
                             master_duplication_enabled=master_duplication_enabled_local,
                             file_name=file_name,
-                            conversation_history=conversation_history_for_llm  # Pass full conversation context
+                            conversation_history=conv_history_for_anti_slop  # Pass conversation context if enabled
                         )
 
                         if rewritten_fb and original_fb:
@@ -3096,6 +3100,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         log_message(f"Thread {thread_id}: Fixing anti-slop paragraph (Iter {anti_slop_iter_num+1}): '{phrase_to_fix}' in context...", "DEBUG")
 
 
+                        # Conditionally pass conversation history based on config
+                        conv_history_for_anti_slop2 = conversation_history_for_llm if app_state.use_conversation_history_for_fixers else None
                         rewritten_sentence, original_sentence = call_anti_slop_llm(
                             context_for_fixer, # Pass paragraph instead of single sentence
                             phrase_to_fix,
@@ -3106,7 +3112,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             current_max_attempts_param=current_max_attempts_for_slop_fixer_call,
                             master_duplication_enabled=master_duplication_enabled_local,
                             file_name=file_name,
-                            conversation_history=conversation_history_for_llm  # Pass full conversation context
+                            conversation_history=conv_history_for_anti_slop2  # Pass conversation context if enabled
                         )
 
                         if rewritten_sentence and original_sentence:
