@@ -751,7 +751,8 @@ def check_slop_bad_words(slot_idx, conf, phrases):
         return False, "WARNING", (f"vLLM rejected the slop list ({len(phrases)} phrases) as bad_words with HTTP "
                                   f"{response.status_code}: {response.text[:300]}. A list over vLLM's per-request limits "
                                   "needs VLLM_MAX_NUM_BAD_WORDS or VLLM_MAX_BAD_WORDS_TOTAL_TOKENS raised on the server")
-    return True, "INFO", f"vLLM accepts the slop list ({len(phrases)} phrases); sending it as bad_words"
+    return True, "INFO", (f"vLLM accepts the slop list ({len(phrases)} phrases); sending it as bad_words "
+                          "instead of running slop detection and the slop fixer")
 
 def enable_slop_bad_words(slots, phrases, run):
     """Check each (slot_idx, conf) pair and publish each accepted slot, with the exact list checked, in
@@ -964,18 +965,17 @@ def start_processing():
         if conf.get('url'):
             log_message(f"API Slot {slot_idx+1} compatibility profile: {resolved}", "INFO")
 
-    # With detection.slop.vllm_bad_words true, the slop list is also sent as vLLM's bad_words by the worker
-    # slots (1-4) and the slop fixers (5-6) that the check confirms. Until it has, they send none. It probes
-    # each server off the Tk thread so an unreachable host cannot freeze the GUI; a new run number
-    # discards a previous run's check.
+    # With detection.slop.vllm_bad_words true, each worker slot (1-4) the check confirms sends the slop list
+    # as vLLM's bad_words instead of running slop detection and the slop fixer. Until the check confirms a
+    # slot, it uses slop detection as before. It probes each server off the Tk thread so an unreachable
+    # host cannot freeze the GUI; a new run number discards a previous run's check.
     with app_state.bad_words_lock:
         app_state.bad_words_run += 1
         app_state.bad_words_by_slot = {}
         bad_words_run = app_state.bad_words_run
     slop_phrases = slop_phrases_as_bad_words()
     if slop_phrases:
-        bad_words_candidates = [(i, c) for i, c in enumerate(all_api_configs_runtime[:6])
-                                if c.get('url') and (c.get('enabled') if i < 4 else c.get('model'))]
+        bad_words_candidates = [(i, c) for i, c in enumerate(all_api_configs_runtime[:4]) if c.get('enabled') and c.get('url')]
         threading.Thread(target=enable_slop_bad_words, args=(bad_words_candidates, slop_phrases, bad_words_run),
                          daemon=True).start()
 

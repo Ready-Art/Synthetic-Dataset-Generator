@@ -1059,24 +1059,25 @@ Call Slop Fixer LLM (API Slot 5) to rewrite paragraph
 
 ### Banning slop phrases at generation (vLLM only)
 
-With `detection.slop.vllm_bad_words: true` (off by default; in the editor, the checkbox under
-**Slop Detection**), the slop list (`detection.slop.phrases`) is also sent to vLLM servers as
-`bad_words`. The model then avoids those phrases while it writes, with the whole conversation in
-context, and the slop fixer above only has to handle what still gets through. The list goes out
-with question, answer and user-reply requests (slots 1–4) and with the slop and anti-slop fixers'
-rewrites (slots 5–6). Off, nothing is sent or probed, and the slop list is used for detection only.
+The slop list (`detection.slop.phrases`) is used one of two ways per slot, never both:
 
-At run start, a background check confirms each enabled slot before it sends the list:
+- **Slop detection and the slop fixer** (above): the default.
+- **vLLM `bad_words`**: with `detection.slop.vllm_bad_words: true` (off by default; in the editor,
+  the checkbox under **Slop Detection**), a worker slot (1–4) on a vLLM server sends the list as
+  `bad_words` with its question, answer and user-reply requests, so the model avoids those phrases
+  while it writes. Those requests skip slop detection, so the slop fixer (slot 5) does not run for
+  them. The fixers never send `bad_words`. Anti-slop detection is unaffected.
+
+At run start, a background check confirms each enabled worker slot before it sends the list:
 
 1. The slot's API compatibility profile keeps `bad_words` (`openai_compatible` and a `custom`
    profile listing it do; the hosted-API profiles drop it).
 2. `GET …/v1/models` reports `owned_by: "vllm"`.
 3. A one-token request carrying the whole list succeeds.
 
-A slot that fails any step uses the slop list for detection only, as before, and the log says why.
-Requests sent before the check finishes carry no `bad_words`. A confirmed slot sends exactly the
-list the check tested: slop phrases edited during a run are used for detection at once, and as
-`bad_words` from the next run start.
+A slot that fails any step uses slop detection and the slop fixer, as before, and the log says why.
+Requests sent before the check finishes also use slop detection. A confirmed slot sends exactly the
+list the check tested: slop phrases edited during a run reach it from the next run start.
 
 Since vLLM 0.28.0, `bad_words` is limited per request to 128 token sequences
 (`VLLM_MAX_NUM_BAD_WORDS`) and 1024 tokens in total (`VLLM_MAX_BAD_WORDS_TOTAL_TOKENS`); earlier
@@ -1085,12 +1086,15 @@ form when it tokenizes differently), so the first limit allows between 64 and 12
 on the tokenizer, and long phrases can reach the token total sooner. A list over a limit fails
 step 3: raise those environment variables on the vLLM server, or shorten the list.
 
-vLLM matches differently from slop detection:
-- It is case-sensitive: `Shivers down` at the start of a sentence is not banned by `shivers down`.
-  Detection still catches it.
+vLLM matches more narrowly than slop detection, so a banned phrase can still appear in the output,
+and nothing rewrites it:
+- It matches exact tokens, case-sensitively: `Shivers down` at the start of a sentence is not
+  banned by `shivers down`, and text that tokenizes differently in context (for example after
+  `*` or other punctuation) is not banned either. Slop detection ignores case and punctuation.
 - For a phrase, vLLM blocks only its last token, once the earlier tokens have been generated.
   Banning `shivers down her spine` stops `spine` after `shivers down her`, so the model may write
-  `back` instead.
+  `back` instead, or repeat a word to get past the ban (`air filled, filled with` avoids a ban on
+  `air filled with`). Single words and short phrases ban more cleanly than long ones.
 
 ### Anti-Slop Fixing Flow
 

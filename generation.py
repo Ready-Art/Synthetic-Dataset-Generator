@@ -1142,6 +1142,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             bad_words = slop_bad_words(api_slot_idx)
             if bad_words:
                 payload_dict['bad_words'] = bad_words # vLLM-only parameter; set only for slots confirmed as vLLM at run start
+                slop_phrases_local = () # bad_words replaces slop detection, and so the slop fixer, for this slot
             thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
             if thinking_mode == 'enable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
@@ -1426,6 +1427,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             bad_words = slop_bad_words(api_slot_idx)
             if bad_words:
                 payload_dict['bad_words'] = bad_words # vLLM-only parameter; set only for slots confirmed as vLLM at run start
+                slop_phrases_local = () # bad_words replaces slop detection, and so the slop fixer, for this slot
             thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
             if thinking_mode == 'enable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
@@ -1687,9 +1689,6 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 **final_slop_fixer_params,
                 "stream": False
             }
-            bad_words = slop_bad_words(api_slot_idx_slop_fixer)
-            if bad_words:
-                payload_data['bad_words'] = bad_words # vLLM-only parameter; keeps the rewrite from using another slop phrase
             payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_slop_fixer)
             payload = json.dumps(payload_data)
             headers = {
@@ -1910,9 +1909,6 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 **final_anti_slop_params,
                 "stream": False
             }
-            bad_words = slop_bad_words(api_slot_idx_anti_slop)
-            if bad_words:
-                payload_data['bad_words'] = bad_words # vLLM-only parameter; keeps the rewrite from using a slop phrase
             payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_anti_slop)
             payload = json.dumps(payload_data)
             headers = {
@@ -2162,6 +2158,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 bad_words = slop_bad_words(api_slot_idx)
                 if bad_words:
                     payload_dict_ans['bad_words'] = bad_words # vLLM-only parameter; set only for slots confirmed as vLLM at run start
+                    slop_phrases_local = () # bad_words replaces slop detection, and so the slop fixer, for this slot
 
                 thinking_mode = sampler_settings_local.get('enable_thinking', 'default')
                 if thinking_mode == 'enable':
