@@ -30,6 +30,9 @@ import api_handler
 import api_profiles
 import app_state
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
+from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
+                        DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
+                        opening_mode_conflict, opening_mode_mismatch)
 from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
@@ -177,7 +180,10 @@ def load_generation_state():
                     incompatible_settings.append(f"Number of Turns (Saved: {saved_config_snapshot.get('generation.num_turns')}, Current: {current_num_turns})")
                 if saved_config_snapshot.get('api.master_duplication_mode') != current_master_duplication_mode:
                     incompatible_settings.append(f"Master Duplication Mode (Saved: {saved_config_snapshot.get('api.master_duplication_mode')}, Current: {current_master_duplication_mode})")
-                
+                opening_mode_change = opening_mode_mismatch(saved_config_snapshot, global_config.get('prompts.opening_mode', False))
+                if opening_mode_change:
+                    incompatible_settings.append(opening_mode_change)
+
                 # Only check subject/context size if not using questions file (as they are irrelevant otherwise)
                 if not current_use_questions_file:
                     if saved_config_snapshot.get('generation.subject_size') != current_subject_size:
@@ -991,6 +997,32 @@ def start_processing():
     current_answer_prompt = global_config.get('prompts.answer', "Provide an answer to the last question.")
     current_api_request_timeout = global_config.get('generation.api_request_timeout', 300)
     current_lore = global_config.get('prompts.lore', '')
+    # Opening mode: samples start with the character's greeting and a first line from the user's seat
+    current_opening_mode = bool(global_config.get('prompts.opening_mode', False))
+    current_greeting_prompt = global_config.get('prompts.greeting', DEFAULT_GREETING_PROMPT)
+    if not current_greeting_prompt or not current_greeting_prompt.strip():
+        current_greeting_prompt = DEFAULT_GREETING_PROMPT
+        if current_opening_mode: log_message("Greeting prompt was empty in config. Using default prompt.", "WARNING")
+    current_first_line_prompt = global_config.get('prompts.first_line', DEFAULT_FIRST_LINE_PROMPT)
+    if not current_first_line_prompt or not current_first_line_prompt.strip():
+        current_first_line_prompt = DEFAULT_FIRST_LINE_PROMPT
+        if current_opening_mode: log_message("First line prompt was empty in config. Using default prompt.", "WARNING")
+    current_greeting_context = global_config.get('prompts.greeting_context', DEFAULT_GREETING_CONTEXT)
+    if not isinstance(current_greeting_context, str) or not current_greeting_context.strip():
+        current_greeting_context = DEFAULT_GREETING_CONTEXT
+        if current_opening_mode: log_message("Greeting context was empty in config. Using default.", "WARNING")
+    current_first_line_styles = global_config.get('prompts.first_line_styles', list(DEFAULT_FIRST_LINE_STYLES))
+    if isinstance(current_first_line_styles, str):
+        current_first_line_styles = [current_first_line_styles]
+    current_first_line_styles = [str(s).strip() for s in (current_first_line_styles or []) if str(s).strip()]
+    if not current_first_line_styles:
+        current_first_line_styles = list(DEFAULT_FIRST_LINE_STYLES)
+        if current_opening_mode: log_message("First line styles were empty in config. Using defaults.", "WARNING")
+    try:
+        current_placeholder_share = min(1.0, max(0.0, float(global_config.get('generation.placeholder_share', 0.0) or 0.0)))
+    except (TypeError, ValueError):
+        log_message("generation.placeholder_share is not a number. Using 0.", "WARNING")
+        current_placeholder_share = 0.0
     app_state.quality_enabled = global_config.get('quality.enabled', True)
     app_state.quality_output_filter = global_config.get('quality.output_filter', False)
     log_message(f"Quality scoring: enabled={app_state.quality_enabled}, output_filter={app_state.quality_output_filter}", "INFO")
@@ -1108,6 +1140,12 @@ def start_processing():
     # --- Define Number of Tasks to Generate (New) ---
     NUM_RANDOM_CHUNKS = global_config.get('generation.num_random_chunks', 12000) # Change this number to generate more or fewer tasks per run
 
+    opening_conflict = opening_mode_conflict(current_opening_mode, current_use_questions_file, master_duplication_enabled)
+    if opening_conflict:
+        toast.show(opening_conflict, "error")
+        log_message(opening_conflict, "ERROR")
+        app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
+
     # --- Populate Task Queue ---
     if current_use_questions_file:
         try:
@@ -1124,7 +1162,7 @@ def start_processing():
         app_state.questions_list = [] 
 
     input_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('.txt') and f != os.path.basename(QUESTIONS_FILE_PATH)]
-    if not current_use_questions_file and not input_files:
+    if not current_use_questions_file and not input_files and not current_opening_mode: # Opening mode runs without a book
         toast.show("No input .txt files found.", "warning")
         log_message("No input .txt files found for chunking.", "WARNING")
         app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
@@ -1140,6 +1178,9 @@ def start_processing():
                 with app_state.task_queue_ui_lock:
                     app_state.pending_task_ids.add(task_id)
                     app_state.task_metadata[task_id] = {'file': os.path.basename(QUESTIONS_FILE_PATH), 'retries': 0, 'task_data': task_tuple}
+    elif current_opening_mode and not input_files: # Opening mode without a book: num_random_chunks tasks
+        total_tasks_to_queue = enqueue_opening_tasks(NUM_RANDOM_CHUNKS)
+        log_message(f"Opening mode without input files: {total_tasks_to_queue} tasks for this run.", "INFO")
     else: # Chunk input files (Randomized)
         subject_size = subject_size_conf
         context_size = context_size_conf
@@ -1179,7 +1220,8 @@ def start_processing():
                 random_start_index = random.randint(0, max_valid_start_index)
 
                 # 4. Create a unique Task ID based on file name and the random start index
-                task_id = f"{random_file_name}_chunk_at_{random_start_index}"
+                # Opening-mode IDs differ, so finished chunk-mode tasks never suppress them
+                task_id = ("opening_" if current_opening_mode else "") + f"{random_file_name}_chunk_at_{random_start_index}"
 
                 # 5. Check if this specific chunk has already been completed (e.g., from a previous run)
                 if task_id not in app_state.completed_task_ids:
@@ -1392,7 +1434,14 @@ def start_processing():
             current_api_request_timeout,
             current_slop_to_anti_slop_fallback,
             current_lore,
-        ), name=f"Worker-{i}")
+        ), kwargs={
+            'opening_mode_local': current_opening_mode,
+            'greeting_prompt_local': current_greeting_prompt,
+            'first_line_prompt_local': current_first_line_prompt,
+            'placeholder_share_local': current_placeholder_share,
+            'greeting_context_local': current_greeting_context,
+            'first_line_styles_local': current_first_line_styles,
+        }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
 
@@ -1773,7 +1822,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.5.1",
+    text="v9.6.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
