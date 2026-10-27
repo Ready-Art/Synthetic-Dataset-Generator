@@ -1,4 +1,16 @@
 # generate.py
+"""
+DEVELOPER NOTE FOR LLMs:
+When modifying this file, always reference codebase.md first for:
+- File architecture and dependencies
+- Key functions and their purposes
+- Common tasks and which files to edit
+- Thread safety patterns and state variable conventions
+- API slot indices and their purposes
+- Config file locations (config/config.yml, config/api_profiles.yml)
+
+This ensures changes align with the project's established patterns and don't break existing functionality.
+"""
 import os
 import requests
 import json
