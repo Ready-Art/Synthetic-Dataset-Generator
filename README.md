@@ -95,7 +95,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ### Character & Persona Engine
 - **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues (1–10 characters per conversation)
-- **Character Profiles** — Randomly inject character names, ages (validated 18–60), races, jobs, clothing, appearance, backstories, personalities, traits, and settings into system prompts
+- **Character Profiles** — Randomly inject character names, ages (validated 18–60), races, jobs, clothing, jewelry, appearance, backstories, personalities, traits, and settings into system prompts
 - **Card-Based Character Editor** — Visual card layout in the Configuration Editor with individual add/remove per character
 - **Name Validation** — Characters with empty or whitespace-only names are automatically skipped with a warning
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
@@ -458,6 +458,7 @@ prompts:
         race: "Human"
         job: "Horologist and Pawn Shop Manager"
         clothing: "Heavyweight flannel button-down, faded rust color, straight-leg cargo pants dark olive green"
+        jewelry: "Silver locket with faded photograph, simple copper wedding band"
         appearance: "Broad-shouldered and sturdy with a soft midsection, weathered olive skin, steel-gray and dark brown hair in choppy jaw-length bob"
         backstory: "Estranged from religious parents, lives alone above the shop, drives a 2004 Subaru Outback, goal is to restore an 18th-century marine chronometer"
         personality: "Fundamentally stoic and introverted, copes with stress by disassembling cheap mechanical watches, curt with strangers but nurturing with friends"
@@ -492,7 +493,7 @@ prompts:
 
 **Character Configuration Notes:**
 
-- **New format (recommended):** Use the `characters` list with dicts containing `name`, `age`, `gender`, `race`, `job`, `clothing`, `appearance`, `backstory`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
+- **New format (recommended):** Use the `characters` list with dicts containing `name`, `age`, `gender`, `race`, `job`, `clothing`, `jewelry`, `appearance`, `backstory`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
 - **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
 - **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
 - **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10, max: 100).
@@ -1091,7 +1092,7 @@ Persist in generation_state.json
 
 ### Multi-Character Conversation Mode
 
-When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, appearance, backstory, personality, traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
+When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, jewelry, appearance, backstory, personality, traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
 
 Characters with empty or whitespace-only names are automatically skipped. Ages outside the 18–60 range are auto-corrected. Character selection uses round-robin distribution across tasks for even coverage.
 
@@ -1448,6 +1449,7 @@ Race: Human
 Age: 59
 Job: Horologist and Pawn Shop Manager
 Clothing: Heavyweight flannel button-down, faded rust color...
+Jewelry: Silver locket with faded photograph, simple copper wedding band
 Appearance: Broad-shouldered and sturdy with a soft midsection...
 Backstory: Estranged from religious parents, lives alone above the shop...
 Personality: Fundamentally stoic and introverted, copes with stress...
