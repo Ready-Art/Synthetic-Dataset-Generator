@@ -408,7 +408,7 @@ generation:
 prompts:
   use_questions_file: false       # Use input/questions.txt instead of LLM-generated questions
   question: "Write the user's first message in a roleplay drawn from the passage below. Write only the message itself, as the user, not as any other character.\n\n{context}"
-  answer: "Write your next message in the roleplay."
+  answer: "Write your next message in the roleplay. Write only the message itself."
   user_continuation_prompt: "Write the user's next message. Write only as the user, not as any other character."
 
   system:
