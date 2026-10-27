@@ -1314,6 +1314,7 @@ class ConfigEditor(tk.Toplevel):
                         'race': sanitize_input(data['race'].get().strip()),
                         'job': sanitize_input(data['job'].get().strip()),
                         'clothing': sanitize_input(data['clothing'].get().strip()),
+                        'jewelry': sanitize_input(data['jewelry'].get().strip()),
                         'appearance': sanitize_input(data['appearance'].get().strip()),
                         'traits': sanitize_input(data['traits'].get().strip()),
                         'backstory': sanitize_input(data['backstory'].get().strip()),
@@ -1323,7 +1324,7 @@ class ConfigEditor(tk.Toplevel):
                         'greeting': data['greeting'].get().strip(),  # Saved as typed, like the opening-mode prompts
                     }
                         for data in self.character_entries
-                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
+                        if any(data[k].get().strip() for k in ['name', 'race', 'job', 'clothing', 'jewelry', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
                     ]
                 },
                 'emotional_states': {
@@ -1709,6 +1710,7 @@ class ConfigEditor(tk.Toplevel):
                 old_races = character_conf.get('race', [])
                 old_jobs = character_conf.get('job', [])
                 old_clothing = character_conf.get('clothing', [])
+                old_jewelry = character_conf.get('jewelry', [])
                 old_appearance = character_conf.get('appearance', [])
                 old_backstory = character_conf.get('backstory', [])
                 old_personality = character_conf.get('personality', [])
@@ -1717,11 +1719,11 @@ class ConfigEditor(tk.Toplevel):
                 old_class = character_conf.get('class', [])
                 old_greeting = character_conf.get('greeting', [])
 
-                if any([old_names, old_races, old_jobs, old_clothing, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class, old_genders]):
+                if any([old_names, old_races, old_jobs, old_clothing, old_jewelry, old_appearance, old_backstory, old_personality, old_traits, old_setting, old_class, old_genders]):
                     max_len = max(
                         len(old_names), len(old_races), len(old_jobs), len(old_clothing),
-                        len(old_appearance), len(old_backstory), len(old_personality), len(old_traits),
-                        len(old_setting), len(old_class), len(old_genders)
+                        len(old_jewelry), len(old_appearance), len(old_backstory), len(old_personality),
+                        len(old_traits), len(old_setting), len(old_class), len(old_genders)
                     )
                     for i in range(max_len):
                         characters_list.append({
@@ -1731,6 +1733,7 @@ class ConfigEditor(tk.Toplevel):
                             'race': old_races[i] if i < len(old_races) else '',
                             'job': old_jobs[i] if i < len(old_jobs) else '',
                             'clothing': old_clothing[i] if i < len(old_clothing) else '',
+                            'jewelry': old_jewelry[i] if i < len(old_jewelry) else '',
                             'appearance': old_appearance[i] if i < len(old_appearance) else '',
                             'backstory': old_backstory[i] if i < len(old_backstory) else '',
                             'personality': old_personality[i] if i < len(old_personality) else '',
@@ -1920,7 +1923,7 @@ class ConfigEditor(tk.Toplevel):
         for data in self.character_entries:
             if visible_only and data['frame'].winfo_manager() != 'pack':
                 continue
-            for key in ('clothing', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'greeting'):
+            for key in ('clothing', 'jewelry', 'appearance', 'backstory', 'personality', 'traits', 'setting', 'greeting'): 
                 widget = data[f'{key}_widget']
                 if widget.winfo_exists():
                     data[key].set(widget.get('1.0', tk.END).strip())
@@ -2039,6 +2042,7 @@ class ConfigEditor(tk.Toplevel):
 
         next_row = 1
         for key, caption, height in (("clothing", "Clothing:", 2),
+                                     ("jewelry", "Jewelry:", 2),
                                      ("appearance", "Appearance:", 2),
                                      ("backstory", "Backstory:", 3),
                                      ("personality", "Personality:", 3),
