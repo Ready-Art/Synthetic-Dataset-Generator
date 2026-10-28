@@ -814,6 +814,54 @@ def test_generate_wiring():
           any(isinstance(n, ast.Constant) and n.value == "prompts.opening_mode" for n in ast.walk(save)))
 
 
+ARC = "calm -> wary -> tense"
+
+
+def answer_systems():
+    return [body["messages"][0]["content"] for body in ROUTER.bodies("answer")]
+
+
+def names_stage(system, stage):
+    return ("EMOTIONAL STATE (PROGRESSION): CALM -> WARY -> TENSE" in system
+            and f"you are in the {stage} state" in system and "throughout your responses" not in system)
+
+
+def test_arc_and_persona_requests():
+    persona_char = dict(CHARACTERS[0], persona="Misses the open sea.")
+    for entry in (ARC, "calm → wary → tense"):
+        reset_state()
+        run_worker(chunk_task(), current_num_turns=3, character_list=[persona_char],
+                   enable_emotional_states_local=True, emotional_states_list_local=[entry],
+                   persona_breakthrough_turn_local=2)
+        systems = answer_systems()
+        check(f"arc {entry!r} over 3 turns: each answer's system prompt names its own stage",
+              len(systems) == 3 and all(names_stage(s, stage) for s, stage in zip(systems, ["calm", "wary", "tense"])))
+        check(f"arc {entry!r}: persona breakthrough appears from slot 2, not before",
+              len(systems) == 3 and "Misses the open sea." not in systems[0]
+              and all("Misses the open sea." in s for s in systems[1:]))
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, enable_emotional_states_local=True,
+               emotional_states_list_local=["anxious"])
+    check("a flat state keeps its flat text on every answer",
+          all("EMOTIONAL STATE: ANXIOUS" in s and "throughout your responses" in s for s in answer_systems()))
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=1, num_characters_local=2, persona_breakthrough_turn_local=1,
+               character_list=[dict(CHARACTERS[0], persona=""), dict(CHARACTERS[1], persona="Fears the flood.")])
+    system = answer_systems()[0]
+    check("with character 1 lacking a persona, character 2's persona keeps its profile number",
+          "--- CHARACTER 2 PROFILE ---" in system and "CHARACTER 2's inner persona" in system
+          and "CHARACTER 1's inner persona" not in system)
+
+    reset_state()
+    run_opening(current_num_turns=2, enable_emotional_states_local=True, emotional_states_list_local=[ARC])
+    greeting_system = ROUTER.bodies("greeting")[0]["messages"][0]["content"]
+    check("opening mode spreads the arc over the greeting and both answers, one stage each",
+          names_stage(greeting_system, "calm")
+          and [names_stage(s, st) for s, st in zip(answer_systems(), ["wary", "tense"])] == [True, True])
+
+
 def main():
     print("(1) completion check")
     test_conversation_is_complete()
@@ -832,6 +880,8 @@ def main():
     test_opening_quality_scoring()
     test_config_defaults()
     test_generate_wiring()
+    print("(4) emotional arc and persona through the worker")
+    test_arc_and_persona_requests()
     if FAILURES:
         print(f"\n{len(FAILURES)} opening-mode test(s) failed")
         sys.exit(1)

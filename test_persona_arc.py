@@ -91,23 +91,37 @@ def main():
     check("plan length matches turn count", len(plan) == 6)
 
     print("Emotional-state injection text (_emotional_state_injection):")
-    check("flat uses EMOTIONAL STATE header", "EMOTIONAL STATE: ANXIOUS" in inject("anxious"))
+    flat = inject("anxious")
+    check("flat uses EMOTIONAL STATE header", "EMOTIONAL STATE: ANXIOUS" in flat)
+    check("flat keeps its throughout instruction", "throughout your responses" in flat)
+    check("flat with its one-stage tuple is the same text", inject("anxious", ("anxious",)) == flat)
     check("empty label -> empty text", inject("") == "")
-    arc_txt = inject("neutral -> anxious")
+    arc = split("calm -> wary -> tense")
+    arc_txt = inject("wary", arc)
     check("arc uses PROGRESSION header", "PROGRESSION" in arc_txt)
-    check("arc names the current stage", "ANXIOUS" in arc_txt)
+    check("arc header lists every stage", "CALM -> WARY -> TENSE" in arc_txt)
+    check("arc names the slot's stage, not the last one", "you are in the wary state" in arc_txt)
+    check("arc drops the flat throughout instruction", "throughout your responses" not in arc_txt)
     check("arc tells model not to announce the shift", "announc" in arc_txt.lower())
+    check("unicode-arrow arc gives the same text", inject("wary", split("calm → wary → tense")) == arc_txt)
+    plan = expand(arc, 3)
+    check("each slot of the worker's plan names its own stage",
+          [f"you are in the {s} state" in inject(s, arc) for s in plan] == [True, True, True]
+          and plan == ["calm", "wary", "tense"])
 
     print("Persona breakthrough block (_persona_block_for_characters):")
     check("no personas -> empty block", persona([]) == "")
-    one = persona(["a hidden grief"], char_count_label=False)
+    one = persona([(1, "a hidden grief")], char_count_label=False)
     check("block has header", "INNER PERSONA BREAKTHROUGH" in one)
     check("single char uses generic 'the character'", "the character's inner persona" in one)
     check("persona text is included", "a hidden grief" in one)
-    two = persona(["inner A", "inner B"], char_count_label=True)
+    two = persona([(1, "inner A"), (2, "inner B")], char_count_label=True)
     check("multi-char labels CHARACTER 1", "CHARACTER 1's inner persona" in two)
     check("multi-char labels CHARACTER 2", "CHARACTER 2's inner persona" in two)
     check("both persona texts present", "inner A" in two and "inner B" in two)
+    gap = persona([(2, "inner B")], char_count_label=True)
+    check("a persona keeps its profile number when an earlier one has none",
+          "CHARACTER 2's inner persona" in gap and "CHARACTER 1" not in gap)
 
     print("Config editor save (ConfigEditor._get_current_editor_config_data):")
     import config_editor

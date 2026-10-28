@@ -392,39 +392,42 @@ def _expand_emotional_arc(stages, num_turns):
     return [stages[min(last, max(0, round(p * last / span)))] for p in range(n)]
 
 
-def _emotional_state_injection(state_label):
-    """Prompt text for the current emotional state. `state_label` is either a bare state name
-    (flat) or the full arc string (progression); the instruction adapts accordingly."""
-    if not state_label:
+def _emotional_state_injection(stage, arc_stages=None):
+    """Prompt text for one assistant slot's emotional state. `stage` is the slot's state name;
+    `arc_stages` is the whole arc it belongs to (from _split_emotional_arc_entry), or empty or a
+    single stage for a flat state."""
+    if not stage:
         return ""
-    if "->" in state_label or "\u2192" in state_label:
+    if arc_stages and len(arc_stages) > 1:
         instruction = (
-            f"EMOTIONAL STATE (PROGRESSION): {state_label.upper()}\n"
+            f"EMOTIONAL STATE (PROGRESSION): {' -> '.join(arc_stages).upper()}\n"
             f"This conversation is a short emotional arc. In your current reply you are in the "
-            f"{state_label.split('->')[-1].strip()} state; earlier replies showed the earlier states, "
+            f"{stage} state; earlier replies showed the earlier states, "
             f"later replies will show the later ones. Let the shift play out naturally through tone, "
             f"word choice, and what you choose to hide or reveal rather than announcing it.\n"
         )
     else:
         instruction = (
-            f"EMOTIONAL STATE: {state_label.upper()}\n"
+            f"EMOTIONAL STATE: {stage.upper()}\n"
             f"Express this emotional state throughout your responses. "
-            f"Use appropriate tone, word choice, and emotional expression that reflects {state_label} feelings.\n"
+            f"Use appropriate tone, word choice, and emotional expression that reflects {stage} feelings.\n"
         )
     return "\n\n" + instruction
 
 
-def _persona_block_for_characters(chars_with_personas, char_count_label=True):
+def _persona_block_for_characters(numbered_personas, char_count_label=True):
     """Build the inner-persona breakthrough block injected from the persona turn onward.
 
+    `numbered_personas` is a list of (profile number, persona text): the number is the one in that
+    character's `CHARACTER N PROFILE` header, so characters without a persona leave gaps.
     Mirrors the profile's persona line but is framed as 'the mask slipping' so the model keeps the
     outward behaviour in the profile while letting the private self surface under pressure.
     """
-    if not chars_with_personas:
+    if not numbered_personas:
         return ""
     lines = []
-    for i, persona_text in enumerate(chars_with_personas, 1):
-        who = f"CHARACTER {i}" if char_count_label else "the character"
+    for number, persona_text in numbered_personas:
+        who = f"CHARACTER {number}" if char_count_label else "the character"
         lines.append(f"{who}'s inner persona (private self, surfacing now): {persona_text}")
     body = "\n".join(lines)
     return (
@@ -636,7 +639,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             character_injection = ""
             opening_chars = []  # Profiles actually added to the scene prompt (opening mode's greeting speaker)
-            char_persona_texts = []  # Selected characters' inner personas, in selection order (breakthrough block)
+            char_personas = []  # (profile number, inner persona) of selected characters that have one (breakthrough block)
             if enable_character_engine_local and character_list:
                 # Select multiple characters based on num_characters_local using round-robin
                 num_chars_to_select = min(num_characters_local, len(character_list))
@@ -743,7 +746,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         )
                         character_profiles.append(character_profile)
                         opening_chars.append(selected_char)
-                        char_persona_texts.append(random_persona.strip() if random_persona and random_persona.strip() else "")
+                        if random_persona and random_persona.strip():
+                            char_personas.append((idx + 1, random_persona.strip()))
 
                     # Finalize Injection
                     if character_profiles:
@@ -764,13 +768,16 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # ('neutral -> anxious'); arcs expand across the task's assistant turns.
             current_emotional_state_label = ""  # metadata label: full arc string, or bare state
             emotional_arc_turn_states = []  # one state name per assistant turn (1-based index-0)
+            arc_stages = ()
             if enable_emotional_states_local and emotional_states_list_local:
                 chosen_entry = str(random.choice(emotional_states_list_local)).strip()
                 current_emotional_state_label = chosen_entry
                 arc_stages = _split_emotional_arc_entry(chosen_entry)
                 if not arc_stages:
                     current_emotional_state_label = ""
-                emotional_arc_turn_states = _expand_emotional_arc(arc_stages, current_num_turns)
+                # In opening mode the greeting is an extra assistant slot (slot 1) before the turns
+                arc_slots = current_num_turns + 1 if opening_mode_local else current_num_turns
+                emotional_arc_turn_states = _expand_emotional_arc(arc_stages, arc_slots)
                 if current_emotional_state_label:
                     log_message(
                         f"Thread {thread_id}: Assigned emotional state '{current_emotional_state_label}' "
@@ -784,9 +791,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             except (TypeError, ValueError):
                 persona_breakthrough_turn = 2
             char_count_label = len(opening_chars) > 1
-            persona_breakthrough_block = _persona_block_for_characters(
-                [p for p in char_persona_texts if p], char_count_label=char_count_label
-            )
+            persona_breakthrough_block = _persona_block_for_characters(char_personas, char_count_label=char_count_label)
 
             def _persona_visible_at(slot_no):
                 """The inner persona is withheld until the scene has run long enough to 'break through'.
@@ -820,7 +825,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     prompt += persona_breakthrough_block
                 slot_state = _emotional_slot_state(slot_no)
                 if slot_state:
-                    prompt += _emotional_state_injection(slot_state)
+                    prompt += _emotional_state_injection(slot_state, arc_stages)
                 return prompt
 
             # Greeting / initial-question generation happens before the loop; slot 1 = the first
