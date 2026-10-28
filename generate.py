@@ -1142,6 +1142,19 @@ def start_processing():
 
     log_message(f"Random names enabled: {enable_random_names}, Names count: {len(random_names_list)}", "INFO")
 
+    # NEW: Load random settings configuration (pool of settings sampled when a character's own
+    # setting is empty; also used to unify settings across multi-character ensembles).
+    random_settings_config = global_config.get('prompts.random_settings', {})
+    enable_random_settings = random_settings_config.get('enabled', False)
+    random_settings_list = random_settings_config.get('settings', [])
+
+    if enable_random_settings and not random_settings_list:
+        log_message("Warning: Random settings enabled but no settings defined. Disabling random settings.", "WARNING")
+        enable_random_settings = False
+        random_settings_list = []
+
+    log_message(f"Random settings enabled: {enable_random_settings}, Settings count: {len(random_settings_list)}", "INFO")
+
     base_sys_prompt = global_config.get('prompts.system.base', "You are a helpful assistant.")
     app_state.system_prompts_list = []
     if current_use_variable_system:
@@ -1486,6 +1499,8 @@ def start_processing():
             enable_random_names,
             random_names_list,
             include_metadata,
+            enable_random_settings,
+            random_settings_list,
         ), kwargs={
             'opening_mode_local': current_opening_mode,
             'greeting_prompt_local': current_greeting_prompt,
@@ -1876,7 +1891,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v10.2.1",
+    text="v10.2.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

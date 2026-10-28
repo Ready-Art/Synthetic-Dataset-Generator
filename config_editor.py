@@ -646,6 +646,20 @@ class ConfigEditor(tk.Toplevel):
                         command=self._toggle_setting_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
+        # Add checkbox to enable random settings pool (fills empty character settings + unifies ensembles)
+        self.enable_random_settings_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(self.character_engine_content_frame, text="Enable Random Settings Pool (fill empty character settings; unify multi-character scenes)",
+                variable=self.enable_random_settings_var_editor, command=self._toggle_random_settings_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        character_engine_row_idx += 1
+
+        # Add random settings text area
+        ttk.Label(self.character_engine_content_frame, text="Random Settings Pool (one per line, sampled into empty character settings): ").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        character_engine_row_idx += 1
+        random_settings_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=1, undo=True)
+        random_settings_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        setattr(self, 'random_settings_text', random_settings_text)
+        character_engine_row_idx += 1
+
         # --- Character Table (Card-based layout) ---
         self.character_entries = []  # All cards retain their variables, including off-page cards.
         self.character_page_size = 3
@@ -1401,6 +1415,10 @@ class ConfigEditor(tk.Toplevel):
                     'enabled': self.enable_random_names_var_editor.get(),
                     'names': [sanitize_input(line.strip()) for line in self.random_names_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
+                'random_settings': {
+                    'enabled': self.enable_random_settings_var_editor.get(),
+                    'settings': [sanitize_input(line.strip()) for line in self.random_settings_text.get("1.0", tk.END).split('\n') if line.strip()]
+                },
             },
             'detection': {
                 'no_user_impersonation': self.no_user_impersonation_var.get(), # Get from global Tkinter var
@@ -1533,6 +1551,23 @@ class ConfigEditor(tk.Toplevel):
                 field_widget.config(state='disabled')
 
         log_message(f"Random Names fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
+
+    def _toggle_random_settings_fields(self):
+        """Enables/disables random settings text field based on checkbox state."""
+        is_enabled = self.enable_random_settings_var_editor.get()
+
+        random_settings_fields = [
+            'random_settings_text'
+        ]
+
+        for field_name in random_settings_fields:
+            field_widget = getattr(self, field_name)
+            if is_enabled:
+                field_widget.config(state='normal')
+            else:
+                field_widget.config(state='disabled')
+
+        log_message(f"Random Settings fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 
     def _toggle_class_fields(self):
         """Enables/disables class selection text field based on checkbox state."""
@@ -1884,6 +1919,13 @@ class ConfigEditor(tk.Toplevel):
             self.random_names_text.insert(tk.END, "\n".join(random_names_conf.get('names', [])))
             self._toggle_random_names_fields()
 
+            # NEW: Load random settings pool
+            random_settings_conf = prompts_config.get('random_settings', {})
+            self.enable_random_settings_var_editor.set(random_settings_conf.get('enabled', False))
+            self.random_settings_text.delete(1.0, tk.END)
+            self.random_settings_text.insert(tk.END, "\n".join(random_settings_conf.get('settings', [])))
+            self._toggle_random_settings_fields()
+
             detection_conf = config.get('detection', {})
             self.no_user_impersonation_var.set(detection_conf.get('no_user_impersonation', False)) # Set global var
             refusal_conf = detection_conf.get('refusal', {})
@@ -2009,6 +2051,9 @@ class ConfigEditor(tk.Toplevel):
             
             if self.enable_random_names_var_editor.get():
                 get_text_as_list(self.random_names_text)
+            
+            if self.enable_random_settings_var_editor.get():
+                get_text_as_list(self.random_settings_text)
             
             max_cards_val = int(self.max_character_cards_var.get())
             assert max_cards_val > 0, "Max character cards must be > 0"

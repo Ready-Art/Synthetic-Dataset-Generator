@@ -481,6 +481,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            enable_random_names_local=False,
            random_names_list_local=None,
            include_metadata_local=True,
+           enable_random_settings_local=False,
+           random_settings_list_local=None,
            opening_mode_local=False,
            greeting_prompt_local="",
            first_line_prompt_local="",
@@ -668,6 +670,40 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         if available:
                             selected_chars.extend(random.sample(available, min(remaining_needed, len(available))))
 
+                    # --- Resolve this scene's setting(s) ---
+                    # When setting selection is on, a character keeps its own setting if provided;
+                    # otherwise a setting is sampled from the random_settings pool (when enabled) or
+                    # the hardcoded default. For a multi-character ensemble we UNIFY to a single
+                    # shared setting -- picked from the ensemble (the distinct settings the selected
+                    # characters would otherwise carry, i.e. own settings + pool samples) -- so the
+                    # whole scene happens in one place instead of each character drifting to their own.
+                    default_setting = 'A standard indoor environment.'
+                    settings_for_selected = [default_setting] * len(selected_chars)
+                    if enable_setting_selection_local:
+                        per_char_settings = []
+                        for c in selected_chars:
+                            own_setting = str(c.get('setting', '') or '').strip()
+                            if own_setting:
+                                per_char_settings.append(own_setting)
+                            elif enable_random_settings_local and random_settings_list_local:
+                                per_char_settings.append(random.choice(random_settings_list_local))
+                            else:
+                                per_char_settings.append(default_setting)
+                        if len(selected_chars) > 1:
+                            # Unify: one setting shared by the whole ensemble (order-preserving dedupe).
+                            distinct_settings = list(dict.fromkeys(per_char_settings))
+                            unified_setting = random.choice(distinct_settings)
+                            settings_for_selected = [unified_setting] * len(selected_chars)
+                            log_message(f"Thread {thread_id}: Unified multi-character setting to '{unified_setting}' "
+                                        f"({len(distinct_settings)} candidate(s)) for task {task_id}", "DEBUG")
+                        else:
+                            settings_for_selected = per_char_settings
+                        if enable_random_settings_local and random_settings_list_local:
+                            sampled = sum(1 for s in settings_for_selected if s in random_settings_list_local and s != default_setting)
+                            if sampled:
+                                log_message(f"Thread {thread_id}: Filled {sampled} empty setting(s) from the random_settings pool "
+                                            f"for task {task_id}", "DEBUG")
+
                     character_profiles = []
 
                     for idx, selected_char in enumerate(selected_chars):
@@ -700,7 +736,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         random_persona = selected_char.get('persona', '')
                         random_personality = selected_char.get('personality', 'Unknown')
                         random_traits = selected_char.get('traits', '')
-                        random_setting = selected_char.get('setting', 'Unknown') if enable_setting_selection_local else 'A standard indoor environment.'
+                        # Setting was resolved/unified for the whole ensemble above (defaults to the
+                        # standard indoor environment when setting selection is off).
+                        random_setting = settings_for_selected[idx]
                         random_class = selected_char.get('class', '')
 
                         # Validate Age
@@ -749,6 +787,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         character_profiles.append(character_profile)
                         opening_chars.append(selected_char)
                         scene_character_names.append(random_name)
+                        # The ensemble is unified, so every selected char shares one setting; record it once.
                         if enable_setting_selection_local and not meta_setting and random_setting:
                             meta_setting = random_setting
                         if random_persona and random_persona.strip():

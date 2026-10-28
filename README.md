@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v10.2.1
+# ReadyArt Synthetic Dataset Generator v10.2.2
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -105,6 +105,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Name Validation** — Characters with empty or whitespace-only names are automatically skipped with a warning
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
 - **Setting Selection** — Optionally assign custom locations/environments to each character
+- **Random Settings Pool (NEW)** — A configurable pool of locations (`prompts.random_settings.settings[]`, analogous to `random_names`). When `setting_enabled` is true, a character whose own `setting` is empty is given a setting sampled from the pool instead of the default indoor environment; multi-character scenes are additionally unified to one shared location pulled from the ensemble, so all characters inhabit the same place (feeds consistency, prevents cross-talk)
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Emotional Arcs (NEW in v10.0)** — A state can be a *progression* (`calm -> wary -> tense`) instead of a single mood. Arcs are expanded across the conversation's assistant turns, so the emotional register shifts over time (start composed, surface anger near the end) rather than staying flat — much richer training signal for multi-turn scenes
 - **Persona Breakthrough (NEW in v10.0)** — The inner `persona` is deliberately kept out of early turns and re-injected as an *INNER PERSONA BREAKTHROUGH* block from a configurable slot (`prompts.character.persona_breakthrough_turn`, default 2). Slot 1 stays outward-behaviour-only, mirroring how real character cards hide the private self until the scene breaks through
@@ -522,7 +523,18 @@ prompts:
       - "Charlie"
       - "Diana"
       - "Eve"
+
+  random_settings:              # Pool of settings, analogous to random_names
+    enabled: false              # When setting_enabled is true and a character's own setting is empty,
+                                # sample one from this list instead of the default indoor environment
+    settings:                   # One per line; also used as the candidate pool when unifying multi-character scenes
+      - "A cozy coffee shop in the old town"
+      - "A bustling city street at rush hour"
+      - "A late-night diner by the train station"
+      - "A quiet park bench in autumn"
 ```
+
+> **Note:** `random_settings` only takes effect when `character.setting_enabled` is `true`. It fills *empty* per-character `setting` fields and is the candidate pool used to unify a multi-character ensemble to a single shared location. A character that already has its own non-empty `setting` keeps it.
 
 **Character Configuration Notes:**
 
@@ -538,6 +550,7 @@ prompts:
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
 - **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept. With random names on it is not used, since it names the profile's own character; the greeting is generated under the random name instead.
 - **`random_names`:** Optional feature that overrides character names with randomly selected names from a configured list. When `prompts.random_names.enabled` is true, each character's name in the prompt is replaced with a random name from `prompts.random_names.names[]`. Names are selected independently for each character (not in order), allowing for varied name assignments across conversations. This is useful for generating diverse datasets without manually creating many character profiles.
+- **`random_settings`:** Optional feature (analogous to `random_names`) that adds location diversity to roleplay data. It only applies when `character.setting_enabled` is `true`. For each selected character whose own `setting` field is empty, a setting is sampled from `prompts.random_settings.settings[]` (when `enabled`) instead of falling back to the default `"A standard indoor environment."`. A character with its own non-empty `setting` always keeps it. Additionally, when multiple characters are selected for one scene, their settings are **unified to a single shared setting** drawn from the ensemble (the distinct settings they would otherwise carry) so every character inhabits the same location — this feeds the consistency dimension and prevents cross-talk between characters set in different places.
 
 **Template Variables** (each is optional; the shipped question prompt uses only `{context}`):
 - `{recent_questions}` — Recent question history to avoid repetition
@@ -1379,7 +1392,7 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
 | **Reasoning models outputting thinking blocks** | Set `enable_thinking` to `"disable"` in samplers config to add `chat_template_kwargs` to API payload |
 | **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` field is populated in character entries |
-| **Characters not getting settings** | Ensure `setting_enabled: true` in the character config and that `setting` field is populated in character entries |
+| **Characters not getting settings** | Ensure `setting_enabled: true` in the character config. Empty per-character `setting` fields fall back to the default indoor environment unless `random_settings.enabled: true` with a populated `settings[]` pool, in which case a setting is sampled from the pool. For multi-character scenes, settings are unified to one shared location automatically (see `random_settings`) |
 | **Characters feeling flat or one-note** | Fill both the `persona` (inner personality) and `personality` (outward behavior) fields; `persona` drives the hidden interior life while `personality` drives observed behavior |
 | **Characters not getting personalities** | Add the `personality` field to character entries in the config |
 | **Characters not getting traits** | Add the `traits` field to character entries in the config (e.g., `"quick-witted, detail-oriented"`) |
@@ -1569,7 +1582,7 @@ Setting: Cluttered repair counter in dimly lit pawn shop...
 --- END CHARACTER 1 PROFILE ---
 ```
 
-The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true. The `Class` field is only included when `class_enabled` is true. The `Personality` field is only included when it's not empty or "Unknown" (it describes outward behavior). **The `Persona` (inner personality) line is deliberately absent from this static block** — it is re-injected later as a separate breakthrough block (below) so early turns stay outward-only.
+The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true — and its value is resolved per scene: a character keeps its own non-empty `setting`, otherwise an empty one is filled from the `random_settings` pool (when enabled) or the default indoor environment, and multi-character ensembles are unified to a single shared setting (see `random_settings`). The `Class` field is only included when `class_enabled` is true. The `Personality` field is only included when it's not empty or "Unknown" (it describes outward behavior). **The `Persona` (inner personality) line is deliberately absent from this static block** — it is re-injected later as a separate breakthrough block (below) so early turns stay outward-only.
 
 ### Persona Breakthrough Injection (NEW in v10.0)
 

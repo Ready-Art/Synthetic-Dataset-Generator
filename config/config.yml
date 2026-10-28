@@ -64,6 +64,9 @@ generation:
   subject_size: 1000
   context_size: 3000
   max_attempts: 5
+  # Multi-turn gives the persona-breakthrough and emotional arcs room to shift across
+  # the conversation (slot 1 stays outward-only; the inner persona surfaces from
+  # persona_breakthrough_turn onward). Bump higher for longer, more developed scenes.
   num_turns: 4
   placeholder_share: 0.0
   history_size: 10
@@ -84,6 +87,9 @@ generation:
   slop_to_anti_slop_fallback: false
   discard_refused_conversations: false
   use_conversation_history_for_fixers: true
+  # Appends a flat, scalar-only "metadata" block to each output.jsonl record
+  # (Axolotl-safe: same keys/types on every row, never touches conversations[]).
+  # Set false to restore the legacy two-field output exactly.
   include_metadata: true
 quality:
   enabled: true
@@ -152,6 +158,10 @@ prompts:
     class_enabled: false
     setting_enabled: false
     num_characters: 1
+    # Persona breakthrough: which assistant slot (1 = first reply) the inner persona starts being
+    # injected from. Slot 1 (greeting/opening answer) is always outward-behaviour-only; the persona
+    # 'breaks through' from this slot onward, mirroring how real character cards hide the inner self
+    # until the scene has gone long enough. Set 1 to expose persona from the very first reply.
     persona_breakthrough_turn: 2
     characters:
     - name: Melody
@@ -184,11 +194,10 @@ prompts:
       appearance: 59 years old, broad-shouldered and sturdy with a soft midsection,
         weathered olive skin, hair is steel-gray and dark brown, cut into a choppy
         jaw-length bob with frayed ends, eyes are deep-set and hazel-green with gold
-        flecks and a slight droop, prominent nose with a slight bump, thin lips, a
-        faded burn scar on her left forearm, three lobe piercings in each ear with
-        mismatched silver studs, slight rosacea on her cheeks, default expression
-        is a skeptical squint, posture is slightly hunched forward from years of desk
-        work.
+        flecks and a slight droop, prominent nose with a slight bump, thin lips, a faded burn scar on her left forearm,
+        three lobe piercings in each ear with mismatched silver studs, slight rosacea
+        on her cheeks, default expression is a skeptical squint, posture is slightly
+        hunched forward from years of desk work.
       traits: 'Meticulous, cynical, resilient, stubborn; Quirk 1: constantly taps
         her left thumb against her index finger in a steady rhythm to mimic the ticking
         of a clock when she is thinking, Quirk 2: refuses to drink hot beverages from
@@ -201,35 +210,55 @@ prompts:
         a broken AC, and her ultimate goal is to restore a specific 18th-century marine
         chronometer she found in the estate of a deceased hoarder to prove to herself
         that anything truly broken can be made to run again.
-      persona: 'Deep down she is a tender idealist who fell in love with timepieces
-        as a child and still believes anything truly broken can be made to run again
-        - clocks and people alike. Her sarcasm is armor over a lonely, vulnerable
-        core: a stubborn hope that she can still fix what is damaged, and a private
-        grief over the family she lost that she would never show. The longer a conversation
-        stays tense, the more that mask slips; under real pressure her hope can shatter
-        and she snaps at someone before she catches it, then feels worse about the
-        snap than about whatever set it off.'
-      personality: Stoic and introverted on the surface, curt and defensively sarcastic
-        with strangers, patient and quietly nurturing once trust is earned. She keeps
-        her real feelings tightly inside, talks less than she listens, and works the
-        counter with slow, deliberate hands. She copes with stress by disassembling
-        cheap mechanical watches into component parts and sorting them into tiny glass
-        jars, and her one non-negotiable rule is that she will never exploit someone's
-        desperation or ignorance for money, no matter how badly the shop is doing.
+      persona: 'Deep down she is a tender idealist who fell in love with timepieces as a child and still believes anything truly broken can be made to run again - clocks and people alike. Her sarcasm is armor over a lonely, vulnerable core: a stubborn hope that she can still fix what is damaged, and a private grief over the family she lost that she would never show. The longer a conversation stays tense, the more that mask slips; under real pressure her hope can shatter and she snaps at someone before she catches it, then feels worse about the snap than about whatever set it off.'
+      personality: Stoic and introverted on the surface, curt and defensively sarcastic with strangers, patient and quietly nurturing once trust is earned. She keeps her real feelings tightly inside, talks less than she listens, and works the counter with slow, deliberate hands. She copes with stress by disassembling cheap mechanical watches into component parts and sorting them into tiny glass jars, and her one non-negotiable rule is that she will never exploit someone's desperation or ignorance for money, no matter how badly the shop is doing.
       setting: ''
       class: ''
       greeting: ''
   emotional_states:
     enabled: true
+    # Each line is either a flat state (constant across turns) or an arc using '->' (or unicode ->)
+    # between stages. Arcs are expanded across the conversation's assistant turns, so the state
+    # shifts over time rather than being one static injection (e.g. start calm, surface anger near
+    # the end of the scene).
     states:
     - happy
     - sad
     - anxious
+    # Arcs (-> between stages) are expanded across the conversation's assistant turns.
+    # These two read as a realistic escalation for Melody: she starts composed and the
+    # mask slips toward the end, matching her persona's 'under real pressure she snaps'.
     - calm -> wary -> tense
     - composed -> guarded -> snapped
   random_names:
     enabled: false
     names: []
+  # Random settings pool: when setting_enabled is true and a character's own setting
+  # field is empty, a setting is sampled from this list (if enabled) instead of falling
+  # back to the hardcoded default.  When multiple characters are selected for a scene,
+  # their individual settings are unified to one shared setting drawn from the ensemble.
+  random_settings:
+    enabled: false
+    settings:
+    - A cozy coffee shop in the old town
+    - A bustling city street at rush hour
+    - A quiet park bench in autumn
+    - A late-night diner by the train station
+    - A cramped apartment during a thunderstorm
+    - A sun-drenched bookshop with mismatched furniture
+    - A hospital waiting room
+    - A beach boardwalk at sunset
+    - A crowded subway car
+    - A small-town post office
+    - A university lecture hall
+    - A roadside motel parking lot
+    - A dimly lit jazz bar
+    - A community garden on a Saturday morning
+    - A laundromat with a broken dryer
+    - A library archive room
+    - A rooftop terrace overlooking the city
+    - A farmers' market on a rainy day
+    - An airport gate during a delayed flight
 detection:
   no_user_impersonation: false
   refusal:
