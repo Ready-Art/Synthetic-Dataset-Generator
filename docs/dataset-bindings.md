@@ -5,8 +5,9 @@ variables such as `{{ds:nvd_f_name}}`. Each existing generation task receives an
 immutable attachment containing one row's mapped values from each enabled source.
 The default configuration is `datasets: {sources: []}`; unused sources add no reads.
 
-This integration is based on upstream `f04ed7bccea81e33dd79ebd1275e6c46c0c8e267`,
-including metadata schema 2 and random-setting selection/unification. Dataset
+This integration is based on upstream `9f49ceb7e51f50d0cdf3ff644d3d503b3327a83e`,
+including metadata schema 2, random-setting selection/unification, OOC detection,
+and character-profile-aware quality scoring. Dataset
 values supply inputs to those existing methods. Original task IDs, queue behavior,
 conversation/refinement loops, duplication, output schema, and recovery remain
 under the upstream engine's control. Attachments last for the owning queue/run;
@@ -84,7 +85,10 @@ Indexed aliases such as `{{ds:name:2}}` are not supported.
 
 Static authored inputs are copied and expanded for each task: system/answer
 instructions, lore, enabled character fields, emotional-state entries, enabled
-name/setting pools, opening styles, and applicable corrective/rotating instructions.
+name/setting pools, opening styles, and applicable corrective/rotating instructions,
+including OOC fixes when that detector is active. Detection phrase lists keep their
+upstream literal semantics. The quality scorer receives the character profile
+already constructed by the worker from the task's resolved inputs.
 The worker always starts from the original templates, including when one worker
 processes successive rows. It does not reinterpret the questions-file contents,
 source chunks, generated answers, user continuations, or accepted history as
@@ -373,7 +377,8 @@ Linux, Python 3.12.14, Tk 9.0.4, and ttkbootstrap 2.2.6. They exercised:
 `READYART_GUI_SCREENSHOTS` optionally gives the panel suite a screenshot directory.
 Visual review caught missing Unicode checkbox glyphs; the dropdown now uses the
 portable markers shown above. No model API calls were used for these checks.
-Windows hands-on verification remains outstanding.
+Windows hands-on verification was outstanding at this checkpoint; see the later
+Windows verification results below.
 
 ### Compatibility with the updated upstream engine
 
@@ -383,10 +388,10 @@ Run this suite in its own process:
 python -B test_dataset_compatibility.py
 ```
 
-It exports the exact upstream commit `f04ed7bc` from the local Git history (or uses
+It exports the exact upstream commit `9f49ceb7` from the local Git history (or uses
 the checkout named by `DATASET_COMPATIBILITY_BASELINE_DIR`) and runs each side in separate
 processes. Upstream receives manually populated authored inputs; the candidate
-receives equivalent aliases and actual CSV/JSONL bindings. Ten differential traces
+receives equivalent aliases and actual CSV/JSONL bindings. Twelve differential traces
 compare API payloads/order, cache keys, accepted history, output/schema-2 metadata,
 selection counters, and completion/requeue decisions:
 
@@ -399,11 +404,17 @@ selection counters, and completion/requeue decisions:
 - Whole-job requeue with the same attachment and the original retry decisions.
 - Disabled datasets with the original native-placeholder cascade.
 - Empty resolved continuation and greeting-context templates.
+- OOC corrections for two successive dataset rows on one worker, including
+  detection counters and literal detection phrases.
+- The actual quality scorer receiving the resolved character profile and recording
+  the scripted judge's score in output metadata.
 
 A structural test additionally verifies that all original functions outside the
 six explicit generation input hooks and `start_processing` remain unchanged, and
 that shared state, API handling, detection, quality, and text utilities are byte-
-identical to upstream. The independent task-attachment tests cover 20 concurrent
+identical to upstream after normalizing CRLF line endings to LF. Every other byte
+remains significant; this accommodates Windows checkout line endings without
+ignoring content changes. The independent task-attachment tests cover 20 concurrent
 jobs, same-ID callers, source failures, queue ownership, and resource cleanup.
 
 These are scripted HTTP tests using the upstream test harness. They do not make
@@ -411,6 +422,50 @@ paid model calls, hit real Valkey, exercise real provider failures, or establish
 equivalence for every configuration. The existing upstream API-profile,
 persona/arc, opening-mode, and random-setting tests must also pass. Windows
 hands-on verification remains a separate check.
+
+The newer upstream worker launcher passed its three OOC options into positional
+slots already supplied by opening-mode keyword arguments. This raised
+`TypeError: multiple values for argument 'opening_mode_local'` before the worker
+could run. The integration moves those three arguments to their existing named
+parameters; it does not change the worker signature or OOC retry method.
+`test_worker_launch.py` checks the actual launch expressions against the actual
+worker signature without importing or running the GUI. This startup correction
+is separate from the worker-driven differential tests, whose baseline remains
+the unmodified upstream commit.
+
+### Windows verification of the original integration
+
+The original integration at `d05655bb` (based on `f04ed7bc`) received a favorable
+Windows GUI review. On that exact branch, the user reported all 17 task-attachment
+tests passing in 0.039 seconds and all ten behavioral compatibility scenarios
+passing in 8.216 seconds. The structural byte-comparison check was excluded from
+that Windows command because the original test did not account for checkout
+line endings. It had already passed on Linux.
+
+Those Windows results apply to that checkpoint. The subsequent upstream merge
+adds the OOC and quality scenarios above and makes the source comparison handle
+CRLF. Live model endpoint verification remains pending; no model endpoint is
+needed to run these scripted tests.
+
+### Validation after merging upstream v10.3.5
+
+The merged implementation passed 121 source/binding/settings/renderer/task/backend
+tests, all 13 compatibility tests (twelve traces plus the source-preservation gate),
+all 14 actual Tk dataset GUI tests, and the worker-launch regression test. All four
+existing upstream regression scripts also passed. The opening-mode script's
+expected keyword set now includes the three correctly named OOC arguments.
+
+The GUI round-trip checks saved and reloaded enabled OOC detection phrases/fixes
+and dataset mappings together, through both the main configuration and the actual
+profile-load handler. No dataset source reads occurred during those saves/loads.
+The new launch regression failed on untouched `9f49ceb7` with the duplicate
+opening-mode argument and passed after the narrow caller correction.
+
+These post-merge results are from Linux. The Windows results above remain tied to
+`d05655bb`; a later Windows run must be recorded separately. No live provider,
+GPU inference, or real Valkey service was used.
+
+### Historical validation before the upstream merge
 
 Validation on this integration passed 121 source/binding/settings/renderer/task
 tests, all 11 compatibility tests (ten traces plus the structural gate), all four
@@ -424,3 +479,9 @@ leave the old pool visible after the widget becomes enabled. The same behavior
 occurs in unmodified `f04ed7bc`; saving immediately can retain the stale pool.
 Review the pool text after that transition. This integration does not alter the
 upstream random-settings widget's enable/load ordering.
+
+The same class of issue was reproduced for the new OOC text fields in both
+untouched `9f49ceb7` and the merged editor: loading an enabled profile after a
+disabled one updates the enabled flag and saved configuration, but the phrase
+and fix widgets can retain their previous text. Inspect those fields before the
+next save. This inherited GUI issue is documented and left unchanged.

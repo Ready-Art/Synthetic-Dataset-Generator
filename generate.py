@@ -1521,9 +1521,6 @@ def start_processing():
             include_metadata,
             enable_random_settings,
             random_settings_list,
-            current_ooc_phrases,
-            current_ooc_fixes,
-            current_ooc_enabled,
         ), kwargs={
             'opening_mode_local': current_opening_mode,
             'greeting_prompt_local': current_greeting_prompt,
@@ -1532,6 +1529,9 @@ def start_processing():
             'greeting_context_local': current_greeting_context,
             'first_line_styles_local': current_first_line_styles,
             'persona_breakthrough_turn_local': persona_breakthrough_turn,
+            'current_ooc_phrases': current_ooc_phrases,
+            'current_ooc_fixes': current_ooc_fixes,
+            'current_ooc_enabled': current_ooc_enabled,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
