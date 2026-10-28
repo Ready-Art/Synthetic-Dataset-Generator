@@ -365,8 +365,7 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
     # Build the scoring prompt
     conversation_text = _format_conversation_for_scoring(conversation_history)
     max_chars = global_config.get('quality.max_chars_for_scoring', 8000)
-    if len(conversation_text) > max_chars:
-        conversation_text = conversation_text[:max_chars] + "\n[...truncated...]"
+    conversation_text = _truncate_head_tail(conversation_text, max_chars)
 
     # The character card, when available, is what makes "consistency" measurable as
     # persona fidelity. Truncate defensively so a very long multi-character scene cannot
@@ -381,11 +380,16 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         "- coherence: Does the conversation flow logically? Do responses follow naturally from prompts?\n"
         "- naturalness: Does the dialogue sound like real human conversation? Avoid robotic/formulaic language.\n"
         "- engagement: Is the content interesting, vivid, and compelling? Does it hold attention?\n"
-        "- consistency: Persona fidelity AND internal consistency. Score HOW WELL the assistant stays "
-        "in character -- voice, tone, stated personality and traits, and world details -- and whether "
-        "anything contradicts the character profile(s) below (e.g. a stoic character becoming exuberant, "
-        "narration breaks like \"As a helpful AI, I would...\", god-viewing the user's thoughts/actions, "
-        "or dropping into second-person advice). Penalise hard for out-of-character drift.\n"
+        "- consistency: Persona fidelity AND internal consistency. Check the FULL conversation turn by turn -- "
+        "drift usually creeps in on later turns, so weigh late responses at least as heavily as early ones. "
+        "Score HOW WELL the assistant stays in character -- voice, tone, phrasing, stated personality and traits, "
+        "and world details -- and whether anything contradicts the character profile(s) below (e.g. a stoic "
+        "character becoming exuberant, a character suddenly knowing what the user is thinking, narration breaks "
+        "like \"As a helpful AI, I would...\", customer-service closers such as \"Is there anything else I can help "
+        "you with?\", or dropping into second-person advice). Quoted dialogue (\"...\") is the character speaking "
+        "and is judged on fidelity to the profile; unquoted narrator text must also stay in-scene -- god-viewing "
+        "the user's thoughts/actions and fourth-wall drops are out of character. Penalise hard for out-of-character "
+        "drift: each distinct OOC moment should visibly pull the score down.\n"
     )
     if profile_block:
         consistency_context = (
@@ -405,7 +409,9 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         "Score the following conversation on each dimension from 0 to 100.\n\n"
         + dimensions_text + consistency_context +
         "Respond ONLY with a JSON object, no other text. Format:\n"
-        '{"coherence": <0-100>, "naturalness": <0-100>, "engagement": <0-100>, "consistency": <0-100>, "notes": "<one sentence summary>"}\n\n'
+        '{"coherence": <0-100>, "naturalness": <0-100>, "engagement": <0-100>, "consistency": <0-100>, '
+        '"ooc_evidence": ["<very short description of each distinct out-of-character moment, or [] if there are none>"], '
+        '"notes": "<one sentence summary>"}\n\n'
         f"CONVERSATION:\n{conversation_text}"
     )
 
@@ -421,7 +427,8 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         "messages": messages,
         "temperature": sampler_settings.get('temperature', 0.1),
         "top_p": sampler_settings.get('top_p', 0.9),
-        "max_tokens": sampler_settings.get('max_tokens', 256),
+        # ooc_evidence entries take space; give the judge headroom beyond bare scores
+        "max_tokens": sampler_settings.get('max_tokens', 384),
         "stream": False
     }
 
@@ -489,6 +496,18 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
             if val < 40:
                 flags.append(f"low_{dim}")
 
+        # LLM-judged OOC evidence: concrete out-of-character moments the judge spotted.
+        # An explicit, non-empty list flags the row even when consistency stayed >= 40,
+        # so the dashboard can show persona drift without relying on phrase matching alone.
+        ooc_evidence = parsed.get('ooc_evidence')
+        if isinstance(ooc_evidence, str):
+            ooc_evidence = [ooc_evidence]
+        if ooc_evidence is not None and not isinstance(ooc_evidence, list):
+            ooc_evidence = []
+        ooc_evidence = [str(e).strip() for e in (ooc_evidence or []) if str(e).strip()]
+        if ooc_evidence:
+            flags.append("ooc_drift")
+
         if parsed.get('notes'):
             # Store notes for debugging (not in composite score)
             pass
@@ -504,6 +523,23 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
     except Exception as e:
         log_message(f"Thread {thread_id}: Quality scoring LLM error for {task_id}: {e}", "ERROR")
         return {}, [f"llm_exception"], False
+
+
+def _truncate_head_tail(text, max_chars):
+    """Truncate ``text`` to ``max_chars`` keeping BOTH ends.
+
+    Head-only truncation loses the end of long conversations, which is exactly where
+    persona drift and OOC creep accumulate; keeping the last exchanges lets the judge
+    see how the scene resolves. The start is kept so the opening voice is a reference
+    point for comparison.
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    head = max_chars * 3 // 5
+    tail = max_chars - head - 40  # reserve room for the marker
+    tail = max(tail, 1)
+    marker = "\n\n[...middle of conversation truncated for scoring...]\n\n"
+    return text[:head] + marker + text[-tail:]
 
 
 def _format_conversation_for_scoring(conversation_history):
