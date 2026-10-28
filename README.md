@@ -1171,9 +1171,11 @@ readyart-dataset-generator/
 ├── config_editor.py         # Configuration editor GUI (tabbed interface with search, validation)
 ├── dashboard.py             # Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview)
 ├── app_state.py             # Shared runtime state (counters, locks, task queue, quality scores, circuit breaker)
-├── test_api_profiles.py     # Unit tests for API compatibility profiles
-├── test_opening_mode.py     # Integration tests for opening mode
-├── test_persona_arc.py      # Unit tests for the persona-breakthrough + emotional-arc helpers
+├── tests/                   # Test scripts (run from the repository root: python -B tests/<name>.py)
+│   ├── test_api_profiles.py # Unit tests for API compatibility profiles
+│   ├── test_opening_mode.py # Integration tests for opening mode
+│   ├── test_persona_arc.py  # Unit tests for the persona-breakthrough + emotional-arc helpers
+│   └── ...                  # Remaining suites: dataset_*, quality_roleplay, random_settings, worker_launch
 ├── tools/
 │   └── check_gui_layout.py  # GUI layout testing utility for small displays
 ├── config/
@@ -1753,9 +1755,9 @@ The application is organized into focused modules with one-way dependencies to p
 | `api_profiles.py` | Per-endpoint payload compatibility profiles (thread-safe, auto-detection) | `logging_config` |
 | `app_state.py` | Shared runtime state (counters, locks, task queue, quality scores, circuit breaker) | `config_loader` |
 | `logging_config.py` | Centralized logging with colorama (colored console + file output) | None (stdlib only) |
-| `test_api_profiles.py` | Unit tests for API compatibility profiles | `api_profiles` |
-| `test_opening_mode.py` | Integration tests for opening mode (worker run against fake server) | `generation`, `app_state`, `logging_config` |
-| `test_persona_arc.py` | Unit tests for the persona-breakthrough + emotional-arc helpers (parsing, expansion, injection) | `generation` |
+| `tests/test_api_profiles.py` | Unit tests for API compatibility profiles | `api_profiles` |
+| `tests/test_opening_mode.py` | Integration tests for opening mode (worker run against fake server) | `generation`, `app_state`, `logging_config` |
+| `tests/test_persona_arc.py` | Unit tests for the persona-breakthrough + emotional-arc helpers (parsing, expansion, injection) | `generation` |
 | `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.

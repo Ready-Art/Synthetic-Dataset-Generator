@@ -4,8 +4,10 @@
 
 The application targets Python 3.9 (`README.md`, Requirements), so code and tests must not use anything newer, such
 as `match` or `X | Y` type unions (both 3.10).
-Tests that import `generation.py` (`test_opening_mode.py`, `test_persona_arc.py`, `test_dataset_compatibility.py`)
-or the Datasets panel need Tk; `test_datasets_panel.py` and `test_dataset_column_menu.py` also need a display.
+All test scripts live in `tests/` (run them from the repository root, e.g. `python -B tests/test_api_profiles.py`).
+Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_persona_arc.py`,
+`tests/test_dataset_compatibility.py`) or the Datasets panel need Tk; `tests/test_datasets_panel.py` and
+`tests/test_dataset_column_menu.py` also need a display.
 
 ```sh
 python -m pip install -r requirements.txt            # the application
@@ -18,19 +20,19 @@ File Reference below names one. Before finishing, and before opening a pull requ
 the pull request which ones you ran and whether they passed:
 
 ```sh
-for t in test_*.py; do python -B "$t" || echo "FAILED: $t"; done
+for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 ```
 
-- `test_dataset_backends.py` skips its checks unless `requirements-datasets.txt` is installed. A skip does not count
+- `tests/test_dataset_backends.py` skips its checks unless `requirements-datasets.txt` is installed. A skip does not count
   as a pass.
-- `test_dataset_compatibility.py` compares the requests the worker sends with those of the engine at its
+- `tests/test_dataset_compatibility.py` compares the requests the worker sends with those of the engine at its
   `BASELINE_COMMIT`, which it extracts with `git archive`, so it needs `git` and a clone that holds that commit (not
   a shallow clone or a zip download). A change that alters the requests on purpose (a prompt, a message's order or
   role) makes it fail by design. Move `BASELINE_COMMIT` to a commit with the same change.
   `DATASET_COMPATIBILITY_BASELINE_DIR=<dir>` runs it against an extracted tree instead.
 - Importing `logging_config` creates `output/` in the working directory, and `logging_config.LOG_FILE_PATH` is
-  relative to it, so `test_api_profiles.py` appends to the repository's `output/log.txt`. `test_opening_mode.py` and
-  `test_persona_arc.py` change into a temporary directory first.
+  relative to it, so `tests/test_api_profiles.py` appends to the repository's `output/log.txt`. `tests/test_opening_mode.py` and
+  `tests/test_persona_arc.py` change into a temporary directory first.
 - `tools/check_gui_layout.py` and `tools/check_dataset_hub.py` are not part of the test run (see Tools).
 
 ## Boundaries
@@ -164,7 +166,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Key:** `start_processing()`, `worker()` launch, UI widgets, `ConfigEditor`
 **Edit for:**
 - Queue dataset wiring → `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` in `start_processing()` attaches an in-memory `DatasetTaskAttachments` service to the run's task queue; attachments die with the queue and are NOT persisted across app restarts
-- Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()`. **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `test_worker_launch.py` fails on the mismatch
+- Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()`. **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `tests/test_worker_launch.py` fails on the mismatch
 - New UI tab → Add to `dashboard_notebook` + populate widgets; custom tabs (Quality / 🔍 Review) need their own gated per-tick refresher (`update_quality_tab()` / `_update_review_table()`), called from the periodic GUI update loop and from `_on_dashboard_tab_changed()` so the incoming tab isn't stale — `update_dashboard()` itself only handles Totals/API issue panels and the graph
 - Quality tab → `update_quality_tab()` fills the dimension summary labels (from `quality.get_quality_stats()['dimension_averages']`) and the latest-50 scores Treeview from `app_state.quality_scores`
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
@@ -202,16 +204,16 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Scoring dimensions → `SCORING_DIMENSIONS` dict (weights) + `ROLEPLAY_SCORING_DIMENSIONS` (opt-in via `quality.roleplay_dimensions`; active set comes from `active_scoring_dimensions()`, which every score/stats/UI path must use instead of `SCORING_DIMENSIONS` directly)
 - Heuristic logic → `_score_diversity()`, `_score_technical()`, `_heuristic_fallback_for_llm_dim()`, plus the roleplay heuristics (voice = bigram overlap between characters' attributed spoken lines via `_spoken_lines_by_character()`; grounding = profile-keyword coverage via `_profile_keywords()`; persona = Persona-section keyword timing around `prompts.character.persona_breakthrough_turn` via `_persona_sections()`)
 - LLM scoring → `_score_with_llm()` (uses API slot from `quality.scoring_api` config); when the toggle is on it appends the three roleplay definitions + JSON fields to the judge prompt, raises the `max_tokens` default by 64/dim, and refines (replaces) the heuristic roleplay scores with the judge's; `_score_and_store_quality()` in `generation.py` forwards `scene_characters=scene_character_names`
-- Tests → `test_quality_roleplay.py` (toggle on/off, all three heuristics, judge prompt/refinement via stubbed `requests.post`)
+- Tests → `tests/test_quality_roleplay.py` (toggle on/off, all three heuristics, judge prompt/refinement via stubbed `requests.post`)
 - Persona-fidelity consistency → `score_conversation()` / `_score_with_llm()` accept `character_profile_text`; the actual character card (the `character_injection` block from `worker()`) is injected into the judge prompt so the `consistency` dimension measures persona/personality/traits fidelity, not just self-consistency. Capped by `quality.max_profile_chars_for_scoring` (default 4000). Without a profile the judge falls back to generic self-consistency language
 - Consistency heuristic fallback → `_heuristic_fallback_for_llm_dim('consistency')` no longer returns a flat `70`; it scores down on well-known OOC markers (helpful-bot narration, "as <name>, I would" breaks, fourth-wall drops)
 - Flags → Add to `flags` list in scoring functions
 
-### `test_api_profiles.py` [15]
+### `tests/test_api_profiles.py` [15]
 **Purpose:** Unit tests for `api_profiles.py`
 **Edit for:** Add new profile tests in `main()`
 
-### `test_opening_mode.py` [16]
+### `tests/test_opening_mode.py` [16]
 **Purpose:** Tests for opening mode functionality
 **Edit for:** Add new opening mode tests (greeting, first-line, worker integration). It also checks where the per-reply note goes, that the requests of a task share one system prompt, and the generated question's `QUESTION_USER_SIDE` line
 
@@ -229,25 +231,25 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Custom layout → Use `ResponsiveGrid` for reflowing widgets
 - Scrollable area → Wrap in `ScrollableFrame`
 
-### `test_persona_arc.py` [19]
+### `tests/test_persona_arc.py` [19]
 **Purpose:** Unit tests for the persona/emotional-arc helpers in `generation.py`
 **Key:** `main()` covers `_split_emotional_arc_entry`, `_expand_emotional_arc`, `_emotional_state_injection`, `_persona_block_for_characters`
 **Edit for:** Add arc-parsing/expansion/injection cases (arrows, stage distribution, header text, single vs multi-char labels)
 
-### `test_random_settings.py` [20]
+### `tests/test_random_settings.py` [20]
 **Purpose:** Standalone validation of the setting resolution/unification algorithm added to `worker()`
 **Key:** `resolve_settings()` mirrors the per-task block; `run()` covers keep-own-setting, pool-sample-on-empty, multi-character unification, selection-off default, pool-disabled default, and ensemble-bounded unification across a seed range
 **Edit for:** Add settings-resolution edge cases (blank/whitespace own setting, pool with duplicates, 3+ char ensembles)
 
-### `test_quality_roleplay.py`
+### `tests/test_quality_roleplay.py`
 **Purpose:** Headless unit tests for the opt-in roleplay quality dimensions in `quality.py` (no model/network/display; the LLM-judge path is exercised through a stubbed `requests.post`)
 **Key:** covers the `quality.roleplay_dimensions` toggle (off by default; active dimension set + weight normalization), the three heuristics (`_score_voice_distinctiveness`, `_score_grounding`, `_score_persona_alignment` incl. the early-leak / never-surfaces / no-persona cases) and judge prompt construction + refinement when on
 **Edit for:** Add roleplay-dimension heuristic or judge-prompt cases
 
-### `test_worker_launch.py` [21]
+### `tests/test_worker_launch.py` [21]
 **Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
 **Key:** Rebuilds the `worker()` signature from its AST, extracts the actual `threading.Thread(target=worker, args=..., kwargs=...)` call from `start_processing()`, and binds them via `inspect.Signature.bind()`; then asserts the OOC kwargs (`current_ooc_phrases`/`current_ooc_fixes`/`current_ooc_enabled`) are supplied by keyword from same-named locals (never positionally) — no app config, GUI, or network code is evaluated
-**Run:** `python -B -m unittest test_worker_launch`
+**Run:** `python -B tests/test_worker_launch.py`
 **Edit for:** Extend per-kwarg source assertions when new params are moved into / added to the `kwargs=` dict at the launch site
 
 ### `dataset_sources.py` [22]
@@ -299,43 +301,43 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Key:** `ColumnVisibilityMenu` (`set_columns()`, `on_change(None | tuple_of_names)`) — `None` = all columns (incl. imported later); explicit empty = none
 **Edit for:** Selection semantics in the docstring: `set_columns` never fires `on_change`; canonicalization to `None` when every current column is selected; no application-wide event bindings
 
-### `test_dataset_sources.py` [29]
+### `tests/test_dataset_sources.py` [29]
 **Purpose:** Unit tests for `dataset_sources.py` (local CSV/TSV/JSON/JSONL readers, schema discovery, fingerprints, error paths)
 **Edit for:** Add reader/format cases with temporary fixture files
 
-### `test_dataset_settings.py` [30]
+### `tests/test_dataset_settings.py` [30]
 **Purpose:** Unit tests for `dataset_settings.py` normalization/validation (selectors, aliases, visibility, readiness rules)
 **Edit for:** Add setting-shape and validation-failure cases
 
-### `test_dataset_bindings.py` [31]
+### `tests/test_dataset_bindings.py` [31]
 **Purpose:** Unit tests for `dataset_bindings.py` (sequential allocation, repeat-bind idempotency, exhaustion, snapshot round trip, thread safety)
 **Edit for:** Add binding-lifecycle cases (use `ThreadPoolExecutor` for concurrency)
 
-### `test_dataset_templates.py` [32]
+### `tests/test_dataset_templates.py` [32]
 **Purpose:** Unit tests for `dataset_templates.py` rendering (single-pass, native-placeholder compatibility, alias validation, reserved-namespace typos)
 **Edit for:** Add render/template edge cases
 
-### `test_dataset_tasks.py` [33]
+### `tests/test_dataset_tasks.py` [33]
 **Purpose:** Unit tests for `dataset_tasks.py` (queue attachment lifecycle, lazy reader open/close, same-run reuse, GC behavior of weak references)
 **Edit for:** Add task-attachment lifecycle cases
 
-### `test_dataset_backends.py` [34]
+### `tests/test_dataset_backends.py` [34]
 **Purpose:** Backend-coverage tests for optional readers (Parquet via `pyarrow`, Hub / saved-`DatasetDict` via `datasets` 4.x) incl. resource lifecycle on rename/delete; never touches the network or a model API
 **Edit for:** Extend optional-backend cases; hard-dep backends (csv/json/jsonl) always run, optional ones skip when the package is missing
 
-### `test_dataset_column_menu.py` [35]
+### `tests/test_dataset_column_menu.py` [35]
 **Purpose:** Unit tests for `dataset_column_menu.py` (selection semantics, large-column boundedness, grab/focus handling); skips cleanly without a display
 **Edit for:** Add picker behavior cases (run on a display for zero skips)
 
-### `test_datasets_panel.py` [36]
+### `tests/test_datasets_panel.py` [36]
 **Purpose:** Unit tests for `datasets_panel.py` (add/edit/import/alias/save-load flows, background metadata workers); synthetic column names only, optional screenshots via `READYART_GUI_SCREENSHOTS`
 **Edit for:** Add panel-flow cases
 
-### `test_dataset_pipeline.py` [37]
+### `tests/test_dataset_pipeline.py` [37]
 **Purpose:** Pipeline-level simulation of dataset integration into worker-shaped request stages (question/answer/continuation/cleanup); all model replies are fixtures, expected request bodies assembled independently of the renderer
 **Edit for:** Add stage-level pipeline scenarios (scheduler/transport/retry/cache are small simulations, not production impls)
 
-### `test_dataset_compatibility.py` [38]
+### `tests/test_dataset_compatibility.py` [38]
 **Purpose:** Bounded equivalence check: the real worker/request builders/fixers/state saver/output writer run twice — baseline with explicitly populated authored inputs vs candidate fed the same values through real CSV/JSONL sources (fake HTTP, no cache hits/waits/display)
 **Edit for:** Extend side-by-side scenarios; this proves byte-level compatibility, not exhaustive equivalence
 
@@ -358,7 +360,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add new API slot | `config/config.yml` (`api.apis[]`), `config_editor.py` (UI), `app_state.py` (counters), `generation.py` (worker logic) |
 | Add detection type | `config/config.yml` (phrases/fixes/enabled), `detection.py` (`is_*()`), `app_state.py` (timestamps/counters), `generation.py` (worker kwargs + check call), `dashboard.py` (display), `config_editor.py` (Detection tab panel + save/load/validate) — see e.g. OOC Drift |
 | Add config option | `config/config.yml` (default value), `config_editor.py` (UI + save/load), `config_loader.py` (if new structure), `generation.py` (pass to worker) |
-| Add quality dimension | `quality.py` (`SCORING_DIMENSIONS` + `HEURISTIC_DIMENSIONS`/`LLM_DIMENSIONS` sets, scoring logic; opt-in sets like `ROLEPLAY_SCORING_DIMENSIONS` go through `active_scoring_dimensions()` + `is_roleplay_scoring_enabled()`), `generation.py` (`_build_record_metadata()` schema, bump `_METADATA_SCHEMA_VERSION`), `generate.py` (Quality tab via `_rebuild_quality_roleplay_layout()`, already dynamic), `config_editor.py` (only if user-togglable), `config/config.yml` (default), `test_opening_mode.py` (metadata contract) |
+| Add quality dimension | `quality.py` (`SCORING_DIMENSIONS` + `HEURISTIC_DIMENSIONS`/`LLM_DIMENSIONS` sets, scoring logic; opt-in sets like `ROLEPLAY_SCORING_DIMENSIONS` go through `active_scoring_dimensions()` + `is_roleplay_scoring_enabled()`), `generation.py` (`_build_record_metadata()` schema, bump `_METADATA_SCHEMA_VERSION`), `generate.py` (Quality tab via `_rebuild_quality_roleplay_layout()`, already dynamic), `config_editor.py` (only if user-togglable), `config/config.yml` (default), `tests/test_opening_mode.py` (metadata contract) |
 | Modify output format | `generation.py` (`write_conversation()`) |
 | Add slop/anti-slop phrase | `config/config.yml` (`detection.*.phrases`) → `detection.py` phrase lists |
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
@@ -372,16 +374,16 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Modify opening mode prompts | `config/config.yml` (`prompts.greeting`, `prompts.first_line`, `prompts.greeting_context`, `prompts.first_line_styles`) |
 | Add random names feature | `config/config.yml` (`prompts.random_names.enabled`, `prompts.random_names.names[]`), `config_editor.py` (UI toggle + text area), `generate.py` (load config + pass to worker), `generation.py` (use random names in character profile) |
 | Add random settings pool | `config/config.yml` (`prompts.random_settings.enabled`, `prompts.random_settings.settings[]`), `config_editor.py` (UI toggle + text area + save/load/toggle/validation), `generate.py` (load config + pass to worker), `generation.py` (sample empty character settings + unify multi-character ensembles; see setting resolution above) |
-| Add/modify persona breakthrough or emotional arc | `config/config.yml` (`prompts.character.persona_breakthrough_turn` and `persona_breakthrough_placement`, `prompts.emotional_states.states[]` — a state may be `'->'`-joined stages — and `placement`), `config_editor.py` (spinbox under Character Engine + states label + the two placement dropdowns and the cache-warning label), `generate.py` (load + pass to worker kwargs), `generation.py` (`_split_emotional_arc_entry`/`_expand_emotional_arc`/`_emotional_state_injection`/`_persona_block_for_characters` + `note_placement`/`placement_cache_warning` + `slot_notes()` in `worker()`), `test_opening_mode.py` and `test_persona_arc.py` |
+| Add/modify persona breakthrough or emotional arc | `config/config.yml` (`prompts.character.persona_breakthrough_turn` and `persona_breakthrough_placement`, `prompts.emotional_states.states[]` — a state may be `'->'`-joined stages — and `placement`), `config_editor.py` (spinbox under Character Engine + states label + the two placement dropdowns and the cache-warning label), `generate.py` (load + pass to worker kwargs), `generation.py` (`_split_emotional_arc_entry`/`_expand_emotional_arc`/`_emotional_state_injection`/`_persona_block_for_characters` + `note_placement`/`placement_cache_warning` + `slot_notes()` in `worker()`), `tests/test_opening_mode.py` and `tests/test_persona_arc.py` |
 | Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
 | Add/modify output metadata field | `generation.py` (`_build_record_metadata()` schema + `_safe_float()`), keep same-keys/same-types/null-filled invariant; config flag `generation.include_metadata` |
-| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list), `test_dataset_sources.py` (or `test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
+| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list), `tests/test_dataset_sources.py` (or `tests/test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
 | Add dataset column→alias mapping | `config_editor.py` (Datasets tab) → `datasets_panel.py` (Apply/Copy placeholder) → `dataset_settings.py` (validation) — placeholders `{{ds:alias}}` are then usable in any authored prompt field |
 | Modify dataset placeholder rendering | `dataset_templates.py` (`render_template()` / `render_with_native_placeholders()` / `validate_alias()`); worker-side call sites in `generation.py` (`render_task_inputs()`) |
 | Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |
-| Run dataset tests | `python -m unittest test_dataset_sources test_dataset_settings test_dataset_bindings test_dataset_templates test_dataset_tasks test_dataset_backends test_dataset_column_menu test_datasets_panel test_dataset_pipeline test_dataset_compatibility` (live Hub check: `tools/check_dataset_hub.py`, opt-in only) |
+| Run dataset tests | `for t in tests/test_dataset_sources.py tests/test_dataset_settings.py tests/test_dataset_bindings.py tests/test_dataset_templates.py tests/test_dataset_tasks.py tests/test_dataset_backends.py tests/test_dataset_column_menu.py tests/test_datasets_panel.py tests/test_dataset_pipeline.py tests/test_dataset_compatibility.py; do python -B "$t"; done` (live Hub check: `tools/check_dataset_hub.py`, opt-in only) |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
-| Change what a request contains (prompt text, message order or role) | `generation.py`, `test_opening_mode.py`, then move `BASELINE_COMMIT` in `test_dataset_compatibility.py` to a commit with the same change |
+| Change what a request contains (prompt text, message order or role) | `generation.py`, `tests/test_opening_mode.py`, then move `BASELINE_COMMIT` in `tests/test_dataset_compatibility.py` to a commit with the same change |
 
 ## Key State Variables (`app_state.py`)
 
