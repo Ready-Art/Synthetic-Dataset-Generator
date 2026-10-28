@@ -95,6 +95,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Key:** `update_dashboard()`, `update_issue_graph()`, `create_modern_issue_panel()`
 **Edit for:**
 - New metric label → Add to `app_state.py` + update in `update_dashboard()`
+- Issue graph series → `draw_issue_graph()` and `update_issue_graph()` each have parallel `counts` / `colors` / `labels` dicts that must contain the same keys (a missing key = KeyError; an uncounted series = IndexError). `offsets` is computed from `len(counts)`, so adding a series only requires extending the three dicts in BOTH functions
 - Issue panel → `create_modern_issue_panel()` + `update_modern_issue_panel()`
 - Progress bar style → `configure_animated_progress_styles()`, `get_progress_style_name()`
 

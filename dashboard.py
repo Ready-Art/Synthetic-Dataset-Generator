@@ -192,13 +192,17 @@ def draw_issue_graph(canvas_widget, height=400):
 
     x = range(num_bins)
     width = 0.15
-    offsets = [-2*width, -width, 0, width, 2*width]
+    # One offset per issue series, symmetric around each bin center.
+    # Computed from the series count so adding a new detection type
+    # (which extends `counts`) can never run past the end of `offsets`.
+    n_series = len(counts)
+    offsets = [((i + 0.5) - n_series / 2) * width for i in range(n_series)]
 
     # Cohesive, accessible color palette
     colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
-              'anti_slop': '#ffd43b', 'errors': '#fc8181'}
+              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b'}
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
-              'anti_slop': 'Anti-Slop', 'errors': 'Errors'}
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift'}
 
     # Plot bars & add value labels
     for i, key in enumerate(counts.keys()):
@@ -333,7 +337,10 @@ def update_issue_graph(canvas_widget):
 
     x = range(num_bins)
     width = 0.15
-    offsets = [-2.5*width, -1.5*width, -0.5*width, 0.5*width, 1.5*width, 2.5*width]
+    # Symmetric offsets computed from the series count so the offsets list
+    # can never be shorter than `counts.keys()`.
+    n_series = len(counts)
+    offsets = [((i + 0.5) - n_series / 2) * width for i in range(n_series)]
     colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
               'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b'}
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
