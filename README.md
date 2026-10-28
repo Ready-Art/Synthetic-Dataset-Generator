@@ -223,7 +223,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ## 📦 Requirements
 
-- **Python 3.8+**
+- **Python 3.9+**
 - **PostgreSQL** (optional, for database storage)
 - **Valkey or Redis** (optional, for response caching)
 
@@ -306,7 +306,7 @@ saved by the existing recovery mechanism; restarting or starting a new queue
 does not preserve the previous row assignments.
 
 CSV/TSV/JSON/JSONL need no additional dependencies. For Hub, saved-HF, and Parquet
-sources, install `requirements-datasets.txt` with Python 3.9 or later.
+sources, install `requirements-datasets.txt`.
 See [Dataset sources and task metadata](docs/dataset-bindings.md) for setup,
 placeholder behavior, limits, and the upstream comparison tests.
 

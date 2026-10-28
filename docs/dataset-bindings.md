@@ -250,7 +250,7 @@ integration are produced by this branch.
 ## Optional dependencies and compatibility boundary
 
 All foundation modules and CSV/TSV/JSON/JSONL readers use Python's standard
-library and remain compatible with the application's Python 3.8 language target.
+library and remain compatible with the application's Python 3.9 language target.
 Optional packages are imported only when their reader is used. The normal
 `requirements.txt` installation does not include Hugging Face or PyArrow.
 
@@ -260,18 +260,14 @@ The optional installation includes both the application and dataset dependencies
 python -m pip install -r requirements-datasets.txt
 ```
 
-This requires Python 3.9 or later and pins `datasets==4.4.2`. Its dependencies
+This pins `datasets==4.4.2`. Its dependencies
 include PyArrow, so it covers local Parquet and saved-HF folders too. Datasets
 4.x does not execute dataset scripts. Later releases can raise the Python minimum,
 which is why the tested optional backend is pinned explicitly here.
 
-The application's Requests requirement is now `requests>=2.32.4,<3`, resolving
-the conflict between its former `2.31.0` pin and Datasets' `>=2.32.2` requirement.
-Pip can select a release compatible with the interpreter: Requests 2.32.4 supports
-Python 3.8; newer releases raise that minimum. This preserves the normal Python
-3.8 installation path without silently omitting the optional backend if someone
-tries to install it on an unsupported interpreter. The combined install and
-existing application regressions were tested on Python 3.12, not every interpreter.
+The application's Requests requirement is `requests>=2.32.4,<3`, which also
+satisfies Datasets' `>=2.32.2` requirement. The combined install and existing
+application regressions were tested on Python 3.12, not every interpreter.
 
 Authentication uses Hugging Face's normal environment or saved-login mechanism;
 no access token is included in source settings or binding snapshots. No login,
@@ -388,7 +384,7 @@ Run this suite in its own process:
 python -B test_dataset_compatibility.py
 ```
 
-It exports the exact upstream commit `59937027` from the local Git history (or uses
+It exports the upstream commit pinned as `BASELINE_COMMIT` from the local Git history (or uses
 the checkout named by `DATASET_COMPATIBILITY_BASELINE_DIR`) and runs each side in separate
 processes. Upstream receives manually populated authored inputs; the candidate
 receives equivalent aliases and actual CSV/JSONL bindings. Twelve differential traces
