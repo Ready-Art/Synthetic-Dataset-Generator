@@ -113,7 +113,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Main UI, Tkinter app, worker thread management, queue setup
 **Key:** `start_processing()`, `worker()` launch, UI widgets, `ConfigEditor`
 **Edit for:**
-- Worker kwargs → `start_processing()` thread launch (~line 800+)
+- Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()` (~line 1480). **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `test_worker_launch.py` fails on the mismatch
 - New UI tab → Add to `dashboard_notebook` + populate widgets
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - DB export → `export_db_to_jsonl()`, `clear_database()`
@@ -182,6 +182,12 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Standalone validation of the setting resolution/unification algorithm added to `worker()`
 **Key:** `resolve_settings()` mirrors the per-task block; `run()` covers keep-own-setting, pool-sample-on-empty, multi-character unification, selection-off default, pool-disabled default, and ensemble-bounded unification across a seed range
 **Edit for:** Add settings-resolution edge cases (blank/whitespace own setting, pool with duplicates, 3+ char ensembles)
+
+### `test_worker_launch.py` [21]
+**Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
+**Key:** Rebuilds the `worker()` signature from its AST, extracts the actual `threading.Thread(target=worker, args=..., kwargs=...)` call from `start_processing()`, and binds them via `inspect.Signature.bind()`; then asserts the OOC kwargs (`current_ooc_phrases`/`current_ooc_fixes`/`current_ooc_enabled`) are supplied by keyword from same-named locals (never positionally) — no app config, GUI, or network code is evaluated
+**Run:** `python -B -m unittest test_worker_launch`
+**Edit for:** Extend per-kwarg source assertions when new params are moved into / added to the `kwargs=` dict at the launch site
 
 ## Common Tasks Quick Reference
 
