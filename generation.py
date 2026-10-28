@@ -639,6 +639,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             character_injection = ""
             opening_chars = []  # Profiles actually added to the scene prompt (opening mode's greeting speaker)
+            meta_character_names = []  # Names given to those profiles (random names when on), even when the prompt omits names
+            meta_setting = ""  # First non-empty setting the scene prompt carries; "" when setting selection is off
             char_personas = []  # (profile number, inner persona) of selected characters that have one (breakthrough block)
             if enable_character_engine_local and character_list:
                 # Select multiple characters based on num_characters_local using round-robin
@@ -746,6 +748,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         )
                         character_profiles.append(character_profile)
                         opening_chars.append(selected_char)
+                        meta_character_names.append(random_name)
+                        if enable_setting_selection_local and not meta_setting and random_setting:
+                            meta_setting = random_setting
                         if random_persona and random_persona.strip():
                             char_personas.append((idx + 1, random_persona.strip()))
 
@@ -1047,7 +1052,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     primary_turn_quality_result = None
                     if app_state.quality_enabled and assistant_answer:
                         if has_greeting and conversation_history_for_output:
-                            # Opening mode: the LLM context here excludes the greeting; score the real flow
+                            # Opening mode: the greeting is not a reply, so score from the first user turn,
+                            # as the full-conversation path does (unreachable: opening mode refuses
+                            # duplication mode)
                             primary_conv_for_scoring = list(conversation_history_for_output[1:])
                             primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
                         else:
@@ -1057,10 +1064,6 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name
                         )
                         # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
-
-                    # Per-turn provenance for the output metadata block (Axolotl-safe, record-level)
-                    dup_meta_character_names = [c.get('name', '') for c in opening_chars if c.get('name')]
-                    dup_meta_setting = next((c.get('setting', '') for c in opening_chars if c.get('setting')), '')
 
                     # Write all successful duplicated answers to their respective per-API files for this turn
                     if assistant_answer: # Only proceed if at least one API gave an answer to continue the flow
@@ -1083,9 +1086,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     current_output_format, task_id,
                                                     api_slot_idx_for_output_file=original_slot_idx_for_file, # Write to specific API's file
                                                     is_duplication_turn=True, turn_number_for_duplication=turn_num + 1, # Mark as duplication turn
-                                                    character_names=dup_meta_character_names,
-                                                    emotional_state=current_emotional_state_label or None,
-                                                    setting=dup_meta_setting or None,
+                                                    character_names=meta_character_names,
+                                                    emotional_state=current_emotional_state_label,
+                                                    setting=meta_setting,
                                                     opening_mode=opening_mode_local,
                                                     has_greeting=has_greeting,
                                                     num_characters=len(opening_chars),
@@ -1265,12 +1268,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                             f"below threshold {min_threshold}. Marking as quality-rejected.",
                                             "WARNING"
                                         )
-                                        # The conversation still gets the flag in its metadata; the
-                                        # quality output filter marks it, it does not delete it.
-
-                            # Per-record provenance for the output metadata block (Axolotl-safe, record-level)
-                            meta_character_names = [c.get('name', '') for c in opening_chars if c.get('name')]
-                            meta_setting = next((c.get('setting', '') for c in opening_chars if c.get('setting')), '')
+                                        # The row is still written and carries its score in its
+                                        # metadata, so it can be filtered on quality_composite.
 
                             with output_data_lock:
                                 if task_id not in app_state.completed_task_ids:
@@ -1281,8 +1280,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_output_format, task_id, api_slot_idx_for_output_file=None,
                                         mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
                                         character_names=meta_character_names,
-                                        emotional_state=current_emotional_state_label or None,
-                                        setting=meta_setting or None,
+                                        emotional_state=current_emotional_state_label,
+                                        setting=meta_setting,
                                         opening_mode=opening_mode_local,
                                         has_greeting=has_greeting,
                                         num_characters=len(opening_chars),
@@ -3365,13 +3364,16 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
 # --- Output metadata helpers (Axolotl-safe provenance block) ---
 # Metadata schema contract:
-#   * A flat dict of scalars (str/int/float/bool/null) plus fixed-length lists of strings.
-#   * EVERY record carries the SAME keys with the SAME types (null fills gaps).
+#   * A flat dict of scalars (str/int/float/bool) plus fixed-length lists of strings.
+#   * EVERY record carries the SAME keys with the SAME types, and no nulls: Hugging Face
+#     load_dataset fixes a column's type from the first rows, so a column that is null there
+#     and a value later fails to load. Gaps are "" for strings, 0 for duplication_turn and
+#     -1.0 for unscored quality numbers.
 #   * It is stored at the RECORD level, never inside conversations[], so HF's column
 #     inference and Axolotl's template mapping are unaffected (same as today's "id" field).
 #   * generation.include_metadata=false (config.yml) disables it entirely, restoring
 #     the legacy two-field records byte-for-byte.
-_METADATA_SCHEMA_VERSION = 1
+_METADATA_SCHEMA_VERSION = 2
 
 
 def _safe_float(value, default=None):
@@ -3388,33 +3390,38 @@ def _safe_float(value, default=None):
 def _build_record_metadata(character_names, emotional_state, setting, opening_mode, has_greeting,
                            num_characters, quality_result, duplication_turn, generated_at):
     """Builds the flat, schema-stable metadata block for one output record.
-    Always returns every key (null when unavailable) so all rows match.
+    Always returns every key with the same type, never None, so all rows match.
     duplication_turn is the turn number (1-based) for per-turn duplication rows,
-    or None for full-conversation rows / non-duplication mode.
+    or None for full-conversation rows / non-duplication mode (recorded as 0).
+    Quality numbers are -1.0 when the conversation was not scored.
     """
     quality_result = quality_result or {}
     dims = quality_result.get("dimensions", {}) if isinstance(quality_result.get("dimensions"), dict) else {}
     method = quality_result.get("method")
-    composite = _safe_float(quality_result.get("composite")) if method and method != "none" else None
+    scored = bool(method) and method != "none"
+
+    def score(value):
+        return _safe_float(value, -1.0) if scored else -1.0
+
     names = [str(n) for n in (character_names or [])]
     return {
         "meta_version": _METADATA_SCHEMA_VERSION,
         "characters": names if names else [""],          # fixed-shape: list[str] (homogeneous)
-        "emotional_state": str(emotional_state) if emotional_state else None,
-        "setting": str(setting) if setting else None,     # single unified scene setting; null when none
+        "emotional_state": str(emotional_state) if emotional_state else "",
+        "setting": str(setting) if setting else "",       # single unified scene setting; "" when none
         "num_characters": int(num_characters) if num_characters is not None else 0,
         "opening_mode": bool(opening_mode),
         "has_greeting": bool(has_greeting),
-        "duplication_turn": int(duplication_turn) if duplication_turn is not None else None,
-        "quality_method": str(method) if method else None,
-        "quality_composite": composite,
-        "quality_coherence": _safe_float(dims.get("coherence")),
-        "quality_naturalness": _safe_float(dims.get("naturalness")),
-        "quality_engagement": _safe_float(dims.get("engagement")),
-        "quality_diversity": _safe_float(dims.get("diversity")),
-        "quality_consistency": _safe_float(dims.get("consistency")),
-        "quality_technical": _safe_float(dims.get("technical")),
-        "generated_at": str(generated_at) if generated_at else None,
+        "duplication_turn": int(duplication_turn) if duplication_turn is not None else 0,
+        "quality_method": str(method) if method else "",
+        "quality_composite": score(quality_result.get("composite")),
+        "quality_coherence": score(dims.get("coherence")),
+        "quality_naturalness": score(dims.get("naturalness")),
+        "quality_engagement": score(dims.get("engagement")),
+        "quality_diversity": score(dims.get("diversity")),
+        "quality_consistency": score(dims.get("consistency")),
+        "quality_technical": score(dims.get("technical")),
+        "generated_at": str(generated_at) if generated_at else "",
     }
 
 
