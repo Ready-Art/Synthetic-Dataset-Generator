@@ -163,7 +163,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Edit for:**
 - Queue dataset wiring → `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` in `start_processing()` attaches an in-memory `DatasetTaskAttachments` service to the run's task queue; attachments die with the queue and are NOT persisted across app restarts
 - Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()`. **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `test_worker_launch.py` fails on the mismatch
-- New UI tab → Add to `dashboard_notebook` + populate widgets
+- New UI tab → Add to `dashboard_notebook` + populate widgets; custom tabs (Quality / 🔍 Review) need their own gated per-tick refresher (`update_quality_tab()` / `_update_review_table()`), called from the periodic GUI update loop and from `_on_dashboard_tab_changed()` so the incoming tab isn't stale — `update_dashboard()` itself only handles Totals/API issue panels and the graph
+- Quality tab → `update_quality_tab()` fills the dimension summary labels (from `quality.get_quality_stats()['dimension_averages']`) and the latest-50 scores Treeview from `app_state.quality_scores`
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - DB export → `export_db_to_jsonl()`, `clear_database()`
 

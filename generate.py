@@ -743,6 +743,62 @@ def update_quality_display():
             app_state.dashboard_notebook.tab(review_tab_widget, text=label)
             dashboard_navigator.refresh()
 
+def update_quality_tab():
+    """Populates the Quality dashboard tab: per-dimension summary labels and the
+    recent-scores table (latest 50).
+
+    Like the other per-tick Treeview rebuilds, the work is gated to the currently
+    selected tab to keep X server resource use bounded (see
+    ``_active_dashboard_tab_text``).
+    """
+    if not app_state.root.winfo_exists():
+        return
+
+    # Skip the rebuild unless the Quality tab is actually on screen.
+    if _active_dashboard_tab_text() != "Quality":
+        return
+
+    widgets = app_state.dashboard_notebook.tabs_widgets.get("Quality", {})
+    quality_tree = widgets.get("quality_tree")
+    if not quality_tree or not hasattr(quality_tree, 'winfo_exists') or not quality_tree.winfo_exists():
+        return
+
+    dim_labels = widgets.get("dimension_labels", {})
+
+    # --- Quality Summary: average per dimension ---
+    stats = quality.get_quality_stats()
+    if stats["count"] == 0:
+        for dim_name, label in dim_labels.items():
+            label.config(text=f"{dim_name.title()}: N/A")
+    else:
+        for dim_name, label in dim_labels.items():
+            avg = stats["dimension_averages"].get(dim_name, 0)
+            bar = "█" * int(avg // 5) + "░" * (20 - int(avg // 5))
+            label.config(text=f"{dim_name.title()}: {avg} {bar}")
+
+    # --- Recent Scores table (latest 50) ---
+    for item in quality_tree.get_children():
+        quality_tree.delete(item)
+
+    with app_state.quality_lock:
+        scores = app_state.quality_scores
+
+    latest = sorted(scores.items(), key=lambda kv: kv[1].get("scored_at", ""), reverse=True)[:50]
+    for task_id, score_data in latest:
+        dims = score_data.get("dimensions", {})
+        quality_tree.insert("", tk.END, values=(
+            task_id[:50],
+            score_data.get("composite", "N/A"),
+            dims.get("coherence", "N/A"),
+            dims.get("naturalness", "N/A"),
+            dims.get("engagement", "N/A"),
+            dims.get("diversity", "N/A"),
+            dims.get("consistency", "N/A"),
+            dims.get("technical", "N/A"),
+            ", ".join(score_data.get("flags", [])[:4]),
+            score_data.get("method", "N/A"),
+        ))
+
 def update_live_prompt_preview(messages_list, metadata=None):
     """Thread-safe function to update the Rich Prompt Viewer from worker threads."""
     if dashboard_pause_var.get():
@@ -1636,6 +1692,7 @@ def start_processing():
                 update_queue_ui()
                 update_quality_display()
                 _update_review_table()
+                update_quality_tab()
             except Exception as e_gui:
                 log_message(f"GUI update error: {str(e_gui)}", "ERROR")
             finally:
@@ -2758,6 +2815,7 @@ def _on_dashboard_tab_changed(_event=None):
     try:
         update_dashboard()
         _update_review_table()
+        update_quality_tab()
     except Exception as e:
         log_message(f"Dashboard tab-change refresh error: {e}", "ERROR")
 
