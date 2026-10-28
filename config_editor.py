@@ -556,9 +556,23 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(pb_label, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
         self.persona_breakthrough_turn_var_editor = tk.StringVar(value="2")
+        # Explicit black-on-white: the 'superhero' theme gives ttk.Spinbox white text, but on
+        # some platforms the field falls back to a native white background, making the number
+        # unreadable (white on white). A dedicated style + direct widget options override the
+        # theme on every platform; the map keeps the text legible when disabled.
+        try:
+            self.persona_breakthrough_style = 'PersonaBreakthrough.TSpinbox'
+            ttk.Style(self).configure(self.persona_breakthrough_style,
+                                      foreground="#000000", background="#ffffff")
+            ttk.Style(self).map(self.persona_breakthrough_style,
+                                foreground=[("disabled", "#808080")],
+                                background=[("disabled", "#f0f0f0")])
+        except tk.TclError:
+            self.persona_breakthrough_style = None
         self.persona_breakthrough_spinbox = ttk.Spinbox(
             self.character_engine_content_frame, from_=1, to=99,
-            textvariable=self.persona_breakthrough_turn_var_editor, width=6)
+            textvariable=self.persona_breakthrough_turn_var_editor, width=6,
+            style=self.persona_breakthrough_style or 'TSpinbox')
         self.persona_breakthrough_spinbox.grid(
             row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, 0), sticky="w")
         character_engine_row_idx += 1
