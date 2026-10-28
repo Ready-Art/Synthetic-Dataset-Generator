@@ -285,13 +285,13 @@ Primary API references:
 Run the dependency-free foundation checks with:
 
 ```sh
-python -B -m unittest test_dataset_sources test_dataset_bindings test_dataset_templates test_dataset_settings test_dataset_pipeline test_dataset_tasks
+for t in sources bindings templates settings pipeline tasks; do python -B tests/test_dataset_$t.py; done
 ```
 
 After installing the optional requirements, also run the real local backend tests:
 
 ```sh
-python -B -m unittest test_dataset_backends
+python -B tests/test_dataset_backends.py
 ```
 
 Those tests use actual Parquet files and `Dataset.save_to_disk()` fixtures. They
@@ -349,8 +349,8 @@ Run the actual Tk GUI suites separately with the normal application dependencies
 and a desktop or virtual display:
 
 ```sh
-python -B -m unittest test_dataset_column_menu
-python -B -m unittest test_datasets_panel
+python -B tests/test_dataset_column_menu.py
+python -B tests/test_datasets_panel.py
 ```
 
 All seven dropdown tests and all seven panel/editor tests passed with no skips.
@@ -376,18 +376,17 @@ portable markers shown above. No model API calls were used for these checks.
 Windows hands-on verification was outstanding at this checkpoint; see the later
 Windows verification results below.
 
-### Compatibility with the updated upstream engine
+### Compatibility of dataset-bound and typed-in inputs
 
 Run this suite in its own process:
 
 ```sh
-python -B test_dataset_compatibility.py
+python -B tests/test_dataset_compatibility.py
 ```
 
-It exports the upstream commit pinned as `BASELINE_COMMIT` from the local Git history (or uses
-the checkout named by `DATASET_COMPATIBILITY_BASELINE_DIR`) and runs each side in separate
-processes. Upstream receives manually populated authored inputs; the candidate
-receives equivalent aliases and actual CSV/JSONL bindings. Twelve differential traces
+It runs the current engine twice for each scenario, each run in a separate process. The
+baseline run receives manually populated authored inputs; the candidate run receives
+equivalent aliases and actual CSV/JSONL bindings. Twelve differential traces
 compare API payloads/order, cache keys, accepted history, output/schema-2 metadata,
 selection counters, and completion/requeue decisions:
 
@@ -396,7 +395,7 @@ selection counters, and completion/requeue decisions:
 - Two-model duplication using the shared conversation prefix and per-turn writes.
 - Opening mode, perspective switching, random names, persona and emotional arcs.
 - Two different rows on successive jobs handled by one worker.
-- Empty dataset settings using the upstream pool, and ensemble setting unification.
+- Empty dataset settings using the random-settings pool, and ensemble setting unification.
 - Whole-job requeue with the same attachment and the original retry decisions.
 - Disabled datasets with the original native-placeholder cascade.
 - Empty resolved continuation and greeting-context templates.
@@ -405,15 +404,10 @@ selection counters, and completion/requeue decisions:
 - The actual quality scorer receiving the resolved character profile and recording
   the scripted judge's score in output metadata.
 
-A structural test additionally verifies that all original functions outside the
-six explicit generation input hooks and `start_processing` remain unchanged, and
-that shared state, API handling, detection, quality, and text utilities are byte-
-identical to upstream after normalizing CRLF line endings to LF. Every other byte
-remains significant; this accommodates Windows checkout line endings without
-ignoring content changes. The independent task-attachment tests cover 20 concurrent
+The independent task-attachment tests cover 20 concurrent
 jobs, same-ID callers, source failures, queue ownership, and resource cleanup.
 
-These are scripted HTTP tests using the upstream test harness. They do not make
+These are scripted HTTP tests using the opening-mode test harness. They do not make
 paid model calls, hit real Valkey, exercise real provider failures, or establish
 equivalence for every configuration. The existing upstream API-profile,
 persona/arc, opening-mode, and random-setting tests must also pass. Windows
@@ -424,10 +418,9 @@ slots already supplied by opening-mode keyword arguments. This raised
 `TypeError: multiple values for argument 'opening_mode_local'` before the worker
 could run. The integration moves those three arguments to their existing named
 parameters; it does not change the worker signature or OOC retry method.
-`test_worker_launch.py` checks the actual launch expressions against the actual
+`tests/test_worker_launch.py` checks the actual launch expressions against the actual
 worker signature without importing or running the GUI. This startup correction
-is separate from the worker-driven differential tests, whose baseline remains
-the unmodified upstream commit.
+is separate from the worker-driven differential tests.
 
 ### Windows verification of the original integration
 
