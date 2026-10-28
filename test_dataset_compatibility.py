@@ -31,7 +31,7 @@ from queue import Queue
 
 
 REPO = Path(__file__).resolve().parent
-BASELINE_COMMIT = "59937027eeafa635868328a020a80e5e2e5c01ed"
+BASELINE_COMMIT = "57073f85a16686141d02fb0dd8c9b2d786496c50"
 RAW_LITERAL = "{{ds:unmapped_source}}"
 MODEL_LITERAL = "{{ds:unmapped_model}} {last_assistant_message}"
 CELL_LITERAL = "Literal <tag> Unicode \u03a9 and \\path"
