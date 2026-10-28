@@ -453,6 +453,70 @@ def _persona_block_for_characters(numbered_personas, char_count_label=True):
     )
 
 
+# Where a per-reply block (persona breakthrough, emotional state) is sent: "depth0" appends it to the
+# reply's final user message, after the history; "system" appends it to that reply's system prompt.
+NOTE_PLACEMENTS = ("depth0", "system")
+DEFAULT_NOTE_PLACEMENT = "depth0"
+
+
+def note_placement(value):
+    """The placement `value` names ('depth0' or 'system', any case), or None if it names neither."""
+    placement = str(value if value is not None else DEFAULT_NOTE_PLACEMENT).strip().lower()
+    return placement if placement in NOTE_PLACEMENTS else None
+
+
+def placement_cache_warning(num_turns, opening_mode, persona_turn, persona_active,
+                            emotional_states_enabled, emotional_states, persona_placement, emotion_placement):
+    """(share, warning) when a 'system' placement makes the system prompt change between replies,
+    else (0.0, ""). `share` is the estimated fraction of reusable history computed again.
+
+    A reply whose system prompt differs from the previous reply's makes the server compute the whole
+    history again instead of reading it from its prefix cache. With slot k carrying about k-1
+    exchanges of history, the share of reusable history lost is the sum of (k-1) over the slots where
+    the system prompt changes, divided by the sum of (k-1) over all slots, averaged over the
+    configured emotional states (one is picked at random per task). The user continuation after an
+    answer shares its system prompt, so only a change between replies counts. From the config alone.
+    """
+    try:
+        slots = max(0, int(num_turns)) + (1 if opening_mode else 0)
+        persona_turn = max(1, int(persona_turn))
+    except (TypeError, ValueError):
+        return 0.0, ""
+    reusable = sum(k - 1 for k in range(1, slots + 1))
+    if reusable <= 0:
+        return 0.0, ""
+    persona_in_system = bool(persona_active) and note_placement(persona_placement) == "system"
+    entries = [None]
+    if emotional_states_enabled and note_placement(emotion_placement) == "system":
+        entries = [s for s in (_split_emotional_arc_entry(str(e).strip()) for e in emotional_states or ()) if s] or [None]
+
+    lost_shares, change_counts = [], []
+    persona_changes = arc_changes = False
+    for stages in entries:
+        plan = _expand_emotional_arc(stages, slots) if stages else [None] * slots
+        keys = [(persona_in_system and k >= persona_turn, plan[k - 1]) for k in range(1, slots + 1)]
+        changed = [k for k in range(2, slots + 1) if keys[k - 1] != keys[k - 2]]
+        persona_changes |= any(keys[k - 1][0] != keys[k - 2][0] for k in changed)
+        arc_changes |= any(keys[k - 1][1] != keys[k - 2][1] for k in changed)
+        lost_shares.append(sum(k - 1 for k in changed) / reusable)
+        change_counts.append(len(changed))
+    share = sum(lost_shares) / len(lost_shares)
+    if share <= 0:
+        return 0.0, ""
+    changes = sum(change_counts) / len(change_counts)
+    what = " and ".join(name for name, on in (("the persona breakthrough", persona_changes),
+                                              ("emotional arcs", arc_changes)) if on)
+    times = f"{changes:g}" if changes == int(changes) else f"{changes:.1f}"
+    averaged = " on average over the configured states" if len(entries) > 1 else ""
+    return share, (
+        f"Prefix cache: with {what} in the system prompt, the system prompt changes {times} time(s) in a "
+        f"{slots}-reply conversation{averaged}, so the server computes about {share:.0%} of the conversation "
+        f"history again instead of reading it from its cache. Measured at 4 turns with both in the system "
+        f"prompt: answer calls read 35% of their prompt from the cache instead of 77%, and prefill took about "
+        f"1.6x as long. The cost grows with the number of turns. Set the placement to depth0 to keep the cache."
+    )
+
+
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
            use_variable_system_local,
            all_api_configs_local,
@@ -501,6 +565,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            greeting_context_local="",
            first_line_styles_local=(),
            persona_breakthrough_turn_local=2,
+           persona_placement_local=DEFAULT_NOTE_PLACEMENT,
+           emotion_placement_local=DEFAULT_NOTE_PLACEMENT,
            current_ooc_phrases=(),
            current_ooc_fixes=(),
            current_ooc_enabled=True,
@@ -516,6 +582,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         turns are outward-behaviour-only and the model does not leak inner monologue too soon.
       * From turn `persona_breakthrough_turn_local` onward (default 2) the inner persona of each
         selected character is re-injected as an INNER PERSONA BREAKTHROUGH block over the profile.
+      * Each block goes where its placement says (`persona_placement_local`, `emotion_placement_local`):
+        'depth0' (default) after the history in the reply's final user message, or 'system' at the
+        end of that reply's system prompt, which the user continuation after it shares (as in v10).
+        The generated question gets neither.
       * Each configured emotional state may be flat ('anxious') or an arc ('neutral -> anxious');
         arcs are expanded across the task's assistant turns so the state shifts over the
         conversation rather than being one static injection (see _expand_emotional_arc).
@@ -865,8 +935,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     log_message(f"Thread {thread_id}: Character engine enabled but character_list is empty or num_characters is 0.", "WARNING")
 
             # Scene prompt: the system prompt of every request in the task (persona excluded). The
-            # blocks that change per slot (persona breakthrough + emotional state/arc) go in
-            # current_turn_note below, so this prefix stays the same and the server can reuse its cache.
+            # blocks that change per slot (persona breakthrough + emotional state/arc) come from
+            # slot_notes below; on depth0 placement this prefix stays the same and the server can reuse its cache.
             base_scene_prompt = current_system_prompt_for_task + character_injection
 
             # Handle emotional states: a configured entry is either a flat state or an arc
@@ -918,20 +988,24 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 idx = max(1, min(slot_no, len(emotional_arc_turn_states))) - 1
                 return emotional_arc_turn_states[idx]
 
-            def current_turn_note(slot_no):
-                """The note for one assistant-generation slot (1-based): the persona breakthrough once
-                it is visible, then the slot's emotional state. It is appended to the slot's final user
-                message (the greeting or answer prompt), after the history, so the persona and the arc
-                can change mid-conversation without changing the system prompt. Early slots are
-                outward-only: no persona line, and the arc's start state.
+            persona_placement = note_placement(persona_placement_local) or DEFAULT_NOTE_PLACEMENT
+            emotion_placement = note_placement(emotion_placement_local) or DEFAULT_NOTE_PLACEMENT
+
+            def slot_notes(slot_no):
+                """(system note, depth-0 note) for one assistant-generation slot (1-based): the persona
+                breakthrough once it is visible, then the slot's emotional state, each in the part its
+                placement names. The system note is appended to the slot's system prompt; the depth-0
+                note to its final user message (the greeting or answer prompt), after the history, so
+                with both on depth0 the system prompt never changes and the server can reuse its cache.
+                Early slots are outward-only: no persona line, and the arc's start state.
                 """
-                note = ""
+                notes = {"system": "", "depth0": ""}
                 if _persona_visible_at(slot_no) and persona_breakthrough_block:
-                    note += persona_breakthrough_block
+                    notes[persona_placement] += persona_breakthrough_block
                 slot_state = _emotional_slot_state(slot_no)
                 if slot_state:
-                    note += _emotional_state_injection(slot_state, arc_stages)
-                return note
+                    notes[emotion_placement] += _emotional_state_injection(slot_state, arc_stages)
+                return notes["system"], notes["depth0"]
 
             current_system_prompt_for_task = base_scene_prompt
 
@@ -976,8 +1050,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 else:
                     # The greeting IS slot 1 of the scene, so its note has the arc's start state but stays
                     # outward-behaviour-only on persona (breakthrough defaults to the next slot).
+                    greeting_system_note, greeting_turn_note = slot_notes(1)
                     greeting_text = generate_greeting(
-                        current_system_prompt_for_task, greeting_prompt_local,
+                        current_system_prompt_for_task + greeting_system_note, greeting_prompt_local,
                         opening_speaker(scene_character_names, include_names), task[4] if len(task) > 4 else "",
                         thread_id, api_config_for_this_task.get('sampler_settings', {}),
                         api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
@@ -987,7 +1062,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         user_speaking_phrases_local=current_user_speaking_phrases,
                         no_user_impersonation_local=no_user_impersonation_local,
                         context_template=greeting_context_local,
-                        dataset_values=task_dataset_values, turn_note=current_turn_note(1),
+                        dataset_values=task_dataset_values, turn_note=greeting_turn_note,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
@@ -1062,9 +1137,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                 assistant_answer = None # This will hold the assistant's response for the current turn
 
-                # This turn's answer prompt carries the slot's persona and emotional-state note;
-                # slot 1 = first assistant reply of the scene.
-                current_answer_prompt_for_turn = current_answer_prompt + current_turn_note(turn_num + 1 + greeting_offset)
+                # This turn's system prompt and answer prompt carry the slot's persona and
+                # emotional-state notes, each where its placement says; slot 1 = first assistant reply.
+                turn_system_note, turn_note = slot_notes(turn_num + 1 + greeting_offset)
+                current_system_prompt_for_turn = current_system_prompt_for_task + turn_system_note
+                current_answer_prompt_for_turn = current_answer_prompt + turn_note
 
                 # --- Assistant Answer Generation ---
                 if master_duplication_enabled_local:
@@ -1079,7 +1156,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             start_time_api_task = time.time()
                             
                             answer_result = generate_answer_with_retries(
-                                base_system_prompt=current_system_prompt_for_task,
+                                base_system_prompt=current_system_prompt_for_turn,
                                 conversation_history_for_llm=list(current_llm_conversation_context),
                                 answer_prompt_template=current_answer_prompt_for_turn,
                                 thread_id=thread_id, q=q,
@@ -1206,7 +1283,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     if app_state.stop_processing or app_state.pause_processing: break
                     start_time_api_task = time.time()
                     answer_result = generate_answer_with_retries(
-                        base_system_prompt=current_system_prompt_for_task,
+                        base_system_prompt=current_system_prompt_for_turn,
                         conversation_history_for_llm=list(current_llm_conversation_context),
                         answer_prompt_template=current_answer_prompt_for_turn,
                         thread_id=thread_id, q=q,
@@ -1307,8 +1384,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 cont_gen_api_conf = all_api_configs_local[0] if master_duplication_enabled_local else api_config_for_this_task
                 cont_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
 
+                # The continuation shares the answer's system prompt (its system note included, without
+                # a retry's fix), so on 'system' placement the prompt changes only when the note does.
                 user_continuation_reply = generate_user_continuation(
-                    system_prompt=current_system_prompt_for_task,
+                    system_prompt=current_system_prompt_for_turn,
                     conversation_history_for_llm=list(current_llm_conversation_context),
                     user_continuation_prompt_template=current_user_continuation_prompt,
                     dataset_values=task_dataset_values,

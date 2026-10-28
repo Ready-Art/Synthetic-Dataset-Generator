@@ -166,6 +166,10 @@ prompts:
     # 'breaks through' from this slot onward, mirroring how real character cards hide the inner self
     # until the scene has gone long enough. Set 1 to expose persona from the very first reply.
     persona_breakthrough_turn: 2
+    # Where the persona breakthrough block is sent: depth0 = end of the reply's last user message,
+    # after the history, so the system prompt never changes and the server reuses its prefix cache;
+    # system = end of that reply's system prompt (v10), which changes it once the persona appears.
+    persona_breakthrough_placement: depth0
     characters:
     - name: Melody
       age: '59'
@@ -224,6 +228,9 @@ prompts:
     # between stages. Arcs are expanded across the conversation's assistant turns, so the state
     # shifts over time rather than being one static injection (e.g. start calm, surface anger near
     # the end of the scene).
+    # placement: depth0 (end of the reply's last user message, keeps the prefix cache) or system (end
+    # of that reply's system prompt, v10); with system, every arc stage change recomputes the history.
+    placement: depth0
     states:
     - happy
     - sad

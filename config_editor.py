@@ -17,7 +17,8 @@ from tkinter import ttk, scrolledtext, messagebox
 import api_profiles
 from config_loader import sanitize_input
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
-                        DEFAULT_GREETING_PROMPT)
+                        DEFAULT_GREETING_PROMPT, DEFAULT_NOTE_PLACEMENT, NOTE_PLACEMENTS, note_placement,
+                        placement_cache_warning)
 from logging_config import log_message
 from api_handler import global_rate_limiter
 from datasets_panel import DatasetsPanel
@@ -585,6 +586,9 @@ class ConfigEditor(tk.Toplevel):
         pb_help.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
         wrap_label(pb_help, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
+        self.persona_placement_var_editor = tk.StringVar(value=DEFAULT_NOTE_PLACEMENT)
+        character_engine_row_idx = self._add_placement_combobox(
+            character_engine_row_idx, "Persona Breakthrough Placement:", self.persona_placement_var_editor)
 
         # Add checkbox to enable character engine
         self.enable_character_engine_var_editor = tk.BooleanVar()
@@ -617,6 +621,16 @@ class ConfigEditor(tk.Toplevel):
         emotional_states_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=1, undo=True)
         emotional_states_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
         setattr(self, 'emotional_states_text', emotional_states_text)
+        character_engine_row_idx += 1
+        self.emotion_placement_var_editor = tk.StringVar(value=DEFAULT_NOTE_PLACEMENT)
+        character_engine_row_idx = self._add_placement_combobox(
+            character_engine_row_idx, "Emotional State Placement:", self.emotion_placement_var_editor)
+        # Shown when a 'system' placement would change the system prompt between replies
+        self.placement_cache_warning_label = ttk.Label(
+            self.character_engine_content_frame, text="", foreground="orange", wraplength=1)
+        self.placement_cache_warning_label.grid(
+            row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        wrap_label(self.placement_cache_warning_label, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
 
         # Add checkbox to enable random names
@@ -1408,6 +1422,7 @@ class ConfigEditor(tk.Toplevel):
                 'setting_enabled': self.enable_setting_selection_var_editor.get(),
                 'num_characters': int(self.num_characters_var_editor.get()),
                 'persona_breakthrough_turn': int(self.persona_breakthrough_turn_var_editor.get()),
+                'persona_breakthrough_placement': self.persona_placement_var_editor.get(),
                 # Profile fields are saved as typed, like the opening-mode prompts: roleplay text needs its quotes and apostrophes
                 'characters': [
                     {
@@ -1437,7 +1452,8 @@ class ConfigEditor(tk.Toplevel):
                 'emotional_states': {
                     'enabled': self.enable_emotional_states_var_editor.get(),
                     # Saved as typed: an arc separates its stages with '->'
-                    'states': [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()]
+                    'states': [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()],
+                    'placement': self.emotion_placement_var_editor.get(),
                 },
                 'random_names': {
                     'enabled': self.enable_random_names_var_editor.get(),
@@ -1564,6 +1580,38 @@ class ConfigEditor(tk.Toplevel):
             if field_widget is not None and field_widget.winfo_exists():
                 field_widget.configure(state='normal' if is_enabled else 'disabled')
 
+    def _add_placement_combobox(self, row, label_text, variable):
+        """A 'depth0' / 'system' choice for one per-reply block; returns the next free row."""
+        frame = self.character_engine_content_frame
+        ttk.Label(frame, text=label_text).grid(row=row, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        row += 1
+        combo = ttk.Combobox(frame, textvariable=variable, values=list(NOTE_PLACEMENTS), state="readonly", width=10)
+        combo.grid(row=row, column=0, padx=SPACING, pady=0, sticky="w")
+        combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_placement_cache_warning())
+        row += 1
+        help_label = ttk.Label(
+            frame, wraplength=1,
+            text="(depth0 = end of the last user message, after the history: the server reuses its prefix cache; "
+                 "system = end of the system prompt, as in v10: the history is computed again whenever the block changes)")
+        help_label.grid(row=row, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(help_label, frame, padding=2 * SPACING)
+        return row + 1
+
+    def _refresh_placement_cache_warning(self):
+        """Show placement_cache_warning for the values in the editor (cleared when they do not parse)."""
+        try:
+            _share, warning = placement_cache_warning(
+                int(self.num_turns_var.get()), self.opening_mode_var_editor.get(),
+                int(self.persona_breakthrough_turn_var_editor.get()),
+                self.enable_character_engine_var_editor.get()
+                and any(data['persona'].get().strip() for data in self.character_entries),
+                self.enable_emotional_states_var_editor.get(),
+                [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()],
+                self.persona_placement_var_editor.get(), self.emotion_placement_var_editor.get())
+        except (ValueError, tk.TclError):
+            warning = ""
+        self.placement_cache_warning_label.config(text=warning)
+
     def _toggle_emotional_states_fields(self):
         """Enables/disables emotional states text field based on checkbox state."""
         is_enabled = self.enable_emotional_states_var_editor.get()
@@ -1580,6 +1628,7 @@ class ConfigEditor(tk.Toplevel):
                 field_widget.config(state='disabled')
 
         log_message(f"Emotional States fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
+        self._refresh_placement_cache_warning()
 
     def _toggle_random_names_fields(self):
         """Enables/disables random names text field based on checkbox state."""
@@ -1865,6 +1914,8 @@ class ConfigEditor(tk.Toplevel):
             except (TypeError, ValueError):
                 pb_load = 2
             self.persona_breakthrough_turn_var_editor.set(str(pb_load))
+            self.persona_placement_var_editor.set(
+                note_placement(character_conf.get('persona_breakthrough_placement')) or DEFAULT_NOTE_PLACEMENT)
 
             # Clear existing entries first
             for data in self.character_entries[:]:
@@ -1957,6 +2008,8 @@ class ConfigEditor(tk.Toplevel):
             self.enable_emotional_states_var_editor.set(emotional_states_conf.get('enabled', False))
             self.emotional_states_text.delete(1.0, tk.END)
             self.emotional_states_text.insert(tk.END, "\n".join(emotional_states_conf.get('states', [])))
+            self.emotion_placement_var_editor.set(
+                note_placement(emotional_states_conf.get('placement')) or DEFAULT_NOTE_PLACEMENT)
             self._toggle_emotional_states_fields()
 
             # NEW: Load random names
@@ -2121,6 +2174,7 @@ class ConfigEditor(tk.Toplevel):
             quality_max_chars = int(self.quality_max_chars_var.get() or 8000)
             assert quality_max_chars > 100, "Max chars for scoring must be > 100"
 
+            self._refresh_placement_cache_warning()
             if show_success_message:
                 self.status.config(text="Validation successful (basic checks).", foreground="green")
             log_message("ConfigEditor: Validation successful.", "DEBUG")
