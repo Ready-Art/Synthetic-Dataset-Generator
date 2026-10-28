@@ -838,12 +838,20 @@ def answer_notes():
 
 
 def scene_systems():
-    """The system prompt of every request that carries the scene (all but the first-line request)."""
-    return [body["messages"][0]["content"] for kind, body in ROUTER.requests if kind != "first_line"]
+    """The system prompt of every request that carries the scene (all but the first-line request), with the
+    generated question's user-side line removed."""
+    return [body["messages"][0]["content"].removesuffix(g.QUESTION_USER_SIDE) if kind == "question"
+            else body["messages"][0]["content"] for kind, body in ROUTER.requests if kind != "first_line"]
+
+
+def question_has_user_side():
+    """Every generated-question request's system prompt ends with the user-side line."""
+    return all(body["messages"][0]["content"].endswith(g.QUESTION_USER_SIDE) for body in ROUTER.bodies("question"))
 
 
 def one_plain_system():
-    """The task sent one system prompt to every scene request, without persona or emotional state."""
+    """The task sent one system prompt to every scene request, without persona or emotional state; the generated
+    question adds only the user-side line."""
     systems = set(scene_systems())
     return (len(systems) == 1 and not any(marker in s for s in systems
                                           for marker in ("INNER PERSONA", "EMOTIONAL STATE", "Misses the open sea.")))
@@ -871,6 +879,8 @@ def test_arc_and_persona_requests():
               and all("Misses the open sea." in n for n in notes[1:]))
         check(f"arc {entry!r}: question, answers and continuations share one system prompt without the note",
               ROUTER.kinds().count("continuation") == 2 and one_plain_system())
+        check(f"arc {entry!r}: the question's system prompt ends with the user-side line",
+              ROUTER.kinds().count("question") == 1 and question_has_user_side())
         check(f"arc {entry!r}: continuation requests carry no note",
               not any("EMOTIONAL STATE" in json.dumps(b) or "Misses the open sea." in json.dumps(b)
                       for b in ROUTER.bodies("continuation")))
@@ -886,6 +896,13 @@ def test_arc_and_persona_requests():
               len(notes) == 3 and all(names_stage(n, st) for n, st in zip(notes, ["calm", "wary", "tense"]))
               and ["Misses the open sea." in n for n in notes] == [False, True, True])
         check(f"{label}: every request shares one system prompt without the note", one_plain_system())
+        check(f"{label}: a generated question's system prompt ends with the user-side line", question_has_user_side())
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=1, enable_character_engine_local=False)
+    check("character engine off: the generated question's system prompt has no user-side line",
+          ROUTER.kinds().count("question") == 1
+          and not any(g.QUESTION_USER_SIDE in b["messages"][0]["content"] for b in ROUTER.bodies("question")))
 
     reset_state()
     ROUTER.script["answer"] = ["I cannot help with that.", Router.DEFAULTS["answer"][0]]

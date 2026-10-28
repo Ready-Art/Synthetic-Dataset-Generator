@@ -353,6 +353,13 @@ def conversation_is_complete(conversation_history, num_turns, has_greeting=False
 
 ARC_SEPARATORS = ("\u2192", "->")  # "neutral -> anxious" is an emotional-arc entry
 
+# Appended to the scene prompt for the generated first user message when characters are profiled, so the model
+# writes as the user rather than as a profiled character.
+QUESTION_USER_SIDE = (
+    "\n\nYou write only the user's side of this roleplay. The user is not one of the characters above: the user "
+    "is someone who meets them in their world."
+)
+
 
 def _split_emotional_arc_entry(entry):
     """Split one configured state entry into its arc stages.
@@ -1022,8 +1029,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 q_gen_api_conf = all_api_configs_local[0] if master_duplication_enabled_local else api_config_for_this_task
                 q_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
 
+                question_system_prompt = current_system_prompt_for_task + (QUESTION_USER_SIDE if character_injection else "")
                 initial_user_question = generate_question(
-                    current_system_prompt_for_task, current_question_prompt,
+                    question_system_prompt, current_question_prompt,
                     subject_content_for_task, context_content_for_task,
                     thread_id, q_gen_api_conf.get('sampler_settings', {}),
                     q_gen_api_conf.get('url'), q_gen_api_conf.get('model'), q_gen_api_conf.get('key'),
