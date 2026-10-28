@@ -536,7 +536,7 @@ prompts:
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
 - **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
-- **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept.
+- **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept. With random names on it is not used, since it names the profile's own character; the greeting is generated under the random name instead.
 - **`random_names`:** Optional feature that overrides character names with randomly selected names from a configured list. When `prompts.random_names.enabled` is true, each character's name in the prompt is replaced with a random name from `prompts.random_names.names[]`. Names are selected independently for each character (not in order), allowing for varied name assignments across conversations. This is useful for generating diverse datasets without manually creating many character profiles.
 
 **Template Variables** (each is optional; the shipped question prompt uses only `{context}`):

@@ -171,17 +171,17 @@ def enqueue_opening_tasks(count):
 OPENING_PLACEHOLDER = "[Start a new chat]"  # SillyTavern's Strict-mode placeholder (promptPlaceholder)
 
 
-def opening_speaker(opening_chars, include_names=True):
+def opening_speaker(names, include_names=True):
     """Who the greeting is written as, for the greeting prompt's {speaker}.
 
+    names are the characters' names as the scene prompt gives them (random names when those are on).
     One character speaks for themself; with several, a narrator brings each into the scene, since no
     one character can set the scene for the others. With no profile in the prompt, the greeting is
     written as the character the system prompt describes.
     """
-    if not opening_chars:
+    if not names:
         return "the character you are playing"
-    names = [c.get('name', '').strip() for c in opening_chars]
-    if len(opening_chars) == 1:
+    if len(names) == 1:
         return names[0] if include_names else "the character described above"
     if include_names:
         return f"the narrator, bringing {', '.join(names[:-1])} and {names[-1]} into the scene"
@@ -639,7 +639,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             character_injection = ""
             opening_chars = []  # Profiles actually added to the scene prompt (opening mode's greeting speaker)
-            meta_character_names = []  # Names given to those profiles (random names when on), even when the prompt omits names
+            scene_character_names = []  # Names given to those profiles (random names when on), even when the prompt omits names
             meta_setting = ""  # First non-empty setting the scene prompt carries; "" when setting selection is off
             char_personas = []  # (profile number, inner persona) of selected characters that have one (breakthrough block)
             if enable_character_engine_local and character_list:
@@ -748,7 +748,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         )
                         character_profiles.append(character_profile)
                         opening_chars.append(selected_char)
-                        meta_character_names.append(random_name)
+                        scene_character_names.append(random_name)
                         if enable_setting_selection_local and not meta_setting and random_setting:
                             meta_setting = random_setting
                         if random_persona and random_persona.strip():
@@ -870,7 +870,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # (start_processing refuses opening mode with duplication mode or the questions file)
             if opening_mode_local:
                 include_names = global_config.get('prompts.character.include_names_in_prompt', True)
-                profile_greeting = (opening_chars[0].get('greeting') or '').strip() if len(opening_chars) == 1 else ''
+                # A profile's greeting names the profile's own character, so it is not used under a random name
+                use_profile_greeting = len(opening_chars) == 1 and not (enable_random_names_local and random_names_list_local)
+                profile_greeting = (opening_chars[0].get('greeting') or '').strip() if use_profile_greeting else ''
                 if profile_greeting:
                     greeting_text = profile_greeting # Used as-is: no request, no checks, no chunk
                 else:
@@ -878,7 +880,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     # outward-behaviour-only on persona (breakthrough defaults to the next slot).
                     greeting_text = generate_greeting(
                         current_task_scene_prompt(1), greeting_prompt_local,
-                        opening_speaker(opening_chars, include_names), task[4] if len(task) > 4 else "",
+                        opening_speaker(scene_character_names, include_names), task[4] if len(task) > 4 else "",
                         thread_id, api_config_for_this_task.get('sampler_settings', {}),
                         api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
                         api_config_for_this_task.get('key'), api_slot_idx_for_this_task,
@@ -1086,7 +1088,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     current_output_format, task_id,
                                                     api_slot_idx_for_output_file=original_slot_idx_for_file, # Write to specific API's file
                                                     is_duplication_turn=True, turn_number_for_duplication=turn_num + 1, # Mark as duplication turn
-                                                    character_names=meta_character_names,
+                                                    character_names=scene_character_names,
                                                     emotional_state=current_emotional_state_label,
                                                     setting=meta_setting,
                                                     opening_mode=opening_mode_local,
@@ -1279,7 +1281,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_ensure_space_after_line_break, current_remove_markdown,
                                         current_output_format, task_id, api_slot_idx_for_output_file=None,
                                         mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
-                                        character_names=meta_character_names,
+                                        character_names=scene_character_names,
                                         emotional_state=current_emotional_state_label,
                                         setting=meta_setting,
                                         opening_mode=opening_mode_local,

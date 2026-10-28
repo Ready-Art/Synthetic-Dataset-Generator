@@ -736,6 +736,17 @@ def test_opening_speakers():
     run_opening(character_list=with_greeting, num_characters_local=2)
     check("several characters: a profile greeting is not used", ROUTER.kinds()[0] == "greeting")
 
+    reset_state()
+    run_opening(enable_random_names_local=True, random_names_list_local=["Mara"])
+    check("random names on: the greeting speaks as the random name the profile block uses",
+          "Open the scene as Mara." in greeting_text()
+          and "Name: Mara" in ROUTER.bodies("greeting")[0]["messages"][0]["content"])
+    reset_state()
+    run_opening(character_list=with_greeting, enable_random_names_local=True, random_names_list_local=["Mara"])
+    check("random names on: a profile greeting, which names the profile's own character, is not used",
+          ROUTER.kinds()[0] == "greeting" and "Open the scene as Mara." in greeting_text()
+          and profile_greeting not in json.dumps([ROUTER.requests, read_rows()]))
+
 
 def test_opening_quality_scoring():
     reset_state()
