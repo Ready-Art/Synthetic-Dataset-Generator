@@ -28,6 +28,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Random settings pool → `prompts.random_settings.enabled`, `prompts.random_settings.settings[]` (analogous to `random_names`). When `setting_enabled` is true and a selected character's own `setting` is empty, a setting is sampled from this pool (when enabled) instead of the hardcoded default. For a multi-character ensemble the per-character settings are unified to ONE shared setting picked from the ensemble, so the whole scene happens in a single location
 - Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
 - Output metadata → `generation.include_metadata` (flat, schema-stable provenance block per output.jsonl record; trainer-safe; never modifies `conversations[]`; false = legacy two-field records)
+- Datasets → `datasets.sources[]` (default `{sources: []}`) — names-only source definitions (kind, location, config/split/revision selectors, imported column names, aliases, visibility). Dataset *records* and credentials are never stored here; see `docs/dataset-bindings.md`
 
 ### `config/api_profiles.yml` [2]
 **Purpose:** API compatibility profiles for request payload filtering per endpoint
@@ -77,11 +78,12 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ### `config_editor.py` [7]
 **Purpose:** Configuration Editor UI window
-**Key:** `ConfigEditor` class, `save_config_handler()`, `load_config_handler()`
+**Key:** `ConfigEditor` class, `save_config_handler()`, `load_config_handler()`, `DatasetsPanel` tab
 **Edit for:**
 - Add new config field → Add UI widget + bind to `save_config_handler()` + `load_config_handler()`
 - New tab → Add `ttk.Frame` + `notebook.add()` in `__init__()`
 - Validation → `validate_config_handler()`
+- Datasets tab → `DatasetsPanel(self.notebook)` added in `__init__()` (~line 959); config gathered in `save_config_handler()` (`config_data['datasets'] = self.datasets_panel.get_config()`), loaded in `load_config_handler()` (`self.datasets_panel.load_config(...)`), validated in `validate_config_handler()`; `DatasetSettingsError` surfaces on the status bar
 
 ### `config_loader.py` [8]
 **Purpose:** Load/save config.yml and profiles
@@ -113,6 +115,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Main UI, Tkinter app, worker thread management, queue setup
 **Key:** `start_processing()`, `worker()` launch, UI widgets, `ConfigEditor`
 **Edit for:**
+- Queue dataset wiring → `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` at processing start (~line 1216) attaches an in-memory `DatasetTaskAttachments` service to the run's task queue; attachments die with the queue and are NOT persisted across app restarts
 - Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()` (~line 1480). **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `test_worker_launch.py` fails on the mismatch
 - New UI tab → Add to `dashboard_notebook` + populate widgets
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
@@ -132,6 +135,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Character prompt injection → character profile block built in `worker()` (personality/traits are conditionally injected lines in the profile; `persona` = inner personality is deliberately EXCLUDED from the profile and re-injected later as an INNER PERSONA BREAKTHROUGH block once the scene reaches the configured slot). Setting resolution → a `settings_for_selected[]` array is computed per task before the profile loop: each selected character keeps its own non-empty `setting`, else samples from the `random_settings` pool (if enabled) or the `A standard indoor environment.` default; when >1 character is selected the ensemble is unified to one shared setting picked from the distinct candidate settings (order-preserving dedupe), which becomes both the injected `Setting:` line for every character and `meta_setting`
 - Persona/emotional-state split → `_split_emotional_arc_entry()`, `_expand_emotional_arc()`, `_emotional_state_injection()`, `_persona_block_for_characters()` (all above `worker()`). The worker builds a constant `base_scene_prompt` (system + lore + persona-free profile) then recomposes `current_task_scene_prompt(slot_no)` at the top of each turn: persona surfaces from `persona_breakthrough_turn` onward, and emotional states may be a flat name or an arc (`'neutral -> anxious'`) expanded across the conversation's assistant turns. Opening-mode greeting = slot 1, so conversation turn N lives at slot N+1.
 - Output metadata → `_build_record_metadata()` (17 flat keys, same shape on every record, null-filled; `_safe_float()` keeps numeric types stable) + `_score_and_store_quality()` (quality scoring deduped by task_id; called BEFORE both write paths so metadata can carry scores)
+- Dataset binding → `bind_task_datasets(queue, task, ...)` (per task, ~line 653) freezes one row per enabled source into an immutable `task_dataset_values` mapping for the life of the task; `validate_task_templates()` pre-checks all authored templates up front. Authored fields (question/answer/continuation prompts, greeting context, first-line, character long fields via `dataset_authored_inputs`) are rendered with `render_task_inputs()` / `render_with_native_placeholders()`; prompt-fillers (`fill_question_prompt()`, continuation, `fill_greeting_prompt()`, `fill_first_line_prompt()`) take a `dataset_values=None` kwarg — `None` skips rendering entirely, so generation without datasets behaves byte-identically to the pre-dataset engine
 
 ### `logging_config.py` [13]
 **Purpose:** Shared logging utility
@@ -189,6 +193,107 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Run:** `python -B -m unittest test_worker_launch`
 **Edit for:** Extend per-kwarg source assertions when new params are moved into / added to the `kwargs=` dict at the launch site
 
+### `dataset_sources.py` [22]
+**Purpose:** Dataset readers for the optional dataset-binding foundation (CSV/TSV/JSON/JSONL stdlib; Parquet via optional `pyarrow`; Hugging Face Hub / saved-`DatasetDict` via optional `datasets` 4.x). No Tk/app/config imports; importing makes no network requests
+**Key:** `SourceSpec`, `DatasetSchema`, `DatasetRow`, `DatasetSource` (ABC), `LocalFileSource`, `HuggingFaceSource`, `SavedDatasetSource`, `open_source()`, `DatasetDependencyError`
+**Edit for:**
+- Add new source kind → New `DatasetSource` subclass + register in `open_source()` + `dataset_settings._SELECTOR_DEFAULTS` + `datasets_panel._KINDS`
+- Schema discovery → `schema()` returns column names + opaque fingerprint, never record values (JSON reads records internally to find keys, discards them)
+- Optional deps → Guarded by `_optional_module()` / `_datasets_backend()`; absent dependency → `DatasetDependencyError`
+
+### `dataset_settings.py` [23]
+**Purpose:** Names-only settings for the `datasets` config subtree (source selectors, cached column names, aliases, visibility). No GUI, file, or network I/O
+**Key:** `normalize_config()`, `validate_config()`, `source_selector()`, `source_spec()`, `apply_schema()`, `visible_column_names()`, `with_visible_columns()`, `DatasetSettingsError`
+**Edit for:**
+- Add new source selector field → `_SELECTOR_DEFAULTS` + `source_selector()` + `validate_config()`
+- Readiness rule → An *enabled* source with aliases must be complete; disabled/alias-free sources may stay drafts. Hiding a column is presentation-only, never changes alias mapping
+
+### `dataset_bindings.py` [24]
+**Purpose:** Freeze dataset values for one logical generation task, independently of workers (no GUI/worker/app-state imports). One `DatasetBindingManager` per run
+**Key:** `DatasetBindingManager` (`bind(task_id)`, `snapshot()`), `TaskBinding` (`to_dict()`/`from_dict()` JSON snapshots), `SourceBinding`, `SourceProvenance`, `cell_to_text()`, `DatasetExhaustedError`
+**Edit for:**
+- Row advancement → Each source advances sequentially once per newly bound task; rows stage until EVERY source succeeds — exhaustion or invalid data never cycles, skips, or partially publishes
+- Lock ordering → Allocation lock released before the caller renders prompts or calls model APIs
+- Snapshot format → Serializes actual values (foundation for later save/resume; does not restore cursors/pending jobs/conversation progress)
+
+### `dataset_templates.py` [25]
+**Purpose:** Dataset placeholders (`{{ds:alias}}`) and explicit boundaries for authored-prompt rendering. No app/GUI/network/RNG imports
+**Key:** `render_template()` (single-pass), `render_with_native_placeholders()` (preserves the generator's ordered native `str.replace` cascade), `validate_alias()`, `dataset_placeholders()`, `DatasetTemplateError`
+**Edit for:**
+- Add placeholder syntax → `_TOKEN_START` regex + `render_template()`; keep single-pass guarantee (inserted values are never re-interpreted)
+- Reserved namespace → Whitespace-tainted `{{ ds:... }}` variants raise instead of silently passing to the model; the compatibility renderer uses literal native replacements that can match `{context}` inside `{{context}}`
+
+### `dataset_tasks.py` [26]
+**Purpose:** Attach optional dataset values to the generator's existing task identities. One attachment service per existing queue; original task tuples/IDs/retry rules untouched; in-memory only
+**Key:** `configure_queue_datasets()`, `bind_task_datasets()`, `render_task_inputs()`, `validate_task_templates()`, `DatasetTaskAttachments`
+**Edit for:**
+- Queue wiring → `configure_queue_datasets()` called from `generate.py` at processing start; readers opened lazily by the first worker that needs a binding; `_OwnedReader` closes each reader once at queue lifetime end (an old worker finishing its queue is never cut off by a replacement run)
+- Task metadata entry → A *reference* to the immutable binding, not a mutable global "current row"
+
+### `datasets_panel.py` [27]
+**Purpose:** Names-only dataset configuration panel (the Configuration Editor **Datasets** tab), independent of generation workers
+**Key:** `DatasetsPanel`, `load_config()` / `get_config()` / `validate()`, `_metadata_worker()` (max 2 daemon threads)
+**Edit for:**
+- Add source kind UI → `_KINDS` tuple + kind/label maps; Hub sources expose config/split/revision, `hf_disk` exposes its split selector
+- Metadata inspection → Runs in background threads; Tk widgets touched only by the UI thread; column import calls the schema interface and never previews cell values
+
+### `dataset_column_menu.py` [28]
+**Purpose:** Bounded, searchable column-visibility picker for the Datasets panel — one Treeview shows all column names regardless of count
+**Key:** `ColumnVisibilityMenu` (`set_columns()`, `on_change(None | tuple_of_names)`) — `None` = all columns (incl. imported later); explicit empty = none
+**Edit for:** Selection semantics in the docstring: `set_columns` never fires `on_change`; canonicalization to `None` when every current column is selected; no application-wide event bindings
+
+### `test_dataset_sources.py` [29]
+**Purpose:** Unit tests for `dataset_sources.py` (local CSV/TSV/JSON/JSONL readers, schema discovery, fingerprints, error paths)
+**Edit for:** Add reader/format cases with temporary fixture files
+
+### `test_dataset_settings.py` [30]
+**Purpose:** Unit tests for `dataset_settings.py` normalization/validation (selectors, aliases, visibility, readiness rules)
+**Edit for:** Add setting-shape and validation-failure cases
+
+### `test_dataset_bindings.py` [31]
+**Purpose:** Unit tests for `dataset_bindings.py` (sequential allocation, repeat-bind idempotency, exhaustion, snapshot round trip, thread safety)
+**Edit for:** Add binding-lifecycle cases (use `ThreadPoolExecutor` for concurrency)
+
+### `test_dataset_templates.py` [32]
+**Purpose:** Unit tests for `dataset_templates.py` rendering (single-pass, native-placeholder compatibility, alias validation, reserved-namespace typos)
+**Edit for:** Add render/template edge cases
+
+### `test_dataset_tasks.py` [33]
+**Purpose:** Unit tests for `dataset_tasks.py` (queue attachment lifecycle, lazy reader open/close, same-run reuse, GC behavior of weak references)
+**Edit for:** Add task-attachment lifecycle cases
+
+### `test_dataset_backends.py` [34]
+**Purpose:** Backend-coverage tests for optional readers (Parquet via `pyarrow`, Hub / saved-`DatasetDict` via `datasets` 4.x) incl. resource lifecycle on rename/delete; never touches the network or a model API
+**Edit for:** Extend optional-backend cases; hard-dep backends (csv/json/jsonl) always run, optional ones skip when the package is missing
+
+### `test_dataset_column_menu.py` [35]
+**Purpose:** Unit tests for `dataset_column_menu.py` (selection semantics, large-column boundedness, grab/focus handling); skips cleanly without a display
+**Edit for:** Add picker behavior cases (run on a display for zero skips)
+
+### `test_datasets_panel.py` [36]
+**Purpose:** Unit tests for `datasets_panel.py` (add/edit/import/alias/save-load flows, background metadata workers); synthetic column names only, optional screenshots via `READYART_GUI_SCREENSHOTS`
+**Edit for:** Add panel-flow cases
+
+### `test_dataset_pipeline.py` [37]
+**Purpose:** Pipeline-level simulation of dataset integration into worker-shaped request stages (question/answer/continuation/cleanup); all model replies are fixtures, expected request bodies assembled independently of the renderer
+**Edit for:** Add stage-level pipeline scenarios (scheduler/transport/retry/cache are small simulations, not production impls)
+
+### `test_dataset_compatibility.py` [38]
+**Purpose:** Bounded equivalence check: the real worker/request builders/fixers/state saver/output writer run twice — baseline with explicitly populated authored inputs vs candidate fed the same values through real CSV/JSONL sources (fake HTTP, no cache hits/waits/display)
+**Edit for:** Extend side-by-side scenarios; this proves byte-level compatibility, not exhaustive equivalence
+
+### `docs/dataset-bindings.md` [39]
+**Purpose:** User/design doc for the Datasets tab (workflow, placeholders, what is/isn't persisted; notes lineage from upstream `5993702`)
+**Edit for:** Update when Datasets UX or persistence semantics change
+
+### `requirements-datasets.txt` [40]
+**Purpose:** Optional extras for Hugging Face Hub, local Parquet, and saved-HF dataset support (includes base `requirements.txt` + `datasets==4.4.2`; requires Python 3.9+). Base `requirements.txt` only pins `requests>=2.32.4,<3`
+**Edit for:** Bump optional backend pins here, never in `requirements.txt`
+
+### `tools/check_dataset_hub.py` [41]
+**Purpose:** Opt-in live Hub reader check — prints schema/provenance and verifies live-row binding, same-job reuse, snapshot round trip, and literal rendering; never prints dataset cells, calls a model, or mutates app config
+**Usage:** `python -B tools/check_dataset_hub.py --repository owner/dataset --split train --column text [--config X] [--revision Y] [--rows N]` (install `requirements-datasets.txt` first; unit tests never invoke this)
+
 ## Common Tasks Quick Reference
 
 | Task | Files to Edit |
@@ -213,6 +318,11 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add/modify persona breakthrough or emotional arc | `config/config.yml` (`prompts.character.persona_breakthrough_turn`, `prompts.emotional_states.states[]` — a state may be `'->'`-joined stages), `config_editor.py` (spinbox under Character Engine + states label), `generate.py` (load + pass to worker kwargs), `generation.py` (`_split_emotional_arc_entry`/`_expand_emotional_arc`/`_emotional_state_injection`/`_persona_block_for_characters` + per-turn `current_task_scene_prompt()` in `worker()`) |
 | Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
 | Add/modify output metadata field | `generation.py` (`_build_record_metadata()` schema + `_safe_float()`), keep same-keys/same-types/null-filled invariant; config flag `generation.include_metadata` |
+| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list) |
+| Add dataset column→alias mapping | `config_editor.py` (Datasets tab) → `datasets_panel.py` (Apply/Copy placeholder) → `dataset_settings.py` (validation) — placeholders `{{ds:alias}}` are then usable in any authored prompt field |
+| Modify dataset placeholder rendering | `dataset_templates.py` (`render_template()` / `render_with_native_placeholders()` / `validate_alias()`); worker-side call sites in `generation.py` (`render_task_inputs()`) |
+| Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |
+| Run dataset tests | `python -m unittest test_dataset_sources test_dataset_settings test_dataset_bindings test_dataset_templates test_dataset_tasks test_dataset_backends test_dataset_column_menu test_datasets_panel test_dataset_pipeline test_dataset_compatibility` (live Hub check: `tools/check_dataset_hub.py`, opt-in only) |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
 
 ## Key State Variables (`app_state.py`)
@@ -257,6 +367,11 @@ if lock_acquired:
 - Environment: API keys via `os.getenv()` or inline in config
 
 ## Tools
+
+### `tools/check_dataset_hub.py`
+**Purpose:** Opt-in live Hugging Face Hub reader verification (schema/provenance printout + binding invariants); no cells, no model, no config mutation
+**Usage:** `python -B tools/check_dataset_hub.py --repository owner/dataset --split train --column text --rows 2`
+**Flags:** `--config`, `--revision`, `--rows N` (≥1), repeatable distinct `--column`; exits 1 on any invariant failure
 
 ### `tools/check_gui_layout.py`
 **Purpose:** Isolated GUI layout testing without running generation or saving production state
