@@ -26,6 +26,29 @@ import generation as g  # noqa: E402
 FAILURES = []
 
 
+class _Var:
+    """Stands in for a Tk variable or text widget: get() returns the stored value whatever its arguments."""
+    def __init__(self, value="0"):
+        self.value = value
+
+    def get(self, *args):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class _EditorStub:
+    """Stands in for a ConfigEditor: attributes not given return a _Var holding "0"."""
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+
+    def __getattr__(self, name):
+        var = _Var()
+        setattr(self, name, var)
+        return var
+
+
 def check(name, cond):
     if cond:
         print(f"  ok   {name}")
@@ -85,6 +108,33 @@ def main():
     check("multi-char labels CHARACTER 1", "CHARACTER 1's inner persona" in two)
     check("multi-char labels CHARACTER 2", "CHARACTER 2's inner persona" in two)
     check("both persona texts present", "inner A" in two and "inner B" in two)
+
+    print("Config editor save (ConfigEditor._get_current_editor_config_data):")
+    import config_editor
+    import yaml
+    typed = "She's \"Mel\" <the clockmaker> \\ can't"
+    fields = ['name', 'age', 'gender', 'race', 'job', 'eye_color', 'hair', 'hair_color', 'clothing', 'jewelry',
+              'appearance', 'traits', 'backstory', 'persona', 'personality', 'setting', 'class', 'greeting']
+    editor = _EditorStub(
+        character_entries=[{k: _Var(typed) for k in fields}],
+        emotional_states_text=_Var("calm -> wary -> tense\ncan't settle\n"),
+        enable_setting_selection_var_editor=_Var(True),
+        _sync_character_text_values=lambda: None,
+        on_gender_change_editor_handler=lambda save_current=True: None,
+        _profile_label_to_name=lambda label: label,
+        global_config=_EditorStub(config={}),
+    )
+    saved = config_editor.ConfigEditor._get_current_editor_config_data(editor)['prompts']
+    states = saved['emotional_states']['states']
+    check("arc saved as typed", states[0] == "calm -> wary -> tense")
+    check("saved arc still splits into stages", split(states[0]) == ("calm", "wary", "tense"))
+    check("state with an apostrophe saved as typed", states[1] == "can't settle")
+    profile = saved['character']['characters'][0]
+    check("every profile field saved as typed", all(profile[k] == typed for k in fields))
+    # Same dump arguments as ConfigEditor.save_config_handler
+    reloaded = yaml.safe_load(yaml.dump(saved, sort_keys=False, indent=2, default_flow_style=False))
+    check("typed text survives the YAML file",
+          reloaded['emotional_states']['states'] == states and reloaded['character']['characters'][0] == profile)
 
     print()
     if FAILURES:
