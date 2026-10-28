@@ -1078,15 +1078,16 @@ def start_processing():
         old_jewelry = character_config.get('jewelry', [])
         old_appearance = character_config.get('appearance', [])
         old_backstory = character_config.get('backstory', [])
+        old_persona = character_config.get('persona', [])
         old_personality = character_config.get('personality', [])
         old_setting = character_config.get('setting', [])
         old_class = character_config.get('class', [])
 
-        if any([old_names, old_races, old_jobs, old_clothing, old_jewelry, old_appearance, old_backstory, old_personality, old_setting, old_class, old_genders]):
+        if any([old_names, old_races, old_jobs, old_clothing, old_jewelry, old_appearance, old_backstory, old_persona, old_personality, old_setting, old_class, old_genders]):
             max_len = max(
                 len(old_names), len(old_races), len(old_jobs), len(old_clothing),
                 len(old_jewelry), len(old_appearance), len(old_backstory),
-                len(old_personality), len(old_setting), len(old_class), len(old_genders)
+                len(old_persona), len(old_personality), len(old_setting), len(old_class), len(old_genders)
             )
             for i in range(max_len):
                 character_list.append({
@@ -1099,6 +1100,7 @@ def start_processing():
                     'jewelry': old_jewelry[i] if i < len(old_jewelry) else '',
                     'appearance': old_appearance[i] if i < len(old_appearance) else '',
                     'backstory': old_backstory[i] if i < len(old_backstory) else '',
+                    'persona': old_persona[i] if i < len(old_persona) else '',
                     'personality': old_personality[i] if i < len(old_personality) else '',
                     'setting': old_setting[i] if i < len(old_setting) else '',
                     'class': old_class[i] if i < len(old_class) else ''

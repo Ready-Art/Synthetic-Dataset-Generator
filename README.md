@@ -463,7 +463,8 @@ prompts:
         jewelry: "Silver locket with faded photograph, simple copper wedding band"
         appearance: "Broad-shouldered and sturdy with a soft midsection, weathered olive skin, steel-gray and dark brown hair in choppy jaw-length bob"
         backstory: "Estranged from religious parents, lives alone above the shop, drives a 2004 Subaru Outback, goal is to restore an 18th-century marine chronometer"
-        personality: "Fundamentally stoic and introverted, copes with stress by disassembling cheap mechanical watches, curt with strangers but nurturing with friends"
+        persona: "Deep down she is a tender idealist who believes anything truly broken can be made to run again - her sarcasm is armor over loneliness, a fear of vulnerability, and a private grief she would never let anyone see"
+        personality: "Stoic and introverted on the surface; curt and defensively sarcastic with strangers but warm and fiercely loyal with close friends; copes with stress by disassembling cheap mechanical watches into component parts sorted into tiny glass jars"
         traits: "Meticulous, cynical, resilient, stubborn; taps thumb against index finger rhythmically when thinking, refuses hot beverages without lids"
         setting: "Cluttered repair counter in dimly lit pawn shop, 6:45 PM Tuesday, heavy rain lashing windows, smells of brass polish and damp wool"
         class: ""
@@ -476,6 +477,7 @@ prompts:
         clothing: "Business suit"
         appearance: "Short with glasses"
         backstory: "Traveled the world"
+        persona: "Beneath the calm exterior he is restless and afraid of being forgotten, and his kindness is a way to earn one more chance at belonging"
         personality: "Patient and wise"
         traits: "Diplomatic, well-read"
         setting: "A bustling marketplace"
@@ -504,11 +506,12 @@ prompts:
 
 **Character Configuration Notes:**
 
-- **New format (recommended):** Use the `characters` list with dicts containing `name`, `age`, `gender`, `race`, `job`, `clothing`, `jewelry`, `appearance`, `backstory`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
+- **New format (recommended):** Use the `characters` list with dicts containing `name`, `age`, `gender`, `race`, `job`, `clothing`, `jewelry`, `appearance`, `backstory`, `persona`, `personality`, `traits`, `setting`, and `class` fields. This allows full control over each character's attributes.
 - **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
 - **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
 - **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10, max: 100).
-- **`personality`:** Optional field that adds a personality description to the character's system prompt injection.
+- **`persona`:** Optional field describing the character's **inner personality** — the private self underneath the surface: hidden fears, motivations, private grief, contradictions, and what happens under real pressure. It's injected into the system prompt as `Persona (inner personality):` so the LLM can portray an authentic interior life, making characters feel more lifelike.
+- **`personality`:** Optional field describing the character's **outward behavior** — the personality people actually observe: how they speak, act, cope, and treat others. Injected as `Personality (outward behavior):`. Keep it distinct from `persona` (the inner self); together the two give the LLM both the mask and the face beneath it.
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
 - **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
@@ -1104,7 +1107,7 @@ Persist in generation_state.json
 
 ### Multi-Character Conversation Mode
 
-When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, jewelry, appearance, backstory, personality, traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
+When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, jewelry, appearance, backstory, persona (inner personality), personality (outward behavior), traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
 
 Characters with empty or whitespace-only names are automatically skipped. Ages outside the 18–60 range are auto-corrected. Character selection uses round-robin distribution across tasks for even coverage.
 
@@ -1293,6 +1296,7 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Reasoning models outputting thinking blocks** | Set `enable_thinking` to `"disable"` in samplers config to add `chat_template_kwargs` to API payload |
 | **Characters not getting classes** | Ensure `class_enabled: true` in the character config and that `class` field is populated in character entries |
 | **Characters not getting settings** | Ensure `setting_enabled: true` in the character config and that `setting` field is populated in character entries |
+| **Characters feeling flat or one-note** | Fill both the `persona` (inner personality) and `personality` (outward behavior) fields; `persona` drives the hidden interior life while `personality` drives observed behavior |
 | **Characters not getting personalities** | Add the `personality` field to character entries in the config |
 | **Characters not getting traits** | Add the `traits` field to character entries in the config (e.g., `"quick-witted, detail-oriented"`) |
 | **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
@@ -1471,12 +1475,14 @@ Clothing: Heavyweight flannel button-down, faded rust color...
 Jewelry: Silver locket with faded photograph, simple copper wedding band
 Appearance: Broad-shouldered and sturdy with a soft midsection...
 Backstory: Estranged from religious parents, lives alone above the shop...
-Personality: Fundamentally stoic and introverted, copes with stress...
+Persona (inner personality): Deep down she is a tender idealist... her sarcasm is armor over loneliness...
+Personality (outward behavior): Stoic and introverted on the surface; curt with strangers, loyal with friends...
+Traits: Meticulous, cynical, resilient, stubborn...
 Setting: Cluttered repair counter in dimly lit pawn shop...
 --- END CHARACTER 1 PROFILE ---
 ```
 
-The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true. The `Class` field is only included when `class_enabled` is true. The `Personality` field is only included when it's not empty or "Unknown".
+The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true. The `Class` field is only included when `class_enabled` is true. The `Persona` field is only included when it's non-empty (it describes the inner personality), and the `Personality` field is only included when it's not empty or "Unknown" (it describes outward behavior).
 
 ### Emotional State Injection
 

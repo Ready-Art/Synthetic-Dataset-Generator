@@ -587,6 +587,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         random_jewelry = selected_char.get('jewelry', 'Unknown')
                         random_appearance = selected_char.get('appearance', 'Unknown')
                         random_backstory = selected_char.get('backstory', 'Unknown')
+                        random_persona = selected_char.get('persona', '')
                         random_personality = selected_char.get('personality', 'Unknown')
                         random_traits = selected_char.get('traits', '')
                         random_setting = selected_char.get('setting', 'Unknown') if enable_setting_selection_local else 'A standard indoor environment.'
@@ -603,7 +604,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         # Build Injections
                         class_injection = f"\nClass: {random_class}\n" if enable_class_selection_local and random_class else ""
                         setting_injection = f"Setting: {random_setting}\n" if enable_setting_selection_local else ""
-                        personality_injection = f"\nPersonality: {random_personality}\n" if random_personality and random_personality != 'Unknown' else ""
+                        persona_injection = f"\nPersona (inner personality): {random_persona}\n" if random_persona and random_persona.strip() else ""
+                        personality_injection = f"\nPersonality (outward behavior): {random_personality}\n" if random_personality and random_personality != 'Unknown' else ""
                         traits_injection = f"Traits: {random_traits}\n" if random_traits else ""
 
                         # Check if names should be included in prompt
@@ -626,6 +628,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"Jewelry: {random_jewelry}\n"
                             f"Appearance: {random_appearance}\n"
                             f"Backstory: {random_backstory}\n"
+                            f"{persona_injection}"
                             f"{personality_injection}"
                             f"{traits_injection}"
                             f"{setting_injection}"

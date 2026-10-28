@@ -22,7 +22,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Opening mode → `prompts.opening_mode`, `prompts.greeting_context`, `prompts.first_line_styles`
 - Detection phrases → `detection.refusal.phrases`, `detection.slop.phrases`, `detection.user_speaking.*.phrases`
 - Sampler params → `samplers.temperature`, `samplers.top_p`, `samplers.repetition_penalty`
-- Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, traits, backstory, setting)
+- Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, persona, personality, traits, backstory, setting) — `persona` = inner personality (private self), `personality` = outward behavior (observed manner)
 - Random names → `prompts.random_names.enabled`, `prompts.random_names.names[]` (optional list of names to randomly assign to characters, overrides character Name field when enabled)
 - Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
 
@@ -123,6 +123,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Quality scoring → `quality.score_conversation()` call after conversation complete
 - Turn completion check → `conversation_is_complete()` (line 200+)
 - Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
+- Character prompt injection → character profile block built in `worker()` (persona/personality/traits are conditionally injected lines; `persona` = inner personality, `personality` = outward behavior)
 
 ### `logging_config.py` [13]
 **Purpose:** Shared logging utility
@@ -179,6 +180,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add API profile | `config/api_profiles.yml` (new profile definition), no code change needed |
 | Modify API profile params | `config/api_profiles.yml` (`allow`, `rename` lists), `api_profiles.py` (if transform logic changes) |
 | Add character profile | `config/config.yml` (`prompts.character.characters[]`), `config_editor.py` (UI fields) |
+| Add character field | `config/config.yml` (default value per character), `config_editor.py` (`_add_character_row()` long-field loop + `_get_current_editor_config_data()` gather + keep-list + `_sync_character_text_values()` + legacy fallback in `load` path), `generate.py` (legacy fallback), `generation.py` (prompt injection in profile block) |
 | Modify opening mode prompts | `config/config.yml` (`prompts.greeting`, `prompts.first_line`, `prompts.greeting_context`, `prompts.first_line_styles`) |
 | Add random names feature | `config/config.yml` (`prompts.random_names.enabled`, `prompts.random_names.names[]`), `config_editor.py` (UI toggle + text area), `generate.py` (load config + pass to worker), `generation.py` (use random names in character profile) |
 | Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
