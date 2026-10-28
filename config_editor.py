@@ -790,6 +790,24 @@ class ConfigEditor(tk.Toplevel):
         add_detection_list_pair(col2_frame, "Slop Detection", 'slop_phrases_text', 'slop_fixes_text')
         add_detection_list_pair(col2_frame, "Anti-Slop Detection", 'anti_slop_phrases_text', 'anti_slop_fixes_text')
 
+        # --- OOC Drift Detection (phrase-driven, no dedicated API slot) ---
+        ooc_lf = ttk.LabelFrame(col2_frame, text="Out-of-Character (OOC) Detection")
+        ooc_lf._section_search_text = "Out-of-Character (OOC) Detection"
+        ooc_lf.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
+        self.ooc_enabled_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(ooc_lf, text="Enable OOC Detection (catches helpful-bot narration breaks, god-viewing, fourth-wall drops)",
+                            variable=self.ooc_enabled_var_editor, command=self._toggle_ooc_fields).pack(fill="x", pady=(0, 5))
+        ooc_phrases_label = ttk.Label(ooc_lf, text="Detection Phrases (one per line):", wraplength=1)
+        ooc_phrases_label.pack(fill="x")
+        wrap_label(ooc_phrases_label, ooc_lf)
+        self.ooc_phrases_text = scrolledtext.ScrolledText(ooc_lf, wrap=tk.WORD, height=12, width=1, undo=True)
+        self.ooc_phrases_text.pack(fill="both", expand=True, pady=(0,5))
+        ooc_fixes_label = ttk.Label(ooc_lf, text="Fixes (appended to system prompt or for fixer rotation):", wraplength=1)
+        ooc_fixes_label.pack(fill="x")
+        wrap_label(ooc_fixes_label, ooc_lf)
+        self.ooc_fixes_text = scrolledtext.ScrolledText(ooc_lf, wrap=tk.WORD, height=12, width=1, undo=True)
+        self.ooc_fixes_text.pack(fill="both", expand=True)
+
         anti_slop_note_frame = ttk.Frame(col2_frame)
         anti_slop_note_frame.pack(padx=SPACING, pady=(0, SPACING), fill="x")
         ttk.Label(
@@ -1422,6 +1440,11 @@ class ConfigEditor(tk.Toplevel):
             },
             'detection': {
                 'no_user_impersonation': self.no_user_impersonation_var.get(), # Get from global Tkinter var
+                'out_of_character': {
+                    'enabled': bool(self.ooc_enabled_var_editor.get()),
+                    'phrases': [sanitize_input(line.strip()) for line in self.ooc_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
+                    'fixes': [line.strip() for line in self.ooc_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
+                },
                 'refusal': {
                     'phrases': [sanitize_input(line.strip()) for line in self.refusal_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'fixes': [line.strip() for line in self.refusal_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
@@ -1517,6 +1540,14 @@ class ConfigEditor(tk.Toplevel):
         else:
             messagebox.showerror("Error", msg)
             self.status.config(text=msg, foreground="red")
+
+    def _toggle_ooc_fields(self):
+        """Enables/disables OOC detection text fields based on checkbox state."""
+        is_enabled = self.ooc_enabled_var_editor.get()
+        for field_name in ('ooc_phrases_text', 'ooc_fixes_text'):
+            field_widget = getattr(self, field_name, None)
+            if field_widget is not None and field_widget.winfo_exists():
+                field_widget.configure(state='normal' if is_enabled else 'disabled')
 
     def _toggle_emotional_states_fields(self):
         """Enables/disables emotional states text field based on checkbox state."""
@@ -1931,6 +1962,15 @@ class ConfigEditor(tk.Toplevel):
             refusal_conf = detection_conf.get('refusal', {})
             self.refusal_phrases_text.delete(1.0, tk.END); self.refusal_phrases_text.insert(tk.END, "\n".join(refusal_conf.get('phrases', [])))
             self.refusal_fixes_text.delete(1.0, tk.END); self.refusal_fixes_text.insert(tk.END, "\n".join(refusal_conf.get('fixes', [])))
+
+            # OOC drift detection loading (default enabled: True, matching generate.py)
+            ooc_conf = detection_conf.get('out_of_character', {})
+            self.ooc_enabled_var_editor.set(bool(ooc_conf.get('enabled', True)))
+            self.ooc_phrases_text.delete(1.0, tk.END)
+            self.ooc_phrases_text.insert(tk.END, "\n".join(ooc_conf.get('phrases', [])))
+            self.ooc_fixes_text.delete(1.0, tk.END)
+            self.ooc_fixes_text.insert(tk.END, "\n".join(ooc_conf.get('fixes', [])))
+            self._toggle_ooc_fields()
             
             user_speaking_conf = detection_conf.get('user_speaking', {}) 
             for gender_val in ["male", "female", "neutral"]: 
@@ -2037,6 +2077,7 @@ class ConfigEditor(tk.Toplevel):
             get_text_as_list(self.system_variations_text)
             get_text_as_list(self.refusal_phrases_text); get_text_as_list(self.refusal_fixes_text)
             get_text_as_list(self.slop_phrases_text); get_text_as_list(self.slop_fixes_text)
+            get_text_as_list(self.ooc_phrases_text); get_text_as_list(self.ooc_fixes_text)
             get_text_as_list(self.sampler_priority_text)
 
             logit_bias_str = self.logit_bias_text.get("1.0", tk.END).strip()

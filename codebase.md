@@ -106,6 +106,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Add detection type → New `is_*()` function + add key to `app_state.issue_timestamps`
 - Out-of-character drift → `is_out_of_character(answer, ooc_phrases)` mirrors the other `is_*()` shape: phrase-driven, word-boundary matching via `_candidate_patterns`, and on a hit appends to `issue_timestamps['out_of_character']` (1hr cutoff). Complements the phrase-based `no_user_impersonation` / `user_speaking` checks; catches helpful-bot narration breaks ("As a helpful AI...", "Is there anything else I can help you with today?"), god-viewing the user, and fourth-wall drops that the LLM-judge consistency dimension then scores against the character card
 - Phrase lists → Passed from config via `generate.py` → `worker()` (`current_ooc_phrases` / `current_ooc_fixes` / `current_ooc_enabled`)
+- GUI config → Config Editor Detection tab has an "Out-of-Character (OOC) Detection" LabelFrame (`col2_frame`) with an enable checkbox (`ooc_enabled_var_editor` + `_toggle_ooc_fields()`), phrases/fixes text areas (`ooc_phrases_text` / `ooc_fixes_text`), saved to / loaded from `detection.out_of_character.{enabled,phrases,fixes}`, validated in `validate_config_handler()`
 - Timestamp tracking → `issue_timestamps[key].append(time.time())` with 1hr cutoff
 
 ### `generate.py` [11]
@@ -187,7 +188,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Task | Files to Edit |
 |------|---------------|
 | Add new API slot | `config/config.yml` (`api.apis[]`), `config_editor.py` (UI), `app_state.py` (counters), `generation.py` (worker logic) |
-| Add detection type | `detection.py` (function), `app_state.py` (timestamps/counters), `dashboard.py` (display) |
+| Add detection type | `config/config.yml` (phrases/fixes/enabled), `detection.py` (`is_*()`), `app_state.py` (timestamps/counters), `generation.py` (worker kwargs + check call), `dashboard.py` (display), `config_editor.py` (Detection tab panel + save/load/validate) — see e.g. OOC Drift |
 | Add config option | `config/config.yml` (default value), `config_editor.py` (UI + save/load), `config_loader.py` (if new structure), `generation.py` (pass to worker) |
 | Add quality dimension | `quality.py` (`SCORING_DIMENSIONS`, scoring logic), `dashboard.py` (display) |
 | Modify output format | `generation.py` (`write_conversation()`) |
