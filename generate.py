@@ -1,7 +1,7 @@
 # generate.py
 """
 DEVELOPER NOTE FOR LLMs:
-When modifying this file, always reference codebase.md first for:
+When modifying this file, always reference AGENTS.md first for:
 - File architecture and dependencies
 - Key functions and their purposes
 - Common tasks and which files to edit
