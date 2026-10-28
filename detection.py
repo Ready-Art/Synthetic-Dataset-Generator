@@ -189,10 +189,34 @@ def is_anti_slop(answer, anti_slop_phrases_list):
 
     return bool(detected_info), detected_info
 
+# Spans of quoted dialogue ("...", '...', curly ‘...’ / “...”). OOC phrases live in
+# the *narrator's* voice, so these are blanked before matching: the same words spoken
+# by a character inside quotation marks are legitimate in-character speech, not drift.
+_QUOTED_DIALOGUE_RE = re.compile(
+    r'"[^"]*"|'
+    r"'[^']*'" + '|' +
+    r'\u2018[^\u2019]*\u2019|'
+    r'\u201c[^\u201d]*\u201d'
+)
+
+def _strip_quoted_dialogue(sentence):
+    """Blank every quoted-dialogue span in *sentence* down to a single space.
+
+    Used only by :func:`is_out_of_character`. The result is a parallel *narration*
+    view of the sentence — NOT an index-aligned edit (lengths differ) — so callers
+    must keep the original sentence alongside it for reporting.
+    """
+    return _QUOTED_DIALOGUE_RE.sub(' ', sentence)
+
 def is_out_of_character(answer, ooc_phrases_list):
     """Detects out-of-character drift: assistant answering like a helpful bot,
     narration breaks ("As <name>, I would..."), god-viewing the user, or otherwise
     dropping the roleplay voice. Phrase-driven like is_refusal/is_slop/is_user_speaking.
+
+    Unlike those checks, phrases are matched only against *narration*: quoted dialogue
+    is stripped first, so an OOC phrase spoken by a character inside "..." / '...' does
+    NOT flag the turn. This avoids discarding+regenerating good answers just because a
+    character happened to say a listed phrase in a line of speech.
 
     Mirrors the existing is_*() shape: returns (bool, [(phrase, sentence), ...]) and,
     on a hit, appends a timestamp to ``issue_timestamps['out_of_character']`` (1-hour
@@ -216,7 +240,9 @@ def is_out_of_character(answer, ooc_phrases_list):
     if not processed_original_sentences and answer.strip(): processed_original_sentences = [answer.strip()]
 
     processed_phrases = [p.lower().strip() for p in ooc_phrases_list if p.strip()]
-    cleaned_sentences = [clean_sentence_for_match(s) for s in processed_original_sentences]
+    # Match only against the narration view (quoted dialogue blanked out); keep the
+    # original sentence for reporting so the dashboard shows the real line.
+    cleaned_sentences = [clean_sentence_for_match(_strip_quoted_dialogue(s)) for s in processed_original_sentences]
 
     # Compiled once per phrase list; only phrases that could match are searched
     compiled_patterns = _candidate_patterns(processed_phrases, cleaned_sentences)

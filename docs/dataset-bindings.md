@@ -5,9 +5,9 @@ variables such as `{{ds:nvd_f_name}}`. Each existing generation task receives an
 immutable attachment containing one row's mapped values from each enabled source.
 The default configuration is `datasets: {sources: []}`; unused sources add no reads.
 
-This integration is based on upstream `9f49ceb7e51f50d0cdf3ff644d3d503b3327a83e`,
+This integration is based on upstream `59937027eeafa635868328a020a80e5e2e5c01ed`,
 including metadata schema 2, random-setting selection/unification, OOC detection,
-and character-profile-aware quality scoring. Dataset
+character-profile-aware quality scoring, and narration-only OOC matching. Dataset
 values supply inputs to those existing methods. Original task IDs, queue behavior,
 conversation/refinement loops, duplication, output schema, and recovery remain
 under the upstream engine's control. Attachments last for the owning queue/run;
@@ -388,7 +388,7 @@ Run this suite in its own process:
 python -B test_dataset_compatibility.py
 ```
 
-It exports the exact upstream commit `9f49ceb7` from the local Git history (or uses
+It exports the exact upstream commit `59937027` from the local Git history (or uses
 the checkout named by `DATASET_COMPATIBILITY_BASELINE_DIR`) and runs each side in separate
 processes. Upstream receives manually populated authored inputs; the candidate
 receives equivalent aliases and actual CSV/JSONL bindings. Twelve differential traces
@@ -405,7 +405,7 @@ selection counters, and completion/requeue decisions:
 - Disabled datasets with the original native-placeholder cascade.
 - Empty resolved continuation and greeting-context templates.
 - OOC corrections for two successive dataset rows on one worker, including
-  detection counters and literal detection phrases.
+  detection counters, literal detection phrases, and quoted-dialogue immunity.
 - The actual quality scorer receiving the resolved character profile and recording
   the scripted judge's score in output metadata.
 
@@ -447,7 +447,7 @@ adds the OOC and quality scenarios above and makes the source comparison handle
 CRLF. Live model endpoint verification remains pending; no model endpoint is
 needed to run these scripted tests.
 
-### Validation after merging upstream v10.3.5
+### Validation after merging upstream v10.3.5 and v10.3.6
 
 The merged implementation passed 121 source/binding/settings/renderer/task/backend
 tests, all 13 compatibility tests (twelve traces plus the source-preservation gate),
@@ -458,8 +458,13 @@ expected keyword set now includes the three correctly named OOC arguments.
 The GUI round-trip checks saved and reloaded enabled OOC detection phrases/fixes
 and dataset mappings together, through both the main configuration and the actual
 profile-load handler. No dataset source reads occurred during those saves/loads.
-The new launch regression failed on untouched `9f49ceb7` with the duplicate
+The new launch regression failed on untouched `9f49ceb7` and `59937027` with the duplicate
 opening-mode argument and passed after the narrow caller correction.
+
+Upstream `59937027` subsequently changed only OOC narration matching, explanatory
+comments, and the displayed version. Its changes were merged without altering
+the dataset modules or editor integration. The full compatibility suite was rerun
+against that exact baseline, including quoted OOC phrases in corrected replies.
 
 These post-merge results are from Linux. The Windows results above remain tied to
 `d05655bb`; a later Windows run must be recorded separately. No live provider,

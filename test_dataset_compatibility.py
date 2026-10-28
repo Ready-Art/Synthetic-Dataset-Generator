@@ -31,7 +31,7 @@ from queue import Queue
 
 
 REPO = Path(__file__).resolve().parent
-BASELINE_COMMIT = "9f49ceb7e51f50d0cdf3ff644d3d503b3327a83e"
+BASELINE_COMMIT = "59937027eeafa635868328a020a80e5e2e5c01ed"
 RAW_LITERAL = "{{ds:unmapped_source}}"
 MODEL_LITERAL = "{{ds:unmapped_model}} {last_assistant_message}"
 CELL_LITERAL = "Literal <tag> Unicode \u03a9 and \\path"
@@ -114,6 +114,9 @@ class TraceHTTP:
                     # A mistakenly rendered {{ds:name}} detector would match
                     # this clean answer and create extra corrective retries.
                     text += " {} stays in character.".format({"R0": "Ada", "R1": "Bo"}[row])
+                    # The upstream detector ignores this phrase in dialogue;
+                    # only the unquoted first answer should trigger a retry.
+                    text += ' She quotes "As a helpful AI" from the placard.'
         elif kind in ("slop", "anti"):
             original = messages[-1]["content"].split("<original_text>\n", 1)[1].rsplit("\n</original_text>", 1)[0]
             if kind == "slop":
@@ -423,7 +426,8 @@ class DatasetCompatibilityTests(unittest.TestCase):
         rows = result["trace"]["output"]["output.jsonl"]
         self.assertEqual(len(rows), 2)
         for row in rows:
-            self.assertNotIn("As a helpful AI", row["conversations"][-1]["value"])
+            self.assertNotIn("As a helpful AI, I can explain this scene.", row["conversations"][-1]["value"])
+            self.assertIn('"As a helpful AI"', row["conversations"][-1]["value"])
         self.assertEqual(result["trace"]["phases"][-1]["completed"], ["original-0", "original-1"])
 
     def test_quality_judge_receives_rendered_character_profile(self):
