@@ -755,7 +755,7 @@ database:
   pool_size: 10
 ```
 
-When PostgreSQL is enabled, the application initializes a connection pool at startup and stores conversations in the `generated_conversations` table. File writing is skipped entirely when the database is enabled. Use the **Export DB → JSONL** button to export.
+When PostgreSQL is enabled, the application initializes a connection pool at startup and stores conversations in the `generated_conversations` table. File writing is skipped entirely when the database is enabled. Use the **Export DB → JSONL** button to export. The application does not create the table; [docs/postgresql.md](docs/postgresql.md) gives the one-time setup.
 
 **Valkey/Redis Caching:**
 ```yaml
