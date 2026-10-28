@@ -1039,10 +1039,28 @@ def test_record_metadata():
           empty["emotional_state"] == empty["setting"] == empty["quality_method"] == empty["generated_at"] == ""
           and empty["duplication_turn"] == 0
           and all(v == -1.0 for k, v in empty.items() if k.startswith("quality_") and k != "quality_method"))
-    check("meta_version is 2", empty["meta_version"] == full["meta_version"] == 2)
+    # v3 adds the opt-in roleplay dimensions (quality.roleplay_dimensions); they carry
+    # the usual -1.0 gap whenever unscored or toggled off.
+    check("meta_version is 3", empty["meta_version"] == full["meta_version"] == 3)
     check("populated quality numbers are recorded as floats",
           full["quality_composite"] == 87.3 and full["quality_coherence"] == 90.0
           and isinstance(full["quality_coherence"], float))
+    check("roleplay dimension keys exist but are -1.0 when the toggle is off",
+          empty["quality_voice_distinctiveness"] == empty["quality_grounding"] ==
+          empty["quality_persona_alignment"] == -1.0 and
+          full["quality_voice_distinctiveness"] == full["quality_grounding"] ==
+          full["quality_persona_alignment"] == -1.0)
+    rp_full = g._build_record_metadata(
+        ["Ines"], None, None, False, False, 1,
+        {"composite": 80.0, "method": "heuristic_only", "flags": [],
+         "dimensions": {"coherence": 70, "naturalness": 75, "engagement": 72,
+                        "diversity": 80, "consistency": 74, "technical": 90,
+                        "voice_distinctiveness": 65, "grounding": 88, "persona_alignment": 60}},
+        None, "2026-01-15 14:32:00")
+    check("scored roleplay dimensions are recorded as floats when present",
+          rp_full["quality_voice_distinctiveness"] == 65.0
+          and rp_full["quality_grounding"] == 88.0 and rp_full["quality_persona_alignment"] == 60.0
+          and {k: _shape(v) for k, v in rp_full.items()} == {k: _shape(v) for k, v in full.items()})
     unscored = g._build_record_metadata(None, None, None, False, False, 0,
                                         {"composite": 0, "method": "none", "dimensions": {"coherence": 0}}, None, "")
     check("an empty conversation (method none) records -1.0 for every quality number, not 0",

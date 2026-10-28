@@ -74,6 +74,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Random settings pool → `prompts.random_settings.enabled`, `prompts.random_settings.settings[]` (analogous to `random_names`). When `setting_enabled` is true and a selected character's own `setting` is empty, a setting is sampled from this pool (when enabled) instead of the hardcoded default. For a multi-character ensemble the per-character settings are unified to ONE shared setting picked from the ensemble, so the whole scene happens in a single location
 - Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
 - Output metadata → `generation.include_metadata` (flat, schema-stable provenance block per output.jsonl record; trainer-safe; never modifies `conversations[]`; false = legacy two-field records)
+- Quality scoring → `quality.enabled`, `quality.use_llm_scoring`, `quality.output_filter`, `quality.roleplay_dimensions` (opt-in roleplay dimensions: voice_distinctiveness / grounding / persona_alignment), `quality.min_score_threshold`, `quality.max_chars_for_scoring`, `quality.max_profile_chars_for_scoring`, `quality.scoring_api.{url,model,key}`
 - Datasets → `datasets.sources[]` (default `{sources: []}`) — names-only source definitions (kind, location, config/split/revision selectors, imported column names, aliases, visibility). Dataset *records* and credentials are never stored here; see `docs/dataset-bindings.md`
 
 ### `config/api_profiles.yml` [2]
@@ -126,7 +127,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Configuration Editor UI window
 **Key:** `ConfigEditor` class, `save_config_handler()`, `load_config_handler()`, `DatasetsPanel` tab
 **Edit for:**
-- Add new config field → Add UI widget + bind to `save_config_handler()` + `load_config_handler()`
+- Add new config field → Add UI widget + bind to `save_config_handler()` + `load_config_handler()` (Quality Scoring section holds the `quality.roleplay_dimensions` toggle: `quality_roleplay_dims_var_editor`, saved/loaded with the rest of `quality.*`)
 - New tab → Add `ttk.Frame` + `notebook.add()` in `__init__()`
 - Validation → `validate_config_handler()`
 - Datasets tab → `DatasetsPanel(self.notebook)` added in `__init__()`; config gathered in `save_config_handler()` (`config_data['datasets'] = self.datasets_panel.get_config()`), loaded in `load_config_handler()` (`self.datasets_panel.load_config(...)`), validated in `validate_config_handler()`; `DatasetSettingsError` surfaces on the status bar
@@ -167,6 +168,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Quality tab → `update_quality_tab()` fills the dimension summary labels (from `quality.get_quality_stats()['dimension_averages']`) and the latest-50 scores Treeview from `app_state.quality_scores`
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - DB export → `export_db_to_jsonl()`, `clear_database()`
+- Quality tab layout → `_rebuild_quality_roleplay_layout()` builds the summary labels + score-table columns from `quality.active_scoring_dimensions()` (the toggle is read at build time and re-checked each tick, so a change in the Config Editor mid-run re-lays-out the Quality tab automatically; `update_quality_tab()` fills rows in that column order)
 
 ### `generation.py` [12]
 **Purpose:** Worker loop, LLM calls, conversation generation, output writing
@@ -176,13 +178,13 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Slop fixing → `call_slop_fixer_llm()` (API slot 5, index 4) / `call_anti_slop_llm()` (API slot 6, index 5)
 - Output format → `write_conversation()` ShareGPT structure
 - Opening mode → `generate_greeting()`, `generate_first_line()`, `enqueue_opening_tasks()`
-- Quality scoring → `quality.score_conversation()` call after conversation complete
+- Quality scoring → `quality.score_conversation()` call (via `_score_and_store_quality()`) after conversation complete, passing `character_profile_text=character_injection` and `scene_characters=scene_character_names`
 - Turn completion check → `conversation_is_complete()`
 - Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
 - Character prompt injection → character profile block built in `worker()` (personality/traits are conditionally injected lines in the profile; `persona` = inner personality is deliberately EXCLUDED from the profile and re-injected later as an INNER PERSONA BREAKTHROUGH block once the scene reaches the configured slot). Setting resolution → a `settings_for_selected[]` array is computed per task before the profile loop: each selected character keeps its own non-empty `setting`, else samples from the `random_settings` pool (if enabled) or the `A standard indoor environment.` default; when >1 character is selected the ensemble is unified to one shared setting picked from the distinct candidate settings (order-preserving dedupe), which becomes both the injected `Setting:` line for every character and `meta_setting`
 - Persona/emotional-state split → `_split_emotional_arc_entry()`, `_expand_emotional_arc()`, `_emotional_state_injection()`, `_persona_block_for_characters()` (all above `worker()`). The worker builds `base_scene_prompt` (system + lore + persona-free profile) once per task. It is the system message of every greeting, answer and user-continuation request in the task (a retry still appends its jailbreak or fix instruction to it); the generated question gets it plus `QUESTION_USER_SIDE`, and the first-line and fixer requests have their own system prompts. The per-reply notes come from `slot_notes(slot_no)`, which returns `(system note, depth-0 note)`: the INNER PERSONA BREAKTHROUGH block from `persona_breakthrough_turn` onward, then the slot's emotional state, which is a flat name or an arc stage (`'neutral -> anxious'` expanded across the conversation's assistant turns), each in the part its placement names (`prompts.character.persona_breakthrough_placement`, `prompts.emotional_states.placement`; `depth0` or `system`, default `depth0`, parsed by `note_placement()`). The depth-0 note is appended to the slot's final user message, the answer prompt or the opening-mode greeting prompt, after the history and never stored in it; the system note is appended to that slot's answer or greeting system prompt, before any retry fix, and the user continuation after the answer gets the same system prompt (without the fix), as in v10: if the continuation used the plain scene prompt instead, answers and continuations would alternate between two system prompts and a server that keeps one cached prompt per slot (llama-server) would recompute the history on every request. The generated question gets neither. With both on `depth0`, from one answer request to the next the system prompt and the history are the same text, which lets a server's prefix cache reuse them; keep the default that way. `placement_cache_warning()` estimates the history share a `system` placement makes the server compute again; `start_processing` logs it and shows a toast, and the config editor shows it under the placement dropdowns. Opening-mode greeting = slot 1, so conversation turn N lives at slot N+1.
 - Generated first user message → when characters are profiled, its system prompt is the scene prompt plus `QUESTION_USER_SIDE`, which tells the model it writes only the user's side and that the user is not one of the characters
-- Output metadata → `_build_record_metadata()` (17 flat keys, same shape on every record, null-filled; `_safe_float()` keeps numeric types stable) + `_score_and_store_quality()` (quality scoring deduped by task_id; called BEFORE both write paths so metadata can carry scores)
+- Output metadata → `_build_record_metadata()` (20 flat keys, `meta_version` 3, same shape on every record, null-filled; `_safe_float()` keeps numeric types stable; v3 added `quality_voice_distinctiveness`/`quality_grounding`/`quality_persona_alignment`, `-1.0` whenever the roleplay toggle is off or unscored) + `_score_and_store_quality()` (quality scoring deduped by task_id; called BEFORE both write paths so metadata can carry scores; accepts `scene_characters=` for the voice-distinctiveness heuristic)
 - Dataset binding → `bind_task_datasets(queue, task, ...)` near the top of the `worker()` task loop freezes one row per enabled source into an immutable `task_dataset_values` mapping for the life of the task (every turn, fix and retry); `validate_task_templates()` pre-checks the question, continuation, greeting and first-line templates up front. The static authored inputs in `dataset_authored_inputs` (system prompts, answer prompt, jailbreaks and fixes, lore, character fields, emotional states, name/setting pools, first-line styles) are rendered once per task with `render_task_inputs()`. The question, continuation, greeting and first-line templates are rendered where they are formatted, with `render_with_native_placeholders()`: `generate_question()`, `generate_user_continuation()`, `fill_greeting_prompt()` (called by `generate_greeting()`) and `generate_first_line()` take a `dataset_values=None` kwarg, and `None` skips rendering entirely, so generation without datasets behaves byte-identically to the pre-dataset engine. `docs/dataset-bindings.md` (Placeholder syntax) lists the fields
 
 ### `logging_config.py` [13]
@@ -194,11 +196,12 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ### `quality.py` [14]
 **Purpose:** Quality scoring (heuristic + LLM-based)
-**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`, `_heuristic_fallback_for_llm_dim()`
+**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`, `_heuristic_fallback_for_llm_dim()`, `active_scoring_dimensions()`, `_score_voice_distinctiveness()`, `_score_grounding()`, `_score_persona_alignment()`
 **Edit for:**
-- Scoring dimensions → `SCORING_DIMENSIONS` dict (weights)
-- Heuristic logic → `_score_diversity()`, `_score_technical()`, `_heuristic_fallback_for_llm_dim()`
-- LLM scoring → `_score_with_llm()` (uses API slot from `quality.scoring_api` config)
+- Scoring dimensions → `SCORING_DIMENSIONS` dict (weights) + `ROLEPLAY_SCORING_DIMENSIONS` (opt-in via `quality.roleplay_dimensions`; active set comes from `active_scoring_dimensions()`, which every score/stats/UI path must use instead of `SCORING_DIMENSIONS` directly)
+- Heuristic logic → `_score_diversity()`, `_score_technical()`, `_heuristic_fallback_for_llm_dim()`, plus the roleplay heuristics (voice = bigram overlap between characters' attributed spoken lines via `_spoken_lines_by_character()`; grounding = profile-keyword coverage via `_profile_keywords()`; persona = Persona-section keyword timing around `prompts.character.persona_breakthrough_turn` via `_persona_sections()`)
+- LLM scoring → `_score_with_llm()` (uses API slot from `quality.scoring_api` config); when the toggle is on it appends the three roleplay definitions + JSON fields to the judge prompt, raises the `max_tokens` default by 64/dim, and refines (replaces) the heuristic roleplay scores with the judge's; `_score_and_store_quality()` in `generation.py` forwards `scene_characters=scene_character_names`
+- Tests → `test_quality_roleplay.py` (toggle on/off, all three heuristics, judge prompt/refinement via stubbed `requests.post`)
 - Persona-fidelity consistency → `score_conversation()` / `_score_with_llm()` accept `character_profile_text`; the actual character card (the `character_injection` block from `worker()`) is injected into the judge prompt so the `consistency` dimension measures persona/personality/traits fidelity, not just self-consistency. Capped by `quality.max_profile_chars_for_scoring` (default 4000). Without a profile the judge falls back to generic self-consistency language
 - Consistency heuristic fallback → `_heuristic_fallback_for_llm_dim('consistency')` no longer returns a flat `70`; it scores down on well-known OOC markers (helpful-bot narration, "as <name>, I would" breaks, fourth-wall drops)
 - Flags → Add to `flags` list in scoring functions
@@ -234,6 +237,11 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Standalone validation of the setting resolution/unification algorithm added to `worker()`
 **Key:** `resolve_settings()` mirrors the per-task block; `run()` covers keep-own-setting, pool-sample-on-empty, multi-character unification, selection-off default, pool-disabled default, and ensemble-bounded unification across a seed range
 **Edit for:** Add settings-resolution edge cases (blank/whitespace own setting, pool with duplicates, 3+ char ensembles)
+
+### `test_quality_roleplay.py`
+**Purpose:** Headless unit tests for the opt-in roleplay quality dimensions in `quality.py` (no model/network/display; the LLM-judge path is exercised through a stubbed `requests.post`)
+**Key:** covers the `quality.roleplay_dimensions` toggle (off by default; active dimension set + weight normalization), the three heuristics (`_score_voice_distinctiveness`, `_score_grounding`, `_score_persona_alignment` incl. the early-leak / never-surfaces / no-persona cases) and judge prompt construction + refinement when on
+**Edit for:** Add roleplay-dimension heuristic or judge-prompt cases
 
 ### `test_worker_launch.py` [21]
 **Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
@@ -349,7 +357,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add new API slot | `config/config.yml` (`api.apis[]`), `config_editor.py` (UI), `app_state.py` (counters), `generation.py` (worker logic) |
 | Add detection type | `config/config.yml` (phrases/fixes/enabled), `detection.py` (`is_*()`), `app_state.py` (timestamps/counters), `generation.py` (worker kwargs + check call), `dashboard.py` (display), `config_editor.py` (Detection tab panel + save/load/validate) — see e.g. OOC Drift |
 | Add config option | `config/config.yml` (default value), `config_editor.py` (UI + save/load), `config_loader.py` (if new structure), `generation.py` (pass to worker) |
-| Add quality dimension | `quality.py` (`SCORING_DIMENSIONS`, scoring logic), `dashboard.py` (display) |
+| Add quality dimension | `quality.py` (`SCORING_DIMENSIONS` + `HEURISTIC_DIMENSIONS`/`LLM_DIMENSIONS` sets, scoring logic; opt-in sets like `ROLEPLAY_SCORING_DIMENSIONS` go through `active_scoring_dimensions()` + `is_roleplay_scoring_enabled()`), `generation.py` (`_build_record_metadata()` schema, bump `_METADATA_SCHEMA_VERSION`), `generate.py` (Quality tab via `_rebuild_quality_roleplay_layout()`, already dynamic), `config_editor.py` (only if user-togglable), `config/config.yml` (default), `test_opening_mode.py` (metadata contract) |
 | Modify output format | `generation.py` (`write_conversation()`) |
 | Add slop/anti-slop phrase | `config/config.yml` (`detection.*.phrases`) → `detection.py` phrase lists |
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |

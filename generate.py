@@ -743,13 +743,78 @@ def update_quality_display():
             app_state.dashboard_notebook.tab(review_tab_widget, text=label)
             dashboard_navigator.refresh()
 
+def _rebuild_quality_roleplay_layout(force=False):
+    """Rebuilds the Quality tab's summary labels and score-table columns to match the
+    current ``quality.roleplay_dimensions`` toggle (Configuration Editor).
+
+    Runs once at tab creation (``force=True``) and again, at most, whenever the toggle
+    changes at runtime (tracked by ``quality_roleplay_active`` in the tab's widget
+    registry). The generic six dimensions are always shown; the three roleplay
+    dimensions are appended when the toggle is on.
+    """
+    widgets = app_state.dashboard_notebook.tabs_widgets.get("Quality", {})
+    parent_frame = widgets.get("scrollable_frame")
+    active = bool(global_config.get('quality.roleplay_dimensions', False))
+    if not force and "quality_roleplay_active" in widgets \
+            and widgets["quality_roleplay_active"] == active:
+        return
+    widgets["quality_roleplay_active"] = active
+    dims = list(quality.active_scoring_dimensions())
+
+    for key in ("dimension_labels",):
+        widgets.pop(key, None)
+    for w in ("quality_summary_lf", "quality_table_lf", "quality_tree", "dimension_layout", "table_frame"):
+        old = widgets.pop(w, None)
+        if isinstance(old, dict):
+            continue
+        if hasattr(old, "grid_forget"):
+            try:
+                old.grid_forget()
+            except tk.TclError:
+                pass
+        elif isinstance(old, ttk.Frame):
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+
+    # Quality summary panel: one label per active dimension, reflowing 1-3 columns wide.
+    quality_summary_lf = ttk.LabelFrame(parent_frame, text="Quality Summary")
+    quality_summary_lf.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+    dimension_labels = []
+    dim_labels = {}
+    for dim_name in dims:
+        dim_label = ttk.Label(quality_summary_lf, text=f"{dim_name.title()}: N/A")
+        dimension_labels.append(dim_label)
+        dim_labels[dim_name] = dim_label
+    widgets['dimension_labels'] = dim_labels
+    widgets["dimension_layout"] = ResponsiveGrid(
+        quality_summary_lf, dimension_labels, min_width=180, max_columns=3)
+
+    # Recent-scores table: one score column per active dimension + Task ID/Flags/Method.
+    quality_table_lf = ttk.LabelFrame(parent_frame, text="Recent Scores (latest 50)")
+    quality_table_lf.grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="nsew")
+    table_frame = ttk.Frame(quality_table_lf)
+    quality_cols = ("Task ID", "Score") + tuple(d.replace("_", " ").title() for d in dims) + ("Flags", "Method")
+    quality_tree = ttk.Treeview(table_frame, columns=quality_cols, show="headings", height=15)
+    for col in quality_cols:
+        quality_tree.heading(col, text=col)
+        quality_tree.column(col, width=100, minwidth=100, stretch=False, anchor="w")
+    quality_tree.column("Task ID", width=200, minwidth=160)
+    quality_tree.column("Flags", width=200, minwidth=160)
+    widgets["table_frame"] = table_frame
+    _grid_scrollable_table(quality_table_lf, quality_tree)
+    widgets["quality_tree"] = quality_tree
+
+
 def update_quality_tab():
     """Populates the Quality dashboard tab: per-dimension summary labels and the
     recent-scores table (latest 50).
 
     Like the other per-tick Treeview rebuilds, the work is gated to the currently
     selected tab to keep X server resource use bounded (see
-    ``_active_dashboard_tab_text``).
+    ``_active_dashboard_tab_text``). The per-dimension labels/columns follow the
+    ``quality.roleplay_dimensions`` toggle (rebuilt on change).
     """
     if not app_state.root.winfo_exists():
         return
@@ -759,6 +824,10 @@ def update_quality_tab():
         return
 
     widgets = app_state.dashboard_notebook.tabs_widgets.get("Quality", {})
+
+    # Pick up a roleplay-dimensions toggle change made in the Config Editor mid-run.
+    _rebuild_quality_roleplay_layout()
+
     quality_tree = widgets.get("quality_tree")
     if not quality_tree or not hasattr(quality_tree, 'winfo_exists') or not quality_tree.winfo_exists():
         return
@@ -784,17 +853,15 @@ def update_quality_tab():
         scores = app_state.quality_scores
 
     latest = sorted(scores.items(), key=lambda kv: kv[1].get("scored_at", ""), reverse=True)[:50]
+    # Column order mirrors active_scoring_dimensions(); scored rows predate the new dims
+    # (or were scored with the toggle off) and simply show N/A for the missing columns.
     for task_id, score_data in latest:
-        dims = score_data.get("dimensions", {})
+        dim_scores = score_data.get("dimensions", {})
+        row_dims = [dim_scores.get(d, "N/A") for d in quality.active_scoring_dimensions()]
         quality_tree.insert("", tk.END, values=(
             task_id[:50],
             score_data.get("composite", "N/A"),
-            dims.get("coherence", "N/A"),
-            dims.get("naturalness", "N/A"),
-            dims.get("engagement", "N/A"),
-            dims.get("diversity", "N/A"),
-            dims.get("consistency", "N/A"),
-            dims.get("technical", "N/A"),
+            *row_dims,
             ", ".join(score_data.get("flags", [])[:4]),
             score_data.get("method", "N/A"),
         ))
@@ -1993,7 +2060,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v10.4.7",
+    text="v10.5.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2714,34 +2781,9 @@ for tab_name in tab_names:
         parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
 
     elif tab_name == "Quality":
-        # Quality summary panel
-        quality_summary_lf = ttk.LabelFrame(parent_frame, text="Quality Summary")
-        quality_summary_lf.grid(row=0, column=0, padx=SPACING, pady=SPACING, sticky="ew")
-
-        # Summary fields reflow independently of the wide score table.
-        dimension_labels = []
-        for dim_name in quality.SCORING_DIMENSIONS:
-            dim_label = ttk.Label(quality_summary_lf, text=f"{dim_name.title()}: N/A")
-            dimension_labels.append(dim_label)
-            app_state.dashboard_notebook.tabs_widgets[tab_name].setdefault('dimension_labels', {})[dim_name] = dim_label
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['dimension_layout'] = ResponsiveGrid(
-            quality_summary_lf, dimension_labels, min_width=180, max_columns=3)
-
-        # Score table
-        quality_table_lf = ttk.LabelFrame(parent_frame, text="Recent Scores (latest 50)")
-        quality_table_lf.grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="nsew")
-
-        quality_cols = ("Task ID", "Score", "Coherence", "Naturalness", "Engagement", "Diversity", "Consistency", "Technical", "Flags", "Method")
-        quality_tree = ttk.Treeview(quality_table_lf, columns=quality_cols, show="headings", height=15)
-        for col in quality_cols:
-            quality_tree.heading(col, text=col)
-            quality_tree.column(col, width=100, minwidth=100, stretch=False, anchor="w")
-        quality_tree.column("Task ID", width=200, minwidth=160)
-        quality_tree.column("Flags", width=200, minwidth=160)
-
-        _grid_scrollable_table(quality_table_lf, quality_tree)
-
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['quality_tree'] = quality_tree
+        # Summary labels + score-table columns follow the roleplay-dimensions toggle;
+        # rebuilt on change by _rebuild_quality_roleplay_layout() from the update loop.
+        _rebuild_quality_roleplay_layout(force=True)
 
     elif tab_name == "🔍 Review":
         # --- Toolbar: filter + actions ---

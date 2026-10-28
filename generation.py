@@ -1246,7 +1246,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
                         primary_turn_quality_result = _score_and_store_quality(
                             primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name,
-                            character_profile_text=character_injection
+                            character_profile_text=character_injection,
+                            scene_characters=scene_character_names
                         )
                         # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
 
@@ -1449,7 +1450,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     thread_id,
                                     api_slot_idx=api_slot_idx_for_this_task,
                                     file_name=file_name,
-                                    character_profile_text=character_injection
+                                    character_profile_text=character_injection,
+                                    scene_characters=scene_character_names
                                 )
                                 # Optional: filter output by quality threshold
                                 if final_quality_result and app_state.quality_output_filter:
@@ -3640,7 +3642,10 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 #     inference and Axolotl's template mapping are unaffected (same as today's "id" field).
 #   * generation.include_metadata=false (config.yml) disables it entirely, restoring
 #     the legacy two-field records byte-for-byte.
-_METADATA_SCHEMA_VERSION = 2
+#   * v3 (meta_version) adds the opt-in roleplay quality dimensions
+#     (quality_voice_distinctiveness / quality_grounding / quality_persona_alignment);
+#     they carry the usual -1.0 gap when unscored or when the toggle is off.
+_METADATA_SCHEMA_VERSION = 3
 
 
 def _safe_float(value, default=None):
@@ -3688,12 +3693,17 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
         "quality_diversity": score(dims.get("diversity")),
         "quality_consistency": score(dims.get("consistency")),
         "quality_technical": score(dims.get("technical")),
+        # Opt-in roleplay dimensions (quality.roleplay_dimensions); -1.0 when off/unscored,
+        # keeping the same keys/types on every record for Axolotl/HF column inference.
+        "quality_voice_distinctiveness": score(dims.get("voice_distinctiveness")),
+        "quality_grounding": score(dims.get("grounding")),
+        "quality_persona_alignment": score(dims.get("persona_alignment")),
         "generated_at": str(generated_at) if generated_at else "",
     }
 
 
 def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
-                             character_profile_text=""):
+                             character_profile_text="", scene_characters=None):
     """Scores a conversation and stores the result in app_state.quality_scores (deduped by task).
     Mirrors the pre-existing quality bookkeeping (threshold review flags included).
 
@@ -3702,11 +3712,15 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     the consistency dimension against the actual persona/personality/traits instead of a
     generic self-consistency check.
 
+    ``scene_characters`` is the list of names actually in the scene; it feeds the opt-in
+    voice-distinctiveness heuristic (line attribution + n-gram overlap between characters).
+
     Returns the quality result dict, or None on any failure."""
     try:
         qr = quality.score_conversation(conv_for_scoring, task_id, thread_id,
                                         api_slot_idx=api_slot_idx, file_name=file_name,
-                                        character_profile_text=character_profile_text)
+                                        character_profile_text=character_profile_text,
+                                        scene_characters=scene_characters)
         with app_state.quality_lock:
             if task_id not in app_state.quality_scores:
                 app_state.quality_scores[task_id] = qr

@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v10.4.7
+# ReadyArt Synthetic Dataset Generator v10.5.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -75,7 +75,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Questions File Mode** — Use a predefined list of questions instead of LLM-generated ones
 
 ### Quality Scoring (NEW in v9.4.0)
-- **Hybrid Scoring Engine** — Scores every completed conversation across six dimensions (coherence, naturalness, engagement, diversity, consistency, technical) using a fast heuristic pass plus optional LLM-based evaluation
+- **Hybrid Scoring Engine** — Scores every completed conversation across six core dimensions (coherence, naturalness, engagement, diversity, consistency, technical) using a fast heuristic pass plus optional LLM-based evaluation, and optionally three roleplay-specific dimensions (voice distinctiveness, grounding, persona alignment) behind a GUI toggle
 - **Composite Score (0–100)** — Weighted combination of all dimension scores; weights configurable per dimension
 - **Heuristic Dimensions** — Diversity (type-token ratio, sentence length variance, trigram repetition, paragraph structure) and Technical (quote balance, stray asterisks, em dashes, whitespace, all-lowercase detection) run without any API call
 - **Optional LLM Scoring** — Coherence, naturalness, engagement, and consistency can be scored by a dedicated LLM (separate API endpoint) for deeper evaluation; falls back to heuristic estimates if the LLM call fails
@@ -638,13 +638,14 @@ gender: "female"  # "male", "female", or "neutral"
 
 ### Quality Scoring
 
-The quality scoring engine evaluates every completed conversation across six dimensions and produces a weighted composite score from 0 to 100.
+The quality scoring engine evaluates every completed conversation across six core dimensions and produces a weighted composite score from 0 to 100. Three additional roleplay-specific dimensions are available behind an opt-in toggle (see **Roleplay Dimensions** below).
 
 ```yaml
 quality:
   enabled: true                    # Master toggle for quality scoring
   use_llm_scoring: false           # Use LLM for coherence/naturalness/engagement/consistency (extra API calls)
   output_filter: false             # Flag conversations below threshold (for post-filtering)
+  roleplay_dimensions: false       # Opt-in: score voice_distinctiveness, grounding, persona_alignment too
   min_score_threshold: 50          # Conversations below this composite score are flagged for review
   max_chars_for_scoring: 8000      # Truncate conversation before sending to scoring LLM
   scoring_api:
@@ -668,16 +669,27 @@ quality:
 - **Diversity** — Type-token ratio, sentence length variance, trigram repetition rate, paragraph structure
 - **Technical** — Quote balance (straight + curly), stray asterisks, em dashes, tab characters, excessive whitespace, trailing whitespace, all-lowercase detection
 
+### Roleplay Dimensions (opt-in)
+
+When `quality.roleplay_dimensions: true` (toggleable in the Configuration Editor's Quality Scoring section; **off by default** so existing composite scores stay comparable), three roleplay-specific dimensions join the composite, each at default weight `0.10` (the composite is re-normalized over the active dimensions, so the weights never need to sum to 1):
+
+| Dimension | Weight | Method |
+|-----------|--------|--------|
+| Voice Distinctiveness | 0.10 | Heuristic base (bigram overlap between characters' spoken lines); refined by the LLM judge when enabled |
+| Grounding | 0.10 | Heuristic base (profile-keyword coverage in the scene); refined by the LLM judge against the character card |
+| Persona Alignment | 0.10 | Heuristic base (outward personality vs withheld inner `persona` timing around `persona_breakthrough_turn`); refined by the LLM judge |
+
+Each dimension runs a fast heuristic first — so it stays meaningful even with `use_llm_scoring: false` — and the LLM judge replaces its score when a judge call succeeds. New flags: `interchangeable_character_voices`, `similar_character_voices`, `insufficient_multi_character_dialogue`, `undifferentiated_multi_character`, `partial_line_attribution` (voice); `generic_filler_response`, `ungrounded_scene`, `weak_grounding`, `no_profile_for_grounding` (grounding); `early_inner_persona_leak`, `no_inner_persona_signals`, `no_inner_persona_to_align` (persona), plus the usual `low_<dimension>` below-40 marker. The Quality dashboard tab gains one summary label and one table column per enabled dimension (rebuilt automatically when the toggle changes), and each record's metadata block carries `quality_voice_distinctiveness`, `quality_grounding`, `quality_persona_alignment` (`-1.0` when off or unscored — see Record Metadata).
 **LLM Scoring (optional, when `use_llm_scoring: true`):**
 - Sends the conversation (truncated to `max_chars_for_scoring`) to a dedicated LLM with a structured scoring prompt
-- Expects a JSON response with 0–100 scores for coherence, naturalness, engagement, and consistency
+- Expects a JSON response with 0–100 scores for coherence, naturalness, engagement, and consistency (plus the three roleplay dimensions when `roleplay_dimensions` is on)
 - Falls back to heuristic estimates if the LLM call fails or returns invalid JSON
 
 **Flags generated by scoring:**
 - `below_threshold_{N}` — Composite score is below the configured minimum
 - `low_vocabulary_diversity`, `repetitive_phrases`, `uniform_sentence_length` — Diversity issues
 - `unbalanced_straight_quotes`, `stray_asterisks`, `all_lowercase_no_punctuation` — Technical issues
-- `low_coherence`, `low_naturalness`, `low_engagement`, `low_consistency` — LLM dimension scores below 40
+- `low_coherence`, `low_naturalness`, `low_engagement`, `low_consistency` — LLM dimension scores below 40 (also `low_voice_distinctiveness`, `low_grounding`, `low_persona_alignment` when the roleplay dimensions are on)
 - `llm_scoring_fallback` — LLM scoring failed, heuristic estimates used
 - `empty_conversation` — Conversation has fewer than 2 messages
 
@@ -1062,7 +1074,7 @@ When `generation.include_metadata: true` (the default), every record also carrie
     {"from": "gpt", "value": "..."}
   ],
   "metadata": {
-    "meta_version": 2,
+    "meta_version": 3,
     "characters": ["Ines"],
     "emotional_state": "anxious",
     "setting": "A dockside ferry terminal at dusk.",
@@ -1078,6 +1090,9 @@ When `generation.include_metadata: true` (the default), every record also carrie
     "quality_diversity": 95.0,
     "quality_consistency": 88.0,
     "quality_technical": 92.0,
+    "quality_voice_distinctiveness": -1.0,
+    "quality_grounding": -1.0,
+    "quality_persona_alignment": -1.0,
     "generated_at": "2026-01-15 14:32:00"
   }
 }
@@ -1088,10 +1103,10 @@ Field notes:
 - **`emotional_state` / `setting`** — the state or arc assigned to the conversation, and the first non-empty setting the prompt carried; `""` when none (`setting` is `""` whenever setting selection is off).
 - **`opening_mode` / `has_greeting`** — whether opening mode was active and the record starts with a greeting turn.
 - **`duplication_turn`** — in Duplication Mode, the 1-based turn number for per-turn rows; `0` for full-conversation rows.
-- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `-1.0` when the conversation was not scored (scoring disabled or failed, or an empty conversation); `quality_method` is `"heuristic_only"`, `"hybrid"`, `"none"` (empty conversation) or `""` (not scored).
+- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `-1.0` when the conversation was not scored (scoring disabled or failed, or an empty conversation); the three roleplay fields are additionally `-1.0` whenever `quality.roleplay_dimensions` is off. `quality_method` is `"heuristic_only"`, `"hybrid"`, `"none"` (empty conversation) or `""` (not scored).
 - **`generated_at`** — when the row was written, local time.
 
-**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 17 keys with the same scalar types, and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
+**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 20 keys with the same scalar types, and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
 ```yaml
 datasets:
   - path: output.jsonl
@@ -1148,7 +1163,7 @@ readyart-dataset-generator/
 ├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
 ├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes)
 ├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal)
-├── quality.py               # Quality scoring engine (hybrid: heuristic + optional LLM, 6 dimensions)
+├── quality.py               # Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions)
 ├── config_loader.py         # Configuration management, profiles, YAML load/save
 ├── api_handler.py           # Rate limiting, Valkey/Redis caching, response time tracking
 ├── api_profiles.py          # Per-endpoint payload compatibility profiles (thread-safe, auto-detection)
@@ -1196,7 +1211,7 @@ readyart-dataset-generator/
 5. **Per-Reply Note (NEW in v10.0)** — The scene prompt (system prompt + lore + persona-free character profiles) is the system message of every request in a task (a retry still appends its fix instruction to it, as in step 3). Each assistant reply gets a note: the INNER PERSONA BREAKTHROUGH (from `persona_breakthrough_turn` onward) and the emotional-state injection (a flat state, or the current stage of an arc advanced one step per reply). Each block goes where its placement says. On `depth0` (the default) it follows the reply's final instruction (the `answer` prompt, or the `greeting` prompt in opening mode), after the conversation history, and is not stored in it, so the system prompt never changes and the server's prefix cache keeps the history. On `system` it is appended to that reply's system prompt, which changes whenever the block does; the user continuation after that reply shares its system prompt. Questions get the scene prompt without either block, and on `depth0` so do user continuations
 6. **Repeat** — Steps 3–5 repeat for the configured number of turns
 7. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
-8. **Quality Scoring** — The completed conversation is scored across six dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. If the composite score is below the threshold, the task is flagged for review
+8. **Quality Scoring** — The completed conversation is scored across the six core dimensions plus, when `quality.roleplay_dimensions` is on, the three roleplay dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. If the composite score is below the threshold, the task is flagged for review
 9. **Output** — Write to JSONL file or PostgreSQL database, appending the flat `metadata` provenance/quality block when `generation.include_metadata` is true (see [Record Metadata Block](#record-metadata-block-new-in-v990))
 10. **State Save** — Update crash recovery state (including quality scores and review flags)
 
@@ -1211,14 +1226,22 @@ Heuristic Scoring (always runs, no API call)
     └── Technical: quote balance, asterisks, em dashes, whitespace, lowercase check
     │
     ▼
+Roleplay Dimensions (optional, if roleplay_dimensions: true)
+    ├── Voice distinctiveness: bigram overlap between characters' spoken lines
+    ├── Grounding: profile-keyword coverage in the scene
+    └── Persona alignment: outward vs inner-persona timing around the breakthrough slot
+    │  (each also refined by the LLM judge below when one runs)
+    │
+    ▼
 LLM Scoring (optional, if use_llm_scoring: true)
     ├── Format conversation (truncate to max_chars_for_scoring)
     ├── Send to scoring LLM with structured prompt
-    ├── Parse JSON response → coherence, naturalness, engagement, consistency
+    ├── Parse JSON response → coherence, naturalness, engagement, consistency (+ the
+    │   three roleplay dimensions when enabled)
     └── On failure → heuristic fallback estimates
     │
     ▼
-Composite Score = Σ (dimension_score × weight) / Σ weights
+Composite Score = Σ (active dimension_score × weight) / Σ active weights
     │
     ▼
 Below min_score_threshold?
@@ -1697,7 +1720,10 @@ Quality scores are stored in-memory in `app_state.quality_scores` (a dict keyed 
     "engagement": 82,
     "diversity": 95,
     "consistency": 88,
-    "technical": 92
+    "technical": 92,
+    "voice_distinctiveness": 85,
+    "grounding": 90,
+    "persona_alignment": 60
   },
   "flags": [],
   "scored_at": "2025-06-15 14:32:00",
@@ -1705,7 +1731,7 @@ Quality scores are stored in-memory in `app_state.quality_scores` (a dict keyed 
 }
 ```
 
-The `method` field indicates which scoring path was used: `"heuristic_only"`, `"hybrid"`, or `"none"`.
+The `method` field indicates which scoring path was used: `"heuristic_only"`, `"hybrid"`, or `"none"`. The three roleplay dimensions appear only when `quality.roleplay_dimensions` is on; stored entries predate the toggle and simply lack those keys (the dashboard shows `N/A` for them).
 
 ---
 
@@ -1717,7 +1743,7 @@ The application is organized into focused modules with one-way dependencies to p
 |--------|---------|--------------|
 | `generate.py` | Main GUI, orchestration, worker thread management, startup | All modules (root of dependency tree) |
 | `generation.py` | Worker loop, LLM calls, answer generation, task processing | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `quality`, `logging_config` |
-| `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 6 dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
+| `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
 | `config_editor.py` | Configuration editor GUI (tabbed interface, validation, search) | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
 | `dashboard.py` | Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview) | `app_state`, `api_handler`, `logging_config` |
 | `detection.py` | Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes) | `app_state` (for timestamps, issue tracking) |

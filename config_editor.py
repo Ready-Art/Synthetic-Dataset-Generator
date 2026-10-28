@@ -371,6 +371,9 @@ class ConfigEditor(tk.Toplevel):
         self.quality_output_filter_var_editor = tk.BooleanVar(value=False)
         wrapped_checkbutton(gen_settings_frame, text="Flag conversations below threshold (for post-filtering)", variable=self.quality_output_filter_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
+        self.quality_roleplay_dims_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(gen_settings_frame, text="Roleplay dimensions: voice_distinctiveness, grounding, persona_alignment (adds weighted scoring + metadata columns; heuristic base, LLM-judge refined)", variable=self.quality_roleplay_dims_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
+
         add_gen_setting("Min Score Threshold (0-100):", 'quality_min_threshold_var', "(Conversations below this are flagged)")
         add_gen_setting("Max Chars for LLM Scoring:", 'quality_max_chars_var', "(Truncate conversation before sending to scoring LLM)")
 
@@ -1389,6 +1392,7 @@ class ConfigEditor(tk.Toplevel):
                 'enabled': self.quality_enabled_var_editor.get(),
                 'use_llm_scoring': self.quality_use_llm_var_editor.get(),
                 'output_filter': self.quality_output_filter_var_editor.get(),
+                'roleplay_dimensions': self.quality_roleplay_dims_var_editor.get(),
                 'min_score_threshold': int(self.quality_min_threshold_var.get() or 50),
                 'max_chars_for_scoring': int(self.quality_max_chars_var.get() or 8000),
                 'scoring_api': {
@@ -1870,6 +1874,7 @@ class ConfigEditor(tk.Toplevel):
             self.quality_enabled_var_editor.set(quality_conf.get('enabled', True))
             self.quality_use_llm_var_editor.set(quality_conf.get('use_llm_scoring', False))
             self.quality_output_filter_var_editor.set(quality_conf.get('output_filter', False))
+            self.quality_roleplay_dims_var_editor.set(quality_conf.get('roleplay_dimensions', False))
             self.quality_min_threshold_var.set(str(quality_conf.get('min_score_threshold', 50)))
             self.quality_max_chars_var.set(str(quality_conf.get('max_chars_for_scoring', 8000)))
             self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
