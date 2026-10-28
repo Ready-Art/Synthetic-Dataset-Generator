@@ -556,7 +556,7 @@ prompts:
 
 Neither new request uses the Valkey response cache, so a retry gets a new reply. A sample costs one request more than in chunk mode. Without input files, a run queues `num_random_chunks` opening tasks (12000 by default); with input files, opening tasks are book chunks, with IDs starting `opening_` so finished chunk-mode tasks do not suppress them. A greeting or first line that fails every attempt, or a conversation that ends short, is requeued, and marked failed once `MAX_TASK_REQUEUES` is reached. Quality scoring scores the conversation from the first user line. Opening mode cannot run with `use_questions_file` or `master_duplication_mode` on.
 
-The editor saves the `greeting`, `greeting_context` and `first_line` prompts, the first-line styles and each character's `greeting` with their quotes, apostrophes, angle brackets and backslashes, which dialogue and markup need. The system, question, answer, continuation and lore prompts still have those characters removed when saved.
+The editor saves the `greeting`, `greeting_context` and `first_line` prompts, the first-line styles, every character profile field and the emotional states with their quotes, apostrophes, angle brackets and backslashes, which dialogue, markup and the `->` in an emotional arc need. The system, question, answer, continuation and lore prompts still have those characters removed when saved.
 
 ### Detection & Quality Control
 

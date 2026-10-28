@@ -1352,26 +1352,27 @@ class ConfigEditor(tk.Toplevel):
                 'setting_enabled': self.enable_setting_selection_var_editor.get(),
                 'num_characters': int(self.num_characters_var_editor.get()),
                 'persona_breakthrough_turn': int(self.persona_breakthrough_turn_var_editor.get()),
+                # Profile fields are saved as typed, like the opening-mode prompts: roleplay text needs its quotes and apostrophes
                 'characters': [
                     {
-                        'name': sanitize_input(data['name'].get().strip()),
-                        'age': sanitize_input(data['age'].get().strip()),
-                        'gender': sanitize_input(data['gender'].get().strip()),
-                        'race': sanitize_input(data['race'].get().strip()),
-                        'job': sanitize_input(data['job'].get().strip()),
-                        'eye_color': sanitize_input(data['eye_color'].get().strip()),
-                        'hair': sanitize_input(data['hair'].get().strip()),
-                        'hair_color': sanitize_input(data['hair_color'].get().strip()),
-                        'clothing': sanitize_input(data['clothing'].get().strip()),
-                        'jewelry': sanitize_input(data['jewelry'].get().strip()),
-                        'appearance': sanitize_input(data['appearance'].get().strip()),
-                        'traits': sanitize_input(data['traits'].get().strip()),
-                        'backstory': sanitize_input(data['backstory'].get().strip()),
-                        'persona': sanitize_input(data['persona'].get().strip()),
-                        'personality': sanitize_input(data['personality'].get().strip()),
-                        'setting': sanitize_input(data['setting'].get().strip()) if self.enable_setting_selection_var_editor.get() else '',
-                        'class': sanitize_input(data['class'].get().strip()),
-                        'greeting': data['greeting'].get().strip(),  # Saved as typed, like the opening-mode prompts
+                        'name': data['name'].get().strip(),
+                        'age': data['age'].get().strip(),
+                        'gender': data['gender'].get().strip(),
+                        'race': data['race'].get().strip(),
+                        'job': data['job'].get().strip(),
+                        'eye_color': data['eye_color'].get().strip(),
+                        'hair': data['hair'].get().strip(),
+                        'hair_color': data['hair_color'].get().strip(),
+                        'clothing': data['clothing'].get().strip(),
+                        'jewelry': data['jewelry'].get().strip(),
+                        'appearance': data['appearance'].get().strip(),
+                        'traits': data['traits'].get().strip(),
+                        'backstory': data['backstory'].get().strip(),
+                        'persona': data['persona'].get().strip(),
+                        'personality': data['personality'].get().strip(),
+                        'setting': data['setting'].get().strip() if self.enable_setting_selection_var_editor.get() else '',
+                        'class': data['class'].get().strip(),
+                        'greeting': data['greeting'].get().strip(),
                     }
                         for data in self.character_entries
                         if any(data[k].get().strip() for k in ['name', 'race', 'job', 'eye_color', 'hair', 'hair_color', 'clothing', 'jewelry', 'appearance', 'backstory', 'persona', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
@@ -1379,7 +1380,8 @@ class ConfigEditor(tk.Toplevel):
                 },
                 'emotional_states': {
                     'enabled': self.enable_emotional_states_var_editor.get(),
-                    'states': [sanitize_input(line.strip()) for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()]
+                    # Saved as typed: an arc separates its stages with '->'
+                    'states': [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
                 'random_names': {
                     'enabled': self.enable_random_names_var_editor.get(),
