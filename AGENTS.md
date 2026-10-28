@@ -129,7 +129,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Add new config field → Add UI widget + bind to `save_config_handler()` + `load_config_handler()`
 - New tab → Add `ttk.Frame` + `notebook.add()` in `__init__()`
 - Validation → `validate_config_handler()`
-- Datasets tab → `DatasetsPanel(self.notebook)` added in `__init__()` (~line 959); config gathered in `save_config_handler()` (`config_data['datasets'] = self.datasets_panel.get_config()`), loaded in `load_config_handler()` (`self.datasets_panel.load_config(...)`), validated in `validate_config_handler()`; `DatasetSettingsError` surfaces on the status bar
+- Datasets tab → `DatasetsPanel(self.notebook)` added in `__init__()`; config gathered in `save_config_handler()` (`config_data['datasets'] = self.datasets_panel.get_config()`), loaded in `load_config_handler()` (`self.datasets_panel.load_config(...)`), validated in `validate_config_handler()`; `DatasetSettingsError` surfaces on the status bar
 
 ### `config_loader.py` [8]
 **Purpose:** Load/save config.yml and profiles
@@ -161,8 +161,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Main UI, Tkinter app, worker thread management, queue setup
 **Key:** `start_processing()`, `worker()` launch, UI widgets, `ConfigEditor`
 **Edit for:**
-- Queue dataset wiring → `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` at processing start (~line 1216) attaches an in-memory `DatasetTaskAttachments` service to the run's task queue; attachments die with the queue and are NOT persisted across app restarts
-- Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()` (~line 1480). **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `test_worker_launch.py` fails on the mismatch
+- Queue dataset wiring → `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` in `start_processing()` attaches an in-memory `DatasetTaskAttachments` service to the run's task queue; attachments die with the queue and are NOT persisted across app restarts
+- Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()`. **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `test_worker_launch.py` fails on the mismatch
 - New UI tab → Add to `dashboard_notebook` + populate widgets
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - DB export → `export_db_to_jsonl()`, `clear_database()`
@@ -174,7 +174,6 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - API call flow → `generate_answer_with_retries()` main loop
 - Slop fixing → `call_slop_fixer_llm()` (API slot 5, index 4) / `call_anti_slop_llm()` (API slot 6, index 5)
 - Output format → `write_conversation()` ShareGPT structure
-- Dataset values → `bind_task_datasets()` near the top of the `worker()` task loop freezes one row per source for the task, across turns, fixes and retries. `render_task_inputs()` expands `{{ds:alias}}` in the static authored inputs; the question, continuation, greeting and first-line templates are expanded where they are formatted, with `render_with_native_placeholders()`. `docs/dataset-bindings.md` (Placeholder syntax) lists the fields
 - Opening mode → `generate_greeting()`, `generate_first_line()`, `enqueue_opening_tasks()`
 - Quality scoring → `quality.score_conversation()` call after conversation complete
 - Turn completion check → `conversation_is_complete()`
@@ -183,7 +182,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Persona/emotional-state split → `_split_emotional_arc_entry()`, `_expand_emotional_arc()`, `_emotional_state_injection()`, `_persona_block_for_characters()` (all above `worker()`). The worker builds `base_scene_prompt` (system + lore + persona-free profile) once per task. It is the system message of every greeting, answer and user-continuation request in the task (a retry still appends its jailbreak or fix instruction to it); the generated question gets it plus `QUESTION_USER_SIDE`, and the first-line and fixer requests have their own system prompts. The per-reply note comes from `current_turn_note(slot_no)`: the INNER PERSONA BREAKTHROUGH block from `persona_breakthrough_turn` onward, then the slot's emotional state, which is a flat name or an arc stage (`'neutral -> anxious'` expanded across the conversation's assistant turns). The note is appended to the slot's final user message, the answer prompt or the opening-mode greeting prompt, after the history and never stored in it. The question and user-continuation requests do not get it. So from one answer request to the next the system prompt and the history are the same text, which lets a server's prefix cache reuse them; keep it that way. Opening-mode greeting = slot 1, so conversation turn N lives at slot N+1.
 - Generated first user message → when characters are profiled, its system prompt is the scene prompt plus `QUESTION_USER_SIDE`, which tells the model it writes only the user's side and that the user is not one of the characters
 - Output metadata → `_build_record_metadata()` (17 flat keys, same shape on every record, null-filled; `_safe_float()` keeps numeric types stable) + `_score_and_store_quality()` (quality scoring deduped by task_id; called BEFORE both write paths so metadata can carry scores)
-- Dataset binding → `bind_task_datasets(queue, task, ...)` (per task, ~line 653) freezes one row per enabled source into an immutable `task_dataset_values` mapping for the life of the task; `validate_task_templates()` pre-checks all authored templates up front. Authored fields (question/answer/continuation prompts, greeting context, first-line, character long fields via `dataset_authored_inputs`) are rendered with `render_task_inputs()` / `render_with_native_placeholders()`; prompt-fillers (`fill_question_prompt()`, continuation, `fill_greeting_prompt()`, `fill_first_line_prompt()`) take a `dataset_values=None` kwarg — `None` skips rendering entirely, so generation without datasets behaves byte-identically to the pre-dataset engine
+- Dataset binding → `bind_task_datasets(queue, task, ...)` near the top of the `worker()` task loop freezes one row per enabled source into an immutable `task_dataset_values` mapping for the life of the task (every turn, fix and retry); `validate_task_templates()` pre-checks the question, continuation, greeting and first-line templates up front. The static authored inputs in `dataset_authored_inputs` (system prompts, answer prompt, jailbreaks and fixes, lore, character fields, emotional states, name/setting pools, first-line styles) are rendered once per task with `render_task_inputs()`. The question, continuation, greeting and first-line templates are rendered where they are formatted, with `render_with_native_placeholders()`: `generate_question()`, `generate_user_continuation()`, `fill_greeting_prompt()` (called by `generate_greeting()`) and `generate_first_line()` take a `dataset_values=None` kwarg, and `None` skips rendering entirely, so generation without datasets behaves byte-identically to the pre-dataset engine. `docs/dataset-bindings.md` (Placeholder syntax) lists the fields
 
 ### `logging_config.py` [13]
 **Purpose:** Shared logging utility
@@ -366,13 +365,12 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add/modify persona breakthrough or emotional arc | `config/config.yml` (`prompts.character.persona_breakthrough_turn`, `prompts.emotional_states.states[]` — a state may be `'->'`-joined stages), `config_editor.py` (spinbox under Character Engine + states label), `generate.py` (load + pass to worker kwargs), `generation.py` (`_split_emotional_arc_entry`/`_expand_emotional_arc`/`_emotional_state_injection`/`_persona_block_for_characters` + `current_turn_note()` in `worker()`), `test_opening_mode.py` and `test_persona_arc.py` |
 | Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
 | Add/modify output metadata field | `generation.py` (`_build_record_metadata()` schema + `_safe_float()`), keep same-keys/same-types/null-filled invariant; config flag `generation.include_metadata` |
-| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list) |
+| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list), `test_dataset_sources.py` (or `test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
 | Add dataset column→alias mapping | `config_editor.py` (Datasets tab) → `datasets_panel.py` (Apply/Copy placeholder) → `dataset_settings.py` (validation) — placeholders `{{ds:alias}}` are then usable in any authored prompt field |
 | Modify dataset placeholder rendering | `dataset_templates.py` (`render_template()` / `render_with_native_placeholders()` / `validate_alias()`); worker-side call sites in `generation.py` (`render_task_inputs()`) |
 | Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |
 | Run dataset tests | `python -m unittest test_dataset_sources test_dataset_settings test_dataset_bindings test_dataset_templates test_dataset_tasks test_dataset_backends test_dataset_column_menu test_datasets_panel test_dataset_pipeline test_dataset_compatibility` (live Hub check: `tools/check_dataset_hub.py`, opt-in only) |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
-| Add a dataset source format | `dataset_sources.py` (reader), `test_dataset_sources.py`, `test_dataset_backends.py` (optional package), `requirements-datasets.txt` (if a new package) |
 | Change what a request contains (prompt text, message order or role) | `generation.py`, `test_opening_mode.py`, then move `BASELINE_COMMIT` in `test_dataset_compatibility.py` to a commit with the same change |
 
 ## Key State Variables (`app_state.py`)
@@ -436,7 +434,3 @@ if lock_acquired:
 - `--character-count N`: Number of fixture character profiles (1-100, default: 10)
 - `--allow-below-minimum`: Override production window minima for diagnostics
 **Output:** `./layout-check/layout_measurements.json` with widget visibility, overlaps, scroll region, and check results
-
-### `tools/check_dataset_hub.py`
-**Purpose:** Opt-in live check of a Hugging Face Hub dataset reader; prints the schema and provenance, never cell values. Needs network access and `requirements-datasets.txt`; not part of the test run
-**Usage:** `python -B tools/check_dataset_hub.py --repository owner/dataset --config default --split train --column text --rows 2`
