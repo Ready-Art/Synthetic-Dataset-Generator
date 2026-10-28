@@ -841,7 +841,7 @@ class ConfigEditor(tk.Toplevel):
 
         # --- Samplers Tab ---
         self.samplers_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.samplers_tab, text="Samplers (Model Params)")
+        self.notebook.add(self.samplers_tab, text="Samplers")
 
         # Setup Canvas and Scrollbar for Samplers Tab
         self.samplers_canvas = tk.Canvas(self.samplers_tab)

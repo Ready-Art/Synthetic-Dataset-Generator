@@ -317,7 +317,9 @@ class NotebookNavigator(ttk.Frame):
         values = self.tk.splitlist(padding)
         horizontal_padding = (self.winfo_pixels(values[0]) +
                               self.winfo_pixels(values[2] if len(values) > 2 else values[0])) if values else 16
-        needed = sum(tab_font.measure(label) + horizontal_padding + _pixels(self, 8) for label in labels)
+        # A tab is only as wide as its longest line; summing wrapped lines overstates the strip.
+        needed = sum(max((tab_font.measure(line) for line in label.split("\n")), default=0) +
+                     horizontal_padding + _pixels(self, 8) for label in labels)
         compact = needed > max(1, self.notebook.winfo_width() - _pixels(self, 8))
         if compact != self._compact:
             self._compact = compact
