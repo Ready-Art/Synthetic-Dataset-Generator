@@ -755,6 +755,7 @@ def run(args):
                 {"name": f"Layout character {index + 1}", "age": "25", "race": "Human",
                  "gender": "Nonbinary", "job": "Researcher", "class": "Explorer",
                  "clothing": "A coat and comfortable boots.", "appearance": "A synthetic test profile.",
+                 "persona": "Quietly anxious underneath, fiercely protective of the team.",
                  "personality": "Curious and patient.", "traits": "Observant, practical.",
                  "setting": "An imaginary research station.",
                  "backstory": "Long, wrapped fixture text keeps each editor scrollable.\n" * 12}
