@@ -41,6 +41,7 @@ import matplotlib.ticker as ticker
 import api_handler
 import api_profiles
 import app_state
+from dataset_tasks import configure_queue_datasets
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
                         DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
@@ -1209,6 +1210,15 @@ def start_processing():
     app_state.task_queue = Queue() 
     app_state.task_queue.api_widgets = {} 
 
+    # Optional task attachments. Configuration only: readers open on a worker's
+    # first bind. The existing queue, task IDs, retries and recovery stay in charge.
+    try:
+        configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))
+    except ValueError as exc:
+        toast.show(f"Dataset configuration: {exc}", "error")
+        log_message(f"Dataset configuration: {exc}", "ERROR")
+        app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
+
     # --- Define Number of Tasks to Generate (New) ---
     NUM_RANDOM_CHUNKS = global_config.get('generation.num_random_chunks', 12000) # Change this number to generate more or fewer tasks per run
 
@@ -1511,9 +1521,6 @@ def start_processing():
             include_metadata,
             enable_random_settings,
             random_settings_list,
-            current_ooc_phrases,
-            current_ooc_fixes,
-            current_ooc_enabled,
         ), kwargs={
             'opening_mode_local': current_opening_mode,
             'greeting_prompt_local': current_greeting_prompt,
@@ -1522,6 +1529,9 @@ def start_processing():
             'greeting_context_local': current_greeting_context,
             'first_line_styles_local': current_first_line_styles,
             'persona_breakthrough_turn_local': persona_breakthrough_turn,
+            'current_ooc_phrases': current_ooc_phrases,
+            'current_ooc_fixes': current_ooc_fixes,
+            'current_ooc_enabled': current_ooc_enabled,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
