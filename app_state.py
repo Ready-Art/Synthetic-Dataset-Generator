@@ -25,7 +25,8 @@ issue_timestamps = {
     'slop': [],
     'errors': [],
     'anti_slop': [],
-    'incomplete_quotes': []
+    'incomplete_quotes': [],
+    'out_of_character': []
 }
 issue_timestamps_lock = Lock()
 loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded from state file
@@ -46,6 +47,8 @@ recent_slop_per_api = {i: [] for i in range(6)}
 recent_slop_total = []
 recent_user_speaking_per_api = {i: [] for i in range(6)}
 recent_user_speaking_total = []
+recent_ooc_per_api = {i: [] for i in range(6)}
+recent_ooc_total = []
 refusal_count_total = 0
 refusal_counts_per_api = {i: 0 for i in range(6)}
 slop_count_total = 0
@@ -64,6 +67,8 @@ total_input_tokens = 0
 total_output_tokens = 0
 user_speaking_count_total = 0
 user_speaking_counts_per_api = {i: 0 for i in range(6)}
+ooc_count_total = 0
+ooc_counts_per_api = {i: 0 for i in range(6)}
 character_counter = 0  # Round-robin counter for character selection
 character_counter_lock = Lock()  # Thread-safe access
 pending_task_ids = set()
@@ -122,6 +127,7 @@ status_bar = None
 thread_status_label = None
 token_label = None
 user_speaking_label = None
+ooc_label = None
 # ^ dashboard widget handles — assigned in generate.py when the main window is built
 
 
