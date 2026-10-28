@@ -99,6 +99,7 @@ quality:
   output_filter: false
   min_score_threshold: 50
   max_chars_for_scoring: 8000
+  max_profile_chars_for_scoring: 4000
   scoring_api:
     url: ''
     model: ''
