@@ -1,4 +1,4 @@
-# codebase.md - Codebase Cheat Sheet
+AGENTS.md - Codebase Cheat Sheet
 
 ## Core Architecture
 ```
