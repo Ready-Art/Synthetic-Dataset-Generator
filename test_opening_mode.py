@@ -363,12 +363,15 @@ OPENING_HISTORY = [a("The lamp gutters. \"Close the door,\" she says."), u("I sh
 def test_write_conversation():
     reset_state()
     plain = [u("Hello there."), a("Hello back.")]
-    write(plain, task_id="plain")
+    write(plain, task_id="plain", include_metadata=False)
     with open(os.path.join("output", "output.jsonl"), encoding="utf-8") as f:
         text = f.read()
     expected = json.dumps({"id": "plain", "conversations": [{"from": "human", "value": "Hello there."},
                                                             {"from": "gpt", "value": "Hello back."}]}) + "\n"
-    check("both options off: row is byte-identical to the existing format", text == expected)
+    check("all options off, metadata off: row is byte-identical to the legacy format", text == expected)
+    reset_state()
+    write(plain, task_id="plain")
+    check("by default the row carries a metadata block", list(read_rows()[0]) == ["id", "conversations", "metadata"])
 
     reset_state()
     history = json.loads(json.dumps(OPENING_HISTORY))
@@ -733,6 +736,17 @@ def test_opening_speakers():
     run_opening(character_list=with_greeting, num_characters_local=2)
     check("several characters: a profile greeting is not used", ROUTER.kinds()[0] == "greeting")
 
+    reset_state()
+    run_opening(enable_random_names_local=True, random_names_list_local=["Mara"])
+    check("random names on: the greeting speaks as the random name the profile block uses",
+          "Open the scene as Mara." in greeting_text()
+          and "Name: Mara" in ROUTER.bodies("greeting")[0]["messages"][0]["content"])
+    reset_state()
+    run_opening(character_list=with_greeting, enable_random_names_local=True, random_names_list_local=["Mara"])
+    check("random names on: a profile greeting, which names the profile's own character, is not used",
+          ROUTER.kinds()[0] == "greeting" and "Open the scene as Mara." in greeting_text()
+          and profile_greeting not in json.dumps([ROUTER.requests, read_rows()]))
+
 
 def test_opening_quality_scoring():
     reset_state()
@@ -862,6 +876,77 @@ def test_arc_and_persona_requests():
           and [names_stage(s, st) for s, st in zip(answer_systems(), ["wary", "tense"])] == [True, True])
 
 
+# --- (5) Record metadata ----------------------------------------------------------------------
+
+def _shape(value):
+    """A value's JSON type, with a list's element types: what Hugging Face infers a column from."""
+    if isinstance(value, list):
+        return ("list", tuple(sorted({type(v).__name__ for v in value})))
+    return type(value).__name__
+
+
+def _has_none(value):
+    return value is None or (isinstance(value, list) and any(v is None for v in value))
+
+
+def test_record_metadata():
+    empty = g._build_record_metadata(None, None, None, False, False, None, None, None, None)
+    full = g._build_record_metadata(
+        ["Ines", "Oren"], "calm -> wary", "A dockside ferry terminal at dusk.", True, True, 2,
+        {"composite": 87.3, "method": "hybrid", "flags": [],
+         "dimensions": {"coherence": 90, "naturalness": 85.0, "engagement": 82.0, "diversity": 95.0,
+                        "consistency": 88.0, "technical": 92.0}},
+        3, "2026-01-15 14:32:00")
+    check("metadata with every input missing has no None", not any(_has_none(v) for v in empty.values()))
+    check("metadata with every input missing has the populated key set", list(empty) == list(full))
+    check("metadata with every input missing has the populated value types",
+          {k: _shape(v) for k, v in empty.items()} == {k: _shape(v) for k, v in full.items()})
+    check("unknown strings are empty, duplication_turn 0, unscored quality -1.0",
+          empty["emotional_state"] == empty["setting"] == empty["quality_method"] == empty["generated_at"] == ""
+          and empty["duplication_turn"] == 0
+          and all(v == -1.0 for k, v in empty.items() if k.startswith("quality_") and k != "quality_method"))
+    check("meta_version is 2", empty["meta_version"] == full["meta_version"] == 2)
+    check("populated quality numbers are recorded as floats",
+          full["quality_composite"] == 87.3 and full["quality_coherence"] == 90.0
+          and isinstance(full["quality_coherence"], float))
+    unscored = g._build_record_metadata(None, None, None, False, False, 0,
+                                        {"composite": 0, "method": "none", "dimensions": {"coherence": 0}}, None, "")
+    check("an empty conversation (method none) records -1.0 for every quality number, not 0",
+          unscored["quality_method"] == "none"
+          and all(v == -1.0 for k, v in unscored.items() if k.startswith("quality_") and k != "quality_method"))
+    check("the README's quality filter drops unscored rows",
+          isinstance(empty["quality_composite"], float) and not empty["quality_composite"] >= 80)
+
+    reset_state()
+    run_worker(chunk_task())
+    meta = read_rows()[0]["metadata"]
+    check("a worker row with quality scoring off has no None in its metadata",
+          not any(_has_none(v) for v in meta.values()))
+    check("a worker row's metadata has the populated key set and value types",
+          {k: _shape(v) for k, v in meta.items()} == {k: _shape(v) for k, v in full.items()})
+
+
+def test_metadata_matches_prompt():
+    blank_named = [{**CHARACTERS[0], "name": "", "setting": "A harbor at dawn."}]
+    reset_state()
+    run_worker(chunk_task(), character_list=blank_named,
+               enable_random_names_local=True, random_names_list_local=["Mara"])
+    meta = read_rows()[0]["metadata"]
+    check("random names on: the prompt names the profile with the random name", "Name: Mara" in json.dumps(ROUTER.requests))
+    check("random names on: characters records the random name, including for a blank-named profile",
+          meta["characters"] == ["Mara"] and meta["num_characters"] == 1)
+    check("setting selection off: setting is empty though the profile has one",
+          meta["setting"] == "" and "A harbor at dawn." not in json.dumps(ROUTER.requests))
+
+    reset_state()
+    run_worker(chunk_task(), character_list=[{**CHARACTERS[0], "setting": "A harbor at dawn."}],
+               enable_setting_selection_local=True)
+    meta = read_rows()[0]["metadata"]
+    check("random names off: characters records the profile's own name", meta["characters"] == ["Ines"])
+    check("setting selection on: setting records the setting the prompt carried",
+          meta["setting"] == "A harbor at dawn." and "Setting: A harbor at dawn." in json.dumps(ROUTER.requests))
+
+
 def main():
     print("(1) completion check")
     test_conversation_is_complete()
@@ -882,6 +967,9 @@ def main():
     test_generate_wiring()
     print("(4) emotional arc and persona through the worker")
     test_arc_and_persona_requests()
+    print("(5) record metadata")
+    test_record_metadata()
+    test_metadata_matches_prompt()
     if FAILURES:
         print(f"\n{len(FAILURES)} opening-mode test(s) failed")
         sys.exit(1)

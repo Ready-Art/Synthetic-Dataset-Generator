@@ -125,7 +125,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ### Output Metadata (NEW in v9.9.0)
 - **Provenance per Record** — Every output row can carry a flat, schema-stable `metadata` block recording which character(s), emotional state, and setting produced it, plus its quality score, so datasets are self-describing and filterable after generation
-- **Trainer-Safe by Design** — The block lives at the record level (a sibling of `id` and `conversations`), never inside `conversations[]`, and uses only flat scalars (`str`/`int`/`float`/`bool`/`null`) with identical keys and types on every row, so Hugging Face `load_dataset` and Axolotl's template mapping are unaffected
+- **Trainer-Safe by Design** — The block lives at the record level (a sibling of `id` and `conversations`), never inside `conversations[]`, and uses only flat scalars (`str`/`int`/`float`/`bool`, never `null`) with identical keys and types on every row, so Hugging Face `load_dataset` and Axolotl's template mapping are unaffected
 - **Quality Scores Inlined** — Quality scoring runs before the write, so each record's `quality_composite` / `quality_*` dimension fields describe that exact conversation (per-turn rows in Duplication Mode carry `duplication_turn` for identification)
 - **Filterable Post-Generation** — Use the metadata columns to filter datasets in the training repo without regenerating (e.g. keep only rows with `quality_composite >= 80`)
 - **Toggleable & Back-Compatible** — `generation.include_metadata` (default `true`); set to `false` to restore the legacy two-field records exactly, byte-for-byte
@@ -536,7 +536,7 @@ prompts:
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
 - **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
-- **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept.
+- **`greeting`:** Optional. In opening mode, when a sample has this character alone, the greeting is used as-is as the first message: no greeting request, no checks, and no book chunk. Quotes and markup in it are kept. With random names on it is not used, since it names the profile's own character; the greeting is generated under the random name instead.
 - **`random_names`:** Optional feature that overrides character names with randomly selected names from a configured list. When `prompts.random_names.enabled` is true, each character's name in the prompt is replaced with a random name from `prompts.random_names.names[]`. Names are selected independently for each character (not in order), allowing for varied name assignments across conversations. This is useful for generating diverse datasets without manually creating many character profiles.
 
 **Template Variables** (each is optional; the shipped question prompt uses only `{context}`):
@@ -1021,14 +1021,14 @@ When `generation.include_metadata: true` (the default), every record also carrie
     {"from": "gpt", "value": "..."}
   ],
   "metadata": {
-    "meta_version": 1,
+    "meta_version": 2,
     "characters": ["Ines"],
     "emotional_state": "anxious",
     "setting": "A dockside ferry terminal at dusk.",
     "num_characters": 1,
     "opening_mode": true,
     "has_greeting": true,
-    "duplication_turn": null,
+    "duplication_turn": 0,
     "quality_method": "hybrid",
     "quality_composite": 87.3,
     "quality_coherence": 90.0,
@@ -1043,13 +1043,14 @@ When `generation.include_metadata: true` (the default), every record also carrie
 ```
 
 Field notes:
-- **`characters`** — list of character names in the scene (`[""]` when no character engine profile was selected). Fixed-shape list of strings.
-- **`emotional_state` / `setting`** — the state/setting assigned to the conversation, or `null` when none.
+- **`characters`** — list of character names in the scene, as the generator assigned them (the random names when random names are on, recorded even when `include_names_in_prompt` is off; `[""]` when no character engine profile was selected). Fixed-shape list of strings.
+- **`emotional_state` / `setting`** — the state or arc assigned to the conversation, and the first non-empty setting the prompt carried; `""` when none (`setting` is `""` whenever setting selection is off).
 - **`opening_mode` / `has_greeting`** — whether opening mode was active and the record starts with a greeting turn.
-- **`duplication_turn`** — in Duplication Mode, the 1-based turn number for per-turn rows; `null` for full-conversation rows.
-- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `null` when quality scoring is disabled or failed; `quality_method` is `"heuristic_only"`, `"hybrid"`, or `null`.
+- **`duplication_turn`** — in Duplication Mode, the 1-based turn number for per-turn rows; `0` for full-conversation rows.
+- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `-1.0` when the conversation was not scored (scoring disabled or failed, or an empty conversation); `quality_method` is `"heuristic_only"`, `"hybrid"`, `"none"` (empty conversation) or `""` (not scored).
+- **`generated_at`** — when the row was written, local time.
 
-**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 17 keys with the same scalar types (gaps are filled with `null`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
+**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 17 keys with the same scalar types, and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
 ```yaml
 datasets:
   - path: output.jsonl
@@ -1063,8 +1064,8 @@ datasets:
 You *can* use the extra columns for free post-generation filtering in the training repo, e.g. keep only high-scoring rows:
 ```python
 from datasets import load_dataset
-ds = load_dataset("json", data_files="output.jsonl", field="auto")
-ds = ds.filter(lambda r: (r["metadata"]["quality_composite"] or 0) >= 80)
+ds = load_dataset("json", data_files="output.jsonl", split="train")
+ds = ds.filter(lambda r: r["metadata"]["quality_composite"] >= 80)
 ```
 
 Set `generation.include_metadata: false` (Generation tab in the Configuration Editor) to restore the legacy two-field records (`id` + `conversations` only) byte-for-byte.
