@@ -1061,6 +1061,12 @@ def start_processing():
     enable_character_engine_local = character_config.get('enabled', True)
     enable_class_selection_local = character_config.get('class_enabled', False)
     enable_setting_selection_local = character_config.get('setting_enabled', False)
+    # Persona breakthrough: which assistant slot (1 = first reply) starts injecting the inner persona.
+    # Slot 1 is always outward-behaviour-only; the persona 'breaks through' from this slot onward.
+    try:
+        persona_breakthrough_turn = max(1, int(character_config.get('persona_breakthrough_turn', 2)))
+    except (TypeError, ValueError):
+        persona_breakthrough_turn = 2
 
     num_characters_local = character_config.get('num_characters', 1)  # Default to 1 for backward compatibility
     if num_characters_local < 1:
@@ -1487,6 +1493,7 @@ def start_processing():
             'placeholder_share_local': current_placeholder_share,
             'greeting_context_local': current_greeting_context,
             'first_line_styles_local': current_first_line_styles,
+            'persona_breakthrough_turn_local': persona_breakthrough_turn,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -1869,7 +1876,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.9.0",
+    text="v10.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

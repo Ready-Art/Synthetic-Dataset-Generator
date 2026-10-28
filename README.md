@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v9.9.0
+# ReadyArt Synthetic Dataset Generator v10.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -106,6 +106,8 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Class Selection** — Optionally assign fantasy classes (mage, warlock, rogue, etc.) to characters
 - **Setting Selection** — Optionally assign custom locations/environments to each character
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
+- **Emotional Arcs (NEW in v10.0)** — A state can be a *progression* (`calm -> wary -> tense`) instead of a single mood. Arcs are expanded across the conversation's assistant turns, so the emotional register shifts over time (start composed, surface anger near the end) rather than staying flat — much richer training signal for multi-turn scenes
+- **Persona Breakthrough (NEW in v10.0)** — The inner `persona` is deliberately kept out of early turns and re-injected as an *INNER PERSONA BREAKTHROUGH* block from a configurable slot (`prompts.character.persona_breakthrough_turn`, default 2). Slot 1 stays outward-behaviour-only, mirroring how real character cards hide the private self until the scene breaks through
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
 - **Top-Level System Prompt** — Prepend a universal instruction to all system prompts across all conversations
 - **Lore Injection** — Inject world lore/background information into every system prompt
@@ -465,6 +467,10 @@ prompts:
     class_enabled: false           # Enable fantasy class selection
     setting_enabled: false         # Enable custom setting/location per character
     num_characters: 1              # Number of characters per conversation (1-10)
+    # Persona Breakthrough (NEW in v10.0): which assistant slot (1 = first reply) the inner persona
+    # starts being injected from. Slot 1 is always outward-behaviour-only; the persona 'breaks
+    # through' from this slot onward. Set 1 to expose the persona from the very first reply.
+    persona_breakthrough_turn: 2
     characters:                    # List-of-dicts format (recommended)
       - name: "Melody"
         age: "59"
@@ -475,8 +481,8 @@ prompts:
         jewelry: "Silver locket with faded photograph, simple copper wedding band"
         appearance: "Broad-shouldered and sturdy with a soft midsection, weathered olive skin, steel-gray and dark brown hair in choppy jaw-length bob"
         backstory: "Estranged from religious parents, lives alone above the shop, drives a 2004 Subaru Outback, goal is to restore an 18th-century marine chronometer"
-        persona: "Deep down she is a tender idealist who believes anything truly broken can be made to run again - her sarcasm is armor over loneliness, a fear of vulnerability, and a private grief she would never let anyone see"
-        personality: "Stoic and introverted on the surface; curt and defensively sarcastic with strangers but warm and fiercely loyal with close friends; copes with stress by disassembling cheap mechanical watches into component parts sorted into tiny glass jars"
+        persona: "Deep down she is a tender idealist who fell in love with timepieces as a child and still believes anything truly broken can be made to run again - clocks and people alike. Her sarcasm is armor over a lonely, vulnerable core; the longer a scene stays tense the more that mask slips, and under real pressure she snaps before she catches it"
+        personality: "Stoic and introverted on the surface, curt and defensively sarcastic with strangers but patient once trust is earned; keeps her real feelings tightly inside and copes by disassembling cheap watches into tiny glass jars"
         traits: "Meticulous, cynical, resilient, stubborn; taps thumb against index finger rhythmically when thinking, refuses hot beverages without lids"
         setting: "Cluttered repair counter in dimly lit pawn shop, 6:45 PM Tuesday, heavy rain lashing windows, smells of brass polish and damp wool"
         class: ""
@@ -496,15 +502,17 @@ prompts:
         class: "rogue"
 
   emotional_states:
-    enabled: false
+    enabled: true
+    # Each entry is either a flat state (constant across the whole conversation) or an arc using
+    # '->' between stages. Arcs are expanded across the conversation's assistant turns, so the
+    # emotional register shifts over time rather than being one static injection.
     states:
       - "happy"
       - "sad"
       - "anxious"
-      - "angry"
-      - "neutral"
-      - "excited"
-      - "contemplative"
+      # Arcs (NEW in v10.0): a start -> ... -> end progression, one stage per assistant turn
+      - "calm -> wary -> tense"
+      - "composed -> guarded -> snapped"
 
   random_names:
     enabled: false              # Enable random name assignment (overrides character Name field)
@@ -522,8 +530,9 @@ prompts:
 - **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
 - **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
 - **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10, max: 100).
-- **`persona`:** Optional field describing the character's **inner personality** — the private self underneath the surface: hidden fears, motivations, private grief, contradictions, and what happens under real pressure. It's injected into the system prompt as `Persona (inner personality):` so the LLM can portray an authentic interior life, making characters feel more lifelike.
-- **`personality`:** Optional field describing the character's **outward behavior** — the personality people actually observe: how they speak, act, cope, and treat others. Injected as `Personality (outward behavior):`. Keep it distinct from `persona` (the inner self); together the two give the LLM both the mask and the face beneath it.
+- **`persona_breakthrough_turn`:** (NEW in v10.0) Which assistant slot (1 = first reply) the inner `persona` starts being injected from. Slot 1 is always outward-behaviour-only; the persona surfaces as an *INNER PERSONA BREAKTHROUGH* block from this slot onward, so the model does not leak inner monologue too early. Default `2`; set `1` to expose it from the very first reply. In opening mode the greeting is slot 1, so conversation turn *N* lives at slot *N+1*.
+- **`persona`:** Optional field describing the character's **inner personality** — the private self underneath the surface: hidden fears, motivations, private grief, contradictions, and what happens under real pressure. The persona line is **not** part of the static profile block: it is withheld on early turns and re-injected as an INNER PERSONA BREAKTHROUGH block from `persona_breakthrough_turn` onward, so the model portrays an authentic interior life only once the scene "breaks through".
+- **`personality`:** Optional field describing the character's **outward behavior** — the personality people actually observe: how they speak, act, cope, and treat others. Always injected into the profile block as `Personality (outward behavior):`. Keep it distinct from `persona` (the inner self); together the two give the LLM both the mask and the face beneath it, with the mask shown first and the face revealed later.
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
 - **`age`:** Validated to be between 18 and 60 in the configuration editor. Invalid ages are auto-corrected at runtime.
 - **`name`:** Characters with empty or whitespace-only names are automatically skipped with a warning.
@@ -1107,6 +1116,7 @@ readyart-dataset-generator/
 ├── app_state.py             # Shared runtime state (counters, locks, task queue, quality scores, circuit breaker)
 ├── test_api_profiles.py     # Unit tests for API compatibility profiles
 ├── test_opening_mode.py     # Integration tests for opening mode
+├── test_persona_arc.py      # Unit tests for the persona-breakthrough + emotional-arc helpers
 ├── tools/
 │   └── check_gui_layout.py  # GUI layout testing utility for small displays
 ├── config/
@@ -1141,11 +1151,12 @@ readyart-dataset-generator/
    - Anti-slop → Attempt sentence-level rewriting via Anti-Slop Fixer LLM
    - Incomplete quotes → Retry with fix instruction, then programmatic auto-fix
 4. **User Continuation** — If multi-turn, an LLM generates the user's next message. Responses are also checked for malformed content
-5. **Repeat** — Steps 3–4 repeat for the configured number of turns
-6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
-7. **Quality Scoring** — The completed conversation is scored across six dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. If the composite score is below the threshold, the task is flagged for review
-8. **Output** — Write to JSONL file or PostgreSQL database, appending the flat `metadata` provenance/quality block when `generation.include_metadata` is true (see [Record Metadata Block](#record-metadata-block-new-in-v990))
-9. **State Save** — Update crash recovery state (including quality scores and review flags)
+5. **Scene-Prompt Recomposition (NEW in v10.0)** — At the top of every turn the worker rebuilds that task's scene prompt from a constant base (system prompt + lore + persona-free character profiles) plus two dynamic blocks: the INNER PERSONA BREAKTHROUGH (from `persona_breakthrough_turn` onward) and the emotional-state injection for that turn (a flat state, or the current stage of an arc advanced one step per turn). This is what lets the inner persona and the emotional register shift across the conversation instead of being set once
+6. **Repeat** — Steps 3–5 repeat for the configured number of turns
+7. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
+8. **Quality Scoring** — The completed conversation is scored across six dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. If the composite score is below the threshold, the task is flagged for review
+9. **Output** — Write to JSONL file or PostgreSQL database, appending the flat `metadata` provenance/quality block when `generation.include_metadata` is true (see [Record Metadata Block](#record-metadata-block-new-in-v990))
+10. **State Save** — Update crash recovery state (including quality scores and review flags)
 
 ### Quality Scoring Pipeline
 
@@ -1179,7 +1190,7 @@ Persist in generation_state.json
 
 ### Multi-Character Conversation Mode
 
-When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, jewelry, appearance, backstory, persona (inner personality), personality (outward behavior), traits, setting, and optional class. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
+When `num_characters` is set to a value greater than 1, the character engine selects multiple random character profiles and injects them all into the system prompt. Each character receives a distinct profile block with name, race, age, job, clothing, jewelry, appearance, backstory, personality (outward behavior), traits, setting, and optional class. As in single-character mode, each selected character's inner `persona` is withheld from the static profile and re-injected — as a numbered `CHARACTER N` line inside the same INNER PERSONA BREAKTHROUGH block — from `persona_breakthrough_turn` onward. The system prompt instructs the LLM to maintain all character personas throughout the conversation with distinct voices and personalities.
 
 Characters with empty or whitespace-only names are automatically skipped. Ages outside the 18–60 range are auto-corrected. Character selection uses round-robin distribution across tasks for even coverage.
 
@@ -1376,6 +1387,8 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
 | **Progress bars not animating** | Ensure ttkbootstrap is installed; progress bars use color-coded styles that change with completion percentage |
 | **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
+| **Inner persona never shows up** | The persona is intentionally withheld until `persona_breakthrough_turn` (default 2), so on a 1-turn conversation you will only ever see the outward profile. Bump `generation.num_turns` above the breakthrough slot, or set `persona_breakthrough_turn: 1`, to expose the persona sooner |
+| **Emotional arc doesn't seem to shift** | Arcs (`a -> b -> c`) need multiple assistant turns to spread across. On a 1–2 turn conversation an arc resolves to just its start stage; raise `generation.num_turns` so the later stages have turns to land on. Flat states are constant by design |
 | **Slop fixer breaking quotes** | This is expected behavior — the fixer checks for unbalanced quotes after each rewrite and skips replacements that would break quote structure |
 | **Characters with empty names** | Characters with empty or whitespace-only names are automatically skipped with a warning; ensure all character entries have valid names |
 | **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
@@ -1514,6 +1527,8 @@ All logs are written to `output/log.txt` regardless of the debug toggle.
 - **Configure anti-slop** — Set up API Slot 6 and populate `anti_slop.phrases` for secondary quality filtering
 - **Use multi-character mode** — Set `num_characters` > 1 for richer, multi-party dialogues
 - **Use emotional states** — Enable `emotional_states` to add tonal variety to conversations
+- **Use emotional arcs** — Replace flat states with progressions (`calm -> wary -> tense`) so the emotional register shifts across the conversation instead of being one static mood; pair with `generation.num_turns` ≥ the number of stages so every stage has a turn
+- **Lean on the persona/personality split** — Keep `persona` (the private self, shown only after `persona_breakthrough_turn`) distinct from `personality` (the outward mask, always shown) so early turns read as surface behavior and later turns reveal the interior
 - **Add character traits** — Use the `traits` field in character entries to add more depth to character personas
 - **Enable slop → anti-slop fallback** — Set `slop_to_anti_slop_fallback: true` to use the Anti-Slop Fixer as a final attempt when the Slop Fixer fails
 - **Toggle conversation history for fixers** — Set `generation.use_conversation_history_for_fixers: false` to disable passing conversation context to slop/anti-slop fixer LLMs (reduces token usage but may affect coherence)
@@ -1547,23 +1562,44 @@ Clothing: Heavyweight flannel button-down, faded rust color...
 Jewelry: Silver locket with faded photograph, simple copper wedding band
 Appearance: Broad-shouldered and sturdy with a soft midsection...
 Backstory: Estranged from religious parents, lives alone above the shop...
-Persona (inner personality): Deep down she is a tender idealist... her sarcasm is armor over loneliness...
 Personality (outward behavior): Stoic and introverted on the surface; curt with strangers, loyal with friends...
 Traits: Meticulous, cynical, resilient, stubborn...
 Setting: Cluttered repair counter in dimly lit pawn shop...
 --- END CHARACTER 1 PROFILE ---
 ```
 
-The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true. The `Class` field is only included when `class_enabled` is true. The `Persona` field is only included when it's non-empty (it describes the inner personality), and the `Personality` field is only included when it's not empty or "Unknown" (it describes outward behavior).
+The `Name` field is conditionally included based on the `include_names_in_prompt` setting. The `Setting` field is only included when `setting_enabled` is true. The `Class` field is only included when `class_enabled` is true. The `Personality` field is only included when it's not empty or "Unknown" (it describes outward behavior). **The `Persona` (inner personality) line is deliberately absent from this static block** — it is re-injected later as a separate breakthrough block (below) so early turns stay outward-only.
+
+### Persona Breakthrough Injection (NEW in v10.0)
+
+The inner `persona` is withheld on early assistant slots and only surfaces once the scene has run long enough to "break through." From `persona_breakthrough_turn` (default 2) onward, an INNER PERSONA BREAKTHROUGH block is appended to the scene prompt (and the profile's outward behaviour still governs how things are delivered):
+
+```
+--- INNER PERSONA BREAKTHROUGH ---
+The conversation has been going long enough that the outward mask starts to slip. From this point on, let the character's private inner persona surface underneath their usual manner: their hidden hopes, fears, and vulnerabilities can now shape their words, but the outward behaviour described in the profile still governs how things are delivered. Do not announce the shift; let it show through in tone and word choice.
+CHARACTER 1's inner persona (private self, surfacing now): Deep down she is a tender idealist... her sarcasm is armor over loneliness...
+--- END INNER PERSONA BREAKTHROUGH ---
+```
+
+The scene prompt is recomposed at the start of every turn, so this block appears on turn 2+ only, and the character's outward profile stays constant throughout. With a single character the line reads "the character's inner persona…"; with several, each gets a numbered `CHARACTER N` line.
 
 ### Emotional State Injection
 
-When emotional states are enabled, they are injected after the character profiles:
+When emotional states are enabled, a state is injected after the character profiles. A **flat** state is constant across the whole conversation:
 
 ```
 EMOTIONAL STATE: ANXIOUS
 Express this emotional state throughout your responses. Use appropriate tone, word choice, and emotional expression that reflects ANXIOUS feelings.
 ```
+
+An **arc** (an entry written as `state -> state -> ...`) is instead expanded across the conversation's assistant turns, one stage per turn, and injected with a progression header that tells the model the current stage and that earlier/later replies use the other stages:
+
+```
+EMOTIONAL STATE (PROGRESSION): CALM -> WARY -> TENSE
+This conversation is a short emotional arc. In your current reply you are in the wary state; earlier replies showed the earlier states, later replies will show the later ones. Let the shift play out naturally through tone, word choice, and what you choose to hide or reveal rather than announcing it.
+```
+
+For a 3-stage arc over a 4-turn conversation the plan resolves to `[calm, wary, wary, tense]` (always starting on the first stage and ending on the last); a 1-turn task holds the start stage. The metadata `emotional_state` field records the full configured entry (e.g. `"calm -> wary -> tense"` or `"anxious"`).
 
 ### Lore Injection
 
@@ -1650,6 +1686,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `logging_config.py` | Centralized logging with colorama (colored console + file output) | None (stdlib only) |
 | `test_api_profiles.py` | Unit tests for API compatibility profiles | `api_profiles` |
 | `test_opening_mode.py` | Integration tests for opening mode (worker run against fake server) | `generation`, `app_state`, `logging_config` |
+| `test_persona_arc.py` | Unit tests for the persona-breakthrough + emotional-arc helpers (parsing, expansion, injection) | `generation` |
 | `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.

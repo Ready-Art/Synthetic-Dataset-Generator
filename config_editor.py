@@ -549,6 +549,27 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(count_help, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
 
+        # Persona breakthrough: which assistant slot (1 = first reply) the inner persona starts being
+        # injected from. Slot 1 stays outward-behaviour-only; the persona 'breaks through' from here on.
+        pb_label = ttk.Label(self.character_engine_content_frame, text="Persona Breakthrough Turn:", wraplength=1)
+        pb_label.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=(SPACING, 0), sticky="ew")
+        wrap_label(pb_label, self.character_engine_content_frame, padding=2 * SPACING)
+        character_engine_row_idx += 1
+        self.persona_breakthrough_turn_var_editor = tk.StringVar(value="2")
+        self.persona_breakthrough_spinbox = ttk.Spinbox(
+            self.character_engine_content_frame, from_=1, to=99,
+            textvariable=self.persona_breakthrough_turn_var_editor, width=6)
+        self.persona_breakthrough_spinbox.grid(
+            row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, 0), sticky="w")
+        character_engine_row_idx += 1
+        pb_help = ttk.Label(
+            self.character_engine_content_frame,
+            text="(1 = expose inner persona from the very first reply; 2 = hold back until the second reply onward)",
+            wraplength=1)
+        pb_help.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(pb_help, self.character_engine_content_frame, padding=2 * SPACING)
+        character_engine_row_idx += 1
+
         # Add checkbox to enable character engine
         self.enable_character_engine_var_editor = tk.BooleanVar()
         self.include_names_in_prompt_var_editor = tk.BooleanVar(value=True)
@@ -575,7 +596,7 @@ class ConfigEditor(tk.Toplevel):
         character_engine_row_idx += 1
 
         # Add emotional states text area
-        ttk.Label(self.character_engine_content_frame, text="Emotional States (one per line):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        ttk.Label(self.character_engine_content_frame, text="Emotional States / Arcs (one per line; use '->' for a progression, e.g. 'neutral -> tense'):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
         character_engine_row_idx += 1
         emotional_states_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=1, undo=True)
         emotional_states_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
@@ -1330,6 +1351,7 @@ class ConfigEditor(tk.Toplevel):
                 'class_enabled': self.enable_class_selection_var_editor.get(),
                 'setting_enabled': self.enable_setting_selection_var_editor.get(),
                 'num_characters': int(self.num_characters_var_editor.get()),
+                'persona_breakthrough_turn': int(self.persona_breakthrough_turn_var_editor.get()),
                 'characters': [
                     {
                         'name': sanitize_input(data['name'].get().strip()),
@@ -1740,6 +1762,11 @@ class ConfigEditor(tk.Toplevel):
             self.enable_class_selection_var_editor.set(character_conf.get('class_enabled', False))
             self.enable_setting_selection_var_editor.set(character_conf.get('setting_enabled', False))
             self.num_characters_var_editor.set(str(character_conf.get('num_characters', 1)))
+            try:
+                pb_load = max(1, int(character_conf.get('persona_breakthrough_turn', 2)))
+            except (TypeError, ValueError):
+                pb_load = 2
+            self.persona_breakthrough_turn_var_editor.set(str(pb_load))
 
             # Clear existing entries first
             for data in self.character_entries[:]:
@@ -1931,6 +1958,8 @@ class ConfigEditor(tk.Toplevel):
                     except ValueError:
                         raise AssertionError(f"Character {idx+1} age must be a valid number (got '{age_value}')")
             assert 1 <= num_chars_val <= 10, "Number of characters must be between 1 and 10"
+            pb_val = int(self.persona_breakthrough_turn_var_editor.get())
+            assert 1 <= pb_val <= 99, "Persona Breakthrough Turn must be between 1 and 99"
             if self.slop_fixer_temp_var.get(): float(self.slop_fixer_temp_var.get())
             if self.slop_fixer_top_p_var.get(): float(self.slop_fixer_top_p_var.get())
             if self.slop_fixer_min_p_var.get(): float(self.slop_fixer_min_p_var.get())
@@ -2206,6 +2235,10 @@ class ConfigEditor(tk.Toplevel):
         # Enable/disable the Add Character button
         if hasattr(self, 'add_char_btn') and self.add_char_btn.winfo_exists():
             self.add_char_btn.config(state='normal' if is_enabled else 'disabled')
+
+        # Enable/disable the persona breakthrough spinbox
+        if hasattr(self, 'persona_breakthrough_spinbox') and self.persona_breakthrough_spinbox.winfo_exists():
+            self.persona_breakthrough_spinbox.config(state='normal' if is_enabled else 'disabled')
 
         # Enable/disable all entry fields inside the character cards
         for data in self.character_entries:

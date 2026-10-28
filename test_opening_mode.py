@@ -766,6 +766,9 @@ def test_config_defaults():
     check("shipped config's first-line styles are the default",
           shipped["prompts"]["first_line_styles"] == list(g.DEFAULT_FIRST_LINE_STYLES))
     check("shipped config's placeholder share is 0", shipped["generation"]["placeholder_share"] == 0.0)
+    check("shipped config has persona_breakthrough_turn >= 1",
+          isinstance(shipped["prompts"]["character"].get("persona_breakthrough_turn"), int)
+          and shipped["prompts"]["character"]["persona_breakthrough_turn"] >= 1)
 
 
 def _function(tree, name):
@@ -791,9 +794,9 @@ def test_generate_wiring():
         for kw in call.keywords:
             if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
                 passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
-    check("start_processing passes the six opening keywords to the worker",
+    check("start_processing passes the opening + persona-breakthrough keywords to the worker",
           passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local",
-                     "greeting_context_local", "first_line_styles_local"})
+                     "greeting_context_local", "first_line_styles_local", "persona_breakthrough_turn_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",

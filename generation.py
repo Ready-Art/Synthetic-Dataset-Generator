@@ -347,6 +347,98 @@ def conversation_is_complete(conversation_history, num_turns, has_greeting=False
     return replies >= num_turns
 
 
+ARC_SEPARATORS = ("\u2192", "->")  # "neutral -> anxious" is an emotional-arc entry
+
+
+def _split_emotional_arc_entry(entry):
+    """Split one configured state entry into its arc stages.
+
+    Returns a tuple of stripped stage names; a flat state like 'anxious' becomes ('anxious',).
+    A progression like 'neutral -> anxious -> angry' (arrows may be unicode or ASCII) becomes
+    three stages. Entries with nothing usable become ().
+    """
+    if not entry:
+        return ()
+    text = str(entry).strip()
+    if not text:
+        return ()
+    if any(sep in text for sep in ARC_SEPARATORS):
+        parts = [p.strip() for p in text.replace("\u2192", "->").split("->")]
+        parts = tuple(p for p in parts if p)
+        return parts
+    return (text,)
+
+
+def _expand_emotional_arc(stages, num_turns):
+    """Map an arc's stages onto `num_turns` assistant turns (one state per turn).
+
+    A single stage is constant across every turn (the legacy flat behaviour). A multi-stage arc is
+    interpolated linearly so it always begins on the first stage and ends on the last, with the
+    middle stages spread evenly across the intervening turns. This is what turns a static state into
+    a real emotional arc (e.g. start calm, surface anger only as the scene escalates).
+
+        3 stages over 3 turns -> (s1, s2, s3)
+        4 stages over 5 turns -> (s1, s2, s3, s3, s4)
+        2 stages over 1 turn  -> (s1)      # nowhere to progress yet: hold the start
+    """
+    n = max(1, int(num_turns))
+    if not stages:
+        return []
+    stages = list(stages)
+    if len(stages) == 1 or n == 1:
+        return [stages[0]] * n
+    last = len(stages) - 1
+    span = n - 1
+    return [stages[min(last, max(0, round(p * last / span)))] for p in range(n)]
+
+
+def _emotional_state_injection(state_label):
+    """Prompt text for the current emotional state. `state_label` is either a bare state name
+    (flat) or the full arc string (progression); the instruction adapts accordingly."""
+    if not state_label:
+        return ""
+    if "->" in state_label or "\u2192" in state_label:
+        instruction = (
+            f"EMOTIONAL STATE (PROGRESSION): {state_label.upper()}\n"
+            f"This conversation is a short emotional arc. In your current reply you are in the "
+            f"{state_label.split('->')[-1].strip()} state; earlier replies showed the earlier states, "
+            f"later replies will show the later ones. Let the shift play out naturally through tone, "
+            f"word choice, and what you choose to hide or reveal rather than announcing it.\n"
+        )
+    else:
+        instruction = (
+            f"EMOTIONAL STATE: {state_label.upper()}\n"
+            f"Express this emotional state throughout your responses. "
+            f"Use appropriate tone, word choice, and emotional expression that reflects {state_label} feelings.\n"
+        )
+    return "\n\n" + instruction
+
+
+def _persona_block_for_characters(chars_with_personas, char_count_label=True):
+    """Build the inner-persona breakthrough block injected from the persona turn onward.
+
+    Mirrors the profile's persona line but is framed as 'the mask slipping' so the model keeps the
+    outward behaviour in the profile while letting the private self surface under pressure.
+    """
+    if not chars_with_personas:
+        return ""
+    lines = []
+    for i, persona_text in enumerate(chars_with_personas, 1):
+        who = f"CHARACTER {i}" if char_count_label else "the character"
+        lines.append(f"{who}'s inner persona (private self, surfacing now): {persona_text}")
+    body = "\n".join(lines)
+    return (
+        "\n\n--- INNER PERSONA BREAKTHROUGH ---\n"
+        "The conversation has been going long enough that the outward mask starts to slip. From this "
+        "point on, let the character's private inner persona surface underneath their usual manner: "
+        "their hidden hopes, fears, and vulnerabilities can now shape their words, but the outward "
+        "behaviour described in the profile still governs how things are delivered. Do not announce "
+        "the shift; let it show through in tone and word choice.\n"
+        f"{body}\n"
+        "--- END INNER PERSONA BREAKTHROUGH ---\n"
+    )
+
+
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
            use_variable_system_local,
            all_api_configs_local,
@@ -391,12 +483,23 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            first_line_prompt_local="",
            placeholder_share_local=0.0,
            greeting_context_local="",
-           first_line_styles_local=()):
+           first_line_styles_local=(),
+           persona_breakthrough_turn_local=2,
+           ):
     """
     The main function executed by each worker thread.
-    It fetches tasks from the queue, processes them by interacting with LLMs 
+    It fetches tasks from the queue, processes them by interacting with LLMs
     (handling duplication or collaborative API use based on settings),
     and manages retries, issue detection (refusals, user speaking, slop), and output writing.
+
+    Persona / emotional-state handling (deliberate inner-vs-outer split):
+      * The character profile block is injected WITHOUT its persona line on every turn, so early
+        turns are outward-behaviour-only and the model does not leak inner monologue too soon.
+      * From turn `persona_breakthrough_turn_local` onward (default 2) the inner persona of each
+        selected character is re-injected as an INNER PERSONA BREAKTHROUGH block over the profile.
+      * Each configured emotional state may be flat ('anxious') or an arc ('neutral -> anxious');
+        arcs are expanded across the task's assistant turns so the state shifts over the
+        conversation rather than being one static injection (see _expand_emotional_arc).
     """
 
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
@@ -533,6 +636,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             character_injection = ""
             opening_chars = []  # Profiles actually added to the scene prompt (opening mode's greeting speaker)
+            char_persona_texts = []  # Selected characters' inner personas, in selection order (breakthrough block)
             if enable_character_engine_local and character_list:
                 # Select multiple characters based on num_characters_local using round-robin
                 num_chars_to_select = min(num_characters_local, len(character_list))
@@ -603,9 +707,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             random_age = random.randint(18, 60)
 
                         # Build Injections
+                        # NOTE: the inner persona line is deliberately NOT part of the profile
+                        # block. Early turns stay outward-behaviour-only; the persona is re-injected
+                        # later as an INNER PERSONA BREAKTHROUGH (see _persona_block_for_characters).
                         class_injection = f"\nClass: {random_class}\n" if enable_class_selection_local and random_class else ""
                         setting_injection = f"Setting: {random_setting}\n" if enable_setting_selection_local else ""
-                        persona_injection = f"\nPersona (inner personality): {random_persona}\n" if random_persona and random_persona.strip() else ""
                         personality_injection = f"\nPersonality (outward behavior): {random_personality}\n" if random_personality and random_personality != 'Unknown' else ""
                         traits_injection = f"Traits: {random_traits}\n" if random_traits else ""
 
@@ -629,7 +735,6 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"Jewelry: {random_jewelry}\n"
                             f"Appearance: {random_appearance}\n"
                             f"Backstory: {random_backstory}\n"
-                            f"{persona_injection}"
                             f"{personality_injection}"
                             f"{traits_injection}"
                             f"{setting_injection}"
@@ -638,6 +743,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         )
                         character_profiles.append(character_profile)
                         opening_chars.append(selected_char)
+                        char_persona_texts.append(random_persona.strip() if random_persona and random_persona.strip() else "")
 
                     # Finalize Injection
                     if character_profiles:
@@ -649,19 +755,77 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 else:
                     log_message(f"Thread {thread_id}: Character engine enabled but character_list is empty or num_characters is 0.", "WARNING")
 
-            current_system_prompt_for_task += character_injection
+            # Base scene prompt: everything constant for the whole task (persona excluded). The two
+            # dynamic blocks below (persona breakthrough + emotional state/arc) are re-attached at
+            # the top of each turn so they can shift over the conversation.
+            base_scene_prompt = current_system_prompt_for_task + character_injection
 
-            # Handle emotional states
-            current_emotional_state = ""
+            # Handle emotional states: a configured entry is either a flat state or an arc
+            # ('neutral -> anxious'); arcs expand across the task's assistant turns.
+            current_emotional_state_label = ""  # metadata label: full arc string, or bare state
+            emotional_arc_turn_states = []  # one state name per assistant turn (1-based index-0)
             if enable_emotional_states_local and emotional_states_list_local:
-                current_emotional_state = random.choice(emotional_states_list_local)
-                emotional_state_injection = (
-                    f"\n\nEMOTIONAL STATE: {current_emotional_state.upper()}\n"
-                    f"Express this emotional state throughout your responses. "
-                    f"Use appropriate tone, word choice, and emotional expression that reflects {current_emotional_state} feelings.\n"
-                )
-                current_system_prompt_for_task += emotional_state_injection
-                log_message(f"Thread {thread_id}: Assigned emotional state '{current_emotional_state}' for task {task_id}", "DEBUG")
+                chosen_entry = str(random.choice(emotional_states_list_local)).strip()
+                current_emotional_state_label = chosen_entry
+                arc_stages = _split_emotional_arc_entry(chosen_entry)
+                if not arc_stages:
+                    current_emotional_state_label = ""
+                emotional_arc_turn_states = _expand_emotional_arc(arc_stages, current_num_turns)
+                if current_emotional_state_label:
+                    log_message(
+                        f"Thread {thread_id}: Assigned emotional state '{current_emotional_state_label}' "
+                        f"for task {task_id} (turn plan: {' -> '.join(emotional_arc_turn_states)})",
+                        "DEBUG",
+                    )
+
+            # Persona breakthrough: from this turn onward the inner persona is re-injected.
+            try:
+                persona_breakthrough_turn = max(1, int(persona_breakthrough_turn_local))
+            except (TypeError, ValueError):
+                persona_breakthrough_turn = 2
+            char_count_label = len(opening_chars) > 1
+            persona_breakthrough_block = _persona_block_for_characters(
+                [p for p in char_persona_texts if p], char_count_label=char_count_label
+            )
+
+            def _persona_visible_at(slot_no):
+                """The inner persona is withheld until the scene has run long enough to 'break through'.
+
+                Slot 1 = the first assistant reply of the conversation (the greeting in opening mode,
+                or the answer to the opening question otherwise). So it is hidden for the first
+                `persona_breakthrough_turn - 1` slots.
+                """
+                return slot_no >= persona_breakthrough_turn
+
+            def _emotional_slot_state(slot_no):
+                """Which emotional-state label applies to a given assistant slot.
+
+                Flat states are constant; an arc starts at slot 1 and shifts one stage per slot, holding
+                the final stage past the planned number of turns (e.g. a single-turn retry continuation).
+                """
+                if not emotional_arc_turn_states:
+                    return None
+                idx = max(1, min(slot_no, len(emotional_arc_turn_states))) - 1
+                return emotional_arc_turn_states[idx]
+
+            def current_task_scene_prompt(slot_no):
+                """Compose this task's scene prompt for one assistant-generation slot (1-based).
+
+                The prompt is rebuilt per turn (not once per task) so the persona breakthrough and the
+                emotional-arc progression can change mid-conversation. Early slots are outward-only:
+                no persona line, and the arc's start state.
+                """
+                prompt = base_scene_prompt
+                if _persona_visible_at(slot_no) and persona_breakthrough_block:
+                    prompt += persona_breakthrough_block
+                slot_state = _emotional_slot_state(slot_no)
+                if slot_state:
+                    prompt += _emotional_state_injection(slot_state)
+                return prompt
+
+            # Greeting / initial-question generation happens before the loop; slot 1 = the first
+            # assistant reply of the conversation (opening-mode greeting, or the opening answer).
+            current_system_prompt_for_task = current_task_scene_prompt(1)
 
             conversation_history_for_output = [] # Stores the full conversation for writing (mainly for non-duplication mode)
             current_llm_conversation_context = [] # Stores the conversation history passed to the LLM for context
@@ -672,6 +836,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             raw_context_content_for_debug = "" # For debug logging
             has_greeting = False # Opening mode: the conversation starts with the character's greeting
             leading_placeholder = None # Opening mode: optional Strict-mode user turn before the greeting
+            greeting_offset = 0 # Opening mode: the greeting consumed slot 1, so conversation turns shift by one
 
             # --- API Selection Logic ---
             api_config_for_this_task = None # Holds the config for the API used by this task/thread in non-duplication
@@ -699,8 +864,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 if profile_greeting:
                     greeting_text = profile_greeting # Used as-is: no request, no checks, no chunk
                 else:
+                    # The greeting IS slot 1 of the scene, so it gets the arc's start state but stays
+                    # outward-behaviour-only on persona (breakthrough defaults to the next slot).
                     greeting_text = generate_greeting(
-                        current_system_prompt_for_task, greeting_prompt_local,
+                        current_task_scene_prompt(1), greeting_prompt_local,
                         opening_speaker(opening_chars, include_names), task[4] if len(task) > 4 else "",
                         thread_id, api_config_for_this_task.get('sampler_settings', {}),
                         api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
@@ -728,6 +895,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                      "no greeting" if not greeting_text else "no first user line")
                     q.task_done(); continue
                 has_greeting = True
+                greeting_offset = 1  # the greeting consumed slot 1; conversation turn N lives at slot N+1
                 current_llm_conversation_context.append({"role": "assistant", "content": greeting_text})
                 conversation_history_for_output.append({"role": "assistant", "content": greeting_text})
                 if random.random() < placeholder_share_local:
@@ -779,6 +947,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 if app_state.stop_processing or app_state.pause_processing: break # Check before starting a new turn
 
                 assistant_answer = None # This will hold the assistant's response for the current turn
+
+                # Recompose the scene prompt for this turn so the persona breakthrough and any
+                # emotional-arc progression take effect; slot 1 = first assistant reply of the scene.
+                current_system_prompt_for_task = current_task_scene_prompt(turn_num + 1 + greeting_offset)
 
                 # --- Assistant Answer Generation ---
                 if master_duplication_enabled_local:
@@ -907,7 +1079,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     api_slot_idx_for_output_file=original_slot_idx_for_file, # Write to specific API's file
                                                     is_duplication_turn=True, turn_number_for_duplication=turn_num + 1, # Mark as duplication turn
                                                     character_names=dup_meta_character_names,
-                                                    emotional_state=current_emotional_state or None,
+                                                    emotional_state=current_emotional_state_label or None,
                                                     setting=dup_meta_setting or None,
                                                     opening_mode=opening_mode_local,
                                                     has_greeting=has_greeting,
@@ -1104,7 +1276,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_output_format, task_id, api_slot_idx_for_output_file=None,
                                         mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
                                         character_names=meta_character_names,
-                                        emotional_state=current_emotional_state or None,
+                                        emotional_state=current_emotional_state_label or None,
                                         setting=meta_setting or None,
                                         opening_mode=opening_mode_local,
                                         has_greeting=has_greeting,
