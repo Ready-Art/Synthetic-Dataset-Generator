@@ -1049,8 +1049,10 @@ def start_processing():
     app_state.quality_enabled = global_config.get('quality.enabled', True)
     app_state.quality_output_filter = global_config.get('quality.output_filter', False)
     app_state.use_conversation_history_for_fixers = global_config.get('generation.use_conversation_history_for_fixers', True)
+    include_metadata = global_config.get('generation.include_metadata', True)
     log_message(f"Quality scoring: enabled={app_state.quality_enabled}, output_filter={app_state.quality_output_filter}", "INFO")
     log_message(f"Conversation history for fixers: enabled={app_state.use_conversation_history_for_fixers}", "INFO")
+    log_message(f"Output metadata block: enabled={include_metadata}", "INFO")
     if current_lore:
         log_message(f"Lore loaded ({len(current_lore)} chars).", "INFO")
     else:
@@ -1477,6 +1479,7 @@ def start_processing():
             current_lore,
             enable_random_names,
             random_names_list,
+            include_metadata,
         ), kwargs={
             'opening_mode_local': current_opening_mode,
             'greeting_prompt_local': current_greeting_prompt,
@@ -1866,7 +1869,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v9.8.0",
+    text="v9.9.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

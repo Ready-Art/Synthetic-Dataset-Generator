@@ -84,6 +84,7 @@ generation:
   slop_to_anti_slop_fallback: false
   discard_refused_conversations: false
   use_conversation_history_for_fixers: true
+  include_metadata: true
 quality:
   enabled: true
   use_llm_scoring: false

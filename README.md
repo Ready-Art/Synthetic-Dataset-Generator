@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v9.8.0
+# ReadyArt Synthetic Dataset Generator v9.9.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -40,6 +40,8 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Force Recovery](#force-recovery)
   - [Database Management](#database-management)
 - [Output Formats](#-output-formats)
+  - [ShareGPT Format (default)](#sharegpt-format-default)
+  - [Record Metadata Block (NEW in v9.9.0)](#record-metadata-block-new-in-v990)
 - [File Structure](#-file-structure)
 - [How It Works](#-how-it-works)
   - [Generation Pipeline](#generation-pipeline)
@@ -118,6 +120,13 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Strip markdown formatting to plain text
 - Normalize and balance quotation marks (handles both straight `"` and curly `""` quotes, with special handling to avoid breaking inch marks and intentional unquoted dialogue)
 - **Structural Quote Repair** — `repair_straight_quotes()` applies heuristic-based fixes for unbalanced straight quotes (prepends opener or appends closer based on text structure) before the final normalization pass
+
+### Output Metadata (NEW in v9.9.0)
+- **Provenance per Record** — Every output row can carry a flat, schema-stable `metadata` block recording which character(s), emotional state, and setting produced it, plus its quality score, so datasets are self-describing and filterable after generation
+- **Trainer-Safe by Design** — The block lives at the record level (a sibling of `id` and `conversations`), never inside `conversations[]`, and uses only flat scalars (`str`/`int`/`float`/`bool`/`null`) with identical keys and types on every row, so Hugging Face `load_dataset` and Axolotl's template mapping are unaffected
+- **Quality Scores Inlined** — Quality scoring runs before the write, so each record's `quality_composite` / `quality_*` dimension fields describe that exact conversation (per-turn rows in Duplication Mode carry `duplication_turn` for identification)
+- **Filterable Post-Generation** — Use the metadata columns to filter datasets in the training repo without regenerating (e.g. keep only rows with `quality_composite >= 80`)
+- **Toggleable & Back-Compatible** — `generation.include_metadata` (default `true`); set to `false` to restore the legacy two-field records exactly, byte-for-byte
 
 ### Infrastructure & UI
 - **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached, with real-time cost tracking
@@ -407,6 +416,7 @@ generation:
   slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
   discard_refused_conversations: false  # Don't save a conversation if any reply needed a jailbreak
   use_conversation_history_for_fixers: true  # Pass conversation context to slop/anti-slop fixer LLMs for coherent rephrasing
+  include_metadata: true           # Append a flat, schema-stable provenance+quality "metadata" block to each output record (see Output Formats)
   placeholder_share: 0.0          # Opening mode: share of rows (0 to 1) that start with a [Start a new chat] user turn
 
   # Text post-processing flags
@@ -990,6 +1000,66 @@ datasets:
 train_on_inputs: false
 ```
 
+### Record Metadata Block (NEW in v9.9.0)
+
+When `generation.include_metadata: true` (the default), every record also carries a flat, schema-stable `metadata` block with provenance and quality information:
+```json
+{
+  "id": "opening_0",
+  "conversations": [
+    {"from": "gpt", "value": "Rain drums on the ferry's tin roof. ...", "train": false},
+    {"from": "human", "value": "I hurry down the ramp."},
+    {"from": "gpt", "value": "..."}
+  ],
+  "metadata": {
+    "meta_version": 1,
+    "characters": ["Ines"],
+    "emotional_state": "anxious",
+    "setting": "A dockside ferry terminal at dusk.",
+    "num_characters": 1,
+    "opening_mode": true,
+    "has_greeting": true,
+    "duplication_turn": null,
+    "quality_method": "hybrid",
+    "quality_composite": 87.3,
+    "quality_coherence": 90.0,
+    "quality_naturalness": 85.0,
+    "quality_engagement": 82.0,
+    "quality_diversity": 95.0,
+    "quality_consistency": 88.0,
+    "quality_technical": 92.0,
+    "generated_at": "2026-01-15 14:32:00"
+  }
+}
+```
+
+Field notes:
+- **`characters`** — list of character names in the scene (`[""]` when no character engine profile was selected). Fixed-shape list of strings.
+- **`emotional_state` / `setting`** — the state/setting assigned to the conversation, or `null` when none.
+- **`opening_mode` / `has_greeting`** — whether opening mode was active and the record starts with a greeting turn.
+- **`duplication_turn`** — in Duplication Mode, the 1-based turn number for per-turn rows; `null` for full-conversation rows.
+- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `null` when quality scoring is disabled or failed; `quality_method` is `"heuristic_only"`, `"hybrid"`, or `null`.
+
+**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 17 keys with the same scalar types (gaps are filled with `null`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
+```yaml
+datasets:
+  - path: output.jsonl
+    type: chat_template
+    field_messages: conversations
+    message_property_mappings: {role: from, content: value}
+    roles: {user: [human], assistant: [gpt]}
+    roles_to_train: [assistant]
+    message_field_training: train
+```
+You *can* use the extra columns for free post-generation filtering in the training repo, e.g. keep only high-scoring rows:
+```python
+from datasets import load_dataset
+ds = load_dataset("json", data_files="output.jsonl", field="auto")
+ds = ds.filter(lambda r: (r["metadata"]["quality_composite"] or 0) >= 80)
+```
+
+Set `generation.include_metadata: false` (Generation tab in the Configuration Editor) to restore the legacy two-field records (`id` + `conversations` only) byte-for-byte.
+
 In **Duplication Mode**, output files are named per API slot:
 - `output/output_api_slot_0.jsonl`
 - `output/output_api_slot_1.jsonl`
@@ -1073,8 +1143,8 @@ readyart-dataset-generator/
 4. **User Continuation** — If multi-turn, an LLM generates the user's next message. Responses are also checked for malformed content
 5. **Repeat** — Steps 3–4 repeat for the configured number of turns
 6. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
-7. **Quality Scoring** — The completed conversation is scored across six dimensions (heuristic always; LLM optional). If the composite score is below the threshold, the task is flagged for review
-8. **Output** — Write to JSONL file or PostgreSQL database
+7. **Quality Scoring** — The completed conversation is scored across six dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. If the composite score is below the threshold, the task is flagged for review
+8. **Output** — Write to JSONL file or PostgreSQL database, appending the flat `metadata` provenance/quality block when `generation.include_metadata` is true (see [Record Metadata Block](#record-metadata-block-new-in-v990))
 9. **State Save** — Update crash recovery state (including quality scores and review flags)
 
 ### Quality Scoring Pipeline

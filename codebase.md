@@ -25,6 +25,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, persona, personality, traits, backstory, setting) — `persona` = inner personality (private self), `personality` = outward behavior (observed manner)
 - Random names → `prompts.random_names.enabled`, `prompts.random_names.names[]` (optional list of names to randomly assign to characters, overrides character Name field when enabled)
 - Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
+- Output metadata → `generation.include_metadata` (flat, schema-stable provenance block per output.jsonl record; trainer-safe; never modifies `conversations[]`; false = legacy two-field records)
 
 ### `config/api_profiles.yml` [2]
 **Purpose:** API compatibility profiles for request payload filtering per endpoint
@@ -124,6 +125,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Turn completion check → `conversation_is_complete()` (line 200+)
 - Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
 - Character prompt injection → character profile block built in `worker()` (persona/personality/traits are conditionally injected lines; `persona` = inner personality, `personality` = outward behavior)
+- Output metadata → `_build_record_metadata()` (17 flat keys, same shape on every record, null-filled; `_safe_float()` keeps numeric types stable) + `_score_and_store_quality()` (quality scoring deduped by task_id; called BEFORE both write paths so metadata can carry scores)
 
 ### `logging_config.py` [13]
 **Purpose:** Shared logging utility
@@ -184,6 +186,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Modify opening mode prompts | `config/config.yml` (`prompts.greeting`, `prompts.first_line`, `prompts.greeting_context`, `prompts.first_line_styles`) |
 | Add random names feature | `config/config.yml` (`prompts.random_names.enabled`, `prompts.random_names.names[]`), `config_editor.py` (UI toggle + text area), `generate.py` (load config + pass to worker), `generation.py` (use random names in character profile) |
 | Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
+| Add/modify output metadata field | `generation.py` (`_build_record_metadata()` schema + `_safe_float()`), keep same-keys/same-types/null-filled invariant; config flag `generation.include_metadata` |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
 
 ## Key State Variables (`app_state.py`)

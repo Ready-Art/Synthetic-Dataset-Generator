@@ -385,6 +385,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_lore,
            enable_random_names_local=False,
            random_names_list_local=None,
+           include_metadata_local=True,
            opening_mode_local=False,
            greeting_prompt_local="",
            first_line_prompt_local="",
@@ -863,6 +864,27 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     
                     assistant_answer = primary_api_answer_for_conv_flow # Use this for the main conversation flow
 
+                    # --- Quality Scoring (Duplication Mode: score the primary flow) ---
+                    # Scored BEFORE the per-turn writes so each row's metadata can carry the
+                    # quality numbers for this turn. Deduped by task_id inside the helper.
+                    primary_turn_quality_result = None
+                    if app_state.quality_enabled and assistant_answer:
+                        if has_greeting and conversation_history_for_output:
+                            # Opening mode: the LLM context here excludes the greeting; score the real flow
+                            primary_conv_for_scoring = list(conversation_history_for_output[1:])
+                            primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
+                        else:
+                            primary_conv_for_scoring = list(current_llm_conversation_context)
+                            primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
+                        primary_turn_quality_result = _score_and_store_quality(
+                            primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name
+                        )
+                        # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
+
+                    # Per-turn provenance for the output metadata block (Axolotl-safe, record-level)
+                    dup_meta_character_names = [c.get('name', '') for c in opening_chars if c.get('name')]
+                    dup_meta_setting = next((c.get('setting', '') for c in opening_chars if c.get('setting')), '')
+
                     # Write all successful duplicated answers to their respective per-API files for this turn
                     if assistant_answer: # Only proceed if at least one API gave an answer to continue the flow
                         for ans_text, original_slot_idx_for_file in all_duplicated_answers_for_output:
@@ -883,46 +905,15 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     current_remove_markdown,
                                                     current_output_format, task_id,
                                                     api_slot_idx_for_output_file=original_slot_idx_for_file, # Write to specific API's file
-                                                    is_duplication_turn=True, turn_number_for_duplication=turn_num + 1) # Mark as duplication turn
-                            else:
-                                log_message(f"Thread {thread_id}: Skipping turn {turn_num+1} output for API Slot {original_slot_idx_for_file+1} due to previous refusal in task {task_id}", "DEBUG")
-                    # --- Quality Scoring (Duplication Mode: score the primary flow) ---
-                    if app_state.quality_enabled and assistant_answer:
-                        try:
-                            primary_conv_for_scoring = list(current_llm_conversation_context)
-                            primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
-                            quality_result = quality.score_conversation(
-                                primary_conv_for_scoring,
-                                task_id,
-                                thread_id,
-                                api_slot_idx=0,
-                                file_name=file_name
-                            )
-                            with app_state.quality_lock:
-                                # Store with task_id (overwrites per-API scores with primary)
-                                if task_id not in app_state.quality_scores:
-                                    app_state.quality_scores[task_id] = quality_result
-
-                            # ✅ FIX: Flag for review if below threshold (was missing entirely)
-                            min_threshold = global_config.get('quality.min_score_threshold', 50)
-                            if quality_result['composite'] < min_threshold:
-                                with app_state.quality_review_lock:
-                                    app_state.quality_review_ids.add(task_id)
-                                log_message(
-                                    f"Thread {thread_id}: Task {task_id} flagged for review "
-                                    f"(score {quality_result['composite']} < threshold {min_threshold}).",
-                                    "WARNING"
-                                )
-
-                            log_message(
-                                f"Thread {thread_id}: Quality score (dup, primary) for {task_id}: "
-                                f"{quality_result['composite']}/100",
-                                "INFO"
-                            )
-                        except Exception as e_quality:
-                            log_message(f"Thread {thread_id}: Quality scoring error (dup) for {task_id}: {e_quality}", "ERROR")
-                        # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
-                
+                                                    is_duplication_turn=True, turn_number_for_duplication=turn_num + 1, # Mark as duplication turn
+                                                    character_names=dup_meta_character_names,
+                                                    emotional_state=current_emotional_state or None,
+                                                    setting=dup_meta_setting or None,
+                                                    opening_mode=opening_mode_local,
+                                                    has_greeting=has_greeting,
+                                                    num_characters=len(opening_chars),
+                                                    quality_result=primary_turn_quality_result,
+                                                    include_metadata=include_metadata_local)                
                 else: # --- Non-Duplication Mode: Single API call for answer ---
                     if app_state.stop_processing or app_state.pause_processing: break
                     start_time_api_task = time.time()
@@ -1077,6 +1068,33 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         actual_messages = len(conversation_history_for_output)
 
                         if conversation_is_complete(conversation_history_for_output, current_num_turns, has_greeting=has_greeting):
+                            # --- Quality Scoring (BEFORE the write, so the record metadata can carry it) ---
+                            final_quality_result = None
+                            if app_state.quality_enabled:
+                                # The greeting is not a reply, so score from the first user turn
+                                final_quality_result = _score_and_store_quality(
+                                    conversation_history_for_output[1:] if has_greeting else conversation_history_for_output,
+                                    task_id,
+                                    thread_id,
+                                    api_slot_idx=api_slot_idx_for_this_task,
+                                    file_name=file_name
+                                )
+                                # Optional: filter output by quality threshold
+                                if final_quality_result and app_state.quality_output_filter:
+                                    min_threshold = global_config.get('quality.min_score_threshold', 50)
+                                    if final_quality_result['composite'] < min_threshold:
+                                        log_message(
+                                            f"Thread {thread_id}: Task {task_id} score {final_quality_result['composite']} "
+                                            f"below threshold {min_threshold}. Marking as quality-rejected.",
+                                            "WARNING"
+                                        )
+                                        # The conversation still gets the flag in its metadata; the
+                                        # quality output filter marks it, it does not delete it.
+
+                            # Per-record provenance for the output metadata block (Axolotl-safe, record-level)
+                            meta_character_names = [c.get('name', '') for c in opening_chars if c.get('name')]
+                            meta_setting = next((c.get('setting', '') for c in opening_chars if c.get('setting')), '')
+
                             with output_data_lock:
                                 if task_id not in app_state.completed_task_ids:
                                     write_conversation(None, conversation_history_for_output, current_remove_reasoning,
@@ -1084,48 +1102,17 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_remove_asterisk_space_asterisk, current_remove_all_asterisks,
                                         current_ensure_space_after_line_break, current_remove_markdown,
                                         current_output_format, task_id, api_slot_idx_for_output_file=None,
-                                        mask_greeting=has_greeting, leading_placeholder=leading_placeholder)
+                                        mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
+                                        character_names=meta_character_names,
+                                        emotional_state=current_emotional_state or None,
+                                        setting=meta_setting or None,
+                                        opening_mode=opening_mode_local,
+                                        has_greeting=has_greeting,
+                                        num_characters=len(opening_chars),
+                                        quality_result=final_quality_result,
+                                        include_metadata=include_metadata_local)
                                     app_state.completed_task_ids.add(task_id)
                                     log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
-                                    # --- Quality Scoring ---
-                                    if app_state.quality_enabled:
-                                        try:
-                                            quality_result = quality.score_conversation(
-                                                # The greeting is not a reply, so score from the first user turn
-                                                conversation_history_for_output[1:] if has_greeting else conversation_history_for_output,
-                                                task_id,
-                                                thread_id,
-                                                api_slot_idx=api_slot_idx_for_this_task,
-                                                file_name=file_name
-                                            )
-                                            with app_state.quality_lock:
-                                                app_state.quality_scores[task_id] = quality_result
-                                            # Flag for review if below threshold
-                                            min_threshold = global_config.get('quality.min_score_threshold', 50)
-                                            if quality_result['composite'] < min_threshold:
-                                                with app_state.quality_review_lock:
-                                                    app_state.quality_review_ids.add(task_id)
-                                            log_message(
-                                                f"Thread {thread_id}: Quality score for {task_id}: "
-                                                f"{quality_result['composite']}/100 "
-                                                f"(method: {quality_result['method']}, flags: {quality_result['flags']})",
-                                                "INFO"
-                                            )
-
-                                            # Optional: filter output by quality threshold
-                                            if app_state.quality_output_filter:
-                                                min_threshold = global_config.get('quality.min_score_threshold', 50)
-                                                if quality_result['composite'] < min_threshold:
-                                                    log_message(
-                                                        f"Thread {thread_id}: Task {task_id} score {quality_result['composite']} "
-                                                        f"below threshold {min_threshold}. Marking as quality-rejected.",
-                                                        "WARNING"
-                                                    )
-                                                    # The conversation was already written, but we flag it.
-                                                    # If you want to DELETE it from the output file, you'd need
-                                                    # a post-processing step. For now, the flag is stored.
-                                        except Exception as e_quality:
-                                            log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e_quality}", "ERROR")
                                 else:
                                     log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
                             # Update UI tracking on success
@@ -3199,6 +3186,86 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     return None, issue_ever_detected_this_task, refusal_ever_detected_this_task
 
 
+# --- Output metadata helpers (Axolotl-safe provenance block) ---
+# Metadata schema contract:
+#   * A flat dict of scalars (str/int/float/bool/null) plus fixed-length lists of strings.
+#   * EVERY record carries the SAME keys with the SAME types (null fills gaps).
+#   * It is stored at the RECORD level, never inside conversations[], so HF's column
+#     inference and Axolotl's template mapping are unaffected (same as today's "id" field).
+#   * generation.include_metadata=false (config.yml) disables it entirely, restoring
+#     the legacy two-field records byte-for-byte.
+_METADATA_SCHEMA_VERSION = 1
+
+
+def _safe_float(value, default=None):
+    """Coerce to float or return default; used to keep the metadata schema type-stable."""
+    try:
+        if value is None:
+            return default
+        f = float(value)
+        return f if f == f else default  # reject NaN
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_record_metadata(character_names, emotional_state, setting, opening_mode, has_greeting,
+                           num_characters, quality_result, duplication_turn, generated_at):
+    """Builds the flat, schema-stable metadata block for one output record.
+    Always returns every key (null when unavailable) so all rows match.
+    duplication_turn is the turn number (1-based) for per-turn duplication rows,
+    or None for full-conversation rows / non-duplication mode.
+    """
+    quality_result = quality_result or {}
+    dims = quality_result.get("dimensions", {}) if isinstance(quality_result.get("dimensions"), dict) else {}
+    method = quality_result.get("method")
+    composite = _safe_float(quality_result.get("composite")) if method and method != "none" else None
+    names = [str(n) for n in (character_names or [])]
+    return {
+        "meta_version": _METADATA_SCHEMA_VERSION,
+        "characters": names if names else [""],          # fixed-shape: list[str] (homogeneous)
+        "emotional_state": str(emotional_state) if emotional_state else None,
+        "setting": str(setting) if setting else None,     # single unified scene setting; null when none
+        "num_characters": int(num_characters) if num_characters is not None else 0,
+        "opening_mode": bool(opening_mode),
+        "has_greeting": bool(has_greeting),
+        "duplication_turn": int(duplication_turn) if duplication_turn is not None else None,
+        "quality_method": str(method) if method else None,
+        "quality_composite": composite,
+        "quality_coherence": _safe_float(dims.get("coherence")),
+        "quality_naturalness": _safe_float(dims.get("naturalness")),
+        "quality_engagement": _safe_float(dims.get("engagement")),
+        "quality_diversity": _safe_float(dims.get("diversity")),
+        "quality_consistency": _safe_float(dims.get("consistency")),
+        "quality_technical": _safe_float(dims.get("technical")),
+        "generated_at": str(generated_at) if generated_at else None,
+    }
+
+
+def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name):
+    """Scores a conversation and stores the result in app_state.quality_scores (deduped by task).
+    Mirrors the pre-existing quality bookkeeping (threshold review flags included).
+    Returns the quality result dict, or None on any failure."""
+    try:
+        qr = quality.score_conversation(conv_for_scoring, task_id, thread_id,
+                                        api_slot_idx=api_slot_idx, file_name=file_name)
+        with app_state.quality_lock:
+            if task_id not in app_state.quality_scores:
+                app_state.quality_scores[task_id] = qr
+        min_threshold = global_config.get('quality.min_score_threshold', 50)
+        if qr.get('composite', 0) < min_threshold:
+            with app_state.quality_review_lock:
+                app_state.quality_review_ids.add(task_id)
+        log_message(
+            f"Thread {thread_id}: Quality score for {task_id}: "
+            f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
+            "INFO"
+        )
+        return qr
+    except Exception as e_quality:
+        log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e_quality}", "ERROR")
+        return None
+
+
 def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_FILE_PATH is used
                        conversation_history,
                        remove_reasoning_flag,
@@ -3216,6 +3283,14 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
                        *,
                        mask_greeting=False,
                        leading_placeholder=None,
+                       character_names=None,
+                       emotional_state=None,
+                       setting=None,
+                       opening_mode=False,
+                       has_greeting=False,
+                       num_characters=0,
+                       quality_result=None,
+                       include_metadata=True,
                        ):
     """
     Writes a completed conversation (or a single turn in duplication mode) to the output JSONL file.
@@ -3224,6 +3299,9 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
     - mask_greeting: mark the first "gpt" record with "train": false, so trainers that honour a
       per-message training flag (Axolotl's message_field_training) keep it out of the loss.
     - leading_placeholder: put a "human" record with this text before the rest of the conversation.
+    - character_names/emotional_state/setting/opening_mode/has_greeting/num_characters/quality_result:
+      provenance fields; emitted as a flat, schema-stable record-level "metadata" block when
+      include_metadata is true (see _build_record_metadata). conversations[] is never touched.
     The history passed in is not modified.
     """
     processed_conversation_turns = []
@@ -3264,6 +3342,15 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         "id": output_data_id,
         "conversations": processed_conversation_turns
     }
+
+    if include_metadata:
+        output_data["metadata"] = _build_record_metadata(
+            character_names, emotional_state, setting,
+            opening_mode, has_greeting, num_characters,
+            quality_result,
+            (turn_number_for_duplication if is_duplication_turn and turn_number_for_duplication else None),
+            time.strftime('%Y-%m-%d %H:%M:%S'),
+        )
 
     use_db = global_config.get('database.enabled', False)
 
