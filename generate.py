@@ -810,9 +810,20 @@ def update_live_prompt_preview(messages_list, metadata=None):
 
 app_state.live_prompt_preview_hook = update_live_prompt_preview
 
+def generation_running():
+    """True while any worker thread of the current run is alive."""
+    return bool(app_state.threads) and any(t.is_alive() for t in app_state.threads if t)
+
 def start_processing():
     """Initiates the data generation process based on current configurations."""
     global loaded_processed_tasks_snapshot
+
+    # A second start while workers are alive would replace the queue and spawn a second set of workers
+    if generation_running():
+        log_message("Start Generation ignored: a generation run is already in progress.", "WARNING")
+        toast.show("Generation is already running.", "warning")
+        start_button.config(state=tk.DISABLED)
+        return
 
     global_config.load() # Ensure latest config.yml is loaded
     log_message("DEBUG: start_processing() function has been called.", "INFO")
@@ -2286,13 +2297,14 @@ def trigger_export():
 
     # Run export in background thread to prevent UI freeze
     def run_export():
-        start_button.config(state=tk.DISABLED)
-        app_state.status_bar.config(text="Exporting from PostgreSQL...", foreground="blue")
         success = export_db_to_jsonl(file_path)
         app_state.root.after(0, lambda: app_state.status_bar.config(text="Export complete!" if success else "Export failed.",
                                                 foreground="green" if success else "red"))
-        app_state.root.after(0, lambda: start_button.config(state=tk.NORMAL))
+        # Re-enable Start only if no generation run began or is still running
+        app_state.root.after(0, lambda: start_button.config(state=tk.DISABLED if generation_running() else tk.NORMAL))
 
+    start_button.config(state=tk.DISABLED)
+    app_state.status_bar.config(text="Exporting from PostgreSQL...", foreground="blue")
     threading.Thread(target=run_export, daemon=True).start()
 
 export_button = ttk.Button(maintenance_frame, text="📤 Export DB → JSONL", command=trigger_export)
