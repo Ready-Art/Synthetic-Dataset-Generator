@@ -45,7 +45,8 @@ from dataset_tasks import configure_queue_datasets
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
                         DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
-                        opening_mode_conflict, opening_mode_mismatch)
+                        opening_mode_conflict, opening_mode_mismatch,
+                        DEFAULT_NOTE_PLACEMENT, note_placement, placement_cache_warning)
 from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
@@ -1137,6 +1138,17 @@ def start_processing():
 
     log_message(f"Emotional states enabled: {enable_emotional_states}, States: {emotional_states_list}", "INFO")
 
+    # Where the persona breakthrough and the emotional state are sent: 'depth0' (after the history)
+    # or 'system' (end of the reply's system prompt).
+    persona_placement = note_placement(character_config.get('persona_breakthrough_placement'))
+    if persona_placement is None:
+        log_message("prompts.character.persona_breakthrough_placement is not 'depth0' or 'system'. Using depth0.", "WARNING")
+        persona_placement = DEFAULT_NOTE_PLACEMENT
+    emotion_placement = note_placement(emotional_states_config.get('placement'))
+    if emotion_placement is None:
+        log_message("prompts.emotional_states.placement is not 'depth0' or 'system'. Using depth0.", "WARNING")
+        emotion_placement = DEFAULT_NOTE_PLACEMENT
+
     # NEW: Load random names configuration
     random_names_config = global_config.get('prompts.random_names', {})
     enable_random_names = random_names_config.get('enabled', False)
@@ -1227,6 +1239,14 @@ def start_processing():
         toast.show(opening_conflict, "error")
         log_message(opening_conflict, "ERROR")
         app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
+
+    cache_loss, cache_warning = placement_cache_warning(
+        current_num_turns, current_opening_mode, persona_breakthrough_turn,
+        enable_character_engine_local and any(str(c.get('persona') or '').strip() for c in character_list),
+        enable_emotional_states, emotional_states_list, persona_placement, emotion_placement)
+    if cache_warning:
+        toast.show(f"System-prompt placement: ~{cache_loss:.0%} of history recomputed. See log.", "warning", 8000)
+        log_message(cache_warning, "WARNING")
 
     # --- Populate Task Queue ---
     if current_use_questions_file:
@@ -1529,6 +1549,8 @@ def start_processing():
             'greeting_context_local': current_greeting_context,
             'first_line_styles_local': current_first_line_styles,
             'persona_breakthrough_turn_local': persona_breakthrough_turn,
+            'persona_placement_local': persona_placement,
+            'emotion_placement_local': emotion_placement,
             'current_ooc_phrases': current_ooc_phrases,
             'current_ooc_fixes': current_ooc_fixes,
             'current_ooc_enabled': current_ooc_enabled,

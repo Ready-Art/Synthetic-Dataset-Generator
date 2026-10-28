@@ -780,6 +780,9 @@ def test_config_defaults():
     check("shipped config's first-line styles are the default",
           shipped["prompts"]["first_line_styles"] == list(g.DEFAULT_FIRST_LINE_STYLES))
     check("shipped config's placeholder share is 0", shipped["generation"]["placeholder_share"] == 0.0)
+    check("shipped config places the persona breakthrough and the emotional state at depth0",
+          shipped["prompts"]["character"].get("persona_breakthrough_placement") == "depth0"
+          and shipped["prompts"]["emotional_states"].get("placement") == "depth0")
     check("shipped config has persona_breakthrough_turn >= 1",
           isinstance(shipped["prompts"]["character"].get("persona_breakthrough_turn"), int)
           and shipped["prompts"]["character"]["persona_breakthrough_turn"] >= 1)
@@ -808,9 +811,10 @@ def test_generate_wiring():
         for kw in call.keywords:
             if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
                 passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
-    check("start_processing passes the opening, persona-breakthrough, and OOC keywords to the worker",
+    check("start_processing passes the opening, persona-breakthrough, placement and OOC keywords to the worker",
           passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local",
                      "greeting_context_local", "first_line_styles_local", "persona_breakthrough_turn_local",
+                     "persona_placement_local", "emotion_placement_local",
                      "current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
@@ -940,6 +944,72 @@ def test_arc_and_persona_requests():
           one_plain_system())
 
 
+def test_note_placement_requests():
+    """Each block goes to the system prompt or the final user message as its placement says."""
+    persona_char = dict(CHARACTERS[0], persona="Misses the open sea.")
+    marker = ("Misses the open sea.", "EMOTIONAL STATE")
+    for persona_at in ("depth0", "system"):
+        for emotion_at in ("depth0", "system"):
+            label = f"persona {persona_at}, emotion {emotion_at}"
+            reset_state()
+            run_worker(chunk_task(), current_num_turns=3, character_list=[persona_char],
+                       enable_emotional_states_local=True, emotional_states_list_local=[ARC],
+                       persona_breakthrough_turn_local=2,
+                       persona_placement_local=persona_at, emotion_placement_local=emotion_at)
+            answers = ROUTER.bodies("answer")
+            places = {"system": [a["messages"][0]["content"] for a in answers], "depth0": answer_notes()}
+            other = {"system": "depth0", "depth0": "system"}
+            check(f"{label}: the persona is where its placement says, from slot 2",
+                  len(answers) == 3
+                  and ["Misses the open sea." in t for t in places[persona_at]] == [False, True, True]
+                  and not any("Misses the open sea." in t for t in places[other[persona_at]]))
+            check(f"{label}: each stage is where its placement says",
+                  all(names_stage(t, st) for t, st in zip(places[emotion_at], ["calm", "wary", "tense"]))
+                  and not any("EMOTIONAL STATE" in t for t in places[other[emotion_at]]))
+            plain = [b["messages"][0]["content"].removesuffix(g.QUESTION_USER_SIDE) for b in ROUTER.bodies("question")]
+            continuations = ROUTER.bodies("continuation")
+            check(f"{label}: the question request carries neither block",
+                  len(plain) == 1 and not any(m in json.dumps(ROUTER.bodies("question")) for m in marker))
+            check(f"{label}: each answer's system prompt is the scene prompt plus its system note",
+                  all(t.startswith(plain[0]) for t in places["system"])
+                  and (places["system"][0] == plain[0]) == (emotion_at == "depth0"))
+            check(f"{label}: each continuation shares the system prompt of the answer before it",
+                  [c["messages"][0]["content"] for c in continuations] == places["system"][:2])
+            check(f"{label}: continuations carry no depth-0 note",
+                  not any(m in c["messages"][-1]["content"] for c in continuations for m in marker))
+            check(f"{label}: the answer prompt still leads the final user message",
+                  all(n.startswith(ANSWER_PROMPT) for n in answer_notes()))
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, character_list=[persona_char], enable_emotional_states_local=True,
+               emotional_states_list_local=[ARC], persona_placement_local="system", emotion_placement_local="system")
+    systems = [a["messages"][0]["content"] for a in ROUTER.bodies("answer")]
+    check("both on system: the persona comes before the emotional state",
+          systems[1].index("INNER PERSONA BREAKTHROUGH") < systems[1].index("EMOTIONAL STATE"))
+
+    reset_state()
+    ROUTER.script["answer"] = ["I cannot help with that.", Router.DEFAULTS["answer"][0]]
+    run_worker(chunk_task(), current_num_turns=1, enable_emotional_states_local=True,
+               emotional_states_list_local=[ARC], emotion_placement_local="system")
+    answers = ROUTER.bodies("answer")
+    check("emotion on system: a refusal retry appends its jailbreak after the note",
+          len(answers) == 2 and names_stage(answers[0]["messages"][0]["content"], "calm")
+          and answers[1]["messages"][0]["content"] == answers[0]["messages"][0]["content"] + " Stay in character.")
+
+    reset_state()
+    run_opening(current_num_turns=2, enable_emotional_states_local=True, emotional_states_list_local=[ARC],
+                emotion_placement_local="system")
+    greeting = ROUTER.bodies("greeting")[0]["messages"]
+    check("opening mode, emotion on system: the greeting's system prompt carries the first stage",
+          names_stage(greeting[0]["content"], "calm") and "EMOTIONAL STATE" not in greeting[-1]["content"])
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, enable_emotional_states_local=True,
+               emotional_states_list_local=[ARC], emotion_placement_local="top")
+    check("an unknown placement in the worker falls back to depth0",
+          one_plain_system() and all("EMOTIONAL STATE" in n for n in answer_notes()))
+
+
 # --- (5) Record metadata ----------------------------------------------------------------------
 
 def _shape(value):
@@ -1031,6 +1101,7 @@ def main():
     test_generate_wiring()
     print("(4) emotional arc and persona through the worker")
     test_arc_and_persona_requests()
+    test_note_placement_requests()
     print("(5) record metadata")
     test_record_metadata()
     test_metadata_matches_prompt()

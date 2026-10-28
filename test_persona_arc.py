@@ -124,6 +124,46 @@ def main():
     check("a persona keeps its profile number when an earlier one has none",
           "CHARACTER 2's inner persona" in gap and "CHARACTER 1" not in gap)
 
+    print("Note placement (note_placement):")
+    place = g.note_placement
+    check("missing placement -> depth0", place(None) == "depth0")
+    check("depth0 and system are accepted in any case", place(" System ") == "system" and place("DEPTH0") == "depth0")
+    check("an unknown placement -> None", place("top") is None and place("") is None)
+
+    print("Prefix-cache warning (placement_cache_warning):")
+    warn = g.placement_cache_warning
+    plain = dict(num_turns=4, opening_mode=False, persona_turn=2, persona_active=True,
+                 emotional_states_enabled=True, emotional_states=["calm -> wary -> tense"])
+    check("both on depth0 -> no warning", warn(**plain, persona_placement="depth0", emotion_placement="depth0") == (0.0, ""))
+    share, text = warn(**plain, persona_placement="system", emotion_placement="system")
+    check("persona from slot 2 and a 3-stage arc over 4 replies: 2 changes, (1+3)/(0+1+2+3) of history",
+          abs(share - 4 / 6) < 1e-9 and "changes 2 time(s) in a 4-reply" in text and "about 67%" in text)
+    check("the warning names both blocks and the measured result",
+          "the persona breakthrough and emotional arcs" in text and "35%" in text and "77%" in text)
+    flat = dict(plain, emotional_states=["happy", "sad"])
+    check("a flat state on system -> no warning",
+          warn(**flat, persona_placement="depth0", emotion_placement="system") == (0.0, ""))
+    check("persona on system from slot 1 -> no warning",
+          warn(**dict(plain, persona_turn=1), persona_placement="system", emotion_placement="depth0") == (0.0, ""))
+    check("persona on system past the last reply -> no warning",
+          warn(**dict(plain, persona_turn=5), persona_placement="system", emotion_placement="depth0") == (0.0, ""))
+    check("persona on system with no character persona -> no warning",
+          warn(**dict(plain, persona_active=False), persona_placement="system", emotion_placement="depth0") == (0.0, ""))
+    check("emotions on system but disabled -> no warning",
+          warn(**dict(plain, emotional_states_enabled=False), persona_placement="depth0", emotion_placement="system")
+          == (0.0, ""))
+    share, text = warn(**dict(plain, opening_mode=True), persona_placement="system", emotion_placement="depth0")
+    check("opening mode adds the greeting slot: persona at slot 2 of 5 is 1/10 of history",
+          abs(share - 0.1) < 1e-9 and "5-reply" in text and "emotional arcs" not in text)
+    share, text = warn(**dict(plain, emotional_states=["happy", "calm -> tense"]),
+                       persona_placement="depth0", emotion_placement="system")
+    check("a flat and an arc entry average: (0 + 2/6) / 2",
+          abs(share - 1 / 6) < 1e-9 and "on average over the configured states" in text and "0.5 time(s)" in text)
+    check("one turn -> no warning", warn(**dict(plain, num_turns=1), persona_placement="system",
+                                         emotion_placement="system") == (0.0, ""))
+    check("unparsable numbers -> no warning", warn(**dict(plain, num_turns="x"), persona_placement="system",
+                                                   emotion_placement="system") == (0.0, ""))
+
     print("Config editor save (ConfigEditor._get_current_editor_config_data):")
     import config_editor
     import yaml
@@ -138,12 +178,17 @@ def main():
         on_gender_change_editor_handler=lambda save_current=True: None,
         _profile_label_to_name=lambda label: label,
         global_config=_EditorStub(config={}),
+        persona_placement_var_editor=_Var("system"),
+        emotion_placement_var_editor=_Var("depth0"),
     )
     saved = config_editor.ConfigEditor._get_current_editor_config_data(editor)['prompts']
     states = saved['emotional_states']['states']
     check("arc saved as typed", states[0] == "calm -> wary -> tense")
     check("saved arc still splits into stages", split(states[0]) == ("calm", "wary", "tense"))
     check("state with an apostrophe saved as typed", states[1] == "can't settle")
+    check("both placements saved",
+          saved['character']['persona_breakthrough_placement'] == "system"
+          and saved['emotional_states']['placement'] == "depth0")
     profile = saved['character']['characters'][0]
     check("every profile field saved as typed", all(profile[k] == typed for k in fields))
     # Same dump arguments as ConfigEditor.save_config_handler
