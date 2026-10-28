@@ -857,9 +857,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 else:
                     log_message(f"Thread {thread_id}: Character engine enabled but character_list is empty or num_characters is 0.", "WARNING")
 
-            # Base scene prompt: everything constant for the whole task (persona excluded). The two
-            # dynamic blocks below (persona breakthrough + emotional state/arc) are re-attached at
-            # the top of each turn so they can shift over the conversation.
+            # Scene prompt: the system prompt of every request in the task (persona excluded). The
+            # blocks that change per slot (persona breakthrough + emotional state/arc) go in
+            # current_turn_note below, so this prefix stays the same and the server can reuse its cache.
             base_scene_prompt = current_system_prompt_for_task + character_injection
 
             # Handle emotional states: a configured entry is either a flat state or an arc
@@ -911,24 +911,22 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 idx = max(1, min(slot_no, len(emotional_arc_turn_states))) - 1
                 return emotional_arc_turn_states[idx]
 
-            def current_task_scene_prompt(slot_no):
-                """Compose this task's scene prompt for one assistant-generation slot (1-based).
-
-                The prompt is rebuilt per turn (not once per task) so the persona breakthrough and the
-                emotional-arc progression can change mid-conversation. Early slots are outward-only:
-                no persona line, and the arc's start state.
+            def current_turn_note(slot_no):
+                """The note for one assistant-generation slot (1-based): the persona breakthrough once
+                it is visible, then the slot's emotional state. It is appended to the slot's final user
+                message (the greeting or answer prompt), after the history, so the persona and the arc
+                can change mid-conversation without changing the system prompt. Early slots are
+                outward-only: no persona line, and the arc's start state.
                 """
-                prompt = base_scene_prompt
+                note = ""
                 if _persona_visible_at(slot_no) and persona_breakthrough_block:
-                    prompt += persona_breakthrough_block
+                    note += persona_breakthrough_block
                 slot_state = _emotional_slot_state(slot_no)
                 if slot_state:
-                    prompt += _emotional_state_injection(slot_state, arc_stages)
-                return prompt
+                    note += _emotional_state_injection(slot_state, arc_stages)
+                return note
 
-            # Greeting / initial-question generation happens before the loop; slot 1 = the first
-            # assistant reply of the conversation (opening-mode greeting, or the opening answer).
-            current_system_prompt_for_task = current_task_scene_prompt(1)
+            current_system_prompt_for_task = base_scene_prompt
 
             conversation_history_for_output = [] # Stores the full conversation for writing (mainly for non-duplication mode)
             current_llm_conversation_context = [] # Stores the conversation history passed to the LLM for context
@@ -969,10 +967,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 if profile_greeting:
                     greeting_text = profile_greeting # Used as-is: no request, no checks, no chunk
                 else:
-                    # The greeting IS slot 1 of the scene, so it gets the arc's start state but stays
+                    # The greeting IS slot 1 of the scene, so its note has the arc's start state but stays
                     # outward-behaviour-only on persona (breakthrough defaults to the next slot).
                     greeting_text = generate_greeting(
-                        current_task_scene_prompt(1), greeting_prompt_local,
+                        current_system_prompt_for_task, greeting_prompt_local,
                         opening_speaker(scene_character_names, include_names), task[4] if len(task) > 4 else "",
                         thread_id, api_config_for_this_task.get('sampler_settings', {}),
                         api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
@@ -982,7 +980,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         user_speaking_phrases_local=current_user_speaking_phrases,
                         no_user_impersonation_local=no_user_impersonation_local,
                         context_template=greeting_context_local,
-                        dataset_values=task_dataset_values,
+                        dataset_values=task_dataset_values, turn_note=current_turn_note(1),
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
@@ -1056,9 +1054,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                 assistant_answer = None # This will hold the assistant's response for the current turn
 
-                # Recompose the scene prompt for this turn so the persona breakthrough and any
-                # emotional-arc progression take effect; slot 1 = first assistant reply of the scene.
-                current_system_prompt_for_task = current_task_scene_prompt(turn_num + 1 + greeting_offset)
+                # This turn's answer prompt carries the slot's persona and emotional-state note;
+                # slot 1 = first assistant reply of the scene.
+                current_answer_prompt_for_turn = current_answer_prompt + current_turn_note(turn_num + 1 + greeting_offset)
 
                 # --- Assistant Answer Generation ---
                 if master_duplication_enabled_local:
@@ -1075,7 +1073,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             answer_result = generate_answer_with_retries(
                                 base_system_prompt=current_system_prompt_for_task,
                                 conversation_history_for_llm=list(current_llm_conversation_context),
-                                answer_prompt_template=current_answer_prompt,
+                                answer_prompt_template=current_answer_prompt_for_turn,
                                 thread_id=thread_id, q=q,
                                 sampler_settings_local=dup_api_conf_item.get('sampler_settings', {}),
                                 api_url_local=dup_api_conf_item.get('url'),
@@ -1202,7 +1200,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     answer_result = generate_answer_with_retries(
                         base_system_prompt=current_system_prompt_for_task,
                         conversation_history_for_llm=list(current_llm_conversation_context),
-                        answer_prompt_template=current_answer_prompt,
+                        answer_prompt_template=current_answer_prompt_for_turn,
                         thread_id=thread_id, q=q,
                         sampler_settings_local=api_config_for_this_task.get('sampler_settings', {}),
                         api_url_local=api_config_for_this_task.get('url'),
@@ -2248,16 +2246,19 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(),
                       user_speaking_phrases_local=(), no_user_impersonation_local=False, context_template="",
-                      dataset_values=None):
-    """Write the character's opening message: [system: scene prompt, user: filled greeting prompt].
+                      dataset_values=None, turn_note=""):
+    """Write the character's opening message: [system: scene prompt, user: filled greeting prompt
+    + turn note].
 
     Uses max_tokens_answer and the user-speaking check, as an answer does. The book chunk, when the
-    task has one, goes only into this request. Returns the greeting, or None.
+    task has one, goes only into this request. `turn_note` is slot 1's persona and emotional-state
+    note. Returns the greeting, or None.
     """
     messages = [
         {"role": "system", "content": scene_prompt},
         {"role": "user", "content": fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text, context_template,
-                                                         dataset_values=dataset_values)},
+                                                         dataset_values=dataset_values)
+                                    + turn_note},
     ]
     return _request_opening_message(
         messages, 'max_tokens_answer', 'greeting_request', 'Greeting', True,
