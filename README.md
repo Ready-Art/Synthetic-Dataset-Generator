@@ -1388,7 +1388,7 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Progress bars not animating** | Ensure ttkbootstrap is installed; progress bars use color-coded styles that change with completion percentage |
 | **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
 | **Inner persona never shows up** | The persona is intentionally withheld until `persona_breakthrough_turn` (default 2), so on a 1-turn conversation you will only ever see the outward profile. Bump `generation.num_turns` above the breakthrough slot, or set `persona_breakthrough_turn: 1`, to expose the persona sooner |
-| **Emotional arc doesn't seem to shift** | Arcs (`a -> b -> c`) need multiple assistant turns to spread across. On a 1–2 turn conversation an arc resolves to just its start stage; raise `generation.num_turns` so the later stages have turns to land on. Flat states are constant by design |
+| **Emotional arc doesn't seem to shift** | Arcs (`a -> b -> c`) need multiple assistant turns to spread across. Outside opening mode, a 1-turn conversation resolves an arc to just its start stage, and a 2-turn one to its start and end stages (opening mode adds the greeting as one more reply); raise `generation.num_turns` so the middle stages have turns to land on. Flat states are constant by design |
 | **Slop fixer breaking quotes** | This is expected behavior — the fixer checks for unbalanced quotes after each rewrite and skips replacements that would break quote structure |
 | **Characters with empty names** | Characters with empty or whitespace-only names are automatically skipped with a warning; ensure all character entries have valid names |
 | **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
@@ -1599,7 +1599,7 @@ EMOTIONAL STATE (PROGRESSION): CALM -> WARY -> TENSE
 This conversation is a short emotional arc. In your current reply you are in the wary state; earlier replies showed the earlier states, later replies will show the later ones. Let the shift play out naturally through tone, word choice, and what you choose to hide or reveal rather than announcing it.
 ```
 
-For a 3-stage arc over a 4-turn conversation the plan resolves to `[calm, wary, wary, tense]` (always starting on the first stage and ending on the last); a 1-turn task holds the start stage. The metadata `emotional_state` field records the full configured entry (e.g. `"calm -> wary -> tense"` or `"anxious"`).
+For a 3-stage arc over a 4-turn conversation the plan resolves to `[calm, wary, wary, tense]` (always starting on the first stage and ending on the last); outside opening mode a 1-turn task holds the start stage. In opening mode the greeting is one of these replies, so a 1-turn task gives the greeting the start stage and the answer the end stage, and a 2-turn task spreads the arc over three replies (greeting, then two answers): `[calm, wary, tense]`. A greeting taken from the profile's `greeting` field is used as written, so no request receives its stage; the answers still get the later stages. The metadata `emotional_state` field records the full configured entry (e.g. `"calm -> wary -> tense"` or `"anxious"`).
 
 ### Lore Injection
 
