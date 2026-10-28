@@ -2,8 +2,8 @@
 
 ## Setup and Tests
 
-The application targets Python 3.8 (`README.md`, Requirements), so code and tests must not use anything newer, such
-as `list[str]` annotations, `match` or `str.removesuffix()`. The optional dataset backends need Python 3.9 or later.
+The application targets Python 3.9 (`README.md`, Requirements), so code and tests must not use anything newer, such
+as `match` or `X | Y` type unions (both 3.10).
 Tests that import `generation.py` (`test_opening_mode.py`, `test_persona_arc.py`, `test_dataset_compatibility.py`)
 or the Datasets panel need Tk; `test_datasets_panel.py` and `test_dataset_column_menu.py` also need a display.
 
