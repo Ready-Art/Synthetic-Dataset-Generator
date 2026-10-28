@@ -15,6 +15,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - [Requirements](#-requirements)
 - [Installation](#-installation)
 - [Configuration](#-configuration)
+  - [Dataset Sources and Prompt Variables](#dataset-sources-and-prompt-variables)
   - [API Setup](#api-setup)
   - [Generation Settings](#generation-settings)
   - [Prompts & Character Engine](#prompts--character-engine)
@@ -231,7 +232,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 Install via `pip install -r requirements.txt`:
 
 ```
-requests==2.31.0
+requests>=2.32.4,<3
 python-dotenv==1.0.0
 PyYAML==6.0.1
 tk==0.1.0
@@ -285,6 +286,29 @@ psycopg2-binary
 ## ⚙ Configuration
 
 All configuration is managed through `config/config.yml` and can be edited via the built-in Configuration Editor (GUI). The editor provides a tabbed interface with validation and a search bar for quickly finding tabs and sections.
+
+### Dataset Sources and Prompt Variables
+
+The Configuration Editor's **Datasets** tab imports column names from local files,
+saved Hugging Face datasets, or Hub repositories and maps them to aliases such as
+`{{ds:nvd_f_name}}`. It supports multiple sources, a bounded column table, and a
+searchable column dropdown that defaults to **All**. Record values are not shown
+in the configuration GUI.
+
+Each existing generation task receives one frozen row per mapped source. Its
+values remain available through turns, repairs, and retries on the same queue.
+The integration prepares authored inputs while retaining the existing task IDs,
+generation/refinement methods, random-setting selection, duplication, and output
+metadata schema. Task counts still use the generator's existing controls.
+
+**Dataset attachments are in-memory for the current queue/run.** They are not
+saved by the existing recovery mechanism; restarting or starting a new queue
+does not preserve the previous row assignments.
+
+CSV/TSV/JSON/JSONL need no additional dependencies. For Hub, saved-HF, and Parquet
+sources, install `requirements-datasets.txt` with Python 3.9 or later.
+See [Dataset sources and task metadata](docs/dataset-bindings.md) for setup,
+placeholder behavior, limits, and the upstream comparison tests.
 
 ### API Setup
 

@@ -42,6 +42,7 @@ class _EditorStub:
     """Stands in for a ConfigEditor: attributes not given return a _Var holding "0"."""
     def __init__(self, **attrs):
         self.__dict__.update(attrs)
+        self.datasets_panel = type("DatasetPanelStub", (), {"get_config": lambda _self: {"sources": []}})()
 
     def __getattr__(self, name):
         var = _Var()

@@ -59,6 +59,8 @@ database:
   user: ''
   password: ''
   pool_size: 10
+datasets:
+  sources: []
 generation:
   max_character_cards: 10
   subject_size: 1000

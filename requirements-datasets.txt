@@ -1,0 +1,4 @@
+# Optional Hugging Face, local Parquet, and saved-HF dataset support.
+# Requires Python 3.9 or later. Includes the normal application dependencies.
+-r requirements.txt
+datasets==4.4.2

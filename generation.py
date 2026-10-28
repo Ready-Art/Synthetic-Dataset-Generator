@@ -18,6 +18,8 @@ import app_state
 import detection
 import text_utils
 import quality
+from dataset_tasks import bind_task_datasets, render_task_inputs, validate_task_templates
+from dataset_templates import render_with_native_placeholders
 from queue import Queue, Empty, Full
 from logging_config import log_message, LOG_FILE_PATH
 from api_handler import (
@@ -509,6 +511,23 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
 
+    # Keep authored inputs pristine across this worker's successive tasks.
+    # Dynamic native placeholders are still filled by their original helpers.
+    dataset_authored_inputs = (
+        (True, current_system_prompts_for_worker), (True, current_answer_prompt),
+        (bool(current_refusal_phrases), current_jailbreaks),
+        (bool(current_user_speaking_phrases) and not no_user_impersonation_local, current_speaking_fixes),
+        (bool(current_slop_phrases), current_slop_fixes_fallback),
+        (bool(current_slop_phrases or current_anti_slop_phrases), current_slop_fixes_for_rotation_worker),
+        (True, current_top_level_system_prompt), (True, current_lore),
+        (enable_character_engine_local, character_list),
+        (enable_emotional_states_local, emotional_states_list_local),
+        (enable_character_engine_local and enable_random_names_local, random_names_list_local),
+        (enable_character_engine_local and enable_setting_selection_local and enable_random_settings_local,
+         random_settings_list_local),
+        (opening_mode_local, first_line_styles_local),
+    )
+
     # Resilience: in non-duplication mode each worker is pinned to one API slot
     # (thread_id % num_active_apis). Capture it up-front so we can pause -- not
     # drain -- the queue when that host's circuit is open. -1 = duplication/unknown.
@@ -612,6 +631,34 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
         try:
             if app_state.stop_processing: q.task_done(); continue # Check again before intensive processing
+
+            # Resolve one immutable attachment for the existing task identity.
+            # Only authored inputs are prepared; source text, generated history,
+            # selection rules and all refinement/retry loops remain upstream's.
+            task_dataset_values = None
+            task_has_user_continuation = bool(current_user_continuation_prompt)
+            dataset_binding = bind_task_datasets(
+                q, task, app_state.task_metadata, app_state.task_queue_ui_lock)
+            if dataset_binding is not None:
+                task_dataset_values = dataset_binding.values
+                dynamic_templates = []
+                if opening_mode_local:
+                    dynamic_templates.extend((greeting_prompt_local, greeting_context_local, first_line_prompt_local))
+                elif not use_questions_file_local:
+                    dynamic_templates.append(current_question_prompt)
+                if current_num_turns > 1:
+                    dynamic_templates.append(current_user_continuation_prompt)
+                    task_has_user_continuation = bool(render_task_inputs(
+                        current_user_continuation_prompt, task_dataset_values))
+                validate_task_templates(dynamic_templates, task_dataset_values)
+                (current_system_prompts_for_worker, current_answer_prompt,
+                 current_jailbreaks, current_speaking_fixes, current_slop_fixes_fallback,
+                 current_slop_fixes_for_rotation_worker, current_top_level_system_prompt,
+                 current_lore, character_list, emotional_states_list_local,
+                 random_names_list_local, random_settings_list_local,
+                 first_line_styles_local) = tuple(
+                    render_task_inputs(value, task_dataset_values) if enabled else value
+                    for enabled, value in dataset_authored_inputs)
 
             # Determine system prompt for this task
             current_system_prompt_for_task = ""
@@ -928,6 +975,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         user_speaking_phrases_local=current_user_speaking_phrases,
                         no_user_impersonation_local=no_user_impersonation_local,
                         context_template=greeting_context_local,
+                        dataset_values=task_dataset_values,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
@@ -939,6 +987,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         current_max_attempts, current_api_request_timeout, file_name=file_name,
                         refusal_phrases_local=current_refusal_phrases, slop_phrases_local=current_slop_phrases,
                         styles=first_line_styles_local,
+                        dataset_values=task_dataset_values,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if not greeting_text or not initial_user_question:
@@ -975,6 +1024,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     q_gen_api_conf.get('url'), q_gen_api_conf.get('model'), q_gen_api_conf.get('key'),
                     current_history_size_local,
                     raw_subject_content_for_debug, raw_context_content_for_debug,
+                    dataset_values=task_dataset_values,
                     api_slot_idx=q_gen_api_slot_idx,
                     current_max_attempts_param=current_max_attempts,
                     api_request_timeout_param=current_api_request_timeout,
@@ -1229,7 +1279,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 if app_state.stop_processing or app_state.pause_processing: break
 
                 # --- User Continuation Generation (if not the last turn) ---
-                if not current_user_continuation_prompt: 
+                if not task_has_user_continuation:
                     log_message(f"Thread {thread_id}: No user continuation prompt set. Ending conversation after assistant's turn {turn_num + 1}.", "INFO")
                     break
                 
@@ -1241,6 +1291,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     system_prompt=current_system_prompt_for_task,
                     conversation_history_for_llm=list(current_llm_conversation_context),
                     user_continuation_prompt_template=current_user_continuation_prompt,
+                    dataset_values=task_dataset_values,
                     thread_id=thread_id,
                     sampler_settings_local=cont_gen_api_conf.get('sampler_settings', {}),
                     api_url_local=cont_gen_api_conf.get('url'),
@@ -1420,7 +1471,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       history_size_local_param,
                       raw_subject_chunk, raw_context_chunk,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                      file_name="", refusal_phrases_local=(), slop_phrases_local=()):
+                      file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None):
     """Generates an initial question using the LLM, with retries for API call failures."""
 
     if not api_url_local:
@@ -1458,9 +1509,16 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 recent_questions_str = "None"
 
             # Format the question prompt with placeholders
-            final_formatted_user_prompt = question_prompt_template.replace("{recent_questions}", recent_questions_str)
-            final_formatted_user_prompt = final_formatted_user_prompt.replace("{subject}", subject if subject else "N/A")
-            final_formatted_user_prompt = final_formatted_user_prompt.replace("{context}", context if context else "N/A")
+            if dataset_values is None:
+                final_formatted_user_prompt = question_prompt_template.replace("{recent_questions}", recent_questions_str)
+                final_formatted_user_prompt = final_formatted_user_prompt.replace("{subject}", subject if subject else "N/A")
+                final_formatted_user_prompt = final_formatted_user_prompt.replace("{context}", context if context else "N/A")
+            else:
+                final_formatted_user_prompt = render_with_native_placeholders(
+                    question_prompt_template, dataset_values,
+                    (("{recent_questions}", recent_questions_str),
+                     ("{subject}", subject if subject else "N/A"),
+                     ("{context}", context if context else "N/A")))
 
             messages_for_llm = [
                 {"role": "system", "content": system_prompt},
@@ -1716,7 +1774,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
 def generate_user_continuation(system_prompt, conversation_history_for_llm, user_continuation_prompt_template,
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                               file_name="", refusal_phrases_local=(), slop_phrases_local=()):
+                               file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None):
     """Generates the user's continuation reply, with retries for API call failures."""
 
 
@@ -1743,7 +1801,12 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             if conversation_history_for_llm and conversation_history_for_llm[-1]["role"] == "assistant":
                 last_assistant_message = conversation_history_for_llm[-1]["content"]
 
-            final_user_continuation_prompt = user_continuation_prompt_template.replace("{last_assistant_message}", last_assistant_message)
+            if dataset_values is None:
+                final_user_continuation_prompt = user_continuation_prompt_template.replace("{last_assistant_message}", last_assistant_message)
+            else:
+                final_user_continuation_prompt = render_with_native_placeholders(
+                    user_continuation_prompt_template, dataset_values,
+                    (("{last_assistant_message}", last_assistant_message),))
 
             messages = [{"role": "system", "content": system_prompt}] + \
                        conversation_history_for_llm + \
@@ -2148,9 +2211,19 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
     return None
 
 
-def fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text="", context_template=""):
+def fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text="", context_template="", dataset_values=None):
     """Fill {speaker} and {context}. With a book chunk, {context} is the context template (default
     DEFAULT_GREETING_CONTEXT) with the chunk in {chunk}; without one, {context} is empty."""
+    if dataset_values is not None:
+        context_block = ""
+        if chunk_text:
+            selected_context_template = (context_template if render_task_inputs(context_template, dataset_values)
+                                         else DEFAULT_GREETING_CONTEXT)
+            context_block = render_with_native_placeholders(
+                selected_context_template, dataset_values, (("{chunk}", chunk_text),))
+        return render_with_native_placeholders(
+            greeting_prompt_template, dataset_values,
+            (("{speaker}", speaker), ("{context}", context_block))).rstrip()
     context_block = (context_template or DEFAULT_GREETING_CONTEXT).replace("{chunk}", chunk_text) if chunk_text else ""
     return greeting_prompt_template.replace("{speaker}", speaker).replace("{context}", context_block).rstrip()
 
@@ -2159,7 +2232,8 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
                       sampler_settings_local, api_url_local, model_name_local, api_key_local,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(),
-                      user_speaking_phrases_local=(), no_user_impersonation_local=False, context_template=""):
+                      user_speaking_phrases_local=(), no_user_impersonation_local=False, context_template="",
+                      dataset_values=None):
     """Write the character's opening message: [system: scene prompt, user: filled greeting prompt].
 
     Uses max_tokens_answer and the user-speaking check, as an answer does. The book chunk, when the
@@ -2167,7 +2241,8 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
     """
     messages = [
         {"role": "system", "content": scene_prompt},
-        {"role": "user", "content": fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text, context_template)},
+        {"role": "user", "content": fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text, context_template,
+                                                         dataset_values=dataset_values)},
     ]
     return _request_opening_message(
         messages, 'max_tokens_answer', 'greeting_request', 'Greeting', True,
@@ -2179,7 +2254,7 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
 def generate_first_line(greeting, first_line_prompt_template, thread_id,
                         sampler_settings_local, api_url_local, model_name_local, api_key_local,
                         api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                        file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=()):
+                        file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=(), dataset_values=None):
     """Write the user's first line from the user's seat: [system: first-line prompt, user: greeting].
 
     The scene prompt is not sent; the greeting is the other party's turn. One style from `styles`
@@ -2187,8 +2262,11 @@ def generate_first_line(greeting, first_line_prompt_template, thread_id,
     (the line is the user's). Returns the line, or None.
     """
     style = random.choice(tuple(styles) or DEFAULT_FIRST_LINE_STYLES)
+    first_line_instruction = (first_line_prompt_template.replace("{style}", style)
+        if dataset_values is None else render_with_native_placeholders(
+            first_line_prompt_template, dataset_values, (("{style}", style),)))
     messages = [
-        {"role": "system", "content": first_line_prompt_template.replace("{style}", style)},
+        {"role": "system", "content": first_line_instruction},
         {"role": "user", "content": greeting},
     ]
     return _request_opening_message(

@@ -20,6 +20,8 @@ from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DE
                         DEFAULT_GREETING_PROMPT)
 from logging_config import log_message
 from api_handler import global_rate_limiter
+from datasets_panel import DatasetsPanel
+from dataset_settings import DatasetSettingsError
 from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
                        bind_scroll_wheel, fit_window, scroll_to_widget, wrap_label)
 
@@ -935,6 +937,10 @@ class ConfigEditor(tk.Toplevel):
         sampler_row += 1
 
 
+        # Dataset configuration remains isolated from the generation worker.
+        self.datasets_panel = DatasetsPanel(self.notebook)
+        self.notebook.add(self.datasets_panel, text="Datasets")
+
         # --- Profiles Tab ---
         self.profiles_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.profiles_tab, text="Profiles")
@@ -1108,15 +1114,14 @@ class ConfigEditor(tk.Toplevel):
         threading.Thread(target=run_test, args=(self,), daemon=True).start()
 
     def save_config_handler(self, silent=False):
+        """Save validated settings, returning whether the save completed."""
         try:
             # Validate configuration before saving
             if not self.validate_config_handler(show_success_message=False):
-                # Check if status widget exists before updating
-                if hasattr(self.status, 'winfo_exists') and self.status.winfo_exists():
-                    self.status.config(text="Save failed: Validation errors found.", foreground="red")
+                # Keep the specific validation message so the field can be corrected.
                 if not silent:
                     messagebox.showerror("Validation Error", "Cannot save due to validation errors. Please correct them.")
-                return
+                return False
 
             # Proceed with saving logic
             config_to_save_to_main_yml = self._get_current_editor_config_data()
@@ -1155,6 +1160,7 @@ class ConfigEditor(tk.Toplevel):
             if not silent:
                 messagebox.showinfo("Success", "Configuration saved to config.yml!")
             log_message("Configuration saved successfully from editor to main config.", "INFO")
+            return True
 
         except ValueError as e_val:
             # Handle validation errors safely
@@ -1173,6 +1179,7 @@ class ConfigEditor(tk.Toplevel):
             log_message(f"Save failed: {str(e_save)}", "ERROR")
             import traceback
             log_message(traceback.format_exc(), "ERROR")
+        return False
 
 
     def on_close_editor(self):
@@ -1180,9 +1187,12 @@ class ConfigEditor(tk.Toplevel):
         log_message("ConfigEditor: Close button clicked. Saving configuration automatically.", "INFO")
 
         try:
-            self.save_config_handler(silent=True)
+            if not self.save_config_handler(silent=True):
+                log_message("ConfigEditor: Save failed; keeping editor open to preserve unsaved changes.", "WARNING")
+                return
         except Exception as e:
             log_message(f"ConfigEditor: Error during auto-save on close: {e}", "ERROR")
+            return
         self.destroy()
 
     def _populate_profile_list(self):
@@ -1458,6 +1468,7 @@ class ConfigEditor(tk.Toplevel):
         # Preserve pricing settings from the loaded config if they exist
         if 'pricing' in self.global_config.config:
             config_data['pricing'] = self.global_config.config['pricing']
+        config_data['datasets'] = self.datasets_panel.get_config()
         return config_data
 
     def _save_profile_as_handler(self):
@@ -1466,6 +1477,10 @@ class ConfigEditor(tk.Toplevel):
         if not profile_name:
             messagebox.showerror("Error", "Profile name cannot be empty.")
             self.status.config(text="Profile name empty.", foreground="red")
+            return
+
+        if not self.validate_config_handler(show_success_message=False):
+            messagebox.showerror("Validation Error", "Cannot save profile due to validation errors. Please correct them.")
             return
 
         safe_profile_name_check = "".join(c for c in profile_name if c.isalnum() or c in (' ', '_', '-')).rstrip()
@@ -1681,6 +1696,7 @@ class ConfigEditor(tk.Toplevel):
         """Loads data from self.global_config (config.yml) into the editor's UI fields."""
         try:
             config = self.global_config.config # Get current config data
+            self.datasets_panel.load_config(config.get('datasets', {}))
 
             api_config_main = config.get('api', {})
             # NEW: Load pricing value
@@ -1995,6 +2011,7 @@ class ConfigEditor(tk.Toplevel):
     def validate_config_handler(self, event=None, show_success_message=True): 
         """Performs basic validation of numeric and list fields in the editor."""
         try:
+            self.datasets_panel.validate()
             int(self.subject_size_var.get()); int(self.context_size_var.get()); int(self.max_attempts_var.get())
             int(self.db_port_var.get())
             int(self.db_pool_size_var.get())
@@ -2067,6 +2084,9 @@ class ConfigEditor(tk.Toplevel):
                 self.status.config(text="Validation successful (basic checks).", foreground="green")
             log_message("ConfigEditor: Validation successful.", "DEBUG")
             return True 
+        except DatasetSettingsError as e_dataset:
+            self.status.config(text=f"Dataset configuration: {str(e_dataset)}", foreground="red")
+            log_message(f"ConfigEditor dataset validation: {str(e_dataset)}", "WARNING")
         except ValueError as e_val: # Error during type conversion
             self.status.config(text=f"Validation Error: Invalid number. {str(e_val)}", foreground="red")
             log_message(f"ConfigEditor Validation (ValueError): {str(e_val)}", "WARNING")
