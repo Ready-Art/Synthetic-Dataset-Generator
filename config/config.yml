@@ -153,8 +153,8 @@ prompts:
     num_characters: 1
     characters:
     - name: Melody
-      age: '25'
-      gender: ''
+      age: '59'
+      gender: Female
       race: Human
       job: Horologist and Pawn Shop Manager, working in the vintage goods and resale
         industry, she has been in this specific position for 12 years, and she feels
@@ -164,8 +164,9 @@ prompts:
       eye_color: Hazel-green with gold flecks, slightly bloodshot from late nights
         and strain, with a piercing intensity that softens when she is focused on
         delicate work.
-      hair: ''
-      hair_color: ''
+      hair: Steel-gray and dark brown, cut into a choppy jaw-length bob with frayed
+        ends.
+      hair_color: Steel-gray and dark brown.
       clothing: Shirt is a heavyweight flannel button-down, faded rust color, brushed
         cotton, loose fit, subtle plaid pattern, collar neckline, worn thin at the
         elbows and slightly frayed at the cuffs, Pants are straight-leg cargo pants,
@@ -177,11 +178,11 @@ prompts:
         brown, soles heavily worn down at the heels, scuffed but well-maintained,
         Socks are mid-calf crew socks, merino wool blend, thick, heathered forest
         green, pilled at the heel.
-      jewelry: ''
-      appearance: 59, broad-shouldered and sturdy with a soft midsection, weathered
-        olive skin, hair is steel-gray and dark brown, cut into a choppy jaw-length
-        bob with frayed ends, eyes are deep-set and hazel with a slight droop, prominent
-        nose with a slight bump, thin lips, a faded burn scar on her left forearm,
+      jewelry: Three lobe piercings in each ear with mismatched silver studs.
+      appearance: 59 years old, broad-shouldered and sturdy with a soft midsection,
+        weathered olive skin, hair is steel-gray and dark brown, cut into a choppy
+        jaw-length bob with frayed ends, eyes are deep-set and hazel-green with gold
+        flecks and a slight droop, prominent nose with a slight bump, thin lips, a faded burn scar on her left forearm,
         three lobe piercings in each ear with mismatched silver studs, slight rosacea
         on her cheeks, default expression is a skeptical squint, posture is slightly
         hunched forward from years of desk work.
