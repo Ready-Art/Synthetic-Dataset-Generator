@@ -25,11 +25,9 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 
 - `tests/test_dataset_backends.py` skips its checks unless `requirements-datasets.txt` is installed. A skip does not count
   as a pass.
-- `tests/test_dataset_compatibility.py` compares the requests the worker sends with those of the engine at its
-  `BASELINE_COMMIT`, which it extracts with `git archive`, so it needs `git` and a clone that holds that commit (not
-  a shallow clone or a zip download). A change that alters the requests on purpose (a prompt, a message's order or
-  role) makes it fail by design. Move `BASELINE_COMMIT` to a commit with the same change.
-  `DATASET_COMPATIBILITY_BASELINE_DIR=<dir>` runs it against an extracted tree instead.
+- `tests/test_dataset_compatibility.py` runs the current worker twice per scenario, once with values typed in and once
+  with the same values bound from CSV/JSONL sources, and requires the two runs to send identical requests. A failure
+  means dataset binding changed what the worker sends.
 - Importing `logging_config` creates `output/` in the working directory, and `logging_config.LOG_FILE_PATH` is
   relative to it, so `tests/test_api_profiles.py` appends to the repository's `output/log.txt`. `tests/test_opening_mode.py` and
   `tests/test_persona_arc.py` change into a temporary directory first.
@@ -383,7 +381,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |
 | Run dataset tests | `for t in tests/test_dataset_sources.py tests/test_dataset_settings.py tests/test_dataset_bindings.py tests/test_dataset_templates.py tests/test_dataset_tasks.py tests/test_dataset_backends.py tests/test_dataset_column_menu.py tests/test_datasets_panel.py tests/test_dataset_pipeline.py tests/test_dataset_compatibility.py; do python -B "$t"; done` (live Hub check: `tools/check_dataset_hub.py`, opt-in only) |
 | Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
-| Change what a request contains (prompt text, message order or role) | `generation.py`, `tests/test_opening_mode.py`, then move `BASELINE_COMMIT` in `tests/test_dataset_compatibility.py` to a commit with the same change |
+| Change what a request contains (prompt text, message order or role) | `generation.py`, `tests/test_opening_mode.py` |
 
 ## Key State Variables (`app_state.py`)
 

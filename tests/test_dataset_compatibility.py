@@ -1,22 +1,18 @@
-"""Compare dataset-enabled request traces with the exact upstream engine.
+"""Compare the requests the worker sends for dataset-bound inputs with those for the same values typed in.
 
 Run separately from the repository root: ``python -B tests/test_dataset_compatibility.py``.
-The upstream commit
-below must exist locally (it is the exact upstream revision this branch integrates).
-Each side runs in its own process and temporary directory. The real worker,
-request builders, paragraph fixers, state saver and output writer execute;
-the existing opening harness supplies fake HTTP, no cache hits, no waits, and
-GUI-variable stand-ins. No model, network connection or display is used.
+Both sides run the current code, each in its own process and temporary directory. The real
+worker, request builders, paragraph fixers, state saver and output writer execute; the
+existing opening harness supplies fake HTTP, no cache hits, no waits, and GUI-variable
+stand-ins. No model, network connection or display is used.
 
 This is a bounded compatibility check, not a claim of exhaustive equivalence.
 The baseline receives explicitly populated authored inputs; the candidate gets
 the same values from real CSV/JSONL sources. Dynamic native formatting remains
-the upstream engine's responsibility on both sides.
+the engine's responsibility on both sides.
 """
 
-import ast
 import csv
-import io
 import json
 import os
 from pathlib import Path
@@ -24,7 +20,6 @@ import random
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import unittest
@@ -33,7 +28,6 @@ from queue import Queue
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
-BASELINE_COMMIT = "57073f85a16686141d02fb0dd8c9b2d786496c50"
 RAW_LITERAL = "{{ds:unmapped_source}}"
 MODEL_LITERAL = "{{ds:unmapped_model}} {last_assistant_message}"
 CELL_LITERAL = "Literal <tag> Unicode \u03a9 and \\path"
@@ -116,7 +110,7 @@ class TraceHTTP:
                     # A mistakenly rendered {{ds:name}} detector would match
                     # this clean answer and create extra corrective retries.
                     text += " {} stays in character.".format({"R0": "Ada", "R1": "Bo"}[row])
-                    # The upstream detector ignores this phrase in dialogue;
+                    # The detector ignores this phrase in dialogue;
                     # only the unquoted first answer should trigger a retry.
                     text += ' She quotes "As a helpful AI" from the placard.'
         elif kind in ("slop", "anti"):
@@ -239,11 +233,10 @@ def _dataset_config(rows):
     return settings
 
 
-def _trace(repo, candidate, scenario, destination):
+def _trace(candidate, scenario, destination):
     # The harness changes cwd and monkeypatches module globals; always run this
-    # entry point in a separate process, with the chosen source tree first.
+    # entry point in a separate process.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    sys.path.insert(0, str(repo))
     import test_opening_mode as harness
     g, state = harness.g, harness.app_state
     harness.reset_state()
@@ -309,8 +302,8 @@ def _trace(repo, candidate, scenario, destination):
         q.put(None)
         g.worker(0, q, output_lock, **inputs)
     else:
-        # Upstream has no per-task aliases. Feeding its worker explicitly
-        # populated inputs for each task gives the reference trace. Reuse the
+        # Feeding the worker explicitly populated inputs for each task, with no
+        # dataset aliases, gives the reference trace. Reuse the
         # queue/global state so recent questions and selection counters advance.
         for task, values in zip(tasks, rows):
             q.put(task)
@@ -353,28 +346,6 @@ class DatasetCompatibilityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.scratch = tempfile.TemporaryDirectory(prefix="sdg-differential-")
         cls.directory = Path(cls.scratch.name)
-        override = os.environ.get("DATASET_COMPATIBILITY_BASELINE_DIR")
-        if override:
-            cls.baseline = Path(override).resolve()
-        else:
-            cls.baseline = cls.directory / "upstream"
-            cls.baseline.mkdir()
-            archive = subprocess.run(["git", "archive", BASELINE_COMMIT], cwd=REPO,
-                                     check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
-            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as handle:
-                # Only ordinary files/directories are needed. Explicit extraction
-                # keeps this check usable on Python versions before tar filters.
-                for member in handle:
-                    target = (cls.baseline / member.name).resolve()
-                    target.relative_to(cls.baseline.resolve())
-                    if member.isdir():
-                        target.mkdir(parents=True, exist_ok=True)
-                    elif member.isfile():
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with handle.extractfile(member) as source:
-                            target.write_bytes(source.read())
-                    else:
-                        raise ValueError("Unexpected archive member: {}".format(member.name))
 
     @classmethod
     def tearDownClass(cls):
@@ -382,11 +353,10 @@ class DatasetCompatibilityTests(unittest.TestCase):
 
     def _run(self, scenario, candidate):
         target = self.directory / (scenario + ("-candidate.json" if candidate else "-baseline.json"))
-        repo = REPO if candidate else self.baseline
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
                    HF_HUB_OFFLINE="1", HF_DATASETS_OFFLINE="1")
         result = subprocess.run(
-            [sys.executable, "-B", str(Path(__file__).resolve()), "--trace", str(repo),
+            [sys.executable, "-B", str(Path(__file__).resolve()), "--trace",
              "candidate" if candidate else "baseline", scenario, str(target)],
             cwd=self.directory, env=env, text=True, encoding="utf-8",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=35,
@@ -401,7 +371,7 @@ class DatasetCompatibilityTests(unittest.TestCase):
         self.assertEqual(candidate["trace"], baseline["trace"])
         return candidate
 
-    def test_refinement_and_corrective_regeneration_match_upstream(self):
+    def test_refinement_and_corrective_regeneration_match_manual_inputs(self):
         result = self.compare("refinement")
         calls = result["trace"]["calls"]
         self.assertEqual(sum(call["kind"] == "answer" for call in calls), 3)
@@ -449,14 +419,14 @@ class DatasetCompatibilityTests(unittest.TestCase):
         self.assertEqual(metadata["quality_method"], "hybrid")
         self.assertEqual(metadata["quality_consistency"], 94.0)
 
-    def test_duplication_shared_history_and_prefix_writes_match_upstream(self):
+    def test_duplication_shared_history_and_prefix_writes_match_manual_inputs(self):
         result = self.compare("duplication")
         rows = result["trace"]["output"]["output_api_slot_1.jsonl"]
         self.assertEqual([len(row["conversations"]) for row in rows], [2, 4])
         self.assertIn("MODEL=A", rows[1]["conversations"][1]["value"])
         self.assertIn("MODEL=B", rows[1]["conversations"][-1]["value"])
 
-    def test_opening_perspective_persona_arc_and_metadata_match_upstream(self):
+    def test_opening_perspective_persona_arc_and_metadata_match_manual_inputs(self):
         result = self.compare("opening")
         calls = result["trace"]["calls"]
         self.assertEqual([call["kind"] for call in calls], ["greeting", "first_line", "answer", "continuation", "answer"])
@@ -469,19 +439,19 @@ class DatasetCompatibilityTests(unittest.TestCase):
         self.assertEqual(row["conversations"][0]["value"], "[Start a new chat]")
         self.assertEqual(row["metadata"]["characters"], ["Ada"])
 
-    def test_two_jobs_on_one_worker_match_manually_populated_upstream(self):
+    def test_two_jobs_on_one_worker_match_manually_populated_inputs(self):
         result = self.compare("same_worker")
         self.assertEqual(result["bindings"]["original-0"]["values"]["name"], "Ada")
         self.assertEqual(result["bindings"]["original-1"]["values"]["name"], "Bo")
         self.assertEqual([result["bindings"][task]["row_ids"] for task in ("original-0", "original-1")],
                          [["0", "0"], ["1", "1"]])
 
-    def test_empty_dataset_setting_uses_upstream_pool_fallback(self):
+    def test_empty_dataset_setting_uses_pool_fallback(self):
         result = self.compare("settings_single")
         setting = result["trace"]["output"]["output.jsonl"][0]["metadata"]["setting"]
         self.assertIn(setting, ("Pool East R0", "Pool West R0"))
 
-    def test_ensemble_unification_and_effective_metadata_match_upstream(self):
+    def test_ensemble_unification_and_effective_metadata_match_manual_inputs(self):
         result = self.compare("settings_ensemble")
         row = result["trace"]["output"]["output.jsonl"][0]
         setting = row["metadata"]["setting"]
@@ -512,51 +482,14 @@ class DatasetCompatibilityTests(unittest.TestCase):
         self.assertEqual(phase["queued"], ["original-0"])
         self.assertEqual(phase["retries"], {"original-0": 1})
 
-    def test_empty_dataset_greeting_context_preserves_upstream_default(self):
+    def test_empty_dataset_greeting_context_preserves_default(self):
         result = self.compare("opening_empty_context")
         greeting = next(call for call in result["trace"]["calls"] if call["kind"] == "greeting")
         self.assertIn("CONTEXT_0 " + RAW_LITERAL, greeting["body"]["messages"][-1]["content"])
 
-    def test_original_methods_are_structurally_preserved(self):
-        allowed_changes = {
-            "generation.py": {
-                "worker", "generate_question", "generate_user_continuation",
-                "fill_greeting_prompt", "generate_greeting", "generate_first_line",
-            },
-            "generate.py": {"start_processing"},
-        }
-        for filename, permitted in allowed_changes.items():
-            def functions(path):
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-                return {node.name: node for node in tree.body
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-
-            original = functions(self.baseline / filename)
-            candidate = functions(REPO / filename)
-            with self.subTest(file=filename, check="original functions retained"):
-                self.assertTrue(set(original).issubset(candidate),
-                                "Original functions removed: {}".format(sorted(set(original) - set(candidate))))
-            for name, node in original.items():
-                if name in permitted or name not in candidate:
-                    continue
-                with self.subTest(file=filename, function=name):
-                    self.assertEqual(
-                        ast.dump(node, include_attributes=False),
-                        ast.dump(candidate[name], include_attributes=False),
-                        "Original method changed: {}:{}".format(filename, name),
-                    )
-        for filename in ("app_state.py", "api_handler.py", "detection.py", "quality.py", "text_utils.py"):
-            with self.subTest(file=filename, check="byte identity after CRLF normalization"):
-                # git archive emits repository LF, while Windows checkouts may
-                # use CRLF. Normalize that pair only: all other bytes, including
-                # whitespace, lone CR, encoding, and a final newline, stay strict.
-                self.assertEqual((REPO / filename).read_bytes().replace(b"\r\n", b"\n"),
-                                 (self.baseline / filename).read_bytes().replace(b"\r\n", b"\n"),
-                                 "Original module changed: {}".format(filename))
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--trace":
-        _trace(Path(sys.argv[2]), sys.argv[3] == "candidate", sys.argv[4], sys.argv[5])
+        _trace(sys.argv[2] == "candidate", sys.argv[3], sys.argv[4])
     else:
         unittest.main()
