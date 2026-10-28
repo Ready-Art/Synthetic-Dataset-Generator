@@ -2,7 +2,7 @@
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
-**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v9.4.2-STABLE branch.
+**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v10.5.0-STABLE branch.
 
 **NOTE:** While the Slop and Anti-Slop functions do work these are very inefficient especially with a large slop/antislop list. You should look for alternatives such as https://github.com/Ready-Art/antislop-vllm-fork/tree/dev
 
