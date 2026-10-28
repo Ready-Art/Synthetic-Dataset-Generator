@@ -458,7 +458,9 @@ class DatasetCompatibilityTests(unittest.TestCase):
         calls = result["trace"]["calls"]
         self.assertEqual([call["kind"] for call in calls], ["greeting", "first_line", "answer", "continuation", "answer"])
         self.assertNotIn("INNER PERSONA", calls[0]["body"]["messages"][0]["content"])
-        self.assertIn("INNER PERSONA", calls[2]["body"]["messages"][0]["content"])
+        self.assertNotIn("INNER PERSONA", calls[0]["body"]["messages"][-1]["content"])
+        self.assertNotIn("INNER PERSONA", calls[2]["body"]["messages"][0]["content"])
+        self.assertIn("INNER PERSONA", calls[2]["body"]["messages"][-1]["content"])
         self.assertNotIn("SCENE", calls[1]["body"]["messages"][0]["content"])
         row = result["trace"]["output"]["output.jsonl"][0]
         self.assertEqual(row["conversations"][0]["value"], "[Start a new chat]")

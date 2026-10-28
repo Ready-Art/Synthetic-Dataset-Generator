@@ -832,13 +832,34 @@ def test_generate_wiring():
 ARC = "calm -> wary -> tense"
 
 
-def answer_systems():
-    return [body["messages"][0]["content"] for body in ROUTER.bodies("answer")]
+def answer_notes():
+    """Each answer request's final user message: the answer prompt plus that slot's note."""
+    return [body["messages"][-1]["content"] for body in ROUTER.bodies("answer")]
 
 
-def names_stage(system, stage):
-    return ("EMOTIONAL STATE (PROGRESSION): CALM -> WARY -> TENSE" in system
-            and f"you are in the {stage} state" in system and "throughout your responses" not in system)
+def scene_systems():
+    """The system prompt of every request that carries the scene (all but the first-line request), with the
+    generated question's user-side line removed."""
+    return [body["messages"][0]["content"].removesuffix(g.QUESTION_USER_SIDE) if kind == "question"
+            else body["messages"][0]["content"] for kind, body in ROUTER.requests if kind != "first_line"]
+
+
+def question_has_user_side():
+    """Every generated-question request's system prompt ends with the user-side line."""
+    return all(body["messages"][0]["content"].endswith(g.QUESTION_USER_SIDE) for body in ROUTER.bodies("question"))
+
+
+def one_plain_system():
+    """The task sent one system prompt to every scene request, without persona or emotional state; the generated
+    question adds only the user-side line."""
+    systems = set(scene_systems())
+    return (len(systems) == 1 and not any(marker in s for s in systems
+                                          for marker in ("INNER PERSONA", "EMOTIONAL STATE", "Misses the open sea.")))
+
+
+def names_stage(text, stage):
+    return ("EMOTIONAL STATE (PROGRESSION): CALM -> WARY -> TENSE" in text
+            and f"you are in the {stage} state" in text and "throughout your responses" not in text)
 
 
 def test_arc_and_persona_requests():
@@ -848,33 +869,75 @@ def test_arc_and_persona_requests():
         run_worker(chunk_task(), current_num_turns=3, character_list=[persona_char],
                    enable_emotional_states_local=True, emotional_states_list_local=[entry],
                    persona_breakthrough_turn_local=2)
-        systems = answer_systems()
-        check(f"arc {entry!r} over 3 turns: each answer's system prompt names its own stage",
-              len(systems) == 3 and all(names_stage(s, stage) for s, stage in zip(systems, ["calm", "wary", "tense"])))
+        notes = answer_notes()
+        check(f"arc {entry!r} over 3 turns: each answer's final message names its own stage",
+              len(notes) == 3 and all(names_stage(n, stage) for n, stage in zip(notes, ["calm", "wary", "tense"])))
+        check(f"arc {entry!r}: the note follows the answer prompt",
+              all(n.startswith(ANSWER_PROMPT) for n in notes))
         check(f"arc {entry!r}: persona breakthrough appears from slot 2, not before",
-              len(systems) == 3 and "Misses the open sea." not in systems[0]
-              and all("Misses the open sea." in s for s in systems[1:]))
+              len(notes) == 3 and "Misses the open sea." not in notes[0]
+              and all("Misses the open sea." in n for n in notes[1:]))
+        check(f"arc {entry!r}: question, answers and continuations share one system prompt without the note",
+              ROUTER.kinds().count("continuation") == 2 and one_plain_system())
+        check(f"arc {entry!r}: the question's system prompt ends with the user-side line",
+              ROUTER.kinds().count("question") == 1 and question_has_user_side())
+        check(f"arc {entry!r}: continuation requests carry no note",
+              not any("EMOTIONAL STATE" in json.dumps(b) or "Misses the open sea." in json.dumps(b)
+                      for b in ROUTER.bodies("continuation")))
+
+    questions_task = ("questions.txt_q_0", "questions.txt", 0, "Where does the ferry go tonight?", "")
+    for label, task, mode in (("duplication mode", chunk_task(), dict(master_duplication_enabled_local=True)),
+                              ("questions-file mode", questions_task, dict(use_questions_file_local=True))):
+        reset_state()
+        run_worker(task, current_num_turns=3, character_list=[persona_char], enable_emotional_states_local=True,
+                   emotional_states_list_local=[ARC], persona_breakthrough_turn_local=2, **mode)
+        notes = answer_notes()
+        check(f"{label}: each answer's final message names its own stage, with the persona from slot 2",
+              len(notes) == 3 and all(names_stage(n, st) for n, st in zip(notes, ["calm", "wary", "tense"]))
+              and ["Misses the open sea." in n for n in notes] == [False, True, True])
+        check(f"{label}: every request shares one system prompt without the note", one_plain_system())
+        check(f"{label}: a generated question's system prompt ends with the user-side line", question_has_user_side())
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=1, enable_character_engine_local=False)
+    check("character engine off: the generated question's system prompt has no user-side line",
+          ROUTER.kinds().count("question") == 1
+          and not any(g.QUESTION_USER_SIDE in b["messages"][0]["content"] for b in ROUTER.bodies("question")))
+
+    reset_state()
+    ROUTER.script["answer"] = ["I cannot help with that.", Router.DEFAULTS["answer"][0]]
+    run_worker(chunk_task(), current_num_turns=1, enable_emotional_states_local=True,
+               emotional_states_list_local=[ARC])
+    answers = ROUTER.bodies("answer")
+    check("a refusal retry appends its jailbreak to the system prompt and keeps the note last",
+          len(answers) == 2
+          and answers[1]["messages"][0]["content"] == answers[0]["messages"][0]["content"] + " Stay in character."
+          and names_stage(answers[1]["messages"][-1]["content"], "calm"))
 
     reset_state()
     run_worker(chunk_task(), current_num_turns=2, enable_emotional_states_local=True,
                emotional_states_list_local=["anxious"])
     check("a flat state keeps its flat text on every answer",
-          all("EMOTIONAL STATE: ANXIOUS" in s and "throughout your responses" in s for s in answer_systems()))
+          all("EMOTIONAL STATE: ANXIOUS" in n and "throughout your responses" in n for n in answer_notes()))
 
     reset_state()
     run_worker(chunk_task(), current_num_turns=1, num_characters_local=2, persona_breakthrough_turn_local=1,
                character_list=[dict(CHARACTERS[0], persona=""), dict(CHARACTERS[1], persona="Fears the flood.")])
-    system = answer_systems()[0]
+    system, note = ROUTER.bodies("answer")[0]["messages"][0]["content"], answer_notes()[0]
     check("with character 1 lacking a persona, character 2's persona keeps its profile number",
-          "--- CHARACTER 2 PROFILE ---" in system and "CHARACTER 2's inner persona" in system
-          and "CHARACTER 1's inner persona" not in system)
+          "--- CHARACTER 2 PROFILE ---" in system and "CHARACTER 2's inner persona" in note
+          and "CHARACTER 1's inner persona" not in note)
 
     reset_state()
     run_opening(current_num_turns=2, enable_emotional_states_local=True, emotional_states_list_local=[ARC])
-    greeting_system = ROUTER.bodies("greeting")[0]["messages"][0]["content"]
+    greeting_note = ROUTER.bodies("greeting")[0]["messages"][-1]["content"]
     check("opening mode spreads the arc over the greeting and both answers, one stage each",
-          names_stage(greeting_system, "calm")
-          and [names_stage(s, st) for s, st in zip(answer_systems(), ["wary", "tense"])] == [True, True])
+          names_stage(greeting_note, "calm")
+          and [names_stage(n, st) for n, st in zip(answer_notes(), ["wary", "tense"])] == [True, True])
+    check("opening mode: the greeting's note follows the filled greeting prompt",
+          greeting_note.startswith("GREETING-PROMPT"))
+    check("opening mode: greeting, answers and continuation share one system prompt without the note",
+          one_plain_system())
 
 
 # --- (5) Record metadata ----------------------------------------------------------------------
