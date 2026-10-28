@@ -3106,11 +3106,14 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
             if ooc_detected:
                 # Out-of-character drift: helpful-bot narration, god-viewing the user, or
-                # breaking the roleplay voice. This is an *issue* that flags the answer; it is
-                # not retried against the main loop because there is no per-call fix pipeline
-                # -- the LLM judge (quality.consistency, which now sees the character card) is
-                # the primary defence, and the timestamp feeds the dashboard / issue graph so
-                # operators can see drift at a glance.
+                # breaking the roleplay voice. Only narrator-voice text is checked (quoted
+                # dialogue is ignored by detection.is_out_of_character), so a character
+                # speaking a listed phrase in-character does NOT trigger this branch.
+                # On a genuine hit the answer is flagged, timestamped for the dashboard /
+                # issue graph, and then regenerated via the ooc_fixes prompt pipeline (same
+                # shape as refusal/slop); if fixes are exhausted the turn is kept as-is.
+                # The LLM judge (quality.consistency, which sees the character card) remains
+                # the secondary line of defence.
                 issue_detected_this_main_api_call = True
                 lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired:
