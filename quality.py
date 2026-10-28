@@ -47,7 +47,7 @@ HEURISTIC_DIMENSIONS = {"diversity", "technical"}
 LLM_DIMENSIONS = {"coherence", "naturalness", "engagement", "consistency"}
 
 
-def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=None, file_name=""):
+def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=None, file_name="", character_profile_text=""):
     """
     Scores a completed conversation. Returns a dict:
     {
@@ -91,7 +91,8 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
 
     if use_llm_scoring:
         llm_scores, llm_flags, llm_success = _score_with_llm(
-            conversation_history, task_id, thread_id, api_slot_idx, file_name
+            conversation_history, task_id, thread_id, api_slot_idx, file_name,
+            character_profile_text=character_profile_text
         )
         if llm_success:
             method = "hybrid"
@@ -307,17 +308,47 @@ def _heuristic_fallback_for_llm_dim(dim, conversation_history):
         return 50
 
     elif dim == "consistency":
-        # Proxy: check if character names (if any) are used consistently
-        # For now, default to a moderate score
-        return 70
+        # Persona-fidelity proxy: flag well-known OOC drift markers (helpful-bot
+        # narration, breaking the fourth wall) instead of returning a flat 70.
+        # Real character-card comparison requires the LLM judge; this keeps the
+        # heuristic fallback from being pure noise.
+        ooc_markers = [
+            r'\bas a helpful ai\b',
+            r'\bas an? (ai|assistant)\b',
+            r"\bi'm an? ai\b",
+            r"\bi am an? ai\b",
+            r'\blet me know if there.{0,4}s anything else\b',
+            r'\bis there anything else i can help\b',
+            r"\byou're welcome\b",
+            r'\bi hope this helps\b',
+            r'\bas \w+, i would\b',
+        ]
+        hits = sum(1 for p in ooc_markers if re.search(p, all_text.lower()))
+        if hits >= 3:
+            return max(20, 55 - hits * 10)
+        elif hits == 2:
+            return 45
+        elif hits == 1:
+            return 60
+        # No OOC markers: a mild positive tilt vs. the old flat 70.
+        return 72
 
     return 60  # Default fallback
 
 
-def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file_name=""):
+def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file_name="",
+                    character_profile_text=""):
     """
     Calls a dedicated LLM to score the conversation on LLM-based dimensions.
     Uses API Slot 7 (index 6) if configured, otherwise the primary API.
+
+    ``character_profile_text`` is the scene's character card (the ``character_injection``
+    block: name, personality, traits, appearance, setting, etc.). When provided, the judge
+    scores the conversation's consistency against that actual profile -- persona, voice,
+    tone, and stated traits -- rather than a generic "is it consistent?" check. Without it,
+    the consistency dimension cannot measure character fidelity at all, so passing it in is
+    the single biggest quality win for roleplay data.
+
     Returns (scores_dict, flags, success_bool).
     """
     # Determine which API to use for scoring
@@ -337,14 +368,42 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
     if len(conversation_text) > max_chars:
         conversation_text = conversation_text[:max_chars] + "\n[...truncated...]"
 
-    scoring_prompt = (
-        "You are a quality evaluator for synthetic dialogue data. "
-        "Score the following conversation on each dimension from 0 to 100.\n\n"
+    # The character card, when available, is what makes "consistency" measurable as
+    # persona fidelity. Truncate defensively so a very long multi-character scene cannot
+    # blow out the judge's context.
+    profile_block = (character_profile_text or "").strip()
+    max_profile_chars = global_config.get('quality.max_profile_chars_for_scoring', 4000)
+    if len(profile_block) > max_profile_chars:
+        profile_block = profile_block[:max_profile_chars] + "\n[...profile truncated...]"
+
+    dimensions_text = (
         "DIMENSIONS:\n"
         "- coherence: Does the conversation flow logically? Do responses follow naturally from prompts?\n"
         "- naturalness: Does the dialogue sound like real human conversation? Avoid robotic/formulaic language.\n"
         "- engagement: Is the content interesting, vivid, and compelling? Does it hold attention?\n"
-        "- consistency: Are characters, tones, and settings consistent throughout? No contradictions?\n\n"
+        "- consistency: Persona fidelity AND internal consistency. Score HOW WELL the assistant stays "
+        "in character -- voice, tone, stated personality and traits, and world details -- and whether "
+        "anything contradicts the character profile(s) below (e.g. a stoic character becoming exuberant, "
+        "narration breaks like \"As a helpful AI, I would...\", god-viewing the user's thoughts/actions, "
+        "or dropping into second-person advice). Penalise hard for out-of-character drift.\n"
+    )
+    if profile_block:
+        consistency_context = (
+            "\n\nSCORE consistency AGAINST THE CHARACTER PROFILE(S) BELOW. If the assistant's voice, "
+            "tone, stated traits, or described world details contradict the profile, lower the "
+            "consistency score accordingly.\n\n"
+            f"CHARACTER PROFILE(S):\n{profile_block}\n"
+        )
+    else:
+        consistency_context = (
+            "\n\n(No character profile was supplied. Judge consistency only on internal "
+            "self-consistency of the conversation.)\n"
+        )
+
+    scoring_prompt = (
+        "You are a quality evaluator for synthetic roleplay dialogue data. "
+        "Score the following conversation on each dimension from 0 to 100.\n\n"
+        + dimensions_text + consistency_context +
         "Respond ONLY with a JSON object, no other text. Format:\n"
         '{"coherence": <0-100>, "naturalness": <0-100>, "engagement": <0-100>, "consistency": <0-100>, "notes": "<one sentence summary>"}\n\n'
         f"CONVERSATION:\n{conversation_text}"

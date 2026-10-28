@@ -263,6 +263,20 @@ prompts:
     - An airport gate during a delayed flight
 detection:
   no_user_impersonation: false
+  out_of_character:
+    enabled: true
+    phrases:
+    - As a helpful AI
+    - As an AI assistant
+    - I'm an AI language model
+    - I am an AI language model
+    - I must politely decline
+    - I'm unable to roleplay
+    - Let me know if there's anything else
+    - Is there anything else I can help you with today
+    - You're welcome! Feel free to ask
+    - I hope this helps you with your question
+    fixes: []
   refusal:
     phrases: []
     fixes: []

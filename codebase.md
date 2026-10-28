@@ -20,7 +20,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Generation settings → `generation.max_character_cards`, `generation.num_turns`, `generation.output_format`
 - Prompts → `prompts.system.base`, `prompts.question`, `prompts.answer`, `prompts.greeting`, `prompts.first_line`
 - Opening mode → `prompts.opening_mode`, `prompts.greeting_context`, `prompts.first_line_styles`
-- Detection phrases → `detection.refusal.phrases`, `detection.slop.phrases`, `detection.user_speaking.*.phrases`
+- Detection phrases → `detection.refusal.phrases`, `detection.slop.phrases`, `detection.user_speaking.*.phrases`, `detection.out_of_character.phrases` (+ `enabled`, `fixes`)
 - Sampler params → `samplers.temperature`, `samplers.top_p`, `samplers.repetition_penalty`
 - Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, persona, personality, traits, backstory, setting) — `persona` = inner personality (private self), `personality` = outward behavior (observed manner); `persona` is withheld from the profile and re-injected as a breakthrough block from `prompts.character.persona_breakthrough_turn` onward
 - Emotional states/arcs → `prompts.emotional_states.states[]` — each entry is a flat state or a `'->'`-joined progression (`'neutral -> tense -> angry'`) expanded across the conversation's assistant turns
@@ -95,15 +95,18 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Key:** `update_dashboard()`, `update_issue_graph()`, `create_modern_issue_panel()`
 **Edit for:**
 - New metric label → Add to `app_state.py` + update in `update_dashboard()`
+- Issue graph series → `draw_issue_graph()` and `update_issue_graph()` each have parallel `counts` / `colors` / `labels` dicts that must contain the same keys (a missing key = KeyError; an uncounted series = IndexError). `offsets` is computed from `len(counts)`, so adding a series only requires extending the three dicts in BOTH functions
 - Issue panel → `create_modern_issue_panel()` + `update_modern_issue_panel()`
 - Progress bar style → `configure_animated_progress_styles()`, `get_progress_style_name()`
 
 ### `detection.py` [10]
-**Purpose:** Issue detection (refusals, user speaking, slop, anti-slop)
-**Key:** `is_refusal()`, `is_user_speaking()`, `is_slop()`, `is_anti_slop()`, `is_incomplete_quote()`
+**Purpose:** Issue detection (refusals, user speaking, slop, anti-slop, out-of-character drift)
+**Key:** `is_refusal()`, `is_user_speaking()`, `is_slop()`, `is_anti_slop()`, `is_out_of_character()`, `is_incomplete_quote()`
 **Edit for:**
-- Add detection type → New `is_*()` function + add to `app_state.issue_timestamps`
-- Phrase lists → Passed from config via `generate.py` → `worker()`
+- Add detection type → New `is_*()` function + add key to `app_state.issue_timestamps`
+- Out-of-character drift → `is_out_of_character(answer, ooc_phrases)` mirrors the other `is_*()` shape: phrase-driven, word-boundary matching via `_candidate_patterns`, and on a hit appends to `issue_timestamps['out_of_character']` (1hr cutoff). Complements the phrase-based `no_user_impersonation` / `user_speaking` checks; catches helpful-bot narration breaks ("As a helpful AI...", "Is there anything else I can help you with today?"), god-viewing the user, and fourth-wall drops that the LLM-judge consistency dimension then scores against the character card
+- Phrase lists → Passed from config via `generate.py` → `worker()` (`current_ooc_phrases` / `current_ooc_fixes` / `current_ooc_enabled`)
+- GUI config → Config Editor Detection tab has an "Out-of-Character (OOC) Detection" LabelFrame (`col2_frame`) with an enable checkbox (`ooc_enabled_var_editor` + `_toggle_ooc_fields()`), phrases/fixes text areas (`ooc_phrases_text` / `ooc_fixes_text`), saved to / loaded from `detection.out_of_character.{enabled,phrases,fixes}`, validated in `validate_config_handler()`
 - Timestamp tracking → `issue_timestamps[key].append(time.time())` with 1hr cutoff
 
 ### `generate.py` [11]
@@ -139,11 +142,13 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ### `quality.py` [14]
 **Purpose:** Quality scoring (heuristic + LLM-based)
-**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`
+**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`, `_heuristic_fallback_for_llm_dim()`
 **Edit for:**
 - Scoring dimensions → `SCORING_DIMENSIONS` dict (weights)
-- Heuristic logic → `_score_diversity()`, `_score_technical()`
+- Heuristic logic → `_score_diversity()`, `_score_technical()`, `_heuristic_fallback_for_llm_dim()`
 - LLM scoring → `_score_with_llm()` (uses API slot from `quality.scoring_api` config)
+- Persona-fidelity consistency → `score_conversation()` / `_score_with_llm()` accept `character_profile_text`; the actual character card (the `character_injection` block from `worker()`) is injected into the judge prompt so the `consistency` dimension measures persona/personality/traits fidelity, not just self-consistency. Capped by `quality.max_profile_chars_for_scoring` (default 4000). Without a profile the judge falls back to generic self-consistency language
+- Consistency heuristic fallback → `_heuristic_fallback_for_llm_dim('consistency')` no longer returns a flat `70`; it scores down on well-known OOC markers (helpful-bot narration, "as <name>, I would" breaks, fourth-wall drops)
 - Flags → Add to `flags` list in scoring functions
 
 ### `test_api_profiles.py` [15]
@@ -183,7 +188,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Task | Files to Edit |
 |------|---------------|
 | Add new API slot | `config/config.yml` (`api.apis[]`), `config_editor.py` (UI), `app_state.py` (counters), `generation.py` (worker logic) |
-| Add detection type | `detection.py` (function), `app_state.py` (timestamps/counters), `dashboard.py` (display) |
+| Add detection type | `config/config.yml` (phrases/fixes/enabled), `detection.py` (`is_*()`), `app_state.py` (timestamps/counters), `generation.py` (worker kwargs + check call), `dashboard.py` (display), `config_editor.py` (Detection tab panel + save/load/validate) — see e.g. OOC Drift |
 | Add config option | `config/config.yml` (default value), `config_editor.py` (UI + save/load), `config_loader.py` (if new structure), `generation.py` (pass to worker) |
 | Add quality dimension | `quality.py` (`SCORING_DIMENSIONS`, scoring logic), `dashboard.py` (display) |
 | Modify output format | `generation.py` (`write_conversation()`) |
@@ -206,11 +211,13 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ## Key State Variables (`app_state.py`)
 
-**Counters:** `total_attempts_global`, `refusal_count_total`, `slop_count_total`, `error_count_total`, `anti_slop_count_total`, `total_input_tokens`, `total_output_tokens`
+**Counters:** `total_attempts_global`, `refusal_count_total`, `slop_count_total`, `error_count_total`, `anti_slop_count_total`, `ooc_count_total`, `total_input_tokens`, `total_output_tokens`
 
 **Per-API:** `*_per_api` dicts for indices 0-5
 
-**Recent issues:** `recent_*_total`, `recent_*_per_api` (MAX_RECENT = 10)
+**Recent issues:** `recent_*_total`, `recent_*_per_api` (MAX_RECENT = 10); includes `recent_ooc_total` / `recent_ooc_per_api`
+
+**Issue timestamp keys:** `refusals`, `user_speaking`, `slop`, `errors`, `anti_slop`, `incomplete_quotes`, `out_of_character`
 
 **Locks:** `stats_lock`, `issue_timestamps_lock`, `quality_lock`, `task_queue_ui_lock`, `api_circuit_breaker_lock`
 

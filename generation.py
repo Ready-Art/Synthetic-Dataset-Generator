@@ -239,6 +239,7 @@ def save_generation_state():
                 'user_speaking_count_total': app_state.user_speaking_count_total,
                 'slop_count_total': app_state.slop_count_total,
                 'error_count_total': app_state.error_count_total,
+                'ooc_count_total': app_state.ooc_count_total,
                 'refusal_counts_per_api': app_state.refusal_counts_per_api,
                 'total_input_tokens': app_state.total_input_tokens,
                 'total_output_tokens': app_state.total_output_tokens,
@@ -246,6 +247,7 @@ def save_generation_state():
                 'user_speaking_counts_per_api': app_state.user_speaking_counts_per_api,
                 'slop_counts_per_api': app_state.slop_counts_per_api,
                 'error_counts_per_api': app_state.error_counts_per_api,
+                'ooc_counts_per_api': app_state.ooc_counts_per_api,
                 'total_attempts_per_api': app_state.total_attempts_per_api,
                 'anti_slop_count_total': app_state.anti_slop_count_total,
                 'anti_slop_counts_per_api': anti_slop_counts_per_api,
@@ -492,6 +494,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            greeting_context_local="",
            first_line_styles_local=(),
            persona_breakthrough_turn_local=2,
+           current_ooc_phrases=(),
+           current_ooc_fixes=(),
+           current_ooc_enabled=True,
            ):
     """
     The main function executed by each worker thread.
@@ -517,6 +522,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         (True, current_system_prompts_for_worker), (True, current_answer_prompt),
         (bool(current_refusal_phrases), current_jailbreaks),
         (bool(current_user_speaking_phrases) and not no_user_impersonation_local, current_speaking_fixes),
+        (bool(current_ooc_phrases) and current_ooc_enabled, current_ooc_fixes),
         (bool(current_slop_phrases), current_slop_fixes_fallback),
         (bool(current_slop_phrases or current_anti_slop_phrases), current_slop_fixes_for_rotation_worker),
         (True, current_top_level_system_prompt), (True, current_lore),
@@ -652,7 +658,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         current_user_continuation_prompt, task_dataset_values))
                 validate_task_templates(dynamic_templates, task_dataset_values)
                 (current_system_prompts_for_worker, current_answer_prompt,
-                 current_jailbreaks, current_speaking_fixes, current_slop_fixes_fallback,
+                 current_jailbreaks, current_speaking_fixes, current_ooc_fixes,
+                 current_slop_fixes_fallback,
                  current_slop_fixes_for_rotation_worker, current_top_level_system_prompt,
                  current_lore, character_list, emotional_states_list_local,
                  random_names_list_local, random_settings_list_local,
@@ -1092,6 +1099,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 api_request_timeout_param=current_api_request_timeout,
                                 file_name=file_name,
                                 slop_to_anti_slop_fallback=current_slop_to_anti_slop_fallback,
+                                ooc_phrases_local=current_ooc_phrases,
+                                ooc_enabled_local=current_ooc_enabled,
+                                ooc_fixes_local=current_ooc_fixes,
                             )
                             if answer_result and answer_result[0]:  # Check if answer is not None
                                 duplicated_answer_text = answer_result[0]
@@ -1152,7 +1162,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             primary_conv_for_scoring = list(current_llm_conversation_context)
                             primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
                         primary_turn_quality_result = _score_and_store_quality(
-                            primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name
+                            primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name,
+                            character_profile_text=character_injection
                         )
                         # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
 
@@ -1215,6 +1226,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         api_request_timeout_param=current_api_request_timeout,
                         slop_to_anti_slop_fallback=current_slop_to_anti_slop_fallback,
                         file_name=file_name,
+                        ooc_phrases_local=current_ooc_phrases,
+                        ooc_enabled_local=current_ooc_enabled,
+                        ooc_fixes_local=current_ooc_fixes,
                     )
                     if answer_result and answer_result[0]:  # Check if answer is not None
                         assistant_answer = answer_result[0]
@@ -1349,7 +1363,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     task_id,
                                     thread_id,
                                     api_slot_idx=api_slot_idx_for_this_task,
-                                    file_name=file_name
+                                    file_name=file_name,
+                                    character_profile_text=character_injection
                                 )
                                 # Optional: filter output by quality threshold
                                 if final_quality_result and app_state.quality_output_filter:
@@ -2800,11 +2815,19 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  no_user_impersonation_local,
                                  api_request_timeout_param,
                                  slop_to_anti_slop_fallback=False,
-                                 file_name=""):
+                                 file_name="",
+                                 ooc_phrases_local=(),
+                                 ooc_enabled_local=True,
+                                 ooc_fixes_local=()):
     """
-    Generates an assistant's answer, handling retries for refusals, user speaking, and slop.
-    Applies jailbreaks, speaking fixes, and slop fixes (system prompt or dedicated LLM).
-    Returns the generated answer or None if all attempts fail.
+    Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
+    out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
+    (system prompt or dedicated LLM). Returns the generated answer or None if all attempts fail.
+
+    ``ooc_phrases_local`` is the phrase list from ``detection.out_of_character.phrases``;
+    ``ooc_enabled_local`` mirrors ``detection.out_of_character.enabled`` (default True so a
+    missing config does not silently disable the check). Empty phrase lists short-circuit
+    naturally via ``detection.is_out_of_character``.
     """
 
     refusal_detected_this_main_api_call = False
@@ -2821,7 +2844,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
         if app_state.stop_processing or app_state.pause_processing: return None
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
-        fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0}
+        fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0}
         issue_detected_this_main_api_call = False
 
         while True:
@@ -3104,6 +3127,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
             if not no_user_impersonation_local:
                 user_speaking_detected, user_speaking_info = detection.is_user_speaking(answer, user_speaking_phrases_local)
             slop_detected, slop_info = detection.is_slop(answer, slop_phrases_local)
+            ooc_detected, ooc_info = False, []
+            if ooc_enabled_local and ooc_phrases_local:
+                ooc_detected, ooc_info = detection.is_out_of_character(answer, ooc_phrases_local)
 
             if refusal_detected:
                 issue_detected_this_main_api_call = True
@@ -3157,6 +3183,37 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 else:
                     log_message(f"Thread {thread_id}: User speaking detected (API Slot {api_slot_idx+1}), fixes exhausted for this attempt {attempt+1}.", "WARNING")
                     break
+
+            if ooc_detected:
+                # Out-of-character drift: helpful-bot narration, god-viewing the user, or
+                # breaking the roleplay voice. This is an *issue* that flags the answer; it is
+                # not retried against the main loop because there is no per-call fix pipeline
+                # -- the LLM judge (quality.consistency, which now sees the character card) is
+                # the primary defence, and the timestamp feeds the dashboard / issue graph so
+                # operators can see drift at a glance.
+                issue_detected_this_main_api_call = True
+                lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                if lock_acquired:
+                    try:
+                        app_state.ooc_count_total += 1
+                        if api_slot_idx < len(app_state.ooc_counts_per_api):
+                            app_state.ooc_counts_per_api[api_slot_idx] += 1
+                        if ooc_info:
+                            detected_phrase, detected_sentence = ooc_info[0]
+                            if len(app_state.recent_ooc_total) >= MAX_RECENT: app_state.recent_ooc_total.pop(0)
+                            app_state.recent_ooc_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            if api_slot_idx < len(app_state.recent_ooc_per_api):
+                                if len(app_state.recent_ooc_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_ooc_per_api[api_slot_idx].pop(0)
+                                app_state.recent_ooc_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
+                    finally:
+                        app_state.system_prompt_lock.release()
+                if fix_attempts_specific['ooc'] < len(ooc_fixes_local):
+                    current_system_prompt_iter += f" {ooc_fixes_local[fix_attempts_specific['ooc']]}"
+                    fix_attempts_specific['ooc'] += 1
+                    log_message(f"Thread {thread_id}: OOC detected (API Slot {api_slot_idx+1}). Applying fix {fix_attempts_specific['ooc']}. Retrying API call.", "DEBUG")
+                    continue
+                else:
+                    log_message(f"Thread {thread_id}: OOC detected (API Slot {api_slot_idx+1}). Snippet: {answer[:80]}...", "WARNING")
 
             # Initialize slop fix tracking BEFORE slop detection so fallback logic can reference them
             slop_fully_resolved_by_sentence_fixer = False
@@ -3544,13 +3601,21 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
     }
 
 
-def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name):
+def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
+                             character_profile_text=""):
     """Scores a conversation and stores the result in app_state.quality_scores (deduped by task).
     Mirrors the pre-existing quality bookkeeping (threshold review flags included).
+
+    ``character_profile_text`` is this task's character card (the ``character_injection``
+    block). It is forwarded to ``quality.score_conversation`` so the LLM judge can score
+    the consistency dimension against the actual persona/personality/traits instead of a
+    generic self-consistency check.
+
     Returns the quality result dict, or None on any failure."""
     try:
         qr = quality.score_conversation(conv_for_scoring, task_id, thread_id,
-                                        api_slot_idx=api_slot_idx, file_name=file_name)
+                                        api_slot_idx=api_slot_idx, file_name=file_name,
+                                        character_profile_text=character_profile_text)
         with app_state.quality_lock:
             if task_id not in app_state.quality_scores:
                 app_state.quality_scores[task_id] = qr

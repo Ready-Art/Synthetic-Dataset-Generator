@@ -229,6 +229,7 @@ def load_generation_state():
                 app_state.user_speaking_count_total = state_data.get('user_speaking_count_total', 0)
                 app_state.slop_count_total = state_data.get('slop_count_total', 0)
                 app_state.error_count_total = state_data.get('error_count_total', 0)
+                app_state.ooc_count_total = state_data.get('ooc_count_total', 0)
                 anti_slop_count_total = state_data.get('anti_slop_count_total', 0)
                 anti_slop_counts_per_api = load_per_api_stat('anti_slop_counts_per_api', lambda: 0)
 
@@ -236,6 +237,7 @@ def load_generation_state():
                 app_state.user_speaking_counts_per_api = load_per_api_stat('user_speaking_counts_per_api', lambda: 0)
                 app_state.slop_counts_per_api = load_per_api_stat('slop_counts_per_api', lambda: 0)
                 app_state.error_counts_per_api = load_per_api_stat('error_counts_per_api', lambda: 0)
+                app_state.ooc_counts_per_api = load_per_api_stat('ooc_counts_per_api', lambda: 0)
                 app_state.total_attempts_per_api = load_per_api_stat('total_attempts_per_api', lambda: 0)
 
                 if current_master_duplication_mode and 'api_processed_tasks_snapshot' in state_data:
@@ -278,6 +280,7 @@ def reset_all_stats_and_history():
     app_state.user_speaking_count_total = 0
     app_state.slop_count_total = 0
     app_state.error_count_total = 0
+    app_state.ooc_count_total = 0
     anti_slop_count_total = 0
 
     for i in range(6): # For all 6 API slots
@@ -285,6 +288,7 @@ def reset_all_stats_and_history():
         app_state.user_speaking_counts_per_api[i] = 0
         app_state.slop_counts_per_api[i] = 0
         app_state.error_counts_per_api[i] = 0
+        app_state.ooc_counts_per_api[i] = 0
         anti_slop_counts_per_api[i] = 0
         app_state.total_attempts_per_api[i] = 0
     
@@ -294,12 +298,14 @@ def reset_all_stats_and_history():
         app_state.recent_slop_per_api[i] = []
         app_state.recent_errors_per_api[i] = []
         app_state.recent_anti_slop_per_api[i] = []
+        app_state.recent_ooc_per_api[i] = []
 
     app_state.recent_refusals_total = []
     app_state.recent_user_speaking_total = []
     app_state.recent_slop_total = []
     recent_anti_slop_total = []
     app_state.recent_errors_total = []
+    app_state.recent_ooc_total = []
     
     app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
@@ -1179,7 +1185,11 @@ def start_processing():
 
     current_anti_slop_phrases = global_config.get('detection.anti_slop.phrases', [])
     current_anti_slop_fixes = global_config.get('detection.anti_slop.fixes', [])
-    
+
+    current_ooc_phrases = global_config.get('detection.out_of_character.phrases', [])
+    current_ooc_fixes = global_config.get('detection.out_of_character.fixes', [])
+    current_ooc_enabled = bool(global_config.get('detection.out_of_character.enabled', True))
+
     current_slop_phrases = global_config.get('detection.slop.phrases', [])
     current_jailbreaks = global_config.get('detection.refusal.fixes', []) 
     current_slop_fixes_fallback = global_config.get('detection.slop.fixes', []) 
@@ -1511,6 +1521,9 @@ def start_processing():
             include_metadata,
             enable_random_settings,
             random_settings_list,
+            current_ooc_phrases,
+            current_ooc_fixes,
+            current_ooc_enabled,
         ), kwargs={
             'opening_mode_local': current_opening_mode,
             'greeting_prompt_local': current_greeting_prompt,
@@ -1901,7 +1914,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v10.2.2",
+    text="v10.3.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -1944,6 +1957,7 @@ def _create_ttkbs_metric(parent, title, icon, default_text="0 (0.0%)"):
 
 app_state.refusal_percent_label = _create_ttkbs_metric(metrics_frame, "Refusals", "🚫")
 app_state.user_speaking_label = _create_ttkbs_metric(metrics_frame, "User Speak", "🗣️")
+app_state.ooc_label = _create_ttkbs_metric(metrics_frame, "OOC", "🎭")
 app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
 app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 
@@ -2368,12 +2382,13 @@ highlight_colors = {
     "highlight_user_speak": {"foreground": "#4DABF7", "font": ('TkDefaultFont', 9, 'bold')},  # Bright blue
     "highlight_slop": {"foreground": "#9775FA", "font": ('TkDefaultFont', 9, 'bold')},  # Bright purple
     "highlight_anti_slop": {"foreground": "#FFD43B", "font": ('TkDefaultFont', 9, 'bold')},  # Bright yellow
-    "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright orange
+    "highlight_ooc": {"foreground": "#FF922B", "font": ('TkDefaultFont', 9, 'bold')},  # Bright orange (OOC drift)
+    "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright red-orange (errors)
 }
 
 tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review"]
-issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "Errors"]
-issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "errors"] # Keys for accessing data and widgets
+issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors"]
+issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors"] # Keys for accessing data and widgets
 
 # --- Rich Prompt Viewer Tab Setup ---
 preview_tab = ttk.Frame(app_state.dashboard_notebook)
@@ -2587,13 +2602,13 @@ for tab_name in tab_names:
         panels_frame.grid(row=0, column=0, sticky="ew")
         panels = []
         for idx, issue_type_title in enumerate(issue_types):
-            if tab_name == "Totals" and idx == 4:  # Skip "Errors" for Totals tab
+            if tab_name == "Totals" and idx == 5:  # Skip "Errors" for Totals tab
                 continue
 
             key = issue_keys[idx]
             columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
             color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
-                         "anti_slop": "#ffd43b", "errors": "#fc8181"}
+                         "anti_slop": "#ffd43b", "out_of_character": "#ff922b", "errors": "#fc8181"}
 
             panel = ttk.LabelFrame(panels_frame, text=f"Recent {issue_type_title}")
             panels.append(panel)

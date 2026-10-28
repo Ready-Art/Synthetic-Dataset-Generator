@@ -1,7 +1,7 @@
 """Compare dataset-enabled request traces with the exact upstream engine.
 
 Run separately: ``python -B test_dataset_compatibility.py``. The upstream commit
-below must exist locally (it is the parent of this feature's source/UI commits).
+below must exist locally (it is the exact upstream revision this branch integrates).
 Each side runs in its own process and temporary directory. The real worker,
 request builders, paragraph fixers, state saver and output writer execute;
 the existing opening harness supplies fake HTTP, no cache hits, no waits, and
@@ -31,7 +31,7 @@ from queue import Queue
 
 
 REPO = Path(__file__).resolve().parent
-BASELINE_COMMIT = "f04ed7bccea81e33dd79ebd1275e6c46c0c8e267"
+BASELINE_COMMIT = "9f49ceb7e51f50d0cdf3ff644d3d503b3327a83e"
 RAW_LITERAL = "{{ds:unmapped_source}}"
 MODEL_LITERAL = "{{ds:unmapped_model}} {last_assistant_message}"
 CELL_LITERAL = "Literal <tag> Unicode \u03a9 and \\path"
@@ -64,6 +64,18 @@ def _materialize(value, values):
     return value
 
 
+def _populated_worker_inputs(inputs, values):
+    # Detection rules are native inputs, not authored prompt templates. Keeping
+    # them literal on the reference side also catches accidental candidate-side
+    # rendering when a detector contains text resembling a dataset alias.
+    detection_inputs = {
+        "current_refusal_phrases", "current_user_speaking_phrases",
+        "current_slop_phrases", "current_anti_slop_phrases", "current_ooc_phrases",
+    }
+    return {key: value if key in detection_inputs else _materialize(value, values)
+            for key, value in inputs.items()}
+
+
 class TraceHTTP:
     def __init__(self, harness, scenario):
         self.harness = harness
@@ -74,7 +86,8 @@ class TraceHTTP:
     def post(self, url, headers=None, data=None, timeout=None):
         body = json.loads(data)
         messages = body["messages"]
-        kind = ("slop" if url.endswith("/slop") else
+        kind = ("quality" if url.endswith("/quality") else
+                "slop" if url.endswith("/slop") else
                 "anti" if url.endswith("/anti") else self.harness.Router.kind_of(messages))
         joined = "\n".join(message["content"] for message in messages)
         match = re.search(r"ROW=(R\d+)", joined)
@@ -90,11 +103,17 @@ class TraceHTTP:
                 return self.harness.Resp(500, "Fixture transport failure", {})
             if self.scenario == "refinement" and count == 0:
                 text = "I cannot help with that request. ROW={}.".format(row)
+            elif self.scenario == "ooc" and count == 0:
+                text = "As a helpful AI, I can explain this scene. ROW={}.".format(row)
             else:
                 phrase = "shivers down and secretbad" if self.scenario == "refinement" else "steady movement"
                 model = "B" if url.endswith("model-b") else "A"
                 text = "Answer ROW={} MODEL={} NUMBER={} uses {} and {}.".format(
                     row, model, count + 1, phrase, MODEL_LITERAL)
+                if self.scenario == "ooc":
+                    # A mistakenly rendered {{ds:name}} detector would match
+                    # this clean answer and create extra corrective retries.
+                    text += " {} stays in character.".format({"R0": "Ada", "R1": "Bo"}[row])
         elif kind in ("slop", "anti"):
             original = messages[-1]["content"].split("<original_text>\n", 1)[1].rsplit("\n</original_text>", 1)[0]
             if kind == "slop":
@@ -109,6 +128,9 @@ class TraceHTTP:
             text = "Greeting ROW={} gives context and preserves {}.".format(row, MODEL_LITERAL)
         elif kind == "first_line":
             text = "First reply ROW={} preserves {}.".format(row, MODEL_LITERAL)
+        elif kind == "quality":
+            text = json.dumps({"coherence": 92, "naturalness": 88, "engagement": 86,
+                               "consistency": 94, "notes": "The voice follows the supplied profile."})
         else:
             raise AssertionError("Unrouted request: {}".format(body))
         return self.harness.Resp(200, text, {"prompt_tokens": 11, "completion_tokens": 7})
@@ -140,6 +162,16 @@ def _worker_inputs(harness, scenario):
     if scenario == "refinement":
         result.update(slop_fixer_api_config=slop, anti_slop_fixer_api_config_runtime=anti,
                       anti_slop_fixer_api_config_param=anti, current_anti_slop_phrases=["secretbad"])
+    elif scenario == "ooc":
+        result.update(current_num_turns=1, current_ooc_enabled=True,
+                      current_ooc_phrases=["as a helpful ai", "{{ds:name}}"],
+                      current_ooc_fixes=["OOC-FIX ROW={{ds:row}} NAME={{ds:name}} CELL={{ds:literal}}"])
+    elif scenario == "quality_profile":
+        character = dict(harness.CHARACTERS[0], name="Profile {{ds:name}}",
+                         setting="{{ds:setting}}", personality="Reserved {{ds:name}}",
+                         backstory="PROFILE {{ds:literal}}")
+        result.update(enable_character_engine_local=True, enable_setting_selection_local=True,
+                      character_list=[character])
     elif scenario == "duplication":
         result.update(master_duplication_enabled_local=True,
                       all_api_configs_local=[primary, secondary] + [harness.EMPTY] * 4)
@@ -212,7 +244,7 @@ def _trace(repo, candidate, scenario, destination):
     state.purged_task_ids.clear()
     state.quality_scores.clear()
     state.quality_review_ids.clear()
-    state.quality_enabled = False
+    state.quality_enabled = scenario == "quality_profile"
     state.quality_output_filter = False
     state.use_conversation_history_for_fixers = True
     state.master_duplication_enabled_var = harness.Var(scenario == "duplication")
@@ -225,11 +257,13 @@ def _trace(repo, candidate, scenario, destination):
         "generation.max_newlines_malformed": 100,
         "prompts.character.include_names_in_prompt": True,
         "api.master_duplication_mode": scenario == "duplication",
+        "quality.use_llm_scoring": scenario == "quality_profile",
+        "quality.scoring_api": {"url": "http://fixture/quality", "model": "quality-judge", "key": ""},
     })
     server = TraceHTTP(harness, scenario)
     g.requests.post = server.post
     inputs = _worker_inputs(harness, scenario)
-    rows = [_values(index, scenario) for index in range(2 if scenario == "same_worker" else 1)]
+    rows = [_values(index, scenario) for index in range(2 if scenario in ("same_worker", "ooc") else 1)]
     tasks = [("original-{}".format(index), "fixture.txt", index, "SUBJECT {context}",
               "CONTEXT_{} {}".format(index, RAW_LITERAL)) for index in range(len(rows))]
     q = Queue()
@@ -275,11 +309,11 @@ def _trace(repo, candidate, scenario, destination):
         for task, values in zip(tasks, rows):
             q.put(task)
             q.put(None)
-            g.worker(0, q, output_lock, **_materialize(inputs, values))
+            g.worker(0, q, output_lock, **_populated_worker_inputs(inputs, values))
     if scenario == "requeue":
         phases.append(snapshot())
         q.put(None)
-        g.worker(0, q, output_lock, **(inputs if candidate else _materialize(inputs, rows[0])))
+        g.worker(0, q, output_lock, **(inputs if candidate else _populated_worker_inputs(inputs, rows[0])))
     phases.append(snapshot())
 
     output = {}
@@ -300,7 +334,9 @@ def _trace(repo, candidate, scenario, destination):
     result = {
         "trace": {"calls": server.calls, "output": output, "phases": phases,
                   "cache": harness.CACHE_CALLS, "question_history": state.question_history,
-                  "character_counter": state.character_counter, "system_prompt_counter": state.system_prompt_counter},
+                  "character_counter": state.character_counter, "system_prompt_counter": state.system_prompt_counter,
+                  "ooc": {"total": state.ooc_count_total, "per_api": state.ooc_counts_per_api,
+                          "recent": state.recent_ooc_total}},
         "bindings": bindings,
     }
     Path(destination).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -371,6 +407,40 @@ class DatasetCompatibilityTests(unittest.TestCase):
         continuation = next(call for call in calls if call["kind"] == "continuation")
         self.assertNotIn("shivers down", continuation["body"]["messages"][-1]["content"])
         self.assertNotIn("secretbad", continuation["body"]["messages"][-1]["content"])
+
+    def test_ooc_corrective_retries_render_each_tasks_fix_and_keep_detection_native(self):
+        result = self.compare("ooc")
+        answers = [call for call in result["trace"]["calls"] if call["kind"] == "answer"]
+        self.assertEqual(len(answers), 4)
+        self.assertEqual(result["trace"]["ooc"]["total"], 2)
+        self.assertEqual(result["trace"]["ooc"]["per_api"]["0"], 2)
+        for index, name in enumerate(("Ada", "Bo")):
+            first, retry = answers[index * 2:index * 2 + 2]
+            self.assertNotIn("OOC-FIX", first["body"]["messages"][0]["content"])
+            self.assertIn("OOC-FIX ROW=R{} NAME={} CELL={}".format(index, name, CELL_LITERAL),
+                          retry["body"]["messages"][0]["content"])
+            self.assertEqual(result["bindings"]["original-{}".format(index)]["values"]["name"], name)
+        rows = result["trace"]["output"]["output.jsonl"]
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertNotIn("As a helpful AI", row["conversations"][-1]["value"])
+        self.assertEqual(result["trace"]["phases"][-1]["completed"], ["original-0", "original-1"])
+
+    def test_quality_judge_receives_rendered_character_profile(self):
+        result = self.compare("quality_profile")
+        judges = [call for call in result["trace"]["calls"] if call["kind"] == "quality"]
+        self.assertEqual(len(judges), 1)
+        prompt = judges[0]["body"]["messages"][-1]["content"]
+        profile = prompt.split("CHARACTER PROFILE(S):\n", 1)[1].split("Respond ONLY", 1)[0]
+        self.assertIn("Name: Profile Ada", profile)
+        self.assertIn("Personality (outward behavior): Reserved Ada", profile)
+        self.assertIn("Backstory: PROFILE " + CELL_LITERAL, profile)
+        self.assertIn("Setting: Depot 0", profile)
+        self.assertNotIn("{{ds:", profile)
+        self.assertIn(MODEL_LITERAL, prompt)
+        metadata = result["trace"]["output"]["output.jsonl"][0]["metadata"]
+        self.assertEqual(metadata["quality_method"], "hybrid")
+        self.assertEqual(metadata["quality_consistency"], 94.0)
 
     def test_duplication_shared_history_and_prefix_writes_match_upstream(self):
         result = self.compare("duplication")
@@ -467,8 +537,12 @@ class DatasetCompatibilityTests(unittest.TestCase):
                         "Original method changed: {}:{}".format(filename, name),
                     )
         for filename in ("app_state.py", "api_handler.py", "detection.py", "quality.py", "text_utils.py"):
-            with self.subTest(file=filename, check="byte identity"):
-                self.assertEqual((REPO / filename).read_bytes(), (self.baseline / filename).read_bytes(),
+            with self.subTest(file=filename, check="byte identity after CRLF normalization"):
+                # git archive emits repository LF, while Windows checkouts may
+                # use CRLF. Normalize that pair only: all other bytes, including
+                # whitespace, lone CR, encoding, and a final newline, stay strict.
+                self.assertEqual((REPO / filename).read_bytes().replace(b"\r\n", b"\n"),
+                                 (self.baseline / filename).read_bytes().replace(b"\r\n", b"\n"),
                                  "Original module changed: {}".format(filename))
 
 

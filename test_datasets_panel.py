@@ -326,6 +326,12 @@ class DatasetsPanelTests(unittest.TestCase):
         source = self.fixture()
         source["column_aliases"] = {"record_id": "record_key", "category": "record_category"}
         data["datasets"] = {"sources": [source]}
+        expected_ooc = {
+            "enabled": True,
+            "phrases": ["as an ai assistant", "out of character"],
+            "fixes": ["Stay in character.", "Keep the response inside the scene."],
+        }
+        data["detection"]["out_of_character"] = expected_ooc
         (scratch / "config/config.yml").write_text(yaml.safe_dump(data), encoding="utf-8")
         editor = None
         try:
@@ -376,17 +382,38 @@ class DatasetsPanelTests(unittest.TestCase):
                 expected = panel.get_config()
                 collected = editor._get_current_editor_config_data()
                 self.assertEqual(collected["datasets"], expected)
+                self.assertEqual(collected["detection"]["out_of_character"], expected_ooc)
                 self.assertTrue(editor.validate_config_handler(show_success_message=False))
+
+                def clear_round_trip_fields():
+                    panel.load_config({})
+                    editor.ooc_phrases_text.delete("1.0", tk.END)
+                    editor.ooc_fixes_text.delete("1.0", tk.END)
+
+                self.assertTrue(editor.save_config_handler(silent=True))
+                saved_main = yaml.safe_load(Path(loader.path).read_text(encoding="utf-8"))
+                self.assertEqual(saved_main["datasets"], expected)
+                self.assertEqual(saved_main["detection"]["out_of_character"], expected_ooc)
+                clear_round_trip_fields()
+                editor.load_config_handler()
+                self.assertEqual(panel.get_config(), expected)
+                self.assertEqual(editor._get_current_editor_config_data()["detection"]["out_of_character"], expected_ooc)
+
                 editor.new_profile_name_var.set("dataset-ui")
                 with patch("tkinter.messagebox.showinfo"):
                     editor._save_profile_as_handler()
                 profile_path = Path(loader.profiles_dir) / "dataset-ui.yml"
                 self.assertTrue(profile_path.exists())
-                self.assertEqual(yaml.safe_load(profile_path.read_text(encoding="utf-8"))["datasets"], expected)
-                success, message = loader.load_profile_to_main_config("dataset-ui")
-                self.assertTrue(success, message)
-                editor.load_config_handler()
+                saved_profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved_profile["datasets"], expected)
+                self.assertEqual(saved_profile["detection"]["out_of_character"], expected_ooc)
+                clear_round_trip_fields()
+                editor.profile_list_var.set("dataset-ui")
+                with patch("tkinter.messagebox.askyesno", return_value=True), \
+                     patch("tkinter.messagebox.showinfo"):
+                    editor._load_selected_profile_handler()
                 self.assertEqual(panel.get_config(), expected)
+                self.assertEqual(editor._get_current_editor_config_data()["detection"]["out_of_character"], expected_ooc)
                 self.assertEqual(panel.column_menu.get_selection(), ("category",))
                 self.assertEqual(expected["sources"][0]["column_aliases"]["record_id"], "record_key")
 

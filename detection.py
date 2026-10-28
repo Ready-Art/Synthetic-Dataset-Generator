@@ -189,6 +189,52 @@ def is_anti_slop(answer, anti_slop_phrases_list):
 
     return bool(detected_info), detected_info
 
+def is_out_of_character(answer, ooc_phrases_list):
+    """Detects out-of-character drift: assistant answering like a helpful bot,
+    narration breaks ("As <name>, I would..."), god-viewing the user, or otherwise
+    dropping the roleplay voice. Phrase-driven like is_refusal/is_slop/is_user_speaking.
+
+    Mirrors the existing is_*() shape: returns (bool, [(phrase, sentence), ...]) and,
+    on a hit, appends a timestamp to ``issue_timestamps['out_of_character']`` (1-hour
+    rolling window) so the dashboard picks it up automatically.
+    """
+    PUNCTUATION = '.,!?\"\'*()[]{};:'
+    def clean_sentence_for_match(sentence):
+        return ' '.join(word.strip(PUNCTUATION) for word in sentence.split()).lower()
+
+    sentences_with_delimiters = re.split(r'([.!?]["\']?\s*|[\n]+)', answer)
+    processed_original_sentences = []
+    current_s = ""
+    if sentences_with_delimiters:
+        for part in sentences_with_delimiters:
+            if part is None: continue
+            current_s += part
+            if re.search(r'[.!?]["\']?\s*$', part.strip()) or '\n' in part:
+                if current_s.strip(): processed_original_sentences.append(current_s.strip())
+                current_s = ""
+    if current_s.strip(): processed_original_sentences.append(current_s.strip())
+    if not processed_original_sentences and answer.strip(): processed_original_sentences = [answer.strip()]
+
+    processed_phrases = [p.lower().strip() for p in ooc_phrases_list if p.strip()]
+    cleaned_sentences = [clean_sentence_for_match(s) for s in processed_original_sentences]
+
+    # Compiled once per phrase list; only phrases that could match are searched
+    compiled_patterns = _candidate_patterns(processed_phrases, cleaned_sentences)
+
+    detected_info = []
+    for phrase_lower, pattern in compiled_patterns:
+        for i, cleaned_sentence in enumerate(cleaned_sentences):
+            if pattern.search(cleaned_sentence):
+                detected_info.append((phrase_lower, processed_original_sentences[i]))
+
+    if detected_info:
+        with issue_timestamps_lock:
+            issue_timestamps['out_of_character'].append(time.time())
+            cutoff = time.time() - 3600
+            issue_timestamps['out_of_character'] = [t for t in issue_timestamps['out_of_character'] if t > cutoff]
+
+    return bool(detected_info), detected_info
+
 def is_incomplete_quote(text):
     if not text:
         return False, []
