@@ -14,7 +14,8 @@ python -m pip install -r requirements-datasets.txt   # the application + Hugging
 
 Run tests from the repository root. Every test file runs on its own and exits non-zero on a failure; none needs a
 model, a network connection or a running server. While working, run the test for the module you change, where the
-File Reference below names one. Before finishing, run all of them:
+File Reference below names one. Before finishing, and before opening a pull request, run all of them and say in
+the pull request which ones you ran and whether they passed:
 
 ```sh
 for t in test_*.py; do python -B "$t" || echo "FAILED: $t"; done
@@ -34,8 +35,8 @@ for t in test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 
 ## Boundaries
 
-- **The repository has no `.gitignore`.** `output/` (generated rows, `log.txt`, run state), `__pycache__/` and
-  `layout-check/` (once the layout tool has run) are untracked local output. Stage files by name; never `git add -A`
+- `.gitignore` covers local output: `output/` (generated rows, `log.txt`, run state), `__pycache__/`,
+  `.pytest_cache/` and `layout-check/` (once the layout tool has run). Stage files by name; never `git add -A`
   or `git add .`.
 - **Never commit an API key.** `config/config.yml` is tracked and ships with every `key: ''` empty.
 - **Ask before changing the wording of a shipped prompt** in `config/config.yml` (`prompts.*`). The prompts are
