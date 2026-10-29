@@ -2074,12 +2074,15 @@ class ConfigEditor(tk.Toplevel):
             self.per_char_random_emotions_var_editor.set(bool(emotional_states_conf.get('per_character', False)))
             self._toggle_emotional_states_fields()
 
-            # NEW (v10.6.0): Load user-side emotional states/arcs
+            # NEW (v10.6.0): Load user-side emotional states/arcs. The widget starts 'disabled'
+            # (optional feature, off by default), and this Tk build silently drops text edits on a
+            # disabled widget, so the enabled var must be applied and the field re-enabled BEFORE
+            # the delete/insert -- same order as the character-side emotional_states load above.
             user_emotional_states_conf = prompts_config.get('user_emotional_states', {})
             self.enable_user_emotional_states_var_editor.set(user_emotional_states_conf.get('enabled', False))
+            self._toggle_user_emotional_states_fields()
             self.user_emotional_states_text.delete(1.0, tk.END)
             self.user_emotional_states_text.insert(tk.END, "\n".join(user_emotional_states_conf.get('states', [])))
-            self._toggle_user_emotional_states_fields()
 
             # NEW: Load random names
             random_names_conf = prompts_config.get('random_names', {})
