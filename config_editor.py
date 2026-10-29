@@ -374,6 +374,29 @@ class ConfigEditor(tk.Toplevel):
         self.quality_roleplay_dims_var_editor = tk.BooleanVar(value=False)
         wrapped_checkbutton(gen_settings_frame, text="Roleplay dimensions: voice_distinctiveness, grounding, persona_alignment (adds weighted scoring + metadata columns; heuristic base, LLM-judge refined)", variable=self.quality_roleplay_dims_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
+        # --- Per-turn logic gate ---
+        # When on, every freshly generated assistant reply is checked by the quality
+        # LLM for objective logic errors (sexed anatomy vs. stated gender, profile-
+        # contradicting body parts/clothing/injuries, impossible timeline/quantity
+        # statements). A failing turn is sent back to the SAME main API slot with the
+        # original system prompt, the full conversation context, and the judge's
+        # specific findings, so the model knows exactly what to fix without guessing.
+        # Requires a configured Quality Scoring API URL/Model above (or falls back to
+        # the primary API). Off by default so composite scores stay comparable.
+        self.quality_logic_check_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(
+            gen_settings_frame,
+            text="Per-turn logic check (rewrites failed turns via the same main API using the judge's findings as context)",
+            variable=self.quality_logic_check_var_editor,
+        ).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
+
+        add_gen_setting("Logic Check Fail Threshold (0-100):", 'quality_logic_threshold_var',
+                        "(Score below which a turn is rewritten; default 70)")
+        add_gen_setting("Logic Max Rewrites per Turn:", 'quality_logic_max_rewrites_var',
+                        "(How many regeneration rounds run per failing turn; default 1)")
+        add_gen_setting("Max Chars for Logic Check:", 'quality_logic_max_chars_var',
+                        "(Truncate conversation for the per-turn check)")
+
         add_gen_setting("Min Score Threshold (0-100):", 'quality_min_threshold_var', "(Conversations below this are flagged)")
         add_gen_setting("Max Chars for LLM Scoring:", 'quality_max_chars_var', "(Truncate conversation before sending to scoring LLM)")
 
@@ -1436,6 +1459,10 @@ class ConfigEditor(tk.Toplevel):
                 'use_llm_scoring': self.quality_use_llm_var_editor.get(),
                 'output_filter': self.quality_output_filter_var_editor.get(),
                 'roleplay_dimensions': self.quality_roleplay_dims_var_editor.get(),
+                'per_turn_logic_check': self.quality_logic_check_var_editor.get(),
+                'logic_threshold': int(self.quality_logic_threshold_var.get() or 70),
+                'logic_max_rewrites': max(0, int(self.quality_logic_max_rewrites_var.get() or 1)),
+                'logic_max_chars_for_check': max(100, int(self.quality_logic_max_chars_var.get() or 4000)),
                 'min_score_threshold': int(self.quality_min_threshold_var.get() or 50),
                 'max_chars_for_scoring': int(self.quality_max_chars_var.get() or 8000),
                 'scoring_api': {
@@ -1931,6 +1958,10 @@ class ConfigEditor(tk.Toplevel):
             self.quality_use_llm_var_editor.set(quality_conf.get('use_llm_scoring', False))
             self.quality_output_filter_var_editor.set(quality_conf.get('output_filter', False))
             self.quality_roleplay_dims_var_editor.set(quality_conf.get('roleplay_dimensions', False))
+            self.quality_logic_check_var_editor.set(quality_conf.get('per_turn_logic_check', False))
+            self.quality_logic_threshold_var.set(str(quality_conf.get('logic_threshold', 70)))
+            self.quality_logic_max_rewrites_var.set(str(quality_conf.get('logic_max_rewrites', 1)))
+            self.quality_logic_max_chars_var.set(str(quality_conf.get('logic_max_chars_for_check', 4000)))
             self.quality_min_threshold_var.set(str(quality_conf.get('min_score_threshold', 50)))
             self.quality_max_chars_var.set(str(quality_conf.get('max_chars_for_scoring', 8000)))
             self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
@@ -2248,6 +2279,13 @@ class ConfigEditor(tk.Toplevel):
             assert 0 <= quality_threshold <= 100, "Quality threshold must be 0-100"
             quality_max_chars = int(self.quality_max_chars_var.get() or 8000)
             assert quality_max_chars > 100, "Max chars for scoring must be > 100"
+            if self.quality_logic_check_var_editor.get():
+                logic_threshold_val = int(self.quality_logic_threshold_var.get() or 70)
+                assert 0 <= logic_threshold_val <= 100, "Logic check threshold must be 0-100"
+                logic_max_rewrites_val = int(self.quality_logic_max_rewrites_var.get() or 1)
+                assert logic_max_rewrites_val >= 0, "Logic max rewrites must be >= 0"
+                logic_max_chars_val = int(self.quality_logic_max_chars_var.get() or 4000)
+                assert logic_max_chars_val > 100, "Max chars for logic check must be > 100"
 
             self._refresh_placement_cache_warning()
             if show_success_message:

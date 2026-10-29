@@ -174,7 +174,7 @@ def draw_issue_graph(canvas_widget, height=400):
     # Initialize counts
     counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
               'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins,
-              'out_of_character': [0]*num_bins}
+              'out_of_character': [0]*num_bins, 'logic_issues': [0]*num_bins}
 
     with app_state.issue_timestamps_lock:
         for key in counts.keys():
@@ -200,9 +200,11 @@ def draw_issue_graph(canvas_widget, height=400):
 
     # Cohesive, accessible color palette
     colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
-              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b'}
+              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b',
+              'logic_issues': '#38d9a9'}
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
-              'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift'}
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift',
+              'logic_issues': 'Logic Errors'}
 
     # Plot bars & add value labels
     for i, key in enumerate(counts.keys()):
@@ -298,7 +300,7 @@ def update_issue_graph(canvas_widget):
     with app_state.issue_timestamps_lock:
         sig = tuple(
             len(app_state.issue_timestamps.get(k, []))
-            for k in ("refusals", "user_speaking", "slop", "errors", "anti_slop", "out_of_character")
+            for k in ("refusals", "user_speaking", "slop", "errors", "anti_slop", "out_of_character", "logic_issues")
         )
     if (now - _graph_last_draw["t"]) < _GRAPH_REDRAW_MIN_INTERVAL and sig == _graph_last_draw["data_sig"]:
         return
@@ -320,7 +322,7 @@ def update_issue_graph(canvas_widget):
     bin_size = 3600 / num_bins
     counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
               'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins,
-              'out_of_character': [0]*num_bins}
+              'out_of_character': [0]*num_bins, 'logic_issues': [0]*num_bins}
 
     with app_state.issue_timestamps_lock:
         for key in counts.keys():
@@ -342,9 +344,11 @@ def update_issue_graph(canvas_widget):
     n_series = len(counts)
     offsets = [((i + 0.5) - n_series / 2) * width for i in range(n_series)]
     colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
-              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b'}
+              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b',
+              'logic_issues': '#38d9a9'}
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
-              'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift'}
+              'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift',
+              'logic_issues': 'Logic Errors'}
 
     for i, key in enumerate(counts.keys()):
         bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
@@ -392,6 +396,7 @@ def update_dashboard():
     slop_percent = (app_state.slop_count_total / total_attempts_for_calc) * 100
     error_percent = (app_state.error_count_total / total_attempts_for_calc) * 100
     ooc_percent = (app_state.ooc_count_total / total_attempts_for_calc) * 100
+    logic_percent = (app_state.logic_issue_count_total / total_attempts_for_calc) * 100
 
     # Calculate cost (ensure you have the price per 1k tokens from config)
     price_per_token = global_config.get('api.pricing.cost_per_1k_tokens', 0) / 1000
@@ -420,6 +425,8 @@ def update_dashboard():
         app_state.error_percent_label.config(text=f"{app_state.error_count_total} Total Errors logged ({error_percent:.1f}%)")
         if hasattr(app_state.ooc_label, 'winfo_exists') and app_state.ooc_label.winfo_exists():
             app_state.ooc_label.config(text=f"{app_state.ooc_count_total} OOC drift instances ({ooc_percent:.1f}%)")
+        if getattr(app_state, 'logic_label', None) is not None and hasattr(app_state.logic_label, 'winfo_exists') and app_state.logic_label.winfo_exists():
+            app_state.logic_label.config(text=f"{app_state.logic_issue_count_total} logic errors caught & rewritten ({logic_percent:.1f}%)")
 
         # NEW: Update token and cost labels (you need to create these labels in the UI first)
         app_state.token_label.config(text=f"Tokens: {app_state.total_input_tokens + app_state.total_output_tokens}")
@@ -540,6 +547,7 @@ def clear_dashboard():
     app_state.recent_anti_slop_total = []
     app_state.recent_errors_total = []
     app_state.recent_ooc_total = []
+    app_state.recent_logic_total = []
 
     # Clear per-API recent lists
     for i in range(6):
@@ -549,6 +557,7 @@ def clear_dashboard():
         app_state.recent_anti_slop_per_api[i] = []
         app_state.recent_errors_per_api[i] = []
         app_state.recent_ooc_per_api[i] = []
+        app_state.recent_logic_per_api[i] = []
 
     # Clear graph timestamps safely
     with app_state.issue_timestamps_lock:

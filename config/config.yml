@@ -90,6 +90,20 @@ quality:
   use_llm_scoring: false
   output_filter: false
   roleplay_dimensions: false
+  # Per-turn internal-logic gate: after every assistant reply, the quality LLM checks
+  # for objective contradictions (sexed anatomy vs. stated gender, profile-contradicting
+  # body parts/clothing/injuries, impossible timelines or quantities). A failing turn is
+  # sent back to the SAME main API slot with the original system prompt, full conversation
+  # context, and the judge's specific findings -- enough context that the model knows
+  # exactly what to fix. Requires a configured quality.scoring_api (falls back to the
+  # primary API, like conversation-level scoring); off by default.
+  per_turn_logic_check: false
+  # Score (0-100) below which a turn is considered to fail the logic check.
+  logic_threshold: 70
+  # How many regeneration rounds run per failing turn before the best-effort answer is kept.
+  logic_max_rewrites: 1
+  # Truncate conversation for the per-turn check to this many characters.
+  logic_max_chars_for_check: 4000
   min_score_threshold: 50
   max_chars_for_scoring: 8000
   scoring_api:

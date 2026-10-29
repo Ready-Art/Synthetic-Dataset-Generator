@@ -817,7 +817,8 @@ def test_generate_wiring():
                      "persona_placement_local", "emotion_placement_local",
                      "current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled",
                      "user_emotional_states_enabled_local", "user_emotional_states_list_local",
-                     "per_char_random_emotions_local"})
+                     "per_char_random_emotions_local",
+                     "per_turn_logic_check_local", "per_turn_logic_max_rewrites_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
@@ -1172,7 +1173,8 @@ def test_record_metadata():
           and all(v == -1.0 for k, v in empty.items() if k.startswith("quality_") and k != "quality_method"))
     # v3 adds the opt-in roleplay dimensions (quality.roleplay_dimensions); they carry
     # the usual -1.0 gap whenever unscored or toggled off.
-    check("meta_version is 4", empty["meta_version"] == full["meta_version"] == 4)
+    # v5 adds quality_logic (the internal-logic dimension); -1.0 when unscored.
+    check("meta_version is 5", empty["meta_version"] == full["meta_version"] == 5)
     check("user-side emotional state/arc recorded when set, empty when off",
           full["user_emotional_state"] == "curious -> defensive"
           and empty["user_emotional_state"] == "")
@@ -1184,6 +1186,12 @@ def test_record_metadata():
           empty["quality_persona_alignment"] == -1.0 and
           full["quality_voice_distinctiveness"] == full["quality_grounding"] ==
           full["quality_persona_alignment"] == -1.0)
+    check("logic dimension key exists, -1.0 when unscored, float when scored",
+          empty["quality_logic"] == -1.0
+          and g._build_record_metadata(
+              ["Ines"], None, None, False, False, 1,
+              {"composite": 80.0, "method": "heuristic_only", "flags": [],
+               "dimensions": {"logic": 90}}, None, "")["quality_logic"] == 90.0)
     rp_full = g._build_record_metadata(
         ["Ines"], None, None, False, False, 1,
         {"composite": 80.0, "method": "heuristic_only", "flags": [],

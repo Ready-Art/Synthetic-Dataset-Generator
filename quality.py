@@ -5,7 +5,9 @@ Scores completed conversations across the core dimensions (coherence, naturalnes
 engagement, diversity, consistency, technical) using a hybrid approach:
   - Heuristic (fast, no API call): repetition, diversity, punctuation, length
   - LLM (optional, uses a dedicated API slot): coherence, naturalness, engagement,
-    consistency (persona fidelity against the character card)
+    consistency (persona fidelity against the character card) and
+    logic (objective internal contradictions: sexed anatomy vs. stated gender,
+    profile-contradicting body parts/injuries/clothing, impossible timeline statements)
 
 An optional third set of roleplay-specific dimensions -- voice_distinctiveness,
 grounding and persona_alignment -- is added behind the ``quality.roleplay_dimensions``
@@ -39,12 +41,21 @@ from app_state import (
 )
 
 # --- Scoring dimensions and their default weights ---
+# ``logic`` is the internal-logic / factual-coherence check: it hunts objective
+# contradictions in the output (wrong sexed anatomy vs. a character's stated gender,
+# profile-contradicting body parts/injuries/clothing, impossible timeline or quantity
+# statements). It is distinct from ``coherence`` (does the exchange flow?) and
+# ``consistency`` (does the voice stay in character?): those two ask *is it natural*
+# and *is it on-character*, while ``logic`` asks *is it even possible*. Weight is added
+# on top of the existing set; the composite is normalized by total active weight, so
+# existing numbers only shift by a small, well-defined amount.
 SCORING_DIMENSIONS = {
     "coherence": 0.25,
     "naturalness": 0.20,
     "engagement": 0.15,
     "diversity": 0.15,
     "consistency": 0.15,
+    "logic": 0.15,
     "technical": 0.10,
 }
 
@@ -62,7 +73,7 @@ ROLEPLAY_SCORING_DIMENSIONS = {
 HEURISTIC_DIMENSIONS = {"diversity", "technical"}
 
 # --- LLM-based dimensions (require an API call) ---
-LLM_DIMENSIONS = {"coherence", "naturalness", "engagement", "consistency"}
+LLM_DIMENSIONS = {"coherence", "naturalness", "engagement", "consistency", "logic"}
 
 # --- LLM-based roleplay dimensions (also have a heuristic fallback so they stay
 # meaningful when LLM scoring is off or the judge call fails) ---
@@ -93,7 +104,7 @@ def active_scoring_dimensions(config=None):
 
 
 def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=None, file_name="",
-                       character_profile_text="", scene_characters=None):
+                       character_profile_text="", scene_characters=None, logic_findings=None):
     """
     Scores a completed conversation over the active dimensions (see
     ``active_scoring_dimensions()``). Returns a dict:
@@ -105,6 +116,7 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
             "engagement": 82,
             "diversity": 95,
             "consistency": 88,
+            "logic": 90,
             "technical": 92,
             "voice_distinctiveness": 85,   # only when quality.roleplay_dimensions is on
             "grounding": 90,               # only when quality.roleplay_dimensions is on
@@ -159,9 +171,10 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
     method = "heuristic_only"
 
     if use_llm_scoring:
-        llm_scores, llm_flags, llm_success = _score_with_llm(
+        llm_scores, llm_flags, llm_success, _llm_extras = _score_with_llm(
             conversation_history, task_id, thread_id, api_slot_idx, file_name,
-            character_profile_text=character_profile_text
+            character_profile_text=character_profile_text,
+            logic_findings=logic_findings
         )
         if llm_success:
             method = "hybrid"
@@ -394,6 +407,21 @@ def _heuristic_fallback_for_llm_dim(dim, conversation_history):
         elif questions + exclamations > 0:
             return 65
         return 50
+
+    elif dim == "logic":
+        # Internal-logic proxy: without a profile the judge's job (contradicting the
+        # character card's gender/anatomy/etc.) can't be done, so fall back to a mild
+        # positive tilt rather than guessing. The real check is LLM-only -- when the LLM
+        # is off, ``score_conversation`` still records a heuristic number for the
+        # composite, and the per-turn rewrite gate (``check_logic``) simply does not fire.
+        # A few generic impossibility markers get flagged so the heuristic is not flat:
+        impossible_markers = [
+            r'\bher penis\b', r'\bhis vagina\b', r'\bhis breast\b', r'\bher testicle',
+            r'\bpenis.{0,25}\bvagina\b|\bvagina.{0,25}\bpenis\b',
+            r'\bthree legs?\b|\bfour arms?\b|\btwo heads?\b',
+        ]
+        hits = sum(1 for p in impossible_markers if re.search(p, all_text.lower()))
+        return max(30, 72 - hits * 10)
 
     elif dim == "consistency":
         # Persona-fidelity proxy: flag well-known OOC drift markers (helpful-bot
@@ -677,7 +705,7 @@ def _score_persona_alignment(conversation_history, character_profile_text, scene
 
 
 def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file_name="",
-                    character_profile_text=""):
+                    character_profile_text="", logic_findings=None):
     """
     Calls a dedicated LLM to score the conversation on LLM-based dimensions.
     Uses API Slot 7 (index 6) if configured, otherwise the primary API.
@@ -689,7 +717,14 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
     the consistency dimension cannot measure character fidelity at all, so passing it in is
     the single biggest quality win for roleplay data.
 
-    Returns (scores_dict, flags, success_bool).
+    ``logic_findings`` (optional) is the list of per-turn findings recorded by
+    ``check_logic`` during this conversation; when non-empty they are appended to the
+    judge prompt as a FINDINGS block so the conversation-level score takes them into
+    account without having to re-derive them from scratch.
+
+    Returns (scores_dict, flags, success_bool, extras_dict); extras carries the
+    non-score fields (``ooc_evidence``, ``logic_evidence``, ``rewrite_instruction``,
+    ``notes``) parsed out of the judge's JSON reply -- empty dict on failure.
     """
     # Determine which API to use for scoring
     scoring_api_config = global_config.get('quality.scoring_api', {})
@@ -697,10 +732,11 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
     model_name = scoring_api_config.get('model') or global_config.get('api.apis.0.model', '')
     api_key = scoring_api_config.get('key') or global_config.get('api.apis.0.key', '')
     scoring_api_slot = scoring_api_config.get('slot_idx', 6)  # Default to slot 7
+    sampler_settings = scoring_api_config.get('sampler_settings', {}) or {}
 
     if not api_url or not model_name:
         log_message(f"Thread {thread_id}: Quality LLM not configured. Skipping LLM scoring.", "WARNING")
-        return {}, ["llm_not_configured"], False
+        return {}, ["llm_not_configured"], False, {}
 
     # Build the scoring prompt
     conversation_text = _format_conversation_for_scoring(conversation_history)
@@ -730,7 +766,26 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         "and is judged on fidelity to the profile; unquoted narrator text must also stay in-scene -- god-viewing "
         "the user's thoughts/actions and fourth-wall drops are out of character. Penalise hard for out-of-character "
         "drift: each distinct OOC moment should visibly pull the score down.\n"
+        "- logic: Internal-logic / factual coherence of the ASSISTANT's output. Hunt concrete contradictions, "
+        "not style: sexed anatomy that does not match a character's stated gender (e.g. a female character "
+        "described with a penis, or a male character with a vagina), body parts, scars, injuries, clothing or "
+        "appearance that contradict the profile(s) below or the character's own earlier lines, and impossible "
+        "or self-contradicting statements within the conversation (an object both present and absent, two "
+        "mutually-exclusive times or locations, a dead/absent person acting, quantities that change between "
+        "sentences without cause). Quoted dialogue counts too. Do NOT penalise style, pacing, or in-scene "
+        "character behaviour -- only objective impossibilities and self-/profile-contradictions. Score 100 when "
+        "the output holds together factually; each distinct contradiction should pull it down sharply. If the "
+        "judge flagged specific per-turn logic issues in the FINDINGS block below, incorporate them: the turn(s) "
+        "named there count as confirmed findings unless the surrounding text clearly contradicts the finding.\n"
     )
+    if logic_findings:
+        findings_lines = []
+        for f in logic_findings[:8]:
+            findings_lines.append(f"  * turn {f.get('turn','?')}: {f.get('evidence','(no description)')}")
+        dimensions_text += (
+            "\nFINDINGS (per-turn logic gate already run on this conversation; treat these as confirmed "
+            "unless the text obviously refutes them):\n" + "\n".join(findings_lines) + "\n"
+        )
     if profile_block:
         consistency_context = (
             "\n\nSCORE consistency AGAINST THE CHARACTER PROFILE(S) BELOW. If the assistant's voice, "
@@ -750,7 +805,9 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         + dimensions_text + consistency_context +
         "Respond ONLY with a JSON object, no other text. Format:\n"
         '{"coherence": <0-100>, "naturalness": <0-100>, "engagement": <0-100>, "consistency": <0-100>, '
+        '"logic": <0-100>, '
         '"ooc_evidence": ["<very short description of each distinct out-of-character moment, or [] if there are none>"], '
+        '"logic_evidence": ["<very short description of each distinct logic/factual contradiction found in the assistant output, or [] if there are none>"], '
     )
 
     if is_roleplay_scoring_enabled():
@@ -773,24 +830,39 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         '"notes": "<one sentence summary>"}\n\n'
         f"CONVERSATION:\n{conversation_text}"
     )
+    _judge_dims = list(LLM_DIMENSIONS) + (
+        list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else [])
+    scores, flags, success, extras = _call_logic_judge(
+        api_url, model_name, api_key, scoring_api_slot, thread_id, task_id, file_name,
+        sampler_settings, scoring_prompt, expected_dims=_judge_dims,
+    )
+    return scores, flags, success, extras
 
+
+def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+                      file_name, sampler_settings, prompt, expected_dims=None):
+    """Sends ``prompt`` to the quality-scoring LLM and parses the JSON reply.
+
+    Shared by the conversation-level judge (``_score_with_llm``, which expects the
+    score dimensions in ``expected_dims`` -- defaults to every LLM dimension) and the
+    per-turn logic gate (``check_logic``). Returns ``(scores_dict, flags, success_bool)``;
+    non-score fields (``logic_evidence``, ``rewrite_instruction``, ``notes``) are parsed
+    into the caller-facing flags but stripped from ``scores_dict`` so score consumers
+    only ever see 0-100 numbers.
+    """
     messages = [
         {"role": "system", "content": "You are a strict but fair quality evaluator. Respond only with valid JSON."},
-        {"role": "user", "content": scoring_prompt}
+        {"role": "user", "content": prompt}
     ]
 
-    # Build payload
-    sampler_settings = scoring_api_config.get('sampler_settings', {})
-    # The three roleplay dimensions add a score line each; extend the default headroom
-    # so the judge is not cut off mid-JSON when they are active.
-    extra_dims = len(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else 0
     payload_dict = {
         "model": model_name,
         "messages": messages,
         "temperature": sampler_settings.get('temperature', 0.1),
         "top_p": sampler_settings.get('top_p', 0.9),
-        # ooc_evidence entries take space; give the judge headroom beyond bare scores
-        "max_tokens": sampler_settings.get('max_tokens', 384 + extra_dims * 64),
+        # evidence lists and the per-turn rewrite instruction take space; give the
+        # judge headroom beyond bare scores
+        "max_tokens": sampler_settings.get('max_tokens', 512 + max(0, len(expected_dims or LLM_DIMENSIONS) - len(LLM_DIMENSIONS)) * 64),
         "stream": False
     }
 
@@ -832,11 +904,11 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
             if scoring_api_slot < 6:
                 api_response_times_per_slot[scoring_api_slot].append(api_response_time)
                 if len(api_response_times_per_slot[scoring_api_slot]) > MAX_RESPONSE_TIMES_TO_TRACK:
-                    api_response_times_per_slot[scoring_api_slot] = api_response_times_per_slot[scoring_api_slot][-MAX_RESPONSE_TIMES_TO_TRACK:]
+                    api_response_times_per_slot[scoring_api_slot] = api_response_times_per_slot[-MAX_RESPONSE_TIMES_TO_TRACK:]
 
         if response.status_code != 200:
             log_message(f"Thread {thread_id}: Quality scoring API returned {response.status_code} for {task_id}.", "WARNING")
-            return {}, [f"llm_error_{response.status_code}"], False
+            return {}, [f"llm_error_{response.status_code}"], False, {}
 
         response_data = response.json()
         content = response_data['choices'][0]['message'].get('content', '')
@@ -851,18 +923,20 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         parsed = json.loads(content)
         flags = []
 
+        dims = expected_dims if expected_dims is not None else (
+            list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else [])
+        )
         scores = {}
-        judged_dims = list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else [])
-        for dim in judged_dims:
+        for dim in dims:
             val = parsed.get(dim, 50)
             scores[dim] = max(0, min(100, int(val)))
             if val < 40:
                 flags.append(f"low_{dim}")
 
-        # Keep non-score fields (ooc_evidence, notes) out of the score dict so callers
-        # never have to know which extra keys the judge was asked to return.
-        scores.pop("ooc_evidence", None)
-        scores.pop("notes", None)
+        # Keep non-score fields out of the score dict so callers never have to know
+        # which extra keys the judge was asked to return.
+        for extra in ("ooc_evidence", "logic_evidence", "rewrite_instruction", "notes"):
+            scores.pop(extra, None)
 
         # LLM-judged OOC evidence: concrete out-of-character moments the judge spotted.
         # An explicit, non-empty list flags the row even when consistency stayed >= 40,
@@ -876,21 +950,210 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         if ooc_evidence:
             flags.append("ooc_drift")
 
-        if parsed.get('notes'):
-            # Store notes for debugging (not in composite score)
-            pass
+        # LLM-judged logic evidence: concrete contradictions found in the output.
+        logic_evidence = parsed.get('logic_evidence')
+        if isinstance(logic_evidence, str):
+            logic_evidence = [logic_evidence]
+        if logic_evidence is not None and not isinstance(logic_evidence, list):
+            logic_evidence = []
+        logic_evidence = [str(e).strip() for e in (logic_evidence or []) if str(e).strip()]
+        if logic_evidence:
+            flags.append("logic_issues")
 
-        return scores, flags, True
+        rewrite_instruction = parsed.get('rewrite_instruction')
+        if isinstance(rewrite_instruction, list):
+            rewrite_instruction = "; ".join(str(x) for x in rewrite_instruction)
+        rewrite_instruction = str(rewrite_instruction or "").strip()
+
+        # Non-score extras travel in a parallel dict so callers that only want scores
+        # (the conversation-level path) can ignore it; the per-turn logic gate reads it.
+        extras = {
+            "ooc_evidence": ooc_evidence,
+            "logic_evidence": logic_evidence,
+            "rewrite_instruction": rewrite_instruction,
+            "notes": str(parsed.get('notes') or ""),
+        }
+        return scores, flags, True, extras
 
     except json.JSONDecodeError:
         log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}.", "WARNING")
-        return {}, ["llm_invalid_json"], False
+        return {}, ["llm_invalid_json"], False, {}
     except requests.exceptions.Timeout:
         log_message(f"Thread {thread_id}: Quality scoring LLM timed out for {task_id}.", "WARNING")
-        return {}, ["llm_timeout"], False
+        return {}, ["llm_timeout"], False, {}
     except Exception as e:
         log_message(f"Thread {thread_id}: Quality scoring LLM error for {task_id}: {e}", "ERROR")
-        return {}, [f"llm_exception"], False
+        return {}, [f"llm_exception"], False, {}
+
+
+# --- Per-turn logic gate ---------------------------------------------------------------
+# The gate the user asked for: run after every assistant turn, hunt objective logic
+# problems (wrong sexed anatomy vs. the character's stated gender, profile-contradicting
+# body parts/injuries/clothing, impossible timeline or quantity statements) using the
+# SAME quality-scoring LLM slot. When it fails, the caller re-prompts the main
+# generation API with the original system prompt, full conversation history and the
+# judge's specific findings -- enough context that the model knows exactly what to fix
+# instead of guessing from a bare sentence.
+
+def check_logic(answer, conversation_history, character_profile_text="", turn_number=None,
+                task_id="", thread_id="", file_name=""):
+    """Per-turn internal-logic check against the character profile(s).
+
+    Uses the same API slot as conversation-level quality scoring (``quality.scoring_api``,
+    falling back to the primary API when the dedicated one is not configured). The
+    request body mirrors the judge format so the caller gets back a concrete, per-issue
+    ``rewrite_instruction`` in addition to the ``logic_evidence`` list, and those strings
+    are what the worker appends to the next generation prompt -- enough context that the
+    model does not have to guess at what went wrong.
+
+    Returns:
+        {"failed": bool, "score": int, "evidence": [str, ...],
+         "rewrite_instruction": str, "success": bool, "flags": [str, ...]}
+
+        ``success=False`` means the LLM could not be reached / returned unparsable
+        output; in that case ``failed`` stays ``False`` so the answer is not blocked on a
+        judge outage. ``failed=True`` means the check ran and found issues below the
+        configured ``quality.logic_threshold`` (default 70).
+    """
+    result = {"failed": False, "score": None, "evidence": [],
+              "rewrite_instruction": "", "success": False, "flags": []}
+
+    threshold = global_config.get('quality.logic_threshold', 70)
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError):
+        threshold = 70
+
+    scoring_api_config = global_config.get('quality.scoring_api', {})
+    api_url = scoring_api_config.get('url') or global_config.get('api.apis.0.url', '')
+    model_name = scoring_api_config.get('model') or global_config.get('api.apis.0.model', '')
+    api_key = scoring_api_config.get('key') or global_config.get('api.apis.0.key', '')
+    scoring_api_slot = scoring_api_config.get('slot_idx', 6)
+    sampler_settings = scoring_api_config.get('sampler_settings', {}) or {}
+
+    if not api_url or not model_name:
+        log_message(f"Thread {thread_id}: Logic check skipped -- quality LLM not configured "
+                    f"(task {task_id}).", "DEBUG")
+        result["flags"].append("logic_llm_not_configured")
+        return result
+
+    profile_block = (character_profile_text or "").strip()
+    max_profile_chars = global_config.get('quality.max_profile_chars_for_scoring', 4000)
+    if len(profile_block) > max_profile_chars:
+        profile_block = profile_block[:max_profile_chars] + "\n[...profile truncated...]"
+
+    # The check needs to see the last few turns for temporal continuity and enough of the
+    # current turn to catch self-contradictions in longer replies. Cap both ends so a
+    # very long conversation cannot blow out the judge's context.
+    context_turns = conversation_history[-3:] if conversation_history else []
+    conversation_text = _format_conversation_for_scoring(
+        context_turns + [{"role": "assistant", "content": answer}])
+    max_chars = global_config.get('quality.logic_max_chars_for_check', 4000)
+    conversation_text = _truncate_head_tail(conversation_text, max_chars)
+
+    prompt = (
+        "You are a strict quality evaluator for synthetic roleplay dialogue. "
+        "Your ONLY job on this turn is to check for objective INTERNAL LOGIC ERRORS in the "
+        "assistant's LATEST reply (labelled 'ASSISTANT' below, the final message in the "
+        "CONVERSATION block). Do NOT evaluate style, pacing, tone, or in-character choices -- "
+        "only facts that contradict the character profile(s) or the reply's own earlier claims.\n\n"
+        "WHAT TO LOOK FOR (all of these count as failures):\n"
+        "1. Sexed anatomy that contradicts a character's stated gender or earlier descriptions "
+        "(a female character described with male-only organs, a male character with female-only "
+        "organs, or either one described with BOTH simultaneously).\n"
+        "2. Body parts, scars, injuries, clothing, hair, eye colour, or appearance details that "
+        "contradict the CHARACTER PROFILE(S) block below, or that contradict a description the "
+        "same character used in an EARLIER turn of this conversation.\n"
+        "3. Impossible or self-contradicting statements within this reply: an object both present "
+        "and absent, two mutually-exclusive times/places/distances, quantities that change between "
+        "sentences without cause, a character who was left in one room acting in another, a person "
+        "who is clearly dead or absent acting.\n"
+        "4. A character referring to a name, place, or object as their own that belongs to a "
+        "DIFFERENT character in the scene (identity mix-ups).\n\n"
+        "DO NOT PENALISE: ordinary roleplay licence (weather, background extras, generic objects), "
+        "a character changing clothes/mood over the course of the conversation, quoted dialogue "
+        "(a character may say anything), or any stylistic issue.\n\n"
+        "Score 100 when the reply holds together factually. Each distinct contradiction should "
+        "pull the score down sharply (roughly 15-25 points per distinct finding); multiple "
+        "findings compound. A score below " + str(threshold) + " is a FAIL.\n\n"
+        "Respond ONLY with a JSON object, no other text. Format:\n"
+        '{"logic": <0-100>, '
+        '"logic_evidence": ["<very short description of each distinct logic error found, quoting the offending words where possible; [] if none>"], '
+        '"rewrite_instruction": "<one or two imperative sentences the author should follow to fix the specific errors above, referencing the exact profile fields or earlier-turn lines the errors contradict; empty string if the score is at or above the fail threshold>"}\n'
+    )
+    if profile_block:
+        prompt += ("\nCHARACTER PROFILE(S):\n" + profile_block + "\n\n")
+    prompt += "\nCONVERSATION (final message is the one to check):\n" + conversation_text
+
+    expected_dims = ["logic"]
+    scores, flags, success, extras = _call_logic_judge(
+        api_url, model_name, api_key, scoring_api_slot, thread_id, task_id, file_name,
+        sampler_settings, prompt, expected_dims=expected_dims,
+    )
+    result["flags"] = flags
+    if not success:
+        return result
+
+    result["success"] = True
+    result["score"] = scores.get("logic")
+    result["evidence"] = list(extras.get("logic_evidence") or [])
+    result["rewrite_instruction"] = (extras.get("rewrite_instruction") or "").strip()
+    if result["score"] is not None and result["score"] < threshold:
+        result["failed"] = True
+    return result
+
+
+def build_logic_rewrite_instruction(result, answer, character_profile_text="",
+                                     conversation_history=None, turn_number=None):
+    """Assembles the context-rich instruction appended to the NEXT generation prompt after
+    a failed logic check.
+
+    The point of this helper -- and the reason the whole rewrite loop exists -- is to send
+    back to the main API EXACTLY enough context that the model does not have to guess what
+    to change: the specific findings from the judge, the offending profile fields, the
+    original system prompt (already part of the caller's message list) and the full
+    conversation history up to (but not including) the flawed reply. A bare one-line hint
+    like "fix the anatomy" would leave the model to improvise, which is the failure mode
+    this feature is meant to eliminate.
+
+    Returns a multi-line instruction block suitable for appending to the current system
+    prompt (or prepending to the next user message) for a single retry.
+    """
+    score = result.get("score")
+    evidence = result.get("evidence") or []
+    rewrite = (result.get("rewrite_instruction") or "").strip()
+
+    parts = []
+    parts.append(
+        "LOGIC-CORRECTION RETRY: your previous reply failed the internal-logic check"
+        + (f" (score {score}/100)" if score is not None else "")
+        + ". The reviewer found the following concrete problems -- fix EACH one specifically, "
+        "do not just rephrase the surrounding sentences:\n"
+    )
+    if evidence:
+        for i, e in enumerate(evidence, start=1):
+            parts.append(f"  {i}. {e}")
+    elif rewrite:
+        parts.append(f"  1. {rewrite}")
+    else:
+        parts.append(
+            "  1. (No specific findings were recorded -- re-check the reply against the "
+            "character profiles and the earlier turns and correct any factual contradiction "
+            "you find: sexed anatomy vs. stated gender, profile-contradicting body parts or "
+            "clothing, or impossible timeline/quantity statements.)"
+        )
+    # The judge's own fix instruction carries context the bare evidence list may omit
+    # (exactly which profile fields / earlier lines to match). Send it whenever present,
+    # on top of the enumerated findings, so the model never has to guess.
+    if rewrite:
+        parts.append("\nReviewer's fix instruction: " + rewrite)
+    parts.append(
+        "Keep everything else about the reply intact: same scene, same tone, same characters, "
+        "same plot beat. Only change the words needed to fix the listed problems, and make "
+        "sure the corrected version matches the CHARACTER PROFILE(S) and the earlier turns "
+        "already in the conversation. Reply with the full corrected message only."
+    )
+    return "\n".join(parts)
 
 
 def _truncate_head_tail(text, max_chars):

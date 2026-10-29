@@ -282,6 +282,7 @@ def reset_all_stats_and_history():
     app_state.slop_count_total = 0
     app_state.error_count_total = 0
     app_state.ooc_count_total = 0
+    app_state.logic_issue_count_total = 0
     anti_slop_count_total = 0
 
     for i in range(6): # For all 6 API slots
@@ -290,6 +291,7 @@ def reset_all_stats_and_history():
         app_state.slop_counts_per_api[i] = 0
         app_state.error_counts_per_api[i] = 0
         app_state.ooc_counts_per_api[i] = 0
+        app_state.logic_issue_counts_per_api[i] = 0
         anti_slop_counts_per_api[i] = 0
         app_state.total_attempts_per_api[i] = 0
     
@@ -300,6 +302,7 @@ def reset_all_stats_and_history():
         app_state.recent_errors_per_api[i] = []
         app_state.recent_anti_slop_per_api[i] = []
         app_state.recent_ooc_per_api[i] = []
+        app_state.recent_logic_per_api[i] = []
 
     app_state.recent_refusals_total = []
     app_state.recent_user_speaking_total = []
@@ -307,6 +310,7 @@ def reset_all_stats_and_history():
     recent_anti_slop_total = []
     app_state.recent_errors_total = []
     app_state.recent_ooc_total = []
+    app_state.recent_logic_total = []
     
     app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
@@ -1180,6 +1184,23 @@ def start_processing():
     app_state.quality_enabled = global_config.get('quality.enabled', True)
     app_state.quality_output_filter = global_config.get('quality.output_filter', False)
     app_state.use_conversation_history_for_fixers = global_config.get('generation.use_conversation_history_for_fixers', True)
+    # Per-turn internal-logic gate (v10.8.0): when on, every freshly generated assistant
+    # reply is checked by the quality LLM for objective contradictions (sexed anatomy vs.
+    # stated gender, profile-contradicting body parts/clothing, impossible timelines). A
+    # failing turn is sent back to the SAME main API with the original system prompt, full
+    # conversation context and the judge's specific findings, so the model knows exactly
+    # what to fix instead of guessing from a bare hint. Requires a configured quality LLM
+    # (falls back to the primary API, like conversation-level scoring); off by default.
+    per_turn_logic_check = bool(
+        global_config.get('quality.enabled', True)
+        and global_config.get('quality.per_turn_logic_check', False)
+    )
+    try:
+        per_turn_logic_max_rewrites = max(0, int(global_config.get('quality.logic_max_rewrites', 1)))
+    except (TypeError, ValueError):
+        per_turn_logic_max_rewrites = 1
+    log_message(f"Per-turn logic gate: enabled={per_turn_logic_check}, "
+                f"max_rewrites={per_turn_logic_max_rewrites}", "INFO")
     include_metadata = global_config.get('generation.include_metadata', True)
     log_message(f"Quality scoring: enabled={app_state.quality_enabled}, output_filter={app_state.quality_output_filter}", "INFO")
     log_message(f"Conversation history for fixers: enabled={app_state.use_conversation_history_for_fixers}", "INFO")
@@ -1693,6 +1714,8 @@ def start_processing():
             'current_ooc_phrases': current_ooc_phrases,
             'current_ooc_fixes': current_ooc_fixes,
             'current_ooc_enabled': current_ooc_enabled,
+            'per_turn_logic_check_local': per_turn_logic_check,
+            'per_turn_logic_max_rewrites_local': per_turn_logic_max_rewrites,
             'user_emotional_states_enabled_local': enable_user_emotional_states,
             'user_emotional_states_list_local': user_emotional_states_list,
             'per_char_random_emotions_local': per_char_random_emotions,
@@ -2079,7 +2102,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v10.8.0",
+    text="v11.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2123,6 +2146,7 @@ def _create_ttkbs_metric(parent, title, icon, default_text="0 (0.0%)"):
 app_state.refusal_percent_label = _create_ttkbs_metric(metrics_frame, "Refusals", "🚫")
 app_state.user_speaking_label = _create_ttkbs_metric(metrics_frame, "User Speak", "🗣️")
 app_state.ooc_label = _create_ttkbs_metric(metrics_frame, "OOC", "🎭")
+app_state.logic_label = _create_ttkbs_metric(metrics_frame, "Logic", "🧠")
 app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
 app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 

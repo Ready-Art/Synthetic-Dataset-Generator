@@ -120,7 +120,8 @@ def test_toggle_on_scores_three_more():
     r = quality.score_conversation(DISTINCT_CONV, "t-on", 1,
                                    character_profile_text=ALICE_BOB_PROFILE,
                                    scene_characters=["Alice", "Bob"])
-    check("all nine dimensions present", len(r["dimensions"]) == 9)
+    check("all ten dimensions present (7 generic + logic + 3 roleplay)",
+          len(r["dimensions"]) == 10 and "logic" in r["dimensions"])
     check("roleplay dimensions scored 0-100",
           all(0 <= r["dimensions"][d] <= 100 for d in quality.ROLEPLAY_SCORING_DIMENSIONS))
     # Weight check: recompute the composite from the reported dimensions and weights.
@@ -245,8 +246,9 @@ def test_llm_judge_prompt_and_refinement():
         captured["data"] = json.loads(data)
         payload = {
             "coherence": 80, "naturalness": 82, "engagement": 75, "consistency": 70,
+            "logic": 92,
             "voice_distinctiveness": 35, "grounding": 90, "persona_alignment": 88,
-            "ooc_evidence": [], "notes": "judge done",
+            "ooc_evidence": [], "logic_evidence": [], "notes": "judge done",
         }
         return _StubResponse(json.dumps(payload))
 
@@ -257,12 +259,15 @@ def test_llm_judge_prompt_and_refinement():
                                 "scoring_api": {"url": "http://example.invalid/v1/chat/completions",
                                                  "model": "judge-model"}}})
         conv = [dict(t) for t in DISTINCT_CONV]
-        scores, flags, ok = quality._score_with_llm(conv, "t-judge", 1, None, "",
-                                                    character_profile_text=ALICE_BOB_PROFILE)
+        scores, flags, ok, extras = quality._score_with_llm(conv, "t-judge", 1, None, "",
+                                                            character_profile_text=ALICE_BOB_PROFILE)
         check("stubbed judge call succeeds", ok is True)
-        check("judge returns all seven dimensions", set(scores) == set(
+        check("judge returns all eight dimensions (7 base + logic)", set(scores) == set(
             quality.LLM_DIMENSIONS | quality.ROLEPLAY_LLM_DIMENSIONS))
         check("low judge score is flagged", "low_voice_distinctiveness" in flags)
+        check("non-score fields travel in extras, not scores",
+              "logic_evidence" in extras and "rewrite_instruction" in extras
+              and "ooc_evidence" not in scores and "logic_evidence" not in scores)
 
         prompt = captured["data"]["messages"][1]["content"]
         check("prompt includes roleplay dimension definitions",
@@ -283,17 +288,20 @@ def test_llm_judge_prompt_and_refinement():
               and r["dimensions"]["persona_alignment"] == 88)
         check("low_voice_distinctiveness carried into flags", "low_voice_distinctiveness" in r["flags"])
 
-        # Toggle off: prompt has no roleplay section and judge scores only the four core dims.
+        # Toggle off: prompt has no roleplay section and judge scores only the five base dims.
         set_config({"quality": {"use_llm_scoring": True,
                                 "scoring_api": {"url": "http://example.invalid/v1/chat/completions",
                                                  "model": "judge-model"}}})
-        scores2, _, ok2 = quality._score_with_llm(conv, "t-judge3", 1, None, "",
-                                                  character_profile_text=ALICE_BOB_PROFILE)
+        scores2, _, ok2, _ = quality._score_with_llm(conv, "t-judge3", 1, None, "",
+                                                     character_profile_text=ALICE_BOB_PROFILE)
         prompt2 = captured["data"]["messages"][1]["content"]
         check("toggle off: no roleplay dims in prompt", "voice_distinctiveness" not in prompt2)
-        check("toggle off: judge scores the four core dims only",
+        check("toggle off: judge scores the five core dims only",
               ok2 and set(scores2) == set(quality.LLM_DIMENSIONS))
-        check("toggle off: default max_tokens", captured["data"]["max_tokens"] == 384)
+        check("logic dimension defined in the prompt", "- logic:" in prompt2)
+        check("prompt asks for logic JSON fields",
+              '"logic": <0-100>' in prompt2 and '"logic_evidence"' in prompt2)
+        check("default max_tokens with room for evidence lists", captured["data"]["max_tokens"] == 512)
     finally:
         quality.requests.post = real_post
     app_state.quality_scores = {}

@@ -552,6 +552,169 @@ def placement_cache_warning(num_turns, opening_mode, persona_turn, persona_activ
     )
 
 
+def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
+                         current_system_prompt_for_turn, current_answer_prompt_for_turn,
+                         conversation_history_for_llm, answer_under_test, turn_num, greeting_offset,
+                         thread_id, task_id, file_name, character_injection,
+                         scene_character_names, max_rewrites, logic_findings,
+                         current_refusal_phrases, current_user_speaking_phrases, current_slop_phrases,
+                         current_anti_slop_phrases, current_jailbreaks, current_speaking_fixes,
+                         current_slop_fixes_fallback, current_max_attempts,
+                         slop_fixer_api_config, anti_slop_fixer_api_config_param,
+                         current_slop_fixes_for_rotation, master_duplication_enabled_local,
+                         no_user_impersonation_local, current_api_request_timeout,
+                         current_slop_to_anti_slop_fallback,
+                         current_ooc_phrases, current_ooc_enabled, current_ooc_fixes):
+    """Per-turn internal-logic gate for a freshly generated assistant reply.
+
+    ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
+    runs AFTER ``generate_answer_with_retries`` returns but BEFORE the answer is added to
+    the conversation context (so a retry never sees the flawed text). When
+    the quality judge's logic score falls below ``quality.logic_threshold`` the
+    original system prompt + FULL conversation context + the judge's specific
+    findings are sent back to the same main API slot via another
+    ``generate_answer_with_retries`` call -- the retry inherits every downstream fix
+    pipeline (jailbreaks, slop, OOC, quotes) and regenerates the whole turn instead
+    of patching one sentence, which is why the judge's findings must be concrete:
+    a bare "fix the anatomy" hint leaves the model guessing, which is exactly the
+    failure mode this gate exists to prevent.
+
+    Up to ``max_rewrites`` regeneration rounds run; every round is re-checked and
+    its findings are appended to ``logic_findings`` (list mutated in place) so the
+    conversation-level scorer later sees them as confirmed evidence for its own
+    logic dimension. On judge outage (``success=False``) the answer passes through
+    unchanged -- the gate must never block output on a dead judge.
+
+    Returns the regenerated ``answer_result`` 3-tuple ``(answer, issue_flag, refusal_flag)``;
+    on judge outage or a passing score the original tuple is returned unchanged. A rewrite
+    round that yields no usable replacement keeps the last usable answer rather than
+    discarding the turn.
+    """
+    issue_ever_detected_this_task = False
+    refusal_ever_detected_this_task = False
+    check = quality.check_logic(
+        answer_under_test, conversation_history_for_llm,
+        character_profile_text=character_injection,
+        turn_number=turn_num + 1 + greeting_offset,
+        task_id=task_id, thread_id=thread_id, file_name=file_name,
+    )
+
+    def _record(check_result):
+        for ev in check_result.get("evidence") or []:
+            logic_findings.append({
+                "turn": turn_num + 1 + greeting_offset,
+                "evidence": ev,
+                "rewrite_instruction": check_result.get("rewrite_instruction", ""),
+            })
+
+    if not check.get("success") or not check.get("failed"):
+        return (answer_under_test, issue_ever_detected_this_task, refusal_ever_detected_this_task)
+
+    _record(check)
+    log_message(
+        f"Thread {thread_id}: Task {task_id}, turn {turn_num + 1}: logic check FAILED "
+        f"(score {check.get('score')}). Sending the turn back to API Slot "
+        f"{api_slot_idx_for_this_turn + 1} for a context-rich rewrite.",
+        "WARNING",
+    )
+    with app_state.stats_lock:
+        app_state.logic_issue_count_total += 1
+        if api_slot_idx_for_this_turn < len(app_state.logic_issue_counts_per_api):
+            app_state.logic_issue_counts_per_api[api_slot_idx_for_this_turn] += 1
+    # Timestamp + recent-issue ring feed the dashboard's issue graph and the
+    # Totals metric card (same shape as the OOC drift bookkeeping).
+    _ev0 = (check.get("evidence") or [""])[0]
+    with app_state.issue_timestamps_lock:
+        app_state.issue_timestamps['logic_issues'].append(time.time())
+        cutoff_ts = time.time() - 3600
+        app_state.issue_timestamps['logic_issues'] = [
+            t for t in app_state.issue_timestamps['logic_issues'] if t > cutoff_ts]
+        app_state.recent_logic_total.append(("logic error", _ev0, api_slot_idx_for_this_turn))
+        if len(app_state.recent_logic_total) > MAX_RECENT:
+            app_state.recent_logic_total.pop(0)
+        if api_slot_idx_for_this_turn < len(app_state.recent_logic_per_api):
+            app_state.recent_logic_per_api[api_slot_idx_for_this_turn].append((_ev0[:80], api_slot_idx_for_this_turn))
+            if len(app_state.recent_logic_per_api[api_slot_idx_for_this_turn]) > MAX_RECENT:
+                app_state.recent_logic_per_api[api_slot_idx_for_this_turn].pop(0)
+
+    try:
+        max_rewrites = max(0, int(max_rewrites))
+    except (TypeError, ValueError):
+        max_rewrites = 1
+    answer = answer_under_test
+    for rewrite_round in range(1, max_rewrites + 1):
+        if app_state.stop_processing or app_state.pause_processing:
+            break
+        instruction = quality.build_logic_rewrite_instruction(
+            check, answer, character_profile_text=character_injection,
+            conversation_history=conversation_history_for_llm,
+            turn_number=turn_num + 1 + greeting_offset,
+        )
+        retry_system_prompt = current_system_prompt_for_turn + "\n\n" + instruction
+        retry_result = generate_answer_with_retries(
+            base_system_prompt=retry_system_prompt,
+            conversation_history_for_llm=list(conversation_history_for_llm),
+            answer_prompt_template=current_answer_prompt_for_turn,
+            thread_id=thread_id, q=None,
+            sampler_settings_local=api_config_for_this_turn.get('sampler_settings', {}),
+            api_url_local=api_config_for_this_turn.get('url'),
+            model_name_local=api_config_for_this_turn.get('model'),
+            api_key_local=api_config_for_this_turn.get('key'),
+            refusal_phrases_local=current_refusal_phrases,
+            user_speaking_phrases_local=current_user_speaking_phrases,
+            slop_phrases_local=current_slop_phrases,
+            current_anti_slop_phrases_param=current_anti_slop_phrases,
+            jailbreaks_local=current_jailbreaks,
+            speaking_fixes_local=current_speaking_fixes,
+            slop_fixes_fallback_local=current_slop_fixes_fallback,
+            max_attempts_local=current_max_attempts,
+            slop_fixer_api_config_param=slop_fixer_api_config,
+            current_slop_fixes_for_rotation_param=current_slop_fixes_for_rotation,
+            api_slot_idx=api_slot_idx_for_this_turn,
+            current_max_attempts_for_slop_fixer_call=current_max_attempts,
+            master_duplication_enabled_local=master_duplication_enabled_local,
+            no_user_impersonation_local=no_user_impersonation_local,
+            anti_slop_fixer_api_config_param=anti_slop_fixer_api_config_param,
+            api_request_timeout_param=current_api_request_timeout,
+            slop_to_anti_slop_fallback=current_slop_to_anti_slop_fallback,
+            file_name=file_name,
+            ooc_phrases_local=current_ooc_phrases,
+            ooc_enabled_local=current_ooc_enabled,
+            ooc_fixes_local=current_ooc_fixes,
+        )
+        if not retry_result or not retry_result[0]:
+            log_message(
+                f"Thread {thread_id}: Task {task_id}, turn {turn_num + 1}: logic-rewrite round "
+                f"{rewrite_round} produced no usable answer; keeping the previous version.",
+                "WARNING",
+            )
+            break
+        answer = retry_result[0]
+        check = quality.check_logic(
+            answer, conversation_history_for_llm,
+            character_profile_text=character_injection,
+            turn_number=turn_num + 1 + greeting_offset,
+            task_id=task_id, thread_id=thread_id, file_name=file_name,
+        )
+        if check.get("success") and check.get("failed"):
+            _record(check)
+            log_message(
+                f"Thread {thread_id}: Task {task_id}, turn {turn_num + 1}: logic-rewrite round "
+                f"{rewrite_round} still failing (score {check.get('score')}); "
+                "rounds left: "
+                f"{max(0, max_rewrites - rewrite_round)}.",
+                "WARNING",
+            )
+        else:
+            log_message(
+                f"Thread {thread_id}: Task {task_id}, turn {turn_num + 1}: logic issue resolved "
+                f"in rewrite round {rewrite_round}.",
+                "INFO",
+            )
+            break
+    return (answer, issue_ever_detected_this_task, refusal_ever_detected_this_task)
+
+
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
            use_variable_system_local,
            all_api_configs_local,
@@ -605,6 +768,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_ooc_phrases=(),
            current_ooc_fixes=(),
            current_ooc_enabled=True,
+           per_turn_logic_check_local=False,
+           per_turn_logic_max_rewrites_local=1,
            user_emotional_states_enabled_local=False,
            user_emotional_states_list_local=None,
            per_char_random_emotions_local=False,
@@ -1263,6 +1428,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
 
             # --- Multi-Turn Conversation Loop ---
+            # Per-turn logic-check bookkeeping: findings recorded by the gate across all turns
+            # are forwarded to the conversation-level scorer so its 'logic' dimension sees them
+            # as confirmed without re-deriving.
+            logic_findings_this_task = []
             for turn_num in range(current_num_turns):
                 if app_state.stop_processing or app_state.pause_processing: break # Check before starting a new turn
 
@@ -1317,6 +1486,34 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 ooc_enabled_local=current_ooc_enabled,
                                 ooc_fixes_local=current_ooc_fixes,
                             )
+                            if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
+                                # Per-turn logic gate on the primary (slot 1) answer only; the
+                                # duplicated siblings keep their independent variance. The
+                                # flawed turn is NOT yet in current_llm_conversation_context,
+                                # so a retry naturally regenerates a fresh replacement.
+                                answer_result = (
+                                    _per_turn_logic_gate(
+                                        dup_api_conf_item, dup_api_idx,
+                                        current_system_prompt_for_turn, current_answer_prompt_for_turn,
+                                        current_llm_conversation_context, answer_result[0],
+                                        turn_num, greeting_offset,
+                                        thread_id, task_id, file_name, character_injection,
+                                        scene_character_names, per_turn_logic_max_rewrites_local,
+                                        logic_findings_this_task,
+                                        current_refusal_phrases, current_user_speaking_phrases,
+                                        current_slop_phrases, current_anti_slop_phrases,
+                                        current_jailbreaks, current_speaking_fixes,
+                                        current_slop_fixes_fallback, current_max_attempts,
+                                        slop_fixer_api_config, anti_slop_fixer_api_config_param,
+                                        current_slop_fixes_for_rotation_worker,
+                                        master_duplication_enabled_local, no_user_impersonation_local,
+                                        current_api_request_timeout, current_slop_to_anti_slop_fallback,
+                                        current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
+                                    ),
+                                    answer_result[1] if len(answer_result) > 1 else False,
+                                    answer_result[2] if len(answer_result) > 2 else False,
+                                )
+
                             if answer_result and answer_result[0]:  # Check if answer is not None
                                 duplicated_answer_text = answer_result[0]
                                 issue_in_this_call = answer_result[1] if len(answer_result) > 1 else False
@@ -1378,7 +1575,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         primary_turn_quality_result = _score_and_store_quality(
                             primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name,
                             character_profile_text=character_injection,
-                            scene_characters=scene_character_names
+                            scene_characters=scene_character_names,
+                            logic_findings=logic_findings_this_task
                         )
                         # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
 
@@ -1446,6 +1644,28 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         ooc_enabled_local=current_ooc_enabled,
                         ooc_fixes_local=current_ooc_fixes,
                     )
+                    if per_turn_logic_check_local and answer_result and answer_result[0]:
+                        # Per-turn logic gate BEFORE the answer enters the output history, so a
+                        # regeneration cleanly supersedes the flawed turn and the retry never sees it.
+                        answer_result = _per_turn_logic_gate(
+                            api_config_for_this_task, api_slot_idx_for_this_task,
+                            current_system_prompt_for_turn, current_answer_prompt_for_turn,
+                            current_llm_conversation_context, answer_result[0],
+                            turn_num, greeting_offset,
+                            thread_id, task_id, file_name, character_injection,
+                            scene_character_names, per_turn_logic_max_rewrites_local,
+                            logic_findings_this_task,
+                            current_refusal_phrases, current_user_speaking_phrases,
+                            current_slop_phrases, current_anti_slop_phrases,
+                            current_jailbreaks, current_speaking_fixes,
+                            current_slop_fixes_fallback, current_max_attempts,
+                            slop_fixer_api_config, anti_slop_fixer_api_config_param,
+                            current_slop_fixes_for_rotation_worker,
+                            master_duplication_enabled_local, no_user_impersonation_local,
+                            current_api_request_timeout, current_slop_to_anti_slop_fallback,
+                            current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
+                        )
+
                     if answer_result and answer_result[0]:  # Check if answer is not None
                         assistant_answer = answer_result[0]
                         issue_in_this_call = answer_result[1] if len(answer_result) > 1 else False
@@ -1589,7 +1809,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     api_slot_idx=api_slot_idx_for_this_task,
                                     file_name=file_name,
                                     character_profile_text=character_injection,
-                                    scene_characters=scene_character_names
+                                    scene_characters=scene_character_names,
+                                    logic_findings=logic_findings_this_task
                                 )
                                 # Optional: filter output by quality threshold
                                 if final_quality_result and app_state.quality_output_filter:
@@ -3801,7 +4022,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 #     they carry the usual -1.0 gap when unscored or when the toggle is off.
 #   * v4 (meta_version) adds user_emotional_state: the simulated user's assigned
 #     emotional state / '->' arc (NEW in v10.6.0), "" when the feature is off.
-_METADATA_SCHEMA_VERSION = 4
+#   * v5 (meta_version) adds quality_logic: the internal-logic dimension added in
+#     v10.8.0 (objective contradictions vs. character profile: sexed anatomy vs.
+#     stated gender, profile-contradicting body parts/clothing, impossible timelines).
+#     -1.0 when unscored; the composite weight shift is small (15/100 -> ~15/115)
+#     and well-defined because the composite is normalized by total active weight.
+_METADATA_SCHEMA_VERSION = 5
 
 
 def _safe_float(value, default=None):
@@ -3853,6 +4079,10 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
         "quality_engagement": score(dims.get("engagement")),
         "quality_diversity": score(dims.get("diversity")),
         "quality_consistency": score(dims.get("consistency")),
+        # Internal-logic dimension (v10.8.0): objective contradictions vs. the
+        # character profile(s) and prior turns. Always present on every record;
+        # -1.0 gap when the conversation was not scored (schema-stable).
+        "quality_logic": score(dims.get("logic")),
         "quality_technical": score(dims.get("technical")),
         # Opt-in roleplay dimensions (quality.roleplay_dimensions); -1.0 when off/unscored,
         # keeping the same keys/types on every record for Axolotl/HF column inference.
@@ -3864,7 +4094,8 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
 
 
 def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
-                             character_profile_text="", scene_characters=None):
+                             character_profile_text="", scene_characters=None,
+                             logic_findings=None):
     """Scores a conversation and stores the result in app_state.quality_scores (deduped by task).
     Mirrors the pre-existing quality bookkeeping (threshold review flags included).
 
@@ -3876,12 +4107,18 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     ``scene_characters`` is the list of names actually in the scene; it feeds the opt-in
     voice-distinctiveness heuristic (line attribution + n-gram overlap between characters).
 
+    ``logic_findings`` (optional) is the list of per-turn findings recorded by the
+    per-turn logic gate; when non-empty they are appended to the judge prompt as a
+    FINDINGS block so the conversation-level 'logic' dimension takes them into account
+    without re-deriving the same contradictions from scratch.
+
     Returns the quality result dict, or None on any failure."""
     try:
         qr = quality.score_conversation(conv_for_scoring, task_id, thread_id,
                                         api_slot_idx=api_slot_idx, file_name=file_name,
                                         character_profile_text=character_profile_text,
-                                        scene_characters=scene_characters)
+                                        scene_characters=scene_characters,
+                                        logic_findings=logic_findings)
         with app_state.quality_lock:
             if task_id not in app_state.quality_scores:
                 app_state.quality_scores[task_id] = qr
