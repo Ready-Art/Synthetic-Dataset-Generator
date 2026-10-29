@@ -327,6 +327,13 @@ samplers:
   max_tokens_user_reply: 1024
   enable_thinking: default
   logit_bias: ''
+  # v11.1 bad_words toggle: when enabled, every main-API request (question / answer /
+  # user continuation / opening-mode greeting+first-line) plus the Slop Fixer (slot 5)
+  # and Anti-Slop Fixer (slot 6) payloads get a top-level "bad_words" list passed
+  # straight through to the endpoint (vLLM-style; leading whitespace on each entry is
+  # preserved so "word" and " word" are distinct forbidden tokens).
+  use_bad_words: false
+  bad_words: []
   slop_fixer_params: {}
   anti_slop_params: {}
 gender: female

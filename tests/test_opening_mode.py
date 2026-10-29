@@ -1220,6 +1220,56 @@ def test_record_metadata():
           {k: _shape(v) for k, v in meta.items()} == {k: _shape(v) for k, v in full.items()})
 
 
+# --- v11.1 bad_words toggle ---------------------------------------------------------------
+# The toggle is stored under samplers.* in config.yml (loaded once into g.global_config
+# before this test runs; it is off by default). We flip it on the live ConfigLoader, run the
+# opening builders (which share _request_opening_message), verify the payload carries the
+# list -- including any entries with leading whitespace that must NOT be stripped -- then
+# flip it back off.
+
+def _set_bad_words_config(enabled, words):
+    cfg = g.global_config.config.setdefault("samplers", {})
+    prev = (cfg.get("use_bad_words"), cfg.get("bad_words"))
+    if enabled:
+        cfg["use_bad_words"] = True
+        cfg["bad_words"] = list(words)
+    else:
+        cfg.pop("use_bad_words", None)
+        cfg.pop("bad_words", None)
+    return prev
+
+
+def test_bad_words_toggle():
+    reset_state()
+    check("off by default: no bad_words on opening requests",
+          "bad_words" not in g.apply_bad_words_to_payload({"model": "m", "messages": []}, 0))
+
+    prev = _set_bad_words_config(True, ["For Example", " For Example", "sunny"])
+    try:
+        call_greeting()
+        call_first_line()
+        for kind in ("greeting", "first_line"):
+            body = ROUTER.bodies(kind)[0]
+            check(f"{kind}: bad_words are sent when the toggle is on",
+                  body.get("bad_words") == ["For Example", " For Example", "sunny"])
+            check(f"{kind}: leading whitespace on an entry is preserved exactly as configured",
+                  " For Example" in body["bad_words"] and "For Example" in body["bad_words"])
+    finally:
+        _set_bad_words_config(prev[0] if prev[0] else False, prev[1] or [])
+
+    # After clearing, the payload goes back to not carrying bad_words.
+    check("after un-set: apply_bad_words_to_payload is a no-op again",
+          "bad_words" not in g.apply_bad_words_to_payload({"model": "m", "messages": []}, 0))
+
+    # Sanity: even with the toggle on, an empty list does not attach the key.
+    prev = _set_bad_words_config(True, [])
+    try:
+        check("toggle on + empty list: no bad_words key on the payload",
+              "bad_words" not in g.apply_bad_words_to_payload({"model": "m", "messages": []}, 0))
+    finally:
+        _set_bad_words_config(prev[0] if prev[0] else False, prev[1] or [])
+
+
 def test_metadata_matches_prompt():
     blank_named = [{**CHARACTERS[0], "name": "", "setting": "A harbor at dawn."}]
     reset_state()
@@ -1267,6 +1317,8 @@ def main():
     print("(5) record metadata")
     test_record_metadata()
     test_metadata_matches_prompt()
+    print("(6) v11.1 bad_words toggle")
+    test_bad_words_toggle()
     if FAILURES:
         print(f"\n{len(FAILURES)} opening-mode test(s) failed")
         sys.exit(1)

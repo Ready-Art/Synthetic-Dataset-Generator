@@ -965,6 +965,35 @@ class ConfigEditor(tk.Toplevel):
         self.logit_bias_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.WORD, height=5, width=1, undo=True)
         self.logit_bias_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         sampler_row += 1
+
+        # --- v11.1 Bad Words (vLLM-style): toggles the top-level `bad_words` list on every main-API
+        # request AND on the Slop Fixer (slot 5) / Anti-Slop Fixer (slot 6) requests. Leading
+        # whitespace on each line is preserved exactly as typed (so `sunny` and ` sunny` are
+        # distinct forbidden tokens, matching vLLM semantics). Blank lines are skipped.
+        self.use_bad_words_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(
+            sampler_params_frame,
+            text="Enable Bad Words (send vLLM-style `bad_words` to every main-API + slop/anti-slop request)",
+            variable=self.use_bad_words_var_editor,
+            command=self._toggle_bad_words_fields
+        ).grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        sampler_row += 1
+        bad_words_caption = ttk.Label(sampler_params_frame, text="Bad Words (one per line; leading whitespace is significant):", justify="left", wraplength=1)
+        bad_words_caption.grid(row=sampler_row, column=0, columnspan=3, sticky="ew", padx=SPACING, pady=(4, 0))
+        wrap_label(bad_words_caption, sampler_params_frame)
+        sampler_row += 1
+        self.bad_words_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.NONE, height=5, width=1, undo=True)
+        self.bad_words_text.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        sampler_row += 1
+        bad_words_help = ttk.Label(
+            sampler_params_frame,
+            style='Small.TLabel', justify="left", wraplength=1,
+            text="(E.g. a line ` For Example` forbids the word WITH its leading space; a line `For Example` forbids it anywhere. "
+                 "Both may be listed independently. Applies to question / answer / user-continuation / opening-mode requests plus Slop Fixer (slot 5) and Anti-Slop Fixer (slot 6).)")
+        bad_words_help.grid(row=sampler_row, column=0, columnspan=3, sticky="ew", padx=SPACING, pady=(0, SPACING))
+        wrap_label(bad_words_help, sampler_params_frame)
+        sampler_row += 1
+
         self.enable_thinking_mode_var = tk.StringVar(value="default")
         slop_fixer_sampler_lf = ttk.LabelFrame(sampler_params_frame, text="Slop Fixer LLM Sampler Overrides (API Slot 5 - Optional)")
         slop_fixer_sampler_lf.grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); sampler_row+=1
@@ -1579,6 +1608,15 @@ class ConfigEditor(tk.Toplevel):
                 'max_tokens_user_reply': int(self.max_tokens_user_reply_var.get()),
                 'enable_thinking': self.enable_thinking_mode_var.get(),
                 'logit_bias': self.logit_bias_text.get("1.0", tk.END).strip(),
+                # v11.1 bad_words: preserve leading whitespace on every line exactly as typed
+                # (only skip truly-empty lines after stripping the trailing newline); the
+                # toggle gates whether the list is actually sent, not whether it is stored.
+                'use_bad_words': bool(self.use_bad_words_var_editor.get()),
+                'bad_words': [
+                    line.rstrip('\r\n')
+                    for line in self.bad_words_text.get("1.0", tk.END).split('\n')
+                    if line.strip()
+                ],
                 'slop_fixer_params': slop_fixer_params_to_save,
                 'anti_slop_params': anti_slop_fixer_params_to_save
             },
@@ -1691,6 +1729,13 @@ class ConfigEditor(tk.Toplevel):
         except (ValueError, tk.TclError):
             warning = ""
         self.placement_cache_warning_label.config(text=warning)
+
+    def _toggle_bad_words_fields(self):
+        """v11.1: enable/disable the bad-words text field based on the toggle's state."""
+        is_enabled = self.use_bad_words_var_editor.get()
+        field_widget = getattr(self, 'bad_words_text')
+        field_widget.config(state='normal' if is_enabled else 'disabled')
+        log_message(f"Bad Words fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 
     def _toggle_emotional_states_fields(self):
         """Enables/disables emotional states text field based on checkbox state."""
@@ -2177,6 +2222,17 @@ class ConfigEditor(tk.Toplevel):
             self.logit_bias_text.delete("1.0", tk.END)
             self.logit_bias_text.insert("1.0", samplers_config_load.get('logit_bias', ''))
 
+            # v11.1 bad_words: set toggle then re-sync the field state before touching it
+            # (disabled-Text drops edits on this Tk build -- see user_emotional_states note).
+            self.use_bad_words_var_editor.set(bool(samplers_config_load.get('use_bad_words', False)))
+            self._toggle_bad_words_fields()
+            self.bad_words_text.config(state='normal')
+            try:
+                self.bad_words_text.delete("1.0", tk.END)
+                self.bad_words_text.insert("1.0", "\n".join(samplers_config_load.get('bad_words', [])))
+            finally:
+                self._toggle_bad_words_fields()
+
             slop_fixer_sampler_conf = samplers_config_load.get('slop_fixer_params', {})
             self.slop_fixer_temp_var.set(str(slop_fixer_sampler_conf.get('temperature', '')))
             self.slop_fixer_top_p_var.set(str(slop_fixer_sampler_conf.get('top_p', '')))
@@ -2252,6 +2308,11 @@ class ConfigEditor(tk.Toplevel):
             get_text_as_list(self.slop_phrases_text); get_text_as_list(self.slop_fixes_text)
             get_text_as_list(self.ooc_phrases_text); get_text_as_list(self.ooc_fixes_text)
             get_text_as_list(self.sampler_priority_text)
+            # v11.1 bad_words: do NOT strip -- leading whitespace on each entry is intentional
+            # (matches vLLM semantics where ` For Example` and `For Example` are different tokens).
+            if self.use_bad_words_var_editor.get():
+                raw_bad_words = self.bad_words_text.get("1.0", tk.END).split('\n')
+                assert any(line.strip() for line in raw_bad_words), "Enable Bad Words requires at least one non-empty line"
 
             logit_bias_str = self.logit_bias_text.get("1.0", tk.END).strip()
             if logit_bias_str:

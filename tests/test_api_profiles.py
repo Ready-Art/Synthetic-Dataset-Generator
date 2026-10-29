@@ -22,11 +22,14 @@ def check(name, cond):
 
 
 def full_payload():
+    # v11.1 adds `bad_words` to the builder-emitted keys; the list preserves leading whitespace
+    # on entries exactly as typed (see generation.apply_bad_words_to_payload).
     return {
         "model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": False,
         "temperature": 0.5, "top_p": 0.9, "top_k": 50, "min_p": 0.0,
         "repetition_penalty": 1.1, "max_tokens": 128,
         "logit_bias": {"5": 1}, "chat_template_kwargs": {"enable_thinking": False},
+        "bad_words": ["For Example", " For Example"],
     }
 
 
@@ -45,7 +48,7 @@ def main():
 
     # --- mistral profile drops non-OpenAI params and maps repetition_penalty ---
     out = api_profiles.apply_profile(full_payload(), "mistral")
-    for k in ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias"):
+    for k in ("top_k", "min_p", "repetition_penalty", "chat_template_kwargs", "logit_bias", "bad_words"):
         check(f"mistral drops {k}", k not in out)
     check("mistral keeps temperature", out.get("temperature") == 0.5)
     check("mistral keeps model/messages/stream",
@@ -58,6 +61,13 @@ def main():
     check("openai keeps logit_bias", "logit_bias" in out)
     check("openai drops top_k", "top_k" not in out)
     check("openai maps repetition_penalty -> frequency_penalty", out.get("frequency_penalty") == 0.1)
+
+    # --- v11.1: bad_words is a first-class builder key; profiles may allow or drop it ---
+    check("known_param_keys includes bad_words", "bad_words" in api_profiles.known_param_keys())
+    out = api_profiles.apply_profile(full_payload(), "custom", custom_allowed=["temperature", "bad_words"])
+    check("custom allows bad_words when listed", out.get("bad_words") == ["For Example", " For Example"])
+    out = api_profiles.apply_profile(full_payload(), "custom", custom_allowed=["temperature"])
+    check("custom drops bad_words when not listed", "bad_words" not in out)
 
     # --- an explicit frequency_penalty is not overwritten by the rename ---
     pay = full_payload()

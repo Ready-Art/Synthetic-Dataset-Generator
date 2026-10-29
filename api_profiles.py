@@ -49,6 +49,7 @@ _RENAME_TRANSFORMS = {
 _BUILDER_EMITTED_KEYS = frozenset({
     "temperature", "top_p", "top_k", "min_p", "repetition_penalty", "max_tokens",
     "frequency_penalty", "presence_penalty", "logit_bias", "chat_template_kwargs",
+    "bad_words",
 })
 
 _profiles = {}        # name -> {"label": str, "allow": set|None|"from_config", "rename": {}, "detect_hosts": []}

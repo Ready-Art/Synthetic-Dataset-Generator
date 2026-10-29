@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.0
+# ReadyArt Synthetic Dataset Generator v11.1
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -354,7 +354,7 @@ api:
 #### API Compatibility Profiles
 
 The request builders emit a permissive, vLLM/OpenAI-style JSON body (`top_k`, `min_p`,
-`repetition_penalty`, `chat_template_kwargs`, `logit_bias`, …). Local servers ignore params they
+`repetition_penalty`, `chat_template_kwargs`, `logit_bias`, `bad_words`, …). Local servers ignore params they
 don't recognise, but several hosted APIs **reject any unknown field with HTTP 400/422** — so a run
 that works against vLLM fails on every request against, e.g., Mistral.
 
@@ -390,7 +390,7 @@ Notes:
 
 **Params the request builders send** — a profile whose `allow` list omits one of these drops it
 before the request: `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `max_tokens`,
-`logit_bias`, `chat_template_kwargs`.
+`logit_bias`, `chat_template_kwargs`, `bad_words`.
 
 **Also recognised in an `allow` list** (passed straight through when a builder or a future change
 includes them): `frequency_penalty`, `presence_penalty`, `max_completion_tokens`, `stop`, `seed`,
@@ -726,6 +726,8 @@ samplers:
   max_tokens_user_reply: 1024
   enable_thinking: "default"    # "default", "enable", or "disable"
   logit_bias: ""                # JSON format, e.g., {"15": 100}
+  use_bad_words: false          # v11.1: toggle -- send `bad_words` with every request
+  bad_words: []                 # e.g., [" For Example", "For Example"]
 
   # Slop Fixer LLM overrides (API Slot 5)
   slop_fixer_params:
@@ -747,6 +749,19 @@ samplers:
 ```
 
 - **`logit_bias`** — JSON object mapping token IDs to bias values. Passed directly to the API payload. Leave empty (`""`) to disable.
+- **`use_bad_words` / `bad_words`** (v11.1) — When `use_bad_words: true`, every outgoing request (question, answer, user continuation, opening-mode greeting and first line, plus the Slop Fixer on API Slot 5 and the Anti-Slop Fixer on API Slot 6) gets a top-level `bad_words` list passed straight through to the endpoint, matching vLLM's `chat/completions` field of the same name. In the config editor this lives in the **Samplers** tab as a toggle above the text box, right under the Logit Bias field. Entries keep their leading whitespace exactly as typed, so `For Example` (forbids the phrase anywhere) and ` For Example` (forbids the phrase after a space — i.e., *not* at the start of a turn) can be listed independently:
+
+  ```json
+  // vLLM-equivalent request sent by the generator when use_bad_words is on
+  {
+    "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "messages": [{"role": "user", "content": "Write a short sentence about the weather."}],
+    "temperature": 0.7,
+    "bad_words": ["sunny", "rain"]
+  }
+  ```
+
+  Endpoints that don't understand `bad_words` typically ignore it; use the API compatibility profile (`custom_allowed_params`) to filter it out per slot if your hosted provider rejects unknown fields.
 - **`enable_thinking`** — Controls chain-of-thought output in reasoning models:
   - `"default"` — Don't send `chat_template_kwargs` parameter
   - `"enable"` — Send `{"chat_template_kwargs": {"enable_thinking": true}}`

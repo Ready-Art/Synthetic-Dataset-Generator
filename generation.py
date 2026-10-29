@@ -52,6 +52,31 @@ def sanitize_payload_for_endpoint(payload_dict, api_url, slot_idx):
     return api_profiles.apply_profile_for_slot(payload_dict, slot_idx, api_url)
 
 
+def apply_bad_words_to_payload(payload_dict, thread_id):
+    """v11.1: if `samplers.use_bad_words` is on, attach the configured `samplers.bad_words` list to
+    the outgoing payload so vLLM-style endpoints can forbid specific tokens during sampling.
+
+    The toggle and list are read from the TOP-LEVEL `samplers.*` config (not the per-slot sampler
+    override dict) so a single Samplers-tab toggle drives every request uniformly: the four main
+    generation APIs plus the Slop Fixer (slot 5) and Anti-Slop Fixer (slot 6), even when those fixers
+    carry their own `slop_fixer_params` / `anti_slop_params` sampler overrides.
+
+    Leading whitespace on every entry is preserved intentionally -- vLLM treats ` For Example` and
+    `For Example` as different forbidden tokens and both should be supported here.
+    """
+    if not global_config.get('samplers.use_bad_words'):
+        return payload_dict
+    raw = global_config.get('samplers.bad_words') or []
+    if not isinstance(raw, (list, tuple)):
+        log_message(f"Thread {thread_id}: samplers.bad_words must be a list of strings. Skipping.", "WARNING")
+        return payload_dict
+    cleaned = [str(w) for w in raw if str(w) != ""]
+    if not cleaned:
+        return payload_dict
+    payload_dict["bad_words"] = cleaned
+    return payload_dict
+
+
 def check_budget_limit():
     if app_state.stop_processing:
         return False
@@ -2026,6 +2051,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             elif thinking_mode == 'disable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
+            # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
+            payload_dict = apply_bad_words_to_payload(payload_dict, thread_id)
 
             payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local, api_slot_idx)
             payload = json.dumps(payload_dict)
@@ -2318,6 +2345,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             elif thinking_mode == 'disable':
                 payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
             # else 'default': do not send the parameter
+            # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
+            payload_dict = apply_bad_words_to_payload(payload_dict, thread_id)
 
             payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local, api_slot_idx)
             payload = json.dumps(payload_dict)
@@ -2614,6 +2643,9 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
             payload_dict['chat_template_kwargs'] = {"enable_thinking": True}
         elif thinking_mode == 'disable':
             payload_dict['chat_template_kwargs'] = {"enable_thinking": False}
+        # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
+        # (opening-mode greeting + first-line share this builder)
+        payload_dict = apply_bad_words_to_payload(payload_dict, thread_id)
         payload_dict = sanitize_payload_for_endpoint(payload_dict, api_url_local, api_slot_idx)
 
         headers = {'Content-Type': 'application/json'}
@@ -2866,6 +2898,9 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 **final_slop_fixer_params,
                 "stream": False
             }
+            # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
+            # and the Slop Fixer (slot 5)
+            payload_data = apply_bad_words_to_payload(payload_data, thread_id)
             payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_slop_fixer)
             payload = json.dumps(payload_data)
             headers = {
@@ -3116,6 +3151,9 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 **final_anti_slop_params,
                 "stream": False
             }
+            # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
+            # and the Anti-Slop Fixer (slot 6)
+            payload_data = apply_bad_words_to_payload(payload_data, thread_id)
             payload_data = sanitize_payload_for_endpoint(payload_data, api_url, api_slot_idx_anti_slop)
             payload = json.dumps(payload_data)
             headers = {
@@ -3377,6 +3415,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 elif thinking_mode == 'disable':
                     payload_dict_ans['chat_template_kwargs'] = {"enable_thinking": False}
                 # else 'default': do not send the parameter
+                # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
+                payload_dict_ans = apply_bad_words_to_payload(payload_dict_ans, thread_id)
 
                 payload_dict_ans = sanitize_payload_for_endpoint(payload_dict_ans, api_url_local, api_slot_idx)
                 payload = json.dumps(payload_dict_ans)

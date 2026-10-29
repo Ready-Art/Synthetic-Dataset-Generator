@@ -2102,7 +2102,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.0",
+    text="v11.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
