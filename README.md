@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.6
+# ReadyArt Synthetic Dataset Generator v11.6.1
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -1853,7 +1853,10 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.6 (Current)
+### v11.6.1 (Current)
+- **Regex Watch tab readability fix** — the **🔎 Regex Watch** dashboard tab rendered its two tables with the theme's default `Treeview` metrics, which pack a 10pt font (17px linespace) into a flat 20px row. Every row had 3px of slack, so cell text was clipped top and bottom and the whole tab read as scrunched, overlapping text. Both tables now use a dedicated `RegexWatch.Treeview` style with an explicit font and a row height measured from that font's linespace plus padding (the same fix the Review and Queue tables already carry), and their columns are sized from the heading text so no header is truncated. The row height is stable at every supported window size
+
+### v11.6
 - **Regex Watch** — a new detection area for rhetorical *shapes* rather than fixed phrases (`"it is not just X, it is Y"`, `"more than just a Z"`, `"less about X and more about Y"`). Patterns are regular expressions, shipped with six defaults and fully editable
 - **Rewritten by the main API, not a fixer slot** — a hit is sent back to the same main API slot that produced the text, so the model rewrites in its own voice. There is no fixer slot and no fixes list: the instruction is built from the pattern and the text it matched
 - **Bounded and validated** — up to `detection.regex_watch.max_rounds` rewrites per reply (default 3), each followed by a re-check of the whole reply, so a rewrite that introduces a second forbidden shape is caught in the same pass. A rewrite that is empty, too short, still matches its own pattern, or unbalances quotes is discarded and the original kept

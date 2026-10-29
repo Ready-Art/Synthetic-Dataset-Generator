@@ -2387,7 +2387,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.6",
+    text="v11.6.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -3050,6 +3050,50 @@ def _grid_scrollable_table(container, tree):
     horizontal.grid(row=1, column=0, sticky="ew")
 
 
+# --- Regex Watch table styling -------------------------------------------------------
+# The "superhero" theme leaves Treeview without an explicit row height, so Tk falls back to a
+# flat 20px for a 10pt font whose linespace is 17px. Rows then show 3px of slack, which clips
+# ascenders/descenders and makes the Regex Watch tables read as scrunched, overlapping text.
+# Give the tables their own style with an explicit font and a row height measured from that
+# font, and size the columns from the heading text so no header is truncated either.
+REGEX_TREE_STYLE = 'RegexWatch.Treeview'
+REGEX_TREE_BODY_FONT = ('Segoe UI', 10)
+REGEX_TREE_HEADING_FONT = ('Segoe UI', 10, 'bold')
+
+
+def _configure_regex_tree_style():
+    """Define ``RegexWatch.Treeview`` with a row height that fits its font."""
+    style = ttk.Style()
+    root = getattr(app_state, 'root', None)
+    body = font.Font(root=root, font=REGEX_TREE_BODY_FONT)
+    scale = root.winfo_fpixels("1i") / 96.0 if root is not None else 1.0
+    row_height = body.metrics("linespace") + max(8, round(10 * scale))
+    style.configure(REGEX_TREE_STYLE, font=REGEX_TREE_BODY_FONT, rowheight=row_height)
+    style.configure(REGEX_TREE_STYLE + '.Heading', font=REGEX_TREE_HEADING_FONT)
+    return row_height
+
+
+def _configure_regex_tree_columns(tree, columns, widths, stretch_columns=()):
+    """Size columns from their heading text so no header is clipped.
+
+    ``widths`` is the preferred width at 96 DPI; a column never goes below the width its
+    own heading needs, so short headings such as ``#`` stay compact while ``Matched Text``
+    gets room for real content.
+    """
+    scale = tree.winfo_fpixels("1i") / 96.0
+    heading_font = font.Font(root=tree, font=REGEX_TREE_HEADING_FONT)
+    for col in columns:
+        preferred = max(1, round(widths.get(col, 110) * scale))
+        # Heading text plus the theme's sort indicator/arrow padding.
+        minimum = heading_font.measure(col) + round(24 * scale)
+        tree.heading(col, text=col)
+        tree.column(col, width=max(preferred, minimum), minwidth=minimum,
+                    stretch=col in stretch_columns, anchor="w")
+
+
+_configure_regex_tree_style()
+
+
 for tab_name in tab_names:
     tab_frame = ttk.Frame(app_state.dashboard_notebook)
     app_state.dashboard_notebook.add(tab_frame, text=tab_name)
@@ -3252,15 +3296,18 @@ for tab_name in tab_names:
                    command=lambda: _update_regex_watch_tab(force=True)).grid(row=0, column=1, padx=(SPACING, 0))
 
         # --- Configured patterns and their hit counts ---
+        # Both tables below use the dedicated RegexWatch.Treeview style (built once, above this
+        # loop): the theme default packs a 10pt font into a 20px row, so every cell was clipped
+        # and the text looked scrunched. The style sets an explicit font and a row height derived
+        # from the font's linespace, the same fix the Review and Queue tables already use.
         patterns_lf = ttk.LabelFrame(regex_page, text="Configured Patterns (from the Configuration Editor)")
         patterns_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, 4))
         pattern_cols = ("#", "Hits", "Last Status", "Pattern")
         regex_pattern_tree = ttk.Treeview(patterns_lf, columns=pattern_cols, show="headings",
-                                         height=7, selectmode="browse")
-        for col in pattern_cols:
-            regex_pattern_tree.heading(col, text=col)
-            regex_pattern_tree.column(col, width=110, minwidth=70, stretch=False, anchor="w")
-        regex_pattern_tree.column("Pattern", width=520, minwidth=220, stretch=True)
+                                         height=7, selectmode="browse", style=REGEX_TREE_STYLE)
+        _configure_regex_tree_columns(regex_pattern_tree, pattern_cols,
+                                      widths={"#": 56, "Hits": 70, "Last Status": 130, "Pattern": 520},
+                                      stretch_columns=("Pattern",))
         regex_pattern_tree.tag_configure("unresolved", foreground="#ff6b6b")
         regex_pattern_tree.tag_configure("rewritten", foreground="#69f0ae")
         _grid_scrollable_table(patterns_lf, regex_pattern_tree)
@@ -3271,12 +3318,11 @@ for tab_name in tab_names:
         hits_lf.grid(row=4, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
         hit_cols = ("Time", "API", "Status", "Pattern", "Matched Text")
         regex_hit_tree = ttk.Treeview(hits_lf, columns=hit_cols, show="headings",
-                                      height=7, selectmode="browse")
-        for col in hit_cols:
-            regex_hit_tree.heading(col, text=col)
-            regex_hit_tree.column(col, width=110, minwidth=70, stretch=False, anchor="w")
-        regex_hit_tree.column("Pattern", width=260, minwidth=140, stretch=True)
-        regex_hit_tree.column("Matched Text", width=340, minwidth=180, stretch=True)
+                                      height=7, selectmode="browse", style=REGEX_TREE_STYLE)
+        _configure_regex_tree_columns(regex_hit_tree, hit_cols,
+                                      widths={"Time": 90, "API": 80, "Status": 130,
+                                              "Pattern": 260, "Matched Text": 340},
+                                      stretch_columns=("Pattern", "Matched Text"))
         regex_hit_tree.tag_configure("unresolved", foreground="#ff6b6b")
         regex_hit_tree.tag_configure("rewritten", foreground="#69f0ae")
         _grid_scrollable_table(hits_lf, regex_hit_tree)
