@@ -636,6 +636,33 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(self.placement_cache_warning_label, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
 
+        # --- NEW (v10.6.0): User-side emotional states/arcs. Optional; steered onto the simulated
+        # user's messages (opening question/first line + each continuation) rather than the character.
+        self.enable_user_emotional_states_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(self.character_engine_content_frame,
+                text="Enable User Emotional States (assign an emotional state/arc to the simulated user)",
+                variable=self.enable_user_emotional_states_var_editor,
+                command=self._toggle_user_emotional_states_fields).grid(
+                row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        character_engine_row_idx += 1
+        ttk.Label(self.character_engine_content_frame,
+            text="User Emotional States / Arcs (one per line; use '->' for a progression, e.g. 'curious -> defensive'):").grid(
+            row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        character_engine_row_idx += 1
+        user_emotional_states_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=5, width=1, undo=True)
+        # Off by default (optional feature); the load handler re-enables it when configured on
+        user_emotional_states_text.config(state='disabled')
+        user_emotional_states_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        setattr(self, 'user_emotional_states_text', user_emotional_states_text)
+        character_engine_row_idx += 1
+        user_emotion_help = ttk.Label(
+            self.character_engine_content_frame, wraplength=1,
+            text="(Optional. Applies to the user's side of the conversation only -- the opening message and user "
+                 "continuations. Off by default.)")
+        user_emotion_help.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(user_emotion_help, self.character_engine_content_frame, padding=2 * SPACING)
+        character_engine_row_idx += 1
+
         # Add checkbox to enable random names
         self.enable_random_names_var_editor = tk.BooleanVar()
         wrapped_checkbutton(self.character_engine_content_frame, text="Enable Random Names (overrides character Name field with random names from list below)",
@@ -1459,6 +1486,11 @@ class ConfigEditor(tk.Toplevel):
                     'states': [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'placement': self.emotion_placement_var_editor.get(),
                 },
+                'user_emotional_states': {
+                    'enabled': self.enable_user_emotional_states_var_editor.get(),
+                    # Saved as typed: an arc separates its stages with '->'
+                    'states': [line.strip() for line in self.user_emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()],
+                },
                 'random_names': {
                     'enabled': self.enable_random_names_var_editor.get(),
                     'names': [sanitize_input(line.strip()) for line in self.random_names_text.get("1.0", tk.END).split('\n') if line.strip()]
@@ -1633,6 +1665,13 @@ class ConfigEditor(tk.Toplevel):
 
         log_message(f"Emotional States fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
         self._refresh_placement_cache_warning()
+
+    def _toggle_user_emotional_states_fields(self):
+        """Enables/disables the user-side emotional states text field (v10.6.0)."""
+        is_enabled = self.enable_user_emotional_states_var_editor.get()
+        field_widget = getattr(self, 'user_emotional_states_text')
+        field_widget.config(state='normal' if is_enabled else 'disabled')
+        log_message(f"User Emotional States fields {'enabled' if is_enabled else 'disabled'}", "DEBUG")
 
     def _toggle_random_names_fields(self):
         """Enables/disables random names text field based on checkbox state."""
@@ -2017,6 +2056,13 @@ class ConfigEditor(tk.Toplevel):
                 note_placement(emotional_states_conf.get('placement')) or DEFAULT_NOTE_PLACEMENT)
             self._toggle_emotional_states_fields()
 
+            # NEW (v10.6.0): Load user-side emotional states/arcs
+            user_emotional_states_conf = prompts_config.get('user_emotional_states', {})
+            self.enable_user_emotional_states_var_editor.set(user_emotional_states_conf.get('enabled', False))
+            self.user_emotional_states_text.delete(1.0, tk.END)
+            self.user_emotional_states_text.insert(tk.END, "\n".join(user_emotional_states_conf.get('states', [])))
+            self._toggle_user_emotional_states_fields()
+
             # NEW: Load random names
             random_names_conf = prompts_config.get('random_names', {})
             self.enable_random_names_var_editor.set(random_names_conf.get('enabled', False))
@@ -2164,6 +2210,9 @@ class ConfigEditor(tk.Toplevel):
 
             if self.enable_emotional_states_var_editor.get():
                 get_text_as_list(self.emotional_states_text)
+            
+            if self.enable_user_emotional_states_var_editor.get():
+                get_text_as_list(self.user_emotional_states_text)
             
             if self.enable_random_names_var_editor.get():
                 get_text_as_list(self.random_names_text)

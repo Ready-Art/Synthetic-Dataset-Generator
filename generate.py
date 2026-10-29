@@ -1261,6 +1261,20 @@ def start_processing():
 
     log_message(f"Emotional states enabled: {enable_emotional_states}, States: {emotional_states_list}", "INFO")
 
+    # NEW (v10.6.0): Load user-side emotional states configuration. Same flat-state / '->' arc format as
+    # the character's states, but steered onto the SIMULATED USER's messages (opening question/first line
+    # and each user continuation) instead of the character's replies. Off by default; optional in the GUI.
+    user_emotional_states_config = global_config.get('prompts.user_emotional_states', {})
+    enable_user_emotional_states = user_emotional_states_config.get('enabled', False)
+    user_emotional_states_list = user_emotional_states_config.get('states', [])
+
+    if enable_user_emotional_states and not user_emotional_states_list:
+        log_message("Warning: User emotional states enabled but no states defined. Disabling user emotional states.", "WARNING")
+        enable_user_emotional_states = False
+        user_emotional_states_list = []
+
+    log_message(f"User emotional states enabled: {enable_user_emotional_states}, States: {user_emotional_states_list}", "INFO")
+
     # Where the persona breakthrough and the emotional state are sent: 'depth0' (after the history)
     # or 'system' (end of the reply's system prompt).
     persona_placement = note_placement(character_config.get('persona_breakthrough_placement'))
@@ -1677,6 +1691,8 @@ def start_processing():
             'current_ooc_phrases': current_ooc_phrases,
             'current_ooc_fixes': current_ooc_fixes,
             'current_ooc_enabled': current_ooc_enabled,
+            'user_emotional_states_enabled_local': enable_user_emotional_states,
+            'user_emotional_states_list_local': user_emotional_states_list,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2060,7 +2076,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v10.5.0",
+    text="v10.6.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

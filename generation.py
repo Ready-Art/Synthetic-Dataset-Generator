@@ -426,6 +426,34 @@ def _emotional_state_injection(stage, arc_stages=None):
     return "\n\n" + instruction
 
 
+def _user_emotional_state_injection(stage, arc_stages=None):
+    """Prompt text steering the SIMULATED USER's message for one user slot (NEW in v10.6.0).
+
+    Mirrors _emotional_state_injection but is worded for the user's side: it is appended to the
+    ephemeral user prompt (the generated opening question/first line, or a user continuation),
+    never stored in the conversation history and never sent in the system prompt. `stage` is the
+    slot's state name; `arc_stages` is the whole arc it belongs to, or empty/one stage for flat.
+    """
+    if not stage:
+        return ""
+    if arc_stages and len(arc_stages) > 1:
+        instruction = (
+            f"USER EMOTIONAL STATE (PROGRESSION): {' -> '.join(arc_stages).upper()}\n"
+            f"You are writing only the user's message in this roleplay. The user's own feelings shift "
+            f"across the conversation along with the scene: in THIS message the user is in the "
+            f"{stage} state, earlier user messages showed the earlier states and later ones will show "
+            f"the later. Let the user's emotion come through in their tone and word choice rather than "
+            f"stating it outright.\n"
+        )
+    else:
+        instruction = (
+            f"USER EMOTIONAL STATE: {stage.upper()}\n"
+            f"You are writing only the user's message in this roleplay. Write it from a {stage} "
+            f"emotional state: let that feeling shape the user's tone and word choice.\n"
+        )
+    return "\n\n" + instruction
+
+
 def _persona_block_for_characters(numbered_personas, char_count_label=True):
     """Build the inner-persona breakthrough block injected from the persona turn onward.
 
@@ -570,6 +598,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_ooc_phrases=(),
            current_ooc_fixes=(),
            current_ooc_enabled=True,
+           user_emotional_states_enabled_local=False,
+           user_emotional_states_list_local=None,
            ):
     """
     The main function executed by each worker thread.
@@ -589,6 +619,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
       * Each configured emotional state may be flat ('anxious') or an arc ('neutral -> anxious');
         arcs are expanded across the task's assistant turns so the state shifts over the
         conversation rather than being one static injection (see _expand_emotional_arc).
+      * The same option exists on the SIMULATED USER's side (user_emotional_states_*): a chosen
+        entry is flat or an '->' arc expanded across the task's USER turns (the generated opening
+        question/first line plus each user continuation). Its note is appended to the ephemeral user
+        prompt only (_user_emotional_state_injection) -- never stored in the conversation history,
+        never sent in the system prompt, never attached to the character's replies.
     """
 
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
@@ -605,6 +640,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         (True, current_top_level_system_prompt), (True, current_lore),
         (enable_character_engine_local, character_list),
         (enable_emotional_states_local, emotional_states_list_local),
+        (user_emotional_states_enabled_local, user_emotional_states_list_local),
         (enable_character_engine_local and enable_random_names_local, random_names_list_local),
         (enable_character_engine_local and enable_setting_selection_local and enable_random_settings_local,
          random_settings_list_local),
@@ -739,6 +775,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                  current_slop_fixes_fallback,
                  current_slop_fixes_for_rotation_worker, current_top_level_system_prompt,
                  current_lore, character_list, emotional_states_list_local,
+                 user_emotional_states_list_local,
                  random_names_list_local, random_settings_list_local,
                  first_line_styles_local) = tuple(
                     render_task_inputs(value, task_dataset_values) if enabled else value
@@ -960,6 +997,39 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         "DEBUG",
                     )
 
+            # Handle user-side emotional states/arcs (NEW in v10.6.0): the same flat / '->' arc
+            # format, but steered onto the SIMULATED USER's messages -- the opening question/first
+            # line (user turn 1) plus each user continuation. One user message per conversation turn,
+            # so the arc spans exactly current_num_turns user turns. Its note is appended to the
+            # ephemeral user prompt only: never stored in the history, never in the system prompt.
+            current_user_emotional_state_label = ""  # metadata label: full arc string, or bare state
+            user_emotional_arc_turn_states = []  # one state name per user turn (1-based index-0)
+            user_arc_stages = ()
+            if user_emotional_states_enabled_local and user_emotional_states_list_local:
+                chosen_user_entry = str(random.choice(user_emotional_states_list_local)).strip()
+                current_user_emotional_state_label = chosen_user_entry
+                user_arc_stages = _split_emotional_arc_entry(chosen_user_entry)
+                if not user_arc_stages:
+                    current_user_emotional_state_label = ""
+                user_emotional_arc_turn_states = _expand_emotional_arc(user_arc_stages, current_num_turns)
+                if current_user_emotional_state_label:
+                    log_message(
+                        f"Thread {thread_id}: Assigned user emotional state '{current_user_emotional_state_label}' "
+                        f"for task {task_id} (turn plan: {' -> '.join(user_emotional_arc_turn_states)})",
+                        "DEBUG",
+                    )
+
+            def _user_emotional_slot_state(user_turn_no):
+                """Which user emotional-state label applies to a given user turn (1-based).
+
+                User turn 1 is the opening question/first line; continuation after answer k is user
+                turn k+1. Flat states are constant; an arc holds its final stage past the plan.
+                """
+                if not user_emotional_arc_turn_states:
+                    return None
+                idx = max(1, min(user_turn_no, len(user_emotional_arc_turn_states))) - 1
+                return user_emotional_arc_turn_states[idx]
+
             # Persona breakthrough: from this turn onward the inner persona is re-injected.
             try:
                 persona_breakthrough_turn = max(1, int(persona_breakthrough_turn_local))
@@ -1066,6 +1136,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
+                    # The first line is the simulated user's turn 1; its emotional note is appended to
+                    # this request only and never stored in the conversation history.
+                    _first_line_user_state = _user_emotional_slot_state(1)
+                    first_line_user_turn_note = (_user_emotional_state_injection(_first_line_user_state, user_arc_stages)
+                                                 if _first_line_user_state else "")
                     initial_user_question = generate_first_line(
                         greeting_text, first_line_prompt_local, thread_id,
                         api_config_for_this_task.get('sampler_settings', {}),
@@ -1075,6 +1150,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         refusal_phrases_local=current_refusal_phrases, slop_phrases_local=current_slop_phrases,
                         styles=first_line_styles_local,
                         dataset_values=task_dataset_values,
+                        user_turn_note=first_line_user_turn_note,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if not greeting_text or not initial_user_question:
@@ -1104,6 +1180,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 q_gen_api_conf = all_api_configs_local[0] if master_duplication_enabled_local else api_config_for_this_task
                 q_gen_api_slot_idx = 0 if master_duplication_enabled_local else api_slot_idx_for_this_task
 
+                # The opening question is the simulated user's turn 1; its emotional note is appended
+                # to this request only and never stored in the conversation history.
+                _opening_user_state = _user_emotional_slot_state(1)
+                opening_user_turn_note = (_user_emotional_state_injection(_opening_user_state, user_arc_stages)
+                                          if _opening_user_state else "")
+
                 question_system_prompt = current_system_prompt_for_task + (QUESTION_USER_SIDE if character_injection else "")
                 initial_user_question = generate_question(
                     question_system_prompt, current_question_prompt,
@@ -1119,6 +1201,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     file_name=file_name,
                     refusal_phrases_local=current_refusal_phrases,
                     slop_phrases_local=current_slop_phrases,
+                    user_turn_note=opening_user_turn_note,
                 )
             
             if not initial_user_question:
@@ -1274,6 +1357,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     is_duplication_turn=True, turn_number_for_duplication=turn_num + 1, # Mark as duplication turn
                                                     character_names=scene_character_names,
                                                     emotional_state=current_emotional_state_label,
+                                                    user_emotional_state=current_user_emotional_state_label,
                                                     setting=meta_setting,
                                                     opening_mode=opening_mode_local,
                                                     has_greeting=has_greeting,
@@ -1387,6 +1471,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                 # The continuation shares the answer's system prompt (its system note included, without
                 # a retry's fix), so on 'system' placement the prompt changes only when the note does.
+                # This is the simulated user's turn turn_num + 2 (turn 1 was the opening message);
+                # its emotional note goes to this request only and never into the history.
+                _cont_user_state = _user_emotional_slot_state(turn_num + 2)
+                cont_user_turn_note = (_user_emotional_state_injection(_cont_user_state, user_arc_stages)
+                                       if _cont_user_state else "")
                 user_continuation_reply = generate_user_continuation(
                     system_prompt=current_system_prompt_for_turn,
                     conversation_history_for_llm=list(current_llm_conversation_context),
@@ -1403,6 +1492,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     file_name=file_name,
                     refusal_phrases_local=current_refusal_phrases,
                     slop_phrases_local=current_slop_phrases,
+                    user_turn_note=cont_user_turn_note,
                 )
 
                 if not user_continuation_reply:
@@ -1475,6 +1565,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
                                         character_names=scene_character_names,
                                         emotional_state=current_emotional_state_label,
+                                        user_emotional_state=current_user_emotional_state_label,
                                         setting=meta_setting,
                                         opening_mode=opening_mode_local,
                                         has_greeting=has_greeting,
@@ -1573,8 +1664,13 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       history_size_local_param,
                       raw_subject_chunk, raw_context_chunk,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                      file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None):
-    """Generates an initial question using the LLM, with retries for API call failures."""
+                      file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
+                      user_turn_note=""):
+    """Generates an initial question using the LLM, with retries for API call failures.
+
+    `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for the
+    opening message; it is appended to this ephemeral prompt only and never stored in history.
+    """
 
     if not api_url_local:
         log_message(f"Thread {thread_id}: API URL missing for question generation (API Slot {api_slot_idx+1}). Cannot proceed.", "ERROR")
@@ -1621,6 +1717,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     (("{recent_questions}", recent_questions_str),
                      ("{subject}", subject if subject else "N/A"),
                      ("{context}", context if context else "N/A")))
+            final_formatted_user_prompt += user_turn_note
 
             messages_for_llm = [
                 {"role": "system", "content": system_prompt},
@@ -1876,8 +1973,13 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
 def generate_user_continuation(system_prompt, conversation_history_for_llm, user_continuation_prompt_template,
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                               file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None):
-    """Generates the user's continuation reply, with retries for API call failures."""
+                               file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
+                               user_turn_note=""):
+    """Generates the user's continuation reply, with retries for API call failures.
+
+    `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for this
+    message; appended to this ephemeral prompt only and never stored in the conversation history.
+    """
 
 
     if not api_url_local:
@@ -1909,6 +2011,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 final_user_continuation_prompt = render_with_native_placeholders(
                     user_continuation_prompt_template, dataset_values,
                     (("{last_assistant_message}", last_assistant_message),))
+            final_user_continuation_prompt += user_turn_note
 
             messages = [{"role": "system", "content": system_prompt}] + \
                        conversation_history_for_llm + \
@@ -2359,12 +2462,15 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
 def generate_first_line(greeting, first_line_prompt_template, thread_id,
                         sampler_settings_local, api_url_local, model_name_local, api_key_local,
                         api_slot_idx, current_max_attempts_param, api_request_timeout_param,
-                        file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=(), dataset_values=None):
-    """Write the user's first line from the user's seat: [system: first-line prompt, user: greeting].
+                        file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=(), dataset_values=None,
+                        user_turn_note=""):
+    """Write the user's first line from the user's seat: [system: first-line prompt, user: greeting
+    + turn note].
 
     The scene prompt is not sent; the greeting is the other party's turn. One style from `styles`
     (default DEFAULT_FIRST_LINE_STYLES) fills {style}. Uses max_tokens_user_reply and no user-speaking check
-    (the line is the user's). Returns the line, or None.
+    (the line is the user's). `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc
+    note for the opening message; appended to this request only and never stored in history. Returns the line, or None.
     """
     style = random.choice(tuple(styles) or DEFAULT_FIRST_LINE_STYLES)
     first_line_instruction = (first_line_prompt_template.replace("{style}", style)
@@ -2372,7 +2478,7 @@ def generate_first_line(greeting, first_line_prompt_template, thread_id,
             first_line_prompt_template, dataset_values, (("{style}", style),)))
     messages = [
         {"role": "system", "content": first_line_instruction},
-        {"role": "user", "content": greeting},
+        {"role": "user", "content": greeting + user_turn_note},
     ]
     return _request_opening_message(
         messages, 'max_tokens_user_reply', 'first_line_request', 'First line', False,
@@ -3645,7 +3751,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 #   * v3 (meta_version) adds the opt-in roleplay quality dimensions
 #     (quality_voice_distinctiveness / quality_grounding / quality_persona_alignment);
 #     they carry the usual -1.0 gap when unscored or when the toggle is off.
-_METADATA_SCHEMA_VERSION = 3
+#   * v4 (meta_version) adds user_emotional_state: the simulated user's assigned
+#     emotional state / '->' arc (NEW in v10.6.0), "" when the feature is off.
+_METADATA_SCHEMA_VERSION = 4
 
 
 def _safe_float(value, default=None):
@@ -3660,12 +3768,15 @@ def _safe_float(value, default=None):
 
 
 def _build_record_metadata(character_names, emotional_state, setting, opening_mode, has_greeting,
-                           num_characters, quality_result, duplication_turn, generated_at):
+                           num_characters, quality_result, duplication_turn, generated_at,
+                           user_emotional_state=None):
     """Builds the flat, schema-stable metadata block for one output record.
     Always returns every key with the same type, never None, so all rows match.
     duplication_turn is the turn number (1-based) for per-turn duplication rows,
     or None for full-conversation rows / non-duplication mode (recorded as 0).
     Quality numbers are -1.0 when the conversation was not scored.
+    user_emotional_state (NEW in v10.6.0) is the simulated user's assigned state/arc label;
+    "" when the user-side emotional feature is off.
     """
     quality_result = quality_result or {}
     dims = quality_result.get("dimensions", {}) if isinstance(quality_result.get("dimensions"), dict) else {}
@@ -3680,6 +3791,8 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
         "meta_version": _METADATA_SCHEMA_VERSION,
         "characters": names if names else [""],          # fixed-shape: list[str] (homogeneous)
         "emotional_state": str(emotional_state) if emotional_state else "",
+        # Simulated USER's emotional state / arc (NEW in v10.6.0); "" when the feature is off.
+        "user_emotional_state": str(user_emotional_state) if user_emotional_state else "",
         "setting": str(setting) if setting else "",       # single unified scene setting; "" when none
         "num_characters": int(num_characters) if num_characters is not None else 0,
         "opening_mode": bool(opening_mode),
@@ -3758,6 +3871,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
                        leading_placeholder=None,
                        character_names=None,
                        emotional_state=None,
+                       user_emotional_state=None,
                        setting=None,
                        opening_mode=False,
                        has_greeting=False,
@@ -3823,6 +3937,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
             quality_result,
             (turn_number_for_duplication if is_duplication_turn and turn_number_for_duplication else None),
             time.strftime('%Y-%m-%d %H:%M:%S'),
+            user_emotional_state=user_emotional_state,
         )
 
     use_db = global_config.get('database.enabled', False)

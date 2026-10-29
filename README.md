@@ -1,8 +1,10 @@
-# ReadyArt Synthetic Dataset Generator v10.5.0
+# ReadyArt Synthetic Dataset Generator v10.6.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
 **NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v10.5.0-STABLE branch.
+
+**Changelog (v10.6.0):** Added an optional user-side emotional system so the simulated user in a generated conversation can carry their own emotional state (or a `->` emotional arc across the user's turns), steered onto the opening question/first line and each user continuation rather than the character's replies, with a matching toggle and text field in the Configuration Editor's Character Engine tab and a new `user_emotional_state` provenance field in the record metadata block (schema v4).
 
 **NOTE:** While the Slop and Anti-Slop functions do work these are very inefficient especially with a large slop/antislop list. You should look for alternatives such as https://github.com/Ready-Art/antislop-vllm-fork/tree/dev
 
@@ -109,6 +111,8 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Random Settings Pool (NEW)** — A configurable pool of locations (`prompts.random_settings.settings[]`, analogous to `random_names`). When `setting_enabled` is true, a character whose own `setting` is empty is given a setting sampled from the pool instead of the default indoor environment; multi-character scenes are additionally unified to one shared location pulled from the ensemble, so all characters inhabit the same place (feeds consistency, prevents cross-talk)
 - **Emotional States** — Assign random emotional states (happy, sad, angry, etc.) that influence response tone
 - **Emotional Arcs (NEW in v10.0)** — A state can be a *progression* (`calm -> wary -> tense`) instead of a single mood. Arcs are expanded across the conversation's assistant turns, so the emotional register shifts over time (start composed, surface anger near the end) rather than staying flat — much richer training signal for multi-turn scenes
+- **User-Side Emotional States & Arcs (NEW in v10.6.0, optional)** — Give the *simulated user* their own emotional register. The same flat-state / `->`-arc format is steered onto the user's side of the conversation (the generated opening question/first line and each user continuation) instead of the character's replies. Off by default; enable with `prompts.user_emotional_states.enabled`. The note is ephemeral (appended to the user prompt only, never stored in history or the system prompt), and the assigned label is recorded in the record metadata as `user_emotional_state`
+
 - **Persona Breakthrough (NEW in v10.0)** — The inner `persona` is deliberately kept out of early turns and re-injected as an *INNER PERSONA BREAKTHROUGH* block from a configurable slot (`prompts.character.persona_breakthrough_turn`, default 2). Slot 1 stays outward-behaviour-only, mirroring how real character cards hide the private self until the scene breaks through
 - **Variable System Prompts** — Randomly select from a list of system prompt variations per conversation
 - **Top-Level System Prompt** — Prepend a universal instruction to all system prompts across all conversations
@@ -543,6 +547,17 @@ prompts:
       - "calm -> wary -> tense"
       - "composed -> guarded -> snapped"
 
+  user_emotional_states:         # (NEW in v10.6.0) Emotional state / arc for the SIMULATED USER.
+    enabled: false               # Optional and off by default. Same flat-state / '->' arc format as
+                                 # emotional_states, but applied to the user's messages (the generated
+                                 # opening question/first line and each user continuation), not to the
+                                 # character's replies. The note is appended to the ephemeral user prompt
+                                 # only -- never stored in the conversation history or the system prompt.
+    states: []
+      # Examples (uncomment / edit to enable):
+      # - "curious"
+      # - "defensive -> softening -> open"
+
   random_names:
     enabled: false              # Enable random name assignment (overrides character Name field)
     names:                      # List of names to randomly select from when enabled
@@ -570,7 +585,7 @@ prompts:
 - **Legacy format (backward compatible):** Separate lists (`name: [...]`, `race: [...]`, etc.) are automatically converted to the new format at runtime.
 - **`num_characters`:** Controls how many characters are randomly selected and injected into each conversation's system prompt. Set to 1 for single-character conversations, or higher (up to 10) for multi-character dialogues.
 - **`max_character_cards`:** Limits the number of character profile cards displayed in the Configuration Editor UI (default: 10, max: 100).
-- **`persona_breakthrough_turn`:** (NEW in v10.0) Which assistant slot (1 = first reply) the inner `persona` starts being injected from. Slot 1 is always outward-behaviour-only; the persona surfaces as an *INNER PERSONA BREAKTHROUGH* block from this slot onward, so the model does not leak inner monologue too early. Default `2`; set `1` to expose it from the very first reply. In opening mode the greeting is slot 1, so conversation turn *N* lives at slot *N+1*.
+- **`user_emotional_states`:** (NEW in v10.6.0) An **optional** emotional system for the *simulated user's side* of the conversation. It reuses the same flat-state / `->`-arc format as `emotional_states`, but one entry is randomly assigned per task and expanded across the user's turns instead of the character's replies: user turn 1 is the generated opening question (or first line in opening mode), and each later user continuation advances the arc one stage. The note is appended to that request's ephemeral user prompt only — it is never stored in the conversation history and never sent in the system prompt, so it does not affect prefix-cache reuse. `enabled` defaults to `false` (the feature is off and no user note is ever added); the Configuration Editor's Character Engine tab has its own "Enable User Emotional States" checkbox and text area. The assigned label is recorded on the record metadata as `user_emotional_state`. There is no placement option: because the note rides on the user prompt, `depth0`/`system` do not apply.
 - **`persona_breakthrough_placement` and `emotional_states.placement`:** Where each reply's INNER PERSONA BREAKTHROUGH block and emotional state are sent, set separately. `depth0` (the default, and the value when the key is missing) appends the block to the end of the reply's last user message, after the conversation history: the system prompt never changes, so the server reads the history from its prefix cache. `system` appends it to the end of that reply's system prompt, as v10 did, and the user continuation after the reply shares that system prompt, so the simulated user sees the block too: whenever the block changes (the persona appearing, an arc moving to its next stage) the system prompt changes and the server computes the whole history again. A flat state, or a persona shown from the first reply, keeps the system prompt fixed and costs no cache. The generated question gets neither block in either placement. When a `system` placement changes the system prompt between replies, the editor and the start of a run show a warning with the estimated share of history computed again. The estimate counts the replies where the system prompt changes, weighted by how much history each one carries (a reply k carries about k−1 exchanges), averaged over the configured states. It is a model of reuse: on a llama-server replay (Gemma 4 E2B, `-np 2 --cache-ram 0`, 4 turns, persona from reply 2 and a 3-stage arc) it estimates 67% and the server computed 67% of the history again. Measured on llama-server with Gemma 4 26B-A4B at 4 turns, both blocks on `system` read 35% of the answer calls' prompt tokens from the cache against 77% on `depth0`, and spent about 1.6× as long on prefill. The same runs found output differences: with `depth0`, fewer replies were judged at their planned arc stage (99 of 160 against 114 of 160), mostly reply 1 reading later than planned on one arc.- **`persona`:** Optional field describing the character's **inner personality** — the private self underneath the surface: hidden fears, motivations, private grief, contradictions, and what happens under real pressure. The persona line is **not** part of the static profile block: it is withheld on early turns and re-injected as an INNER PERSONA BREAKTHROUGH block from `persona_breakthrough_turn` onward, so the model portrays an authentic interior life only once the scene "breaks through".
 - **`personality`:** Optional field describing the character's **outward behavior** — the personality people actually observe: how they speak, act, cope, and treat others. Always injected into the profile block as `Personality (outward behavior):`. Keep it distinct from `persona` (the inner self); together the two give the LLM both the mask and the face beneath it, with the mask shown first and the face revealed later.
 - **`traits`:** Optional field that adds character traits (e.g., "quick-witted, detail-oriented") to the character's system prompt injection.
@@ -1074,9 +1089,10 @@ When `generation.include_metadata: true` (the default), every record also carrie
     {"from": "gpt", "value": "..."}
   ],
   "metadata": {
-    "meta_version": 3,
+    "meta_version": 4,
     "characters": ["Ines"],
     "emotional_state": "anxious",
+    "user_emotional_state": "curious -> defensive",
     "setting": "A dockside ferry terminal at dusk.",
     "num_characters": 1,
     "opening_mode": true,
@@ -1101,12 +1117,13 @@ When `generation.include_metadata: true` (the default), every record also carrie
 Field notes:
 - **`characters`** — list of character names in the scene, as the generator assigned them (the random names when random names are on, recorded even when `include_names_in_prompt` is off; `[""]` when no character engine profile was selected). Fixed-shape list of strings.
 - **`emotional_state` / `setting`** — the state or arc assigned to the conversation, and the first non-empty setting the prompt carried; `""` when none (`setting` is `""` whenever setting selection is off).
+- **`user_emotional_state`** — (NEW in v10.6.0) the simulated user's assigned emotional state/arc label when `prompts.user_emotional_states.enabled` is on; `""` when the user-side feature is off.
 - **`opening_mode` / `has_greeting`** — whether opening mode was active and the record starts with a greeting turn.
 - **`duplication_turn`** — in Duplication Mode, the 1-based turn number for per-turn rows; `0` for full-conversation rows.
 - **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `-1.0` when the conversation was not scored (scoring disabled or failed, or an empty conversation); the three roleplay fields are additionally `-1.0` whenever `quality.roleplay_dimensions` is off. `quality_method` is `"heuristic_only"`, `"hybrid"`, `"none"` (empty conversation) or `""` (not scored).
 - **`generated_at`** — when the row was written, local time.
 
-**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 20 keys with the same scalar types, and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
+**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 21 keys with the same scalar types, and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
 ```yaml
 datasets:
   - path: output.jsonl
