@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.3
+# ReadyArt Synthetic Dataset Generator v11.4
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -80,7 +80,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Heuristic Dimensions** — Diversity (type-token ratio, sentence length variance, trigram repetition, paragraph structure) and Technical (quote balance, stray asterisks, em dashes, whitespace, all-lowercase detection) run without any API call
 - **Optional LLM Scoring** — Coherence, naturalness, engagement, and consistency can be scored by a dedicated LLM (separate API endpoint) for deeper evaluation; falls back to heuristic estimates if the LLM call fails
 - **Threshold Flagging** — Conversations scoring below a configurable minimum threshold are automatically flagged for human review
-- **Quality Review Tab** — Dedicated dashboard tab listing all flagged conversations with score, lowest dimension, flags, source file, and timestamp; supports filtering, double-click detail view, export to JSONL, and bulk dismiss
+- **Quality Review Tab** — Dedicated dashboard tab listing all flagged conversations with score, lowest dimension, flags, source file, and timestamp; supports filtering, single-click transcript view, export to JSONL, and bulk dismiss
 - **Quality Metrics Bar** — Real-time average composite score (color-coded green/amber/red), count of below-threshold conversations, and most frequent flag displayed in the main metrics area
 - **Quality Score Table** — Dashboard tab showing the latest 50 scored conversations with per-dimension breakdown and method used
 - **Output Filtering** — Optional flag to mark below-threshold conversations for post-processing (score metadata attached to exported JSONL)
@@ -651,7 +651,9 @@ gender: "female"  # "male", "female", or "neutral"
 
 ### Quality Scoring
 
-**NEW in v11.2:** Quality scoring now uses an asynchronous queue system. When LLM scoring is enabled, scoring requests from worker threads are queued and processed sequentially by a dedicated processor thread. This prevents the LLM judge from being overwhelmed with concurrent requests, eliminates "invalid JSON" errors caused by rate limiting or timeouts, and ensures no scoring requests are lost. Worker threads no longer block waiting for quality scores.
+**NEW in v11.4:** The judge is the dataset's gatekeeper. A transient judge failure (network error, timeout, non-200 status, unreadable response) is retried up to `judge_max_attempts` times (default 3) with a linear back-off; if every attempt fails the conversation is **dropped** — it is not written to the dataset, not stored as a score and not flagged for review. A reply that is not valid JSON, or a conversation-level `logic` score of 0, drops the conversation immediately with no retry. There is no heuristic fallback for a failed judge: an unjudged conversation can no longer reach the dataset.
+
+**Since v11.2:** Quality scoring requests run through a dedicated queue processor, so the judge handles one conversation at a time. The worker waits for the verdict (the row cannot be written before the judge has spoken) while other workers keep generating.
 
 The quality scoring engine evaluates every completed conversation across six core dimensions and produces a weighted composite score from 0 to 100. Three additional roleplay-specific dimensions are available behind an opt-in toggle (see **Roleplay Dimensions** below).
 
@@ -663,6 +665,9 @@ quality:
   roleplay_dimensions: false       # Opt-in: score voice_distinctiveness, grounding, persona_alignment too
   min_score_threshold: 50          # Conversations below this composite score are flagged for review
   max_chars_for_scoring: 8000      # Truncate conversation before sending to scoring LLM
+  judge_max_attempts: 3            # Transient judge failures are retried this many times, then the row is dropped
+  judge_retry_delay: 1.0           # Seconds between judge attempts (grows linearly per attempt)
+  result_timeout: 600              # Seconds a worker waits for its queued verdict before dropping the row
   scoring_api:
     url: ""                        # Dedicated LLM endpoint for scoring (optional)
     model: ""                      # Model name for scoring LLM
@@ -931,11 +936,15 @@ The **Quality** and **🔍 Review** tabs provide post-generation quality analysi
 - **Flagged Conversations table** — All conversations below the minimum score threshold, showing Task ID, score, lowest-scoring dimension, flags, source file, and timestamp
 - **Color coding** — Critical (red) for scores below 40, warning (amber) for scores 40–threshold
 - **Filter** — Type a search term to filter flagged items by task ID
-- **Double-click detail** — Opens a detail panel showing the full score breakdown with dimension bars, flags, and scoring metadata
-- **📤 Export Flagged → JSONL** — Exports all flagged conversations (with quality score metadata attached) to `output/quality_review_flagged.jsonl`
+- **Single-click detail** — Selecting a row immediately opens its conversation below: the score breakdown with dimension bars and flags, then the full transcript with colour-coded USER / ASSISTANT speakers
+- **Readable rows** — The table uses roomy row heights, stretches its Task ID and Flags columns to the window width, and keeps its own horizontal/vertical scrollbars
+- **Scrollable transcript** — The detail pane scrolls on its own (wheel and scrollbar) without moving the page, and keeps the reader's position across dashboard refreshes
+- **📤 Export Flagged → JSONL** — Writes every flagged conversation (with its quality score attached as `_quality_score`) to `output/quality_review_flagged.jsonl`, reading the main output, the per-API duplication files and the database
 - **✅ Dismiss All** — Clears all review flags after manual handling (does not delete output data)
 - **🔄 Refresh** — Manually refreshes the flagged items list
-- **Tab badge** — The Review tab label shows a count of currently flagged items (e.g., "🔍 Review (7)")
+- **Tab badge** — The Review tab label shows a count of currently flagged items (e.g., "🔍 Review (7)"); the count line also reports how many conversations the quality judge dropped
+
+> **Dropped conversations never appear here.** A conversation the judge rejected (invalid JSON, a `logic` score of 0, or every retry failed) is not written to the dataset, so there is nothing to review — the log records the reason.
 
 ### Queue Management
 
@@ -1245,9 +1254,9 @@ readyart-dataset-generator/
 5. **Per-Reply Note (NEW in v10.0)** — The scene prompt (system prompt + lore + persona-free character profiles) is the system message of every request in a task (a retry still appends its fix instruction to it, as in step 3). Each assistant reply gets a note: the INNER PERSONA BREAKTHROUGH (from `persona_breakthrough_turn` onward) and the emotional-state injection (a flat state, or the current stage of an arc advanced one step per reply). Each block goes where its placement says. On `depth0` (the default) it follows the reply's final instruction (the `answer` prompt, or the `greeting` prompt in opening mode), after the conversation history, and is not stored in it, so the system prompt never changes and the server's prefix cache keeps the history. On `system` it is appended to that reply's system prompt, which changes whenever the block does; the user continuation after that reply shares its system prompt. Questions get the scene prompt without either block, and on `depth0` so do user continuations
 6. **Repeat** — Steps 3–5 repeat for the configured number of turns
 7. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
-8. **Quality Scoring** — The completed conversation is scored across the six core dimensions plus, when `quality.roleplay_dimensions` is on, the three roleplay dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. If the composite score is below the threshold, the task is flagged for review
+8. **Quality Scoring** — The completed conversation is scored across the six core dimensions plus, when `quality.roleplay_dimensions` is on, the three roleplay dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. When LLM scoring is on the judge is the gatekeeper: a conversation it drops (invalid JSON, a `logic` score of 0, or every retry failed) is **not written at all**. Otherwise, if the composite score is below the threshold, the task is flagged for review
 9. **Output** — Write to JSONL file or PostgreSQL database, appending the flat `metadata` provenance/quality block when `generation.include_metadata` is true (see [Record Metadata Block](#record-metadata-block-new-in-v990))
-10. **State Save** — Update crash recovery state (including quality scores and review flags)
+10. **State Save** — Update crash recovery state (including quality scores, judge drops and review flags)
 
 ### Quality Scoring Pipeline
 
@@ -1273,6 +1282,13 @@ LLM Scoring (optional, if use_llm_scoring: true)
     ├── Parse JSON response → coherence, naturalness, engagement, consistency (+ the
     │   three roleplay dimensions when enabled)
     └── On failure → heuristic fallback estimates
+    │
+    ▼
+Dropped by the judge?
+    ├── Yes → DROP: no row written, no score stored, no review flag
+    │   (invalid JSON and logic 0 are final; transient failures are retried
+    │    judge_max_attempts times first)
+    └── No  → continue
     │
     ▼
 Composite Score = Σ (active dimension_score × weight) / Σ active weights
@@ -1798,7 +1814,12 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.3 (Current)
+### v11.4 (Current)
+- **Quality Judge Retries, Then Drops** — The quality judge now retries a transient failure (network error, timeout, non-200 status, unreadable response) up to 3 times, with a configurable back-off (`quality.judge_max_attempts`, `quality.judge_retry_delay`). If every attempt fails, the conversation is **dropped**: it is not written to the dataset, not stored as a score and not flagged for review
+- **Invalid JSON and Logic 0 Drop Immediately** — A judge reply that is not valid JSON, or a conversation-level `logic` score of 0, drops the conversation on the spot with no retry. There is no heuristic fallback for a failed judge any more: an unjudged conversation can no longer slip into the dataset
+- **Review Tab Rebuilt** — Flagged conversations are now selectable with a single click, the table has readable row heights and stretches its columns, the detail pane shows the real transcript (read back from the output files or the database) and scrolls on its own, the selection survives dashboard refresh ticks, and **Export Flagged → JSONL** actually writes `output/quality_review_flagged.jsonl` (main output, per-API duplication files and database rows)
+
+### v11.3
 - **Robust JSON Extraction for Quality Scoring** — The quality scoring LLM judge now uses robust JSON extraction with regex-based object finding, handling markdown code blocks anywhere in the response, explanatory text before/after JSON, and malformed responses. The system prompt was strengthened to "JSON-only API" language, and JSON parse errors now log the content preview for debugging. This eliminates the "Quality scoring LLM returned invalid JSON" errors that occurred with smaller models like Qwen 3.5 4B that occasionally add explanatory text or inconsistent markdown formatting.
 
 ### v11.2

@@ -399,6 +399,13 @@ class ConfigEditor(tk.Toplevel):
 
         add_gen_setting("Min Score Threshold (0-100):", 'quality_min_threshold_var', "(Conversations below this are flagged)")
         add_gen_setting("Max Chars for LLM Scoring:", 'quality_max_chars_var', "(Truncate conversation before sending to scoring LLM)")
+        # Judge retry / drop policy (v11.4): the judge is the dataset gatekeeper.
+        add_gen_setting("Judge Max Attempts:", 'quality_judge_max_attempts_var',
+                        "(Transient judge failures are retried this many times, then the conversation is dropped; invalid JSON and a logic score of 0 drop immediately without a retry)")
+        add_gen_setting("Judge Retry Delay (seconds):", 'quality_judge_retry_delay_var',
+                        "(Wait before the next judge attempt; grows linearly per attempt)")
+        add_gen_setting("Judge Result Timeout (seconds):", 'quality_result_timeout_var',
+                        "(How long a worker waits for its queued verdict before dropping the row)")
 
         # Quality scoring API config
         ttk.Label(gen_settings_frame, text="Quality Scoring API URL:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
@@ -1494,6 +1501,9 @@ class ConfigEditor(tk.Toplevel):
                 'logic_max_chars_for_check': max(100, int(self.quality_logic_max_chars_var.get() or 4000)),
                 'min_score_threshold': int(self.quality_min_threshold_var.get() or 50),
                 'max_chars_for_scoring': int(self.quality_max_chars_var.get() or 8000),
+                'judge_max_attempts': max(1, min(10, int(self.quality_judge_max_attempts_var.get() or 3))),
+                'judge_retry_delay': max(0.0, float(self.quality_judge_retry_delay_var.get() or 0)),
+                'result_timeout': max(30, int(self.quality_result_timeout_var.get() or 600)),
                 'scoring_api': {
                     'url': sanitize_input(self.quality_api_url_var.get()),
                     'model': sanitize_input(self.quality_api_model_var.get()),
@@ -2009,6 +2019,9 @@ class ConfigEditor(tk.Toplevel):
             self.quality_logic_max_chars_var.set(str(quality_conf.get('logic_max_chars_for_check', 4000)))
             self.quality_min_threshold_var.set(str(quality_conf.get('min_score_threshold', 50)))
             self.quality_max_chars_var.set(str(quality_conf.get('max_chars_for_scoring', 8000)))
+            self.quality_judge_max_attempts_var.set(str(quality_conf.get('judge_max_attempts', 3)))
+            self.quality_judge_retry_delay_var.set(str(quality_conf.get('judge_retry_delay', 1.0)))
+            self.quality_result_timeout_var.set(str(quality_conf.get('result_timeout', 600)))
             self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
             self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
             self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
@@ -2340,6 +2353,12 @@ class ConfigEditor(tk.Toplevel):
             assert 0 <= quality_threshold <= 100, "Quality threshold must be 0-100"
             quality_max_chars = int(self.quality_max_chars_var.get() or 8000)
             assert quality_max_chars > 100, "Max chars for scoring must be > 100"
+            judge_attempts_val = int(self.quality_judge_max_attempts_var.get() or 3)
+            assert 1 <= judge_attempts_val <= 10, "Judge max attempts must be 1-10"
+            judge_delay_val = float(self.quality_judge_retry_delay_var.get() or 0)
+            assert 0 <= judge_delay_val <= 30, "Judge retry delay must be 0-30 seconds"
+            result_timeout_val = int(self.quality_result_timeout_var.get() or 600)
+            assert result_timeout_val >= 30, "Judge result timeout must be at least 30 seconds"
             if self.quality_logic_check_var_editor.get():
                 logic_threshold_val = int(self.quality_logic_threshold_var.get() or 70)
                 assert 0 <= logic_threshold_val <= 100, "Logic check threshold must be 0-100"

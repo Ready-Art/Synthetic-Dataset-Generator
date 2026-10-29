@@ -7,7 +7,8 @@ as `match` or `X | Y` type unions (both 3.10).
 All test scripts live in `tests/` (run them from the repository root, e.g. `python -B tests/test_api_profiles.py`).
 Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_persona_arc.py`,
 `tests/test_dataset_compatibility.py`) or the Datasets panel need Tk; `tests/test_datasets_panel.py` and
-`tests/test_dataset_column_menu.py` also need a display.
+`tests/test_dataset_column_menu.py` also need a display; `tests/test_review_tab_ui.py` needs a display too (it
+builds the real `generate.py` UI) and skips cleanly without one.
 
 ```sh
 python -m pip install -r requirements.txt            # the application
@@ -32,6 +33,7 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
   relative to it, so `tests/test_api_profiles.py` appends to the repository's `output/log.txt`. `tests/test_opening_mode.py` and
   `tests/test_persona_arc.py` change into a temporary directory first.
 - `tools/check_gui_layout.py` and `tools/check_dataset_hub.py` are not part of the test run (see Tools).
+- `tests/test_quality_judge_policy.py` is headless: it stubs `requests.post` and never touches the network.
 
 ## Boundaries
 
@@ -77,7 +79,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Random settings pool → `prompts.random_settings.enabled`, `prompts.random_settings.settings[]` (analogous to `random_names`). When `setting_enabled` is true and a selected character's own `setting` is empty, a setting is sampled from this pool (when enabled) instead of the hardcoded default. For a multi-character ensemble the per-character settings are unified to ONE shared setting picked from the ensemble, so the whole scene happens in a single location
 - Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
 - Output metadata → `generation.include_metadata` (flat, schema-stable provenance block per output.jsonl record; trainer-safe; never modifies `conversations[]`; false = legacy two-field records)
-- Quality scoring → `quality.enabled`, `quality.use_llm_scoring`, `quality.output_filter`, `quality.roleplay_dimensions` (opt-in roleplay dimensions: voice_distinctiveness / grounding / persona_alignment), `quality.min_score_threshold`, `quality.max_chars_for_scoring`, `quality.max_profile_chars_for_scoring`, `quality.scoring_api.{url,model,key}`
+- Quality scoring → `quality.enabled`, `quality.use_llm_scoring`, `quality.output_filter`, `quality.roleplay_dimensions` (opt-in roleplay dimensions: voice_distinctiveness / grounding / persona_alignment), `quality.min_score_threshold`, `quality.max_chars_for_scoring`, `quality.max_profile_chars_for_scoring`, `quality.judge_max_attempts` / `quality.judge_retry_delay` / `quality.result_timeout` (v11.4 judge retry-and-drop policy), `quality.scoring_api.{url,model,key}`
 - Datasets → `datasets.sources[]` (default `{sources: []}`) — names-only source definitions (kind, location, config/split/revision selectors, imported column names, aliases, visibility). Dataset *records* and credentials are never stored here; see `docs/dataset-bindings.md`
 
 ### `config/api_profiles.yml` [2]
@@ -169,6 +171,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()`. **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `tests/test_worker_launch.py` fails on the mismatch
 - New UI tab → Add to `dashboard_notebook` + populate widgets; custom tabs (Quality / 🔍 Review) need their own gated per-tick refresher (`update_quality_tab()` / `_update_review_table()`), called from the periodic GUI update loop and from `_on_dashboard_tab_changed()` so the incoming tab isn't stale — `update_dashboard()` itself only handles Totals/API issue panels and the graph
 - Quality tab → `update_quality_tab()` fills the dimension summary labels (from `quality.get_quality_stats()['dimension_averages']`) and the latest-50 scores Treeview from `app_state.quality_scores`
+- **🔍 Review tab (v11.4)** → a fixed, non-scrolling split view (`page_scroll.grid_remove()` + a `review_page` frame) because nesting a scrolling table and a scrolling Text in the page's `ScrollableFrame` made both unusable. Widget registry keys: `review_page`, `review_tree`, `review_filter_var`, `review_count_label`, `detail_text`, `review_signature`, `review_detail_task`. Helpers: `_record_belongs_to_task()` (id matching, `_api` suffix for duplication rows), `_review_output_files()` / `_iter_review_records()` (main output + per-API files + database), `_find_review_record()`, `_format_review_conversation()` (ShareGPT `conversations[]` or `messages[]`), `_review_signature()` / `_update_review_table(force=False)` (rebuild only on change so a tick never clears the selection), `_show_review_detail(review_tree, force=False)` (skips re-render of the same selection so the scroll position survives), `_export_flagged_review()`. **The Treeview item id is the FULL task id** — never reintroduce a truncated display id in the item id or in the detail lookup. `<<TreeviewSelect>>` (single click) opens the transcript; the detail pane must keep its own scrollbar and stay out of the page canvas
+- **Dropped conversations (v11.4)** → `generation._quality_dropped(verdict)` gates both write paths (non-duplication final write, duplication per-turn write). A drop must never write a row, never `completed_task_ids.add()`, and never enter `quality_review_ids`
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - DB export → `export_db_to_jsonl()`, `clear_database()`
 - Quality tab layout → `_rebuild_quality_roleplay_layout()` builds the summary labels + score-table columns from `quality.active_scoring_dimensions()` (the toggle is read at build time and re-checked each tick, so a change in the Config Editor mid-run re-lays-out the Quality tab automatically; `update_quality_tab()` fills rows in that column order)
@@ -182,6 +186,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Output format → `write_conversation()` ShareGPT structure
 - Opening mode → `generate_greeting()`, `generate_first_line()`, `enqueue_opening_tasks()`
 - Quality scoring → `quality.score_conversation()` call (via `_score_and_store_quality()`) after conversation complete, passing `character_profile_text=character_injection` and `scene_characters=scene_character_names`
+- **Judge gatekeeper (v11.4)** → `_score_and_store_quality()` returns the judge verdict (never `None`) and `_quality_dropped(verdict)` tells the write paths to skip the row. `quality_dropped_this_task` (set per task) suppresses the non-duplication final write, the duplication per-turn write and `completed_task_ids.add()`; the row is dropped, not requeued and not flagged. `quality_dropped` is persisted in `save_generation_state()`
 - Turn completion check → `conversation_is_complete()`
 - Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
 - Character prompt injection → character profile block built in `worker()` (personality/traits are conditionally injected lines in the profile; `persona` = inner personality is deliberately EXCLUDED from the profile and re-injected later as an INNER PERSONA BREAKTHROUGH block once the scene reaches the configured slot). Setting resolution → a `settings_for_selected[]` array is computed per task before the profile loop: each selected character keeps its own non-empty `setting`, else samples from the `random_settings` pool (if enabled) or the `A standard indoor environment.` default; when >1 character is selected the ensemble is unified to one shared setting picked from the distinct candidate settings (order-preserving dedupe), which becomes both the injected `Setting:` line for every character and `meta_setting`
@@ -199,9 +204,11 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ### `quality.py` [14]
 **Purpose:** Quality scoring (heuristic + LLM-based)
-**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`, `_heuristic_fallback_for_llm_dim()`, `active_scoring_dimensions()`, `_score_voice_distinctiveness()`, `_score_grounding()`, `_score_persona_alignment()`
+**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`, `_call_logic_judge()`, `_heuristic_fallback_for_llm_dim()`, `active_scoring_dimensions()`, `_score_voice_distinctiveness()`, `_score_grounding()`, `_score_persona_alignment()`, `enqueue_quality_scoring()`, `_record_quality_result()`
 **Edit for:**
 - Scoring dimensions → `SCORING_DIMENSIONS` dict (weights) + `ROLEPLAY_SCORING_DIMENSIONS` (opt-in via `quality.roleplay_dimensions`; active set comes from `active_scoring_dimensions()`, which every score/stats/UI path must use instead of `SCORING_DIMENSIONS` directly)
+- **Judge retry/drop policy (v11.4)** → `_call_logic_judge()` is a retry wrapper around `_call_logic_judge_once()`. Transient failures (network, timeout, non-200, unreadable envelope) retry `quality.judge_max_attempts` times (default 3) with `quality.judge_retry_delay` linear back-off; **invalid JSON is final and never retried**. `_judge_drop_reason()` decides the verdict: `invalid_json` / `logic_zero` (a judge `logic` score of 0, also final) / `judge_failed` (every retry exhausted). A drop returns `{"dropped": True, "drop_reason": ..., "method": "dropped"}` — `score_conversation()` never falls back to heuristics for a failed judge. A judge that is not configured is a SKIP, not a drop (`JUDGE_SKIP_FLAGS`). Adding a final-failure flag means adding it to `JUDGE_FINAL_FAILURE_FLAGS`; adding a skip flag means adding it to `JUDGE_SKIP_FLAGS`
+- **Verdict delivery** → `enqueue_quality_scoring()` queues the job and waits on its `threading.Event` (the processor still runs one judge at a time) because the worker must know the verdict BEFORE it writes. `_record_quality_result()` stores scores in `app_state.quality_scores` and drops in `app_state.quality_dropped` / `app_state.dropped_task_ids`; a drop is never stored as a score and never flagged for review
 - Heuristic logic → `_score_diversity()`, `_score_technical()`, `_heuristic_fallback_for_llm_dim()`, plus the roleplay heuristics (voice = bigram overlap between characters' attributed spoken lines via `_spoken_lines_by_character()`; grounding = profile-keyword coverage via `_profile_keywords()`; persona = Persona-section keyword timing around `prompts.character.persona_breakthrough_turn` via `_persona_sections()`)
 - LLM scoring → `_score_with_llm()` (uses API slot from `quality.scoring_api` config); when the toggle is on it appends the three roleplay definitions + JSON fields to the judge prompt, raises the `max_tokens` default by 64/dim, and refines (replaces) the heuristic roleplay scores with the judge's; `_score_and_store_quality()` in `generation.py` forwards `scene_characters=scene_character_names`
 - Tests → `tests/test_quality_roleplay.py` (toggle on/off, all three heuristics, judge prompt/refinement via stubbed `requests.post`)
@@ -250,6 +257,17 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** Headless unit tests for the opt-in roleplay quality dimensions in `quality.py` (no model/network/display; the LLM-judge path is exercised through a stubbed `requests.post`)
 **Key:** covers the `quality.roleplay_dimensions` toggle (off by default; active dimension set + weight normalization), the three heuristics (`_score_voice_distinctiveness`, `_score_grounding`, `_score_persona_alignment` incl. the early-leak / never-surfaces / no-persona cases) and judge prompt construction + refinement when on
 **Edit for:** Add roleplay-dimension heuristic or judge-prompt cases
+
+### `tests/test_quality_judge_policy.py`
+**Purpose:** Headless tests for the v11.4 judge retry/drop policy in `quality.py` and the worker's drop gate (no model/network/display; the judge is exercised through a stubbed `requests.post`)
+**Key:** transient failures retry `quality.judge_max_attempts` times then drop; `judge_max_attempts` overrides the count; a good reply after a failed attempt is kept; invalid JSON and a `logic` score of 0 drop with no retry (a low non-zero logic score is kept); an unconfigured judge is a skip, not a drop; a drop is stored in `app_state.quality_dropped` and never in `quality_scores` / `quality_review_ids`; `generation._quality_dropped()` recognises a drop
+**Edit for:** Add retry/drop-policy cases (new final-failure or skip flags, timeout handling, state bookkeeping)
+
+### `tests/test_review_tab_ui.py`
+**Purpose:** Display-dependent regression test for the v11.4 Review tab (builds the REAL `generate.py` UI; skips cleanly without a display)
+**Key:** full-task-id Treeview items + single-click selection; transcript rendered from the output JSONL; the detail pane is read-only and scrollable; a refresh tick keeps the selection and the scroll position; Export Flagged → JSONL writes every row with `_quality_score`; the filter narrows and restores the list
+**Run:** `python -B tests/test_review_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
+**Edit for:** Add Review-tab behaviour cases; keep it free of source data, generation runs, network and model APIs
 
 ### `tests/test_worker_launch.py` [21]
 **Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
@@ -372,6 +390,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add UI metric | `app_state.py` (widget ref), `generate.py` (create widget), `dashboard.py` (update) |
 | Change rate limit | `config/config.yml` (`api.apis[].rate_limit_rpm`), `config_editor.py` (UI field), `api_handler.py` (`set_rate_limit()`) |
 | Modify retry logic | `generation.py` (`generate_answer_with_retries()`, `MAX_TASK_REQUEUES`) |
+| Change judge retry/drop policy (v11.4) | `quality.py` (`QUALITY_JUDGE_MAX_ATTEMPTS`, `_call_logic_judge()`, `_judge_drop_reason()`, `JUDGE_FINAL_FAILURE_FLAGS` / `JUDGE_SKIP_FLAGS`), `generation.py` (`_score_and_store_quality()`, `_quality_dropped()`, both write paths), `config/config.yml` (`quality.judge_max_attempts` / `judge_retry_delay` / `result_timeout`), `config_editor.py` (three fields), `tests/test_quality_judge_policy.py` |
+| Change the Review tab | `generate.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_iter_review_records()`, the `elif tab_name == "🔍 Review"` layout block), `tests/test_review_tab_ui.py` |
 | Add API profile | `config/api_profiles.yml` (new profile definition), no code change needed |
 | Modify API profile params | `config/api_profiles.yml` (`allow`, `rename` lists), `api_profiles.py` (if transform logic changes) |
 | Add character profile | `config/config.yml` (`prompts.character.characters[]`), `config_editor.py` (UI fields) |
@@ -406,6 +426,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **GUI handles:** `root`, `dashboard_notebook`, `slot_widgets`, `rate_limit_labels`, `quality_*_label`
 
 **Flags:** `stop_processing`, `pause_processing`, `processing_active`, `quality_enabled`, `quality_output_filter`, `use_conversation_history_for_fixers`
+
+**Judge drops (v11.4):** `quality_dropped` ({task_id: reason}) and `dropped_task_ids` (set), both guarded by `quality_lock`; populated by `quality._record_quality_result()`, cleared by `reset_all_stats_and_history()`, persisted as `quality_dropped` in `generation_state.json`.
 
 ## API Slots Index
 Indexes count from 0 in code (`api_slot_idx`, `*_per_api` keys). The GUI, the README and most log messages count from 1, so index 4 is "API Slot 5"; debug-log file names (`_api_slot_<index>`) use the index.

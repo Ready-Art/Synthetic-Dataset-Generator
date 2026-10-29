@@ -106,6 +106,18 @@ quality:
   logic_max_chars_for_check: 4000
   min_score_threshold: 50
   max_chars_for_scoring: 8000
+  # v11.4 judge policy. The quality judge is a gatekeeper for the dataset:
+  #  - a transient judge failure (network error, timeout, non-200, unreadable response) is
+  #    retried up to judge_max_attempts times, waiting judge_retry_delay seconds * attempt
+  #    between tries; if every try fails the conversation is DROPPED and not written.
+  #  - a reply that is not valid JSON, or a conversation-level logic score of 0, is final:
+  #    no retry, and the conversation is DROPPED and not written.
+  # Dropped conversations are never stored as scores and never flagged for review; the
+  # Review tab shows how many the judge dropped.
+  judge_max_attempts: 3
+  judge_retry_delay: 1.0
+  # Seconds a worker waits for its queued judge verdict before dropping the row.
+  result_timeout: 600
   scoring_api:
     url: ''
     model: ''

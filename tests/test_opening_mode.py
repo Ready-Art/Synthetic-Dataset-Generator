@@ -768,6 +768,53 @@ def test_opening_quality_scoring():
         app_state.quality_enabled = False
 
 
+def test_quality_judge_drop_skips_the_write():
+    """v11.4: a conversation the quality judge drops is never written to the dataset.
+
+    The judge is the gatekeeper: ``_score_and_store_quality`` returns the verdict BEFORE the
+    write, and a ``dropped`` verdict must leave output.jsonl untouched (and must not mark the
+    task complete or flag it for review).
+    """
+    reset_state()
+    real_score = g.quality.score_conversation
+    app_state.quality_enabled = True
+    app_state.quality_scores.clear()
+    app_state.quality_review_ids.clear()
+    app_state.quality_dropped.clear()
+    app_state.dropped_task_ids.clear()
+    try:
+        g.quality.score_conversation = lambda conv, *a, **k: {
+            "dropped": True, "drop_reason": "logic_zero", "composite": 0,
+            "dimensions": {}, "flags": ["logic_issues"],
+            "scored_at": "2026-01-01 00:00:00", "method": "dropped"}
+        run_worker(chunk_task(), current_num_turns=1)
+        check("a judge-dropped conversation writes no row", read_rows() == [])
+        check("a judge-dropped conversation is not marked complete",
+              not app_state.completed_task_ids)
+        check("a judge-dropped conversation is not stored as a score",
+              "book.txt_chunk_at_0" not in app_state.quality_scores)
+        check("a judge-dropped conversation is not flagged for review",
+              "book.txt_chunk_at_0" not in app_state.quality_review_ids)
+        check("the drop is recorded with its reason",
+              app_state.quality_dropped.get("book.txt_chunk_at_0") == "logic_zero")
+
+        # Control: a normal verdict still writes the row.
+        reset_state()
+        app_state.quality_enabled = True
+        g.quality.score_conversation = lambda conv, *a, **k: {
+            "composite": 88.0, "dimensions": {"logic": 90}, "flags": [],
+            "scored_at": "2026-01-01 00:00:00", "method": "hybrid"}
+        run_worker(chunk_task(), current_num_turns=1)
+        check("a kept conversation still writes its row", len(read_rows()) == 1)
+        check("a kept conversation is marked complete",
+              "book.txt_chunk_at_0" in app_state.completed_task_ids)
+    finally:
+        g.quality.score_conversation = real_score
+        app_state.quality_enabled = False
+        app_state.quality_dropped.clear()
+        app_state.dropped_task_ids.clear()
+
+
 def test_config_defaults():
     import yaml
     with open(os.path.join(REPO, "config", "config.yml"), encoding="utf-8") as f:
@@ -1307,6 +1354,7 @@ def main():
     test_opening_failures()
     test_opening_speakers()
     test_opening_quality_scoring()
+    test_quality_judge_drop_skips_the_write()
     test_config_defaults()
     test_generate_wiring()
     print("(4) emotional arc and persona through the worker")

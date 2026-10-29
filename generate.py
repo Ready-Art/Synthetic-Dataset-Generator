@@ -222,6 +222,8 @@ def load_generation_state():
                 app_state.completed_task_ids = set(state_data.get('completed_task_ids', []))
                 app_state.system_prompt_counter = state_data.get('system_prompt_counter', 0)
                 app_state.quality_scores = state_data.get('quality_scores', {})
+                app_state.quality_dropped = state_data.get('quality_dropped', {})
+                app_state.dropped_task_ids = set(app_state.quality_dropped)
                 app_state.character_counter = state_data.get('character_counter', 0)
                 app_state.question_history = state_data.get('question_history', [])
                 
@@ -316,6 +318,8 @@ def reset_all_stats_and_history():
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
     with app_state.quality_lock:
         app_state.quality_scores = {}
+        app_state.quality_dropped = {}
+        app_state.dropped_task_ids = set()
     log_message("All global statistics, history, and progress trackers have been reset.", "INFO")
     with app_state.quality_review_lock:
         app_state.quality_review_ids = set()
@@ -529,8 +533,116 @@ def _active_dashboard_tab_text():
         return ""
 
 
-def _update_review_table():
-    """Refreshes the Review tab table with currently flagged items."""
+def _record_belongs_to_task(record_id, task_id):
+    """Whether an output row's id belongs to the flagged task id."""
+    if not record_id or not task_id:
+        return False
+    return record_id == task_id or record_id.startswith(task_id + "_api")
+
+
+def _review_output_files():
+    """Every output JSONL file a flagged row can live in (main + per-API duplication)."""
+    files = []
+    output_dir = app_state.OUTPUT_DIR
+    if not os.path.isdir(output_dir):
+        return files
+    for name in sorted(os.listdir(output_dir)):
+        if name.startswith("output") and name.endswith(".jsonl"):
+            files.append(os.path.join(output_dir, name))
+    return files
+
+
+def _iter_review_records(task_ids):
+    """Yields ``(task_id, record)`` for every output row of the given task ids.
+
+    Reads the file output and, when enabled, the database, so the Review tab works in both
+    modes. Records are matched by full id, never by a truncated display value.
+    """
+    task_ids = list(task_ids)
+    if not task_ids:
+        return
+    for path in _review_output_files():
+        try:
+            with open(path, 'r', encoding='utf-8') as src:
+                for line in src:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_id = entry.get('id', '')
+                    for task_id in task_ids:
+                        if _record_belongs_to_task(entry_id, task_id):
+                            yield task_id, entry
+                            break
+        except OSError as e:
+            log_message(f"Review: could not read {path}: {e}", "WARNING")
+
+    if global_config.get('database.enabled', False) and app_state.db_pool:
+        conn = None
+        try:
+            conn = app_state.db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT task_id, conversation_data FROM generated_conversations")
+                for task_id_db, data in cur:
+                    if isinstance(data, str):
+                        try:
+                            data = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                    for task_id in task_ids:
+                        if _record_belongs_to_task(task_id_db, task_id):
+                            yield task_id, (data if isinstance(data, dict) else {})
+                            break
+        except Exception as e:
+            log_message(f"Review: database read failed: {e}", "ERROR")
+        finally:
+            if conn is not None:
+                try:
+                    app_state.db_pool.putconn(conn)
+                except Exception:
+                    pass
+
+
+def _find_review_record(task_id):
+    """The output row for ``task_id`` (first match), or None when it was never written."""
+    for _task, entry in _iter_review_records([task_id]):
+        return entry
+    return None
+
+
+def _review_signature(review_ids, scores, dropped):
+    """A cheap value that changes only when the Review list's content would change.
+
+    The dashboard refreshes every 500 ms while a run is active. Rebuilding the Treeview on
+    every tick deleted the user's selection and reset the detail pane, which is why reading
+    a flagged conversation was impossible before v11.4. The list is rebuilt only when this
+    signature actually changes.
+    """
+    parts = []
+    for task_id in sorted(review_ids):
+        score_data = scores.get(task_id)
+        if not score_data:
+            continue
+        parts.append((task_id,
+                      score_data.get("composite"),
+                      score_data.get("scored_at", ""),
+                      tuple(score_data.get("flags") or ())))
+    return (tuple(parts), tuple(sorted(dropped.items())))
+
+
+def _update_review_table(force=False):
+    """Refreshes the Review tab table with currently flagged items.
+
+    Each row's Treeview item id is the FULL task id, so selecting a row can never resolve
+    to the wrong conversation (the visible Task ID cell is shortened only for display).
+    The table is only rebuilt when its content changed (``force=True`` for an explicit
+    Refresh click), so a per-tick refresh never clears the selection or the detail pane.
+    """
     review_tab = "🔍 Review"
     if review_tab not in app_state.dashboard_notebook.tabs_widgets:
         return
@@ -545,28 +657,36 @@ def _update_review_table():
     if not review_tree or not hasattr(review_tree, 'winfo_exists') or not review_tree.winfo_exists():
         return
 
-    for item in review_tree.get_children():
-        review_tree.delete(item)
-
     filter_text = (filter_var.get().strip().lower() if filter_var else "")
 
     with app_state.quality_review_lock:
-        review_ids = list(app_state.quality_review_ids)
+        review_ids = sorted(app_state.quality_review_ids)
 
     with app_state.quality_lock:
-        scores = app_state.quality_scores
+        scores = dict(app_state.quality_scores)
+        dropped = dict(app_state.quality_dropped)
+
+    visible = [tid for tid in review_ids
+               if (not filter_text or filter_text in tid.lower()) and scores.get(tid)]
+    signature = (filter_text, _review_signature(visible, scores, dropped))
+    if not force and widgets.get('review_signature') == signature:
+        return
+    widgets['review_signature'] = signature
+
+    # Keep the current selection across a rebuild so the row the user is reading stays open.
+    previous = review_tree.selection()
+    previous_id = previous[0] if previous else None
+
+    for item in review_tree.get_children():
+        review_tree.delete(item)
 
     shown = 0
-    for task_id in review_ids:
-        if filter_text and filter_text not in task_id.lower():
-            continue
-        score_data = scores.get(task_id)
-        if not score_data:
-            continue
+    for task_id in visible:
+        score_data = scores[task_id]
 
         composite = score_data.get("composite", 0)
-        dims = score_data.get("dimensions", {})
-        flags = score_data.get("flags", [])
+        dims = score_data.get("dimensions", {}) or {}
+        flags = score_data.get("flags", []) or []
         scored_at = score_data.get("scored_at", "")
 
         # Find the lowest-scoring dimension
@@ -579,19 +699,57 @@ def _update_review_table():
             meta = app_state.task_metadata.get(task_id, {})
             source_file = meta.get('file', 'N/A')
 
+        display_id = task_id if len(task_id) <= 44 else task_id[:41] + "…"
         tag = "critical" if composite < 40 else "warning"
-        review_tree.insert("", tk.END, values=(
-            task_id[:50], f"{composite}", f"{lowest_dim} ({lowest_val})",
-            ", ".join(flags[:4]), source_file, scored_at
+        review_tree.insert("", tk.END, iid=task_id, values=(
+            display_id, f"{composite}", f"{lowest_dim} ({lowest_val})",
+            ", ".join(flags[:3]), source_file, scored_at
         ), tags=(tag,))
         shown += 1
 
+    if previous_id and review_tree.exists(previous_id):
+        review_tree.selection_set(previous_id)
+    elif shown:
+        # Open the first row so the detail pane is never an empty box on arrival.
+        first = review_tree.get_children()[0]
+        review_tree.selection_set(first)
+        review_tree.focus(first)
+    # Render the detail for whatever is selected now (a rebuild clears the Text's binding
+    # state, so this is done explicitly rather than relying on <<TreeviewSelect>>).
+    _show_review_detail(review_tree)
+
     if count_label and hasattr(count_label, 'winfo_exists') and count_label.winfo_exists():
-        count_label.config(text=f"{shown} flagged")
+        text = f"{shown} flagged"
+        if dropped:
+            text += f"  ·  {len(dropped)} dropped by the judge (not in the dataset)"
+        count_label.config(text=text)
 
 
-def _show_review_detail(review_tree):
-    """Shows the full conversation for the selected review item."""
+def _format_review_conversation(record):
+    """Readable transcript of one output record: ShareGPT ``conversations[]`` or ``messages[]``."""
+    turns = []
+    if isinstance(record, dict):
+        for turn in record.get("conversations") or record.get("messages") or []:
+            if not isinstance(turn, dict):
+                continue
+            role = turn.get("from") or turn.get("role") or "?"
+            text = turn.get("value")
+            if text is None:
+                text = turn.get("content", "")
+            label = {"human": "USER", "gpt": "ASSISTANT", "system": "SYSTEM"}.get(
+                str(role).lower(), str(role).upper())
+            turns.append((label, str(text)))
+    return turns
+
+
+def _show_review_detail(review_tree, force=False):
+    """Shows the score breakdown AND the full conversation for the selected review item.
+
+    The transcript is read back from the run's output files (or the database), so the tab
+    shows what was actually written instead of pointing at a file path. Re-rendering the same
+    selection is skipped unless ``force`` is set, so a refresh tick never resets the reader's
+    scroll position.
+    """
     review_tab = "🔍 Review"
     widgets = app_state.dashboard_notebook.tabs_widgets.get(review_tab, {})
     detail_text = widgets.get('detail_text')
@@ -601,42 +759,68 @@ def _show_review_detail(review_tree):
     selected = review_tree.selection()
     if not selected:
         return
-
-    task_id_full = review_tree.item(selected[0], 'values')[0]
-    # Find the full task_id (the table truncates display)
-    with app_state.quality_review_lock:
-        matching = [tid for tid in app_state.quality_review_ids if tid.startswith(task_id_full)]
-    if not matching:
+    task_id = selected[0]
+    if not force and widgets.get('review_detail_task') == task_id \
+            and detail_text.get("1.0", tk.END).strip():
         return
-    task_id = matching[0]
+    widgets['review_detail_task'] = task_id
 
-    # Get score data
     with app_state.quality_lock:
         score_data = app_state.quality_scores.get(task_id, {})
 
-    # Get the conversation from output (re-read from file or use in-memory)
-    # For now, show the score breakdown + flags. Full conversation would require
-    # re-reading the output JSONL or storing it in memory.
-    detail_text.config(state=tk.NORMAL)
+    detail_text.configure(state=tk.NORMAL)
     detail_text.delete(1.0, tk.END)
 
-    detail_text.insert(tk.END, f"TASK: {task_id}\n")
-    detail_text.insert(tk.END, f"SCORE: {score_data.get('composite', 'N/A')}/100\n")
-    detail_text.insert(tk.END, f"METHOD: {score_data.get('method', 'N/A')}\n")
-    detail_text.insert(tk.END, f"SCORED: {score_data.get('scored_at', 'N/A')}\n")
-    detail_text.insert(tk.END, f"\nDIMENSIONS:\n")
-    for dim, val in score_data.get('dimensions', {}).items():
-        bar = "█" * int(val // 5) + "░" * (20 - int(val // 5))
-        detail_text.insert(tk.END, f"  {dim:<15} {bar} {val}\n")
-    detail_text.insert(tk.END, f"\nFLAGS: {', '.join(score_data.get('flags', []))}\n")
-    detail_text.insert(tk.END, f"\n{'='*60}\n")
-    detail_text.insert(tk.END, "NOTE: Full conversation text is in the output JSONL file.\n")
-    detail_text.insert(tk.END, f"      Search for id: \"{task_id}\" in output/output.jsonl\n")
-    detail_text.config(state=tk.DISABLED)
+    detail_text.insert(tk.END, f"TASK: {task_id}\n", "detail_head")
+    if score_data:
+        detail_text.insert(tk.END,
+            f"SCORE: {score_data.get('composite', 'N/A')}/100   "
+            f"METHOD: {score_data.get('method', 'N/A')}   "
+            f"SCORED: {score_data.get('scored_at', 'N/A')}\n", "detail_meta")
+        detail_text.insert(tk.END, "\nDIMENSIONS\n", "detail_head")
+        for dim, val in (score_data.get('dimensions') or {}).items():
+            try:
+                filled = max(0, min(20, int(float(val) // 5)))
+            except (TypeError, ValueError):
+                filled = 0
+            bar = "█" * filled + "░" * (20 - filled)
+            detail_text.insert(tk.END, f"  {dim:<22}{bar} {val}\n")
+        flags = score_data.get('flags') or []
+        if flags:
+            detail_text.insert(tk.END, f"\nFLAGS: {', '.join(flags)}\n", "detail_meta")
+    else:
+        detail_text.insert(tk.END, "No stored score for this task.\n", "detail_meta")
+
+    detail_text.insert(tk.END, "\n" + "─" * 72 + "\n\n", "detail_rule")
+
+    record = _find_review_record(task_id)
+    if record is None:
+        detail_text.insert(
+            tk.END,
+            "This conversation is not in the output files yet.\n\n"
+            "Rows are written when a conversation completes; a row the quality judge "
+            "rejected is never written. Check the Quality tab and output/log.txt.\n",
+            "detail_meta")
+    else:
+        turns = _format_review_conversation(record)
+        if not turns:
+            detail_text.insert(tk.END, "(This output row has no conversation turns.)\n", "detail_meta")
+        for label, text in turns:
+            detail_text.insert(tk.END, f"{label}\n", "role_" + label.lower())
+            detail_text.insert(tk.END, text.rstrip() + "\n\n")
+
+    detail_text.configure(state=tk.DISABLED)
+    detail_text.yview_moveto(0.0)
 
 
 def _export_flagged_review():
-    """Exports all flagged conversations to a separate JSONL file for manual review."""
+    """Exports all flagged conversations to a separate JSONL file for manual review.
+
+    Writes every flagged conversation to ``output/quality_review_flagged.jsonl``, each row
+    carrying its quality verdict in ``_quality_score``. Reads the main output file, the
+    per-API duplication files and the database, so the button works in every mode; the file
+    is always (re)written, so a stale export can never look like a successful one.
+    """
     with app_state.quality_review_lock:
         review_ids = set(app_state.quality_review_ids)
 
@@ -645,40 +829,36 @@ def _export_flagged_review():
         return
 
     with app_state.quality_lock:
-        scores = app_state.quality_scores
+        scores = dict(app_state.quality_scores)
 
     export_path = os.path.join(app_state.OUTPUT_DIR, 'quality_review_flagged.jsonl')
     exported = 0
+    found_ids = set()
 
-    # Read the main output file and extract flagged conversations
-    main_output = app_state.BASE_OUTPUT_FILE_PATH + ".jsonl"
-    if os.path.exists(main_output):
-        with open(main_output, 'r', encoding='utf-8') as src, \
-             open(export_path, 'w', encoding='utf-8') as dst:
-            for line in src:
-                try:
-                    entry = json.loads(line)
-                    entry_id = entry.get('id', '')
-                    # Match both direct task_id and duplication-format ids
-                    if entry_id in review_ids or any(
-                        entry_id.startswith(f"{rid}_api") for rid in review_ids
-                    ):
-                        # Attach quality score metadata
-                        matching_score = scores.get(entry_id)
-                        if not matching_score:
-                            # Try to find the parent task_id
-                            for rid in review_ids:
-                                if entry_id.startswith(rid):
-                                    matching_score = scores.get(rid)
-                                    break
-                        entry['_quality_score'] = matching_score
-                        dst.write(json.dumps(entry) + '\n')
-                        exported += 1
-                except json.JSONDecodeError:
-                    continue
+    try:
+        os.makedirs(app_state.OUTPUT_DIR, exist_ok=True)
+        with open(export_path, 'w', encoding='utf-8') as dst:
+            for task_id, entry in _iter_review_records(review_ids):
+                # Never mutate the source record: the caller may share it with the database path.
+                record = dict(entry)
+                record['_quality_score'] = scores.get(task_id)
+                dst.write(json.dumps(record) + '\n')
+                exported += 1
+                found_ids.add(task_id)
+    except OSError as e:
+        log_message(f"Quality review export failed: {e}", "ERROR")
+        toast.show(f"Export failed: {e}", "error")
+        return
 
-    toast.show(f"Exported {exported} flagged conversations to {export_path}", "success")
-    log_message(f"Quality review export: {exported} items → {export_path}", "INFO")
+    missing = sorted(review_ids - found_ids)
+    if exported:
+        toast.show(f"Exported {exported} flagged conversations to {export_path}", "success")
+    else:
+        toast.show(f"No flagged conversations found in the output files (0 written to {export_path})", "warning")
+    log_message(
+        f"Quality review export: {exported} items → {export_path}"
+        + (f" ({len(missing)} flagged task(s) had no output row)" if missing else ""),
+        "INFO")
 
 
 def _dismiss_all_review():
@@ -2109,7 +2289,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.3",
+    text="v11.4",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2852,59 +3032,97 @@ for tab_name in tab_names:
         _rebuild_quality_roleplay_layout(force=True)
 
     elif tab_name == "🔍 Review":
+        # The Review tab has no issue panels, so its search bar would only search nothing.
+        search_frame.grid_remove()
+        # The Review tab is a fixed, non-scrolling split view: the flagged list on top and
+        # the conversation detail below. Nesting a scrolling table and a scrolling Text in
+        # the page's ScrollableFrame made both unusable (the page canvas swallowed the
+        # wheel and squeezed the panes to their minimum heights), so this tab bypasses the
+        # page scroll region and fills the tab frame directly.
+        page_scroll.grid_remove()
+        review_page = ttk.Frame(tab_frame)
+        review_page.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        review_page.columnconfigure(0, weight=1)
+        review_page.rowconfigure(1, weight=1, minsize=90)
+        review_page.rowconfigure(3, weight=1, minsize=150)
+        tab_frame.rowconfigure(1, weight=1)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['review_page'] = review_page
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = review_page
+
         # --- Toolbar: filter + actions ---
-        review_toolbar = ttk.Frame(scrollable_frame)
-        review_toolbar.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 5))
+        review_toolbar = ttk.Frame(review_page)
+        review_toolbar.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 4))
+        review_toolbar.columnconfigure(0, weight=1)
 
         review_filter_var = tk.StringVar()
         review_filter_entry = ttk.Entry(review_toolbar, textvariable=review_filter_var, width=30)
-        review_toolbar.columnconfigure(0, weight=1)
         review_filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        review_filter_entry.bind("<Return>", lambda e: _update_review_table())
-        ttk.Button(review_toolbar, text="🔍 Filter", command=_update_review_table).grid(row=0, column=1)
+        review_filter_entry.bind("<Return>", lambda e: _update_review_table(force=True))
+        ttk.Button(review_toolbar, text="🔍 Filter", command=lambda: _update_review_table(force=True)).grid(row=0, column=1)
+
         review_actions = ttk.Frame(review_toolbar)
-        review_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=4)
+        review_actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         review_action_buttons = [
             ttk.Button(review_actions, text="📤 Export Flagged → JSONL", command=_export_flagged_review),
             ttk.Button(review_actions, text="✅ Dismiss All", command=_dismiss_all_review),
-            ttk.Button(review_actions, text="🔄 Refresh", command=_update_review_table),
+            ttk.Button(review_actions, text="🔄 Refresh", command=lambda: _update_review_table(force=True)),
         ]
         app_state.dashboard_notebook.tabs_widgets[tab_name]['action_layout'] = ResponsiveGrid(
             review_actions, review_action_buttons, min_width=190, max_columns=3)
-        review_count_label = ttk.Label(review_toolbar, text="", foreground="#ff6b6b", font=('Segoe UI', 10, 'bold'))
-        review_count_label.grid(row=2, column=0, columnspan=2, sticky="w")
+        review_count_label = ttk.Label(review_toolbar, text="", foreground="#ff6b6b",
+                                       font=('Segoe UI', 10, 'bold'))
+        review_count_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
         app_state.dashboard_notebook.tabs_widgets[tab_name]['review_count_label'] = review_count_label
 
         # --- Flagged items table ---
-        review_table_lf = ttk.LabelFrame(scrollable_frame, text="Flagged Conversations (Below Threshold)")
-        review_table_lf.grid(row=1, column=0, sticky="nsew", padx=SPACING, pady=SPACING)
+        review_table_lf = ttk.LabelFrame(review_page, text="Flagged Conversations (Below Threshold)")
+        review_table_lf.grid(row=1, column=0, sticky="nsew", padx=SPACING, pady=(0, 4))
 
         review_cols = ("Task ID", "Score", "Lowest Dim", "Flags", "Source File", "Scored At")
-        review_tree = ttk.Treeview(review_table_lf, columns=review_cols, show="headings", height=12)
+        review_tree = ttk.Treeview(review_table_lf, columns=review_cols, show="headings",
+                                   height=6, selectmode="browse")
         for col in review_cols:
             review_tree.heading(col, text=col)
-            review_tree.column(col, width=120, minwidth=100, stretch=False, anchor="w")
-        review_tree.column("Task ID", width=220)
-        review_tree.column("Flags", width=250)
+            review_tree.column(col, width=130, minwidth=90, stretch=False, anchor="w")
+        review_tree.column("Task ID", width=300, minwidth=200, stretch=True)
+        review_tree.column("Flags", width=230, minwidth=150, stretch=True)
+        # Readable row height: the theme's default is cramped and clips descenders.
+        style.configure('Review.Treeview', font=('Segoe UI', 10),
+                        rowheight=font.Font(family='Segoe UI', size=10).metrics('linespace') + 10)
+        style.configure('Review.Treeview.Heading', font=('Segoe UI', 10, 'bold'))
+        review_tree.configure(style='Review.Treeview')
 
         _grid_scrollable_table(review_table_lf, review_tree)
 
         review_tree.tag_configure("critical", foreground="#ff6b6b")
         review_tree.tag_configure("warning", foreground="#fcc419")
 
-        # Double-click to view conversation detail
-        review_tree.bind("<Double-1>", lambda e: _show_review_detail(review_tree))
+        # A single click opens the conversation, not only a double click: the old binding
+        # made rows feel dead until the user guessed they had to double-click.
+        review_tree.bind("<<TreeviewSelect>>", lambda e: _show_review_detail(review_tree))
 
         app_state.dashboard_notebook.tabs_widgets[tab_name]['review_tree'] = review_tree
         app_state.dashboard_notebook.tabs_widgets[tab_name]['review_filter_var'] = review_filter_var
 
-        # --- Detail panel (hidden until double-click) ---
-        detail_lf = ttk.LabelFrame(scrollable_frame, text="Conversation Detail (double-click a row above)")
-        detail_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
+        # --- Detail panel ---
+        detail_lf = ttk.LabelFrame(review_page, text="Conversation Detail (select a row above)")
+        detail_lf.grid(row=3, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
+        detail_lf.columnconfigure(0, weight=1)
+        detail_lf.rowconfigure(0, weight=1)
 
-        detail_text = scrolledtext.ScrolledText(detail_lf, wrap=tk.WORD, width=1, height=10, font=('Consolas', 9),
-                                                 bg='#1a1a2e', fg='#e0e0e0', relief=tk.FLAT)
-        detail_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        detail_text = scrolledtext.ScrolledText(detail_lf, wrap=tk.WORD, width=1, height=6,
+                                                font=('Consolas', 10),
+                                                bg='#1a1a2e', fg='#e0e0e0', relief=tk.FLAT,
+                                                padx=8, pady=6)
+        detail_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        detail_text.tag_configure("detail_head", foreground="#bb86fc", font=('Consolas', 10, 'bold'))
+        detail_text.tag_configure("detail_meta", foreground="#8b949e")
+        detail_text.tag_configure("detail_rule", foreground="#444466")
+        detail_text.tag_configure("role_user", foreground="#4fc3f7", font=('Consolas', 10, 'bold'))
+        detail_text.tag_configure("role_assistant", foreground="#69f0ae", font=('Consolas', 10, 'bold'))
+        detail_text.tag_configure("role_system", foreground="#ffd43b", font=('Consolas', 10, 'bold'))
+        detail_text.insert(tk.END, "Select a flagged conversation above to read it here.", "detail_meta")
+        detail_text.configure(state=tk.DISABLED)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['detail_text'] = detail_text
 
 # --- Queue Management Tab ---

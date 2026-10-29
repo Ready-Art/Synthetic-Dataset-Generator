@@ -82,6 +82,94 @@ LLM_DIMENSIONS = {"coherence", "naturalness", "engagement", "consistency", "logi
 # meaningful when LLM scoring is off or the judge call fails) ---
 ROLEPLAY_LLM_DIMENSIONS = set(ROLEPLAY_SCORING_DIMENSIONS)
 
+# --- Judge retry / drop policy (v11.4) ------------------------------------------------
+# The quality judge is retried on TRANSIENT failures only (network error, timeout,
+# non-200 status, unreadable response envelope). Two verdicts are final and are never
+# retried: a reply that is not valid JSON, and a conversation-level logic score of 0.
+# A final failure drops the conversation: it is not written to the dataset and is not
+# stored as a score (see ``score_conversation`` -> ``drop`` and
+# ``generation._score_and_store_quality``).
+QUALITY_JUDGE_MAX_ATTEMPTS = 3
+QUALITY_JUDGE_RETRY_DELAY = 1.0  # seconds, multiplied by the attempt number
+
+# Flags that make a judge failure final (no retry, drop the conversation).
+JUDGE_FINAL_FAILURE_FLAGS = frozenset({"llm_invalid_json"})
+
+# Flags that mean "no judge ran at all" (e.g. no scoring API configured). These are not
+# failures: the conversation keeps its heuristic scores instead of being dropped.
+JUDGE_SKIP_FLAGS = frozenset({"llm_not_configured"})
+
+# Drop reasons recorded on the returned result / in app_state.quality_dropped.
+DROP_REASON_INVALID_JSON = "invalid_json"
+DROP_REASON_LOGIC_ZERO = "logic_zero"
+DROP_REASON_JUDGE_FAILED = "judge_failed"
+
+
+def judge_max_attempts(config=None):
+    """How many times the quality judge is tried before the row is dropped.
+
+    ``quality.judge_max_attempts`` (default 3, clamped to 1-10). Set to 1 to disable
+    retries entirely.
+    """
+    cfg = global_config if config is None else config
+    try:
+        attempts = int(cfg.get('quality.judge_max_attempts', QUALITY_JUDGE_MAX_ATTEMPTS))
+    except (TypeError, ValueError):
+        attempts = QUALITY_JUDGE_MAX_ATTEMPTS
+    return max(1, min(10, attempts))
+
+
+def judge_retry_delay(config=None):
+    """Seconds to wait before the next judge attempt (grows linearly per attempt)."""
+    cfg = global_config if config is None else config
+    try:
+        delay = float(cfg.get('quality.judge_retry_delay', QUALITY_JUDGE_RETRY_DELAY))
+    except (TypeError, ValueError):
+        delay = QUALITY_JUDGE_RETRY_DELAY
+    return max(0.0, min(30.0, delay))
+
+
+def quality_result_timeout(config=None):
+    """Seconds a worker waits for its queued quality verdict before dropping the row.
+
+    Covers the whole judge conversation including retries, so the default is generous
+    (``quality.result_timeout``, 600s). Only a judge that is wedged this long is dropped
+    on time-out -- normal retries finish far sooner.
+    """
+    cfg = global_config if config is None else config
+    try:
+        timeout = float(cfg.get('quality.result_timeout', 600))
+    except (TypeError, ValueError):
+        timeout = 600.0
+    return max(30.0, timeout)
+
+
+def _judge_drop_reason(scores, flags, success):
+    """Why this judge result must drop the conversation, or None to keep it.
+
+    Dropped (never saved to the dataset):
+      * ``invalid_json``  -- the reply was not parseable JSON (final, never retried)
+      * ``logic_zero``    -- the judge scored the conversation's ``logic`` at 0 (final)
+      * ``judge_failed``  -- transient failures survived every retry
+
+    A judge that never ran (no scoring API configured) is not a failure: the caller keeps
+    its heuristic scores.
+    """
+    flags = list(flags or [])
+    if JUDGE_SKIP_FLAGS.intersection(flags) and not success:
+        return None
+    if DROP_REASON_INVALID_JSON in flags or "llm_invalid_json" in flags:
+        return DROP_REASON_INVALID_JSON
+    if success:
+        try:
+            logic_score = scores.get("logic")
+        except AttributeError:
+            logic_score = None
+        if logic_score is not None and int(logic_score) <= 0:
+            return DROP_REASON_LOGIC_ZERO
+        return None
+    return DROP_REASON_JUDGE_FAILED
+
 
 def is_roleplay_scoring_enabled(config=None):
     """Whether the roleplay-specific dimensions are included in this run's scoring.
@@ -127,8 +215,14 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
         },
         "flags": ["short_response", "low_diversity"],
         "scored_at": "2025-01-15 14:32:00",
-        "method": "hybrid"  # or "heuristic_only" or "llm_only"
+        "method": "hybrid"  # or "heuristic_only" or "llm_only" or "dropped"
     }
+
+    When the LLM judge is enabled and rejects the conversation -- invalid JSON, a ``logic``
+    score of 0, or a transient failure that survived every retry -- the result is a DROP:
+    ``{"dropped": True, "drop_reason": "invalid_json"|"logic_zero"|"judge_failed", ...}``
+    with ``method`` ``"dropped"``. Callers must not write a dropped conversation to the
+    dataset (``generation._score_and_store_quality`` / the worker write path enforce this).
 
     ``scene_characters`` (the scene's character names) feeds the opt-in
     voice-distinctiveness heuristic; it is ignored when the toggle is off.
@@ -179,6 +273,26 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
             character_profile_text=character_profile_text,
             logic_findings=logic_findings
         )
+        drop_reason = _judge_drop_reason(llm_scores, llm_flags, llm_success)
+        if drop_reason:
+            # v11.4: the judge is the gatekeeper for the dataset. A judge that is still
+            # failing after its retries, a reply that is not valid JSON, and a logic score
+            # of 0 all DROP the conversation: no score is stored, no review flag is set,
+            # and the caller does not write the row. There is no heuristic fallback for a
+            # failed judge any more -- a fallback score would silently let an unjudged
+            # conversation into the dataset.
+            log_message(
+                f"Thread {thread_id}: Quality judge dropped {task_id} ({drop_reason}); "
+                f"the conversation is not saved to the dataset.", "WARNING")
+            return {
+                "dropped": True,
+                "drop_reason": drop_reason,
+                "composite": 0,
+                "dimensions": {k: 0 for k in active_scoring_dimensions()},
+                "flags": list(llm_flags),
+                "scored_at": time.strftime('%Y-%m-%d %H:%M:%S'),
+                "method": "dropped",
+            }
         if llm_success:
             method = "hybrid"
             for dim in LLM_DIMENSIONS:
@@ -192,11 +306,12 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
                         dimension_scores[dim] = llm_scores[dim]
             flags.extend(llm_flags)
         else:
-            # Fallback: estimate LLM dimensions heuristically
-            log_message(f"Thread {thread_id}: LLM quality scoring failed for {task_id}. Using heuristic fallback.", "WARNING")
+            # No judge ran (not configured): keep the heuristic estimates.
+            log_message(f"Thread {thread_id}: LLM quality scoring unavailable for {task_id}. Using heuristic estimates.", "WARNING")
             for dim in LLM_DIMENSIONS:
                 dimension_scores[dim] = _heuristic_fallback_for_llm_dim(dim, conversation_history)
-            flags.append("llm_scoring_fallback")
+            flags.extend(llm_flags)
+            flags.append("llm_scoring_unavailable")
     else:
         # No LLM: use heuristic estimates for all dimensions
         for dim in LLM_DIMENSIONS:
@@ -953,16 +1068,61 @@ def _repair_json(content):
 
 
 def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
-                      file_name, sampler_settings, prompt, expected_dims=None):
+                      file_name, sampler_settings, prompt, expected_dims=None, max_attempts=None):
     """Sends ``prompt`` to the quality-scoring LLM and parses the JSON reply.
 
     Shared by the conversation-level judge (``_score_with_llm``, which expects the
     score dimensions in ``expected_dims`` -- defaults to every LLM dimension) and the
-    per-turn logic gate (``check_logic``). Returns ``(scores_dict, flags, success_bool)``;
-    non-score fields (``logic_evidence``, ``rewrite_instruction``, ``notes``) are parsed
-    into the caller-facing flags but stripped from ``scores_dict`` so score consumers
-    only ever see 0-100 numbers.
+    per-turn logic gate (``check_logic``). Returns
+    ``(scores_dict, flags, success_bool, extras_dict)``; non-score fields
+    (``logic_evidence``, ``rewrite_instruction``, ``notes``) are parsed into the
+    caller-facing extras but stripped from ``scores_dict`` so score consumers only ever
+    see 0-100 numbers.
+
+    Retry policy (v11.4): a TRANSIENT failure -- a network error, a timeout, a non-200
+    status, or an unreadable response envelope -- is retried up to ``max_attempts``
+    times (``quality.judge_max_attempts``, default 3; ``1`` disables retries) with a
+    linear back-off of ``quality.judge_retry_delay`` seconds. An INVALID JSON reply is
+    final and is never retried: the returned flags carry ``llm_invalid_json`` and the
+    callers drop the conversation. The final flags always describe the last attempt.
     """
+    attempts = judge_max_attempts() if max_attempts is None else max(1, int(max_attempts))
+    delay = judge_retry_delay()
+
+    last = ({}, ["llm_exception"], False, {})
+    for attempt in range(1, attempts + 1):
+        scores, flags, success, extras = _call_logic_judge_once(
+            api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+            file_name, sampler_settings, prompt, expected_dims=expected_dims,
+        )
+        last = (scores, flags, success, extras)
+        if success:
+            if attempt > 1:
+                log_message(
+                    f"Thread {thread_id}: Quality judge succeeded for {task_id} on attempt "
+                    f"{attempt}/{attempts}.", "INFO")
+            return last
+        if JUDGE_FINAL_FAILURE_FLAGS.intersection(flags):
+            log_message(
+                f"Thread {thread_id}: Quality judge returned invalid JSON for {task_id}; "
+                f"not retrying (attempt {attempt}/{attempts}).", "WARNING")
+            return last
+        if attempt < attempts:
+            wait = delay * attempt
+            log_message(
+                f"Thread {thread_id}: Quality judge attempt {attempt}/{attempts} failed for "
+                f"{task_id} ({', '.join(flags)}); retrying in {wait:.1f}s.", "WARNING")
+            if wait > 0:
+                time.sleep(wait)
+    log_message(
+        f"Thread {thread_id}: Quality judge failed for {task_id} after {attempts} attempt(s) "
+        f"({', '.join(last[1])}); the conversation will be dropped.", "ERROR")
+    return last
+
+
+def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+                           file_name, sampler_settings, prompt, expected_dims=None):
+    """One judge request. See ``_call_logic_judge`` for the retry wrapper around it."""
     messages = [
         {"role": "system", "content": "You are a strict JSON-only API. Respond with ONLY a valid JSON object. No markdown, no code blocks, no explanations, no extra text. Just raw JSON."},
         {"role": "user", "content": prompt}
@@ -1051,6 +1211,9 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
             except json.JSONDecodeError as e2:
                 log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}: {e2}. Content preview: {content[:500]}", "WARNING")
                 return {}, ["llm_invalid_json"], False, {}
+        if not isinstance(parsed, dict):
+            log_message(f"Thread {thread_id}: Quality scoring LLM returned JSON that is not an object for {task_id}: {content[:200]}", "WARNING")
+            return {}, ["llm_invalid_json"], False, {}
         flags = []
 
         dims = expected_dims if expected_dims is not None else (
@@ -1059,8 +1222,12 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
         scores = {}
         for dim in dims:
             val = parsed.get(dim, 50)
-            scores[dim] = max(0, min(100, int(val)))
-            if val < 40:
+            try:
+                numeric = float(val)
+            except (TypeError, ValueError):
+                numeric = 50.0
+            scores[dim] = max(0, min(100, int(numeric)))
+            if numeric < 40:
                 flags.append(f"low_{dim}")
 
         # Keep non-score fields out of the score dict so callers never have to know
@@ -1400,15 +1567,18 @@ def shutdown_quality_queue():
 
 def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_idx,
                             file_name, character_profile_text, scene_characters,
-                            logic_findings):
-    """
-    Enqueue a quality scoring request. This is non-blocking and returns immediately.
-    The actual scoring happens asynchronously in the processor thread.
-    
-    When the queue processor is not running (e.g., in tests or if not initialized),
-    this falls back to synchronous scoring to maintain compatibility.
-    
-    Returns True if successfully queued/scored, False if the queue is shut down.
+                            logic_findings, timeout=None):
+    """Scores one conversation and returns the verdict (never ``None``).
+
+    The judge is a gatekeeper for the dataset: the worker needs the verdict BEFORE it writes
+    the row, because a dropped conversation must never reach output.jsonl (v11.4). So this
+    call queues the request (the processor still runs one judge at a time) and waits for its
+    result. When the processor is not running (tests, or scoring disabled) it scores inline.
+
+    Returns the ``score_conversation`` dict. A dropped conversation carries
+    ``{"dropped": True, "drop_reason": ...}``; a queue that could not accept the job (full,
+    or the wait timed out) is reported as a dropped row with reason ``judge_failed`` so an
+    unjudged conversation never slips into the dataset.
     """
     if not _quality_processor_running:
         # Fallback to synchronous scoring when processor isn't running (e.g., tests)
@@ -1424,23 +1594,12 @@ def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_i
                 scene_characters=scene_characters,
                 logic_findings=logic_findings
             )
-            with app_state.quality_lock:
-                if task_id not in app_state.quality_scores:
-                    app_state.quality_scores[task_id] = qr
-            min_threshold = global_config.get('quality.min_score_threshold', 50)
-            if qr.get('composite', 0) < min_threshold:
-                with app_state.quality_review_lock:
-                    app_state.quality_review_ids.add(task_id)
-            log_message(
-                f"Thread {thread_id}: Quality score for {task_id}: "
-                f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
-                "INFO"
-            )
-            return True
         except Exception as e:
             log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e}", "ERROR")
-            return False
-    
+            qr = _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+        return _record_quality_result(qr, task_id, thread_id, "Quality score")
+
+    job = {"event": threading.Event(), "result": None, "abandoned": False}
     try:
         _quality_scoring_queue.put((
             conversation_history,
@@ -1450,13 +1609,77 @@ def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_i
             file_name,
             character_profile_text,
             scene_characters,
-            logic_findings
+            logic_findings,
+            job,
         ), block=False)
         log_message(f"Thread {thread_id}: Quality scoring queued for {task_id} (queue size: {_quality_scoring_queue.qsize()}).", "DEBUG")
-        return True
     except Full:
-        log_message(f"Thread {thread_id}: Quality scoring queue full, dropping score for {task_id}.", "WARNING")
-        return False
+        log_message(f"Thread {thread_id}: Quality scoring queue full for {task_id}; the conversation is dropped.", "WARNING")
+        return _record_quality_result(_dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_queue_full"]),
+                                      task_id, thread_id, "Quality processor")
+
+    wait_seconds = quality_result_timeout() if timeout is None else max(1.0, float(timeout))
+    deadline = time.time() + wait_seconds
+    while not job["event"].wait(0.25):
+        # A Stop must not hang on a queued judge: abandon the wait and drop the row.
+        if app_state.stop_processing or time.time() >= deadline:
+            break
+    if not job["event"].is_set():
+        job["abandoned"] = True
+        log_message(
+            f"Thread {thread_id}: Timed out after {wait_seconds:.0f}s waiting for the quality "
+            f"verdict on {task_id}; the conversation is dropped.", "ERROR")
+        return _record_quality_result(_dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_timeout"]),
+                                      task_id, thread_id, "Quality processor")
+    return job["result"] or _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+
+
+def _dropped_result(reason, flags=None):
+    """A score_conversation-shaped result for a conversation the judge rejected."""
+    return {
+        "dropped": True,
+        "drop_reason": reason,
+        "composite": 0,
+        "dimensions": {k: 0 for k in active_scoring_dimensions()},
+        "flags": list(flags or []),
+        "scored_at": time.strftime('%Y-%m-%d %H:%M:%S'),
+        "method": "dropped",
+    }
+
+
+def _record_quality_result(qr, task_id, thread_id, prefix="Quality score"):
+    """Stores a verdict: scores in ``quality_scores``, drops in ``quality_dropped``.
+
+    A dropped conversation is never stored as a score and never flagged for review -- it is
+    recorded only as a drop, so nothing downstream can pick it up as a scored row.
+    """
+    if qr.get("dropped"):
+        with app_state.quality_lock:
+            app_state.quality_dropped[task_id] = qr.get("drop_reason", DROP_REASON_JUDGE_FAILED)
+            app_state.dropped_task_ids.add(task_id)
+        log_message(
+            f"Thread {thread_id}: {prefix} for {task_id}: DROPPED "
+            f"({qr.get('drop_reason')}; flags: {qr.get('flags')}). Not saved to the dataset.",
+            "WARNING")
+        return qr
+
+    with app_state.quality_lock:
+        if task_id not in app_state.quality_scores:
+            app_state.quality_scores[task_id] = qr
+        # A later successful verdict supersedes an earlier drop for the same task (a dropped
+        # task stays retryable, so this happens on the retry).
+        app_state.quality_dropped.pop(task_id, None)
+        app_state.dropped_task_ids.discard(task_id)
+    min_threshold = global_config.get('quality.min_score_threshold', 50)
+    if qr.get('composite', 0) < min_threshold:
+        with app_state.quality_review_lock:
+            app_state.quality_review_ids.add(task_id)
+    log_message(
+        f"Thread {thread_id}: {prefix} for {task_id}: "
+        f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
+        "INFO"
+    )
+    return qr
 
 
 def _quality_queue_processor():
@@ -1474,7 +1697,8 @@ def _quality_queue_processor():
             continue
         
         (conversation_history, task_id, thread_id, api_slot_idx, file_name,
-         character_profile_text, scene_characters, logic_findings) = item
+         character_profile_text, scene_characters, logic_findings) = item[:8]
+        job = item[8] if len(item) > 8 else None
         
         log_message(f"Quality processor: Starting score for {task_id} (from thread {thread_id}).", "DEBUG")
         
@@ -1490,28 +1714,20 @@ def _quality_queue_processor():
                 scene_characters=scene_characters,
                 logic_findings=logic_findings
             )
-            
-            # Store the result (deduped by task_id)
-            with app_state.quality_lock:
-                if task_id not in app_state.quality_scores:
-                    app_state.quality_scores[task_id] = qr
-            
-            # Check threshold for review queue
-            min_threshold = global_config.get('quality.min_score_threshold', 50)
-            if qr.get('composite', 0) < min_threshold:
-                with app_state.quality_review_lock:
-                    app_state.quality_review_ids.add(task_id)
-            
-            log_message(
-                f"Quality processor: Score for {task_id}: "
-                f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
-                "INFO"
-            )
-            
+            # The waiting worker gave up (stop/timeout) and already recorded the drop; storing
+            # the late score too would resurrect a row that was dropped.
+            if job is not None and job.get("abandoned"):
+                log_message(f"Quality processor: {task_id} was abandoned by its worker; "
+                            f"discarding the late verdict.", "WARNING")
+            else:
+                _record_quality_result(qr, task_id, thread_id, "Quality processor")
         except Exception as e:
             log_message(f"Quality processor: Error scoring {task_id}: {e}", "ERROR")
-        
+            qr = _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
         finally:
+            if job is not None:
+                job["result"] = qr
+                job["event"].set()
             _quality_scoring_queue.task_done()
     
     log_message("Quality scoring processor thread exiting.", "DEBUG")

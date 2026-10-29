@@ -287,6 +287,9 @@ def save_generation_state():
                     'prompts.opening_mode': bool(global_config.get('prompts.opening_mode', False)),
                 },
                 'quality_scores': {k: v for k, v in app_state.quality_scores.items()},
+                # v11.4: judge drops persist so a resumed run does not retry (or re-flag) a
+                # conversation the judge already rejected.
+                'quality_dropped': dict(app_state.quality_dropped),
             }
             # If in master duplication mode and task queue has per-API progress, save it
             # Also save overall progress if not in duplication mode
@@ -912,6 +915,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         raw_subject_content_for_debug = ""
         raw_context_content_for_debug = ""
         turns_counted_this_attempt = 0            # Progress turns this attempt added (non-duplication mode)
+        quality_dropped_this_task = False         # v11.4: judge rejected this conversation; do not write it
         start_time_task_overall = time.time() # For timing the whole task processing
 
         with output_data_lock:
@@ -1603,10 +1607,19 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             scene_characters=scene_character_names,
                             logic_findings=logic_findings_this_task
                         )
+                        # v11.4: a judge drop stops the whole duplicated task -- the
+                        # per-API turn rows below must not reach the dataset either.
+                        if _quality_dropped(primary_turn_quality_result):
+                            quality_dropped_this_task = True
+                            log_message(
+                                f"Thread {thread_id}: Task {task_id} dropped by the quality judge "
+                                f"({primary_turn_quality_result.get('drop_reason')}) at turn {turn_num + 1}. "
+                                "NOT saving to output.jsonl.", "WARNING")
+                            break
                         # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
 
                     # Write all successful duplicated answers to their respective per-API files for this turn
-                    if assistant_answer: # Only proceed if at least one API gave an answer to continue the flow
+                    if assistant_answer and not quality_dropped_this_task:
                         for ans_text, original_slot_idx_for_file in all_duplicated_answers_for_output:
                             # CRITICAL FIX: Check if this specific answer had a refusal
                             # We need to track refusals per API call, not just overall
@@ -1800,6 +1813,21 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # --- End of Multi-Turn Loop ---
             if app_state.stop_processing: q.task_done(); continue 
 
+            # v11.4: the quality judge is a gatekeeper. A dropped conversation (invalid
+            # JSON, a logic score of 0, or every judge retry failed) is NEVER written to
+            # the dataset and is not marked complete, so nothing downstream can mistake it
+            # for a scored row.
+            if quality_dropped_this_task:
+                with app_state.task_queue_ui_lock:
+                    app_state.pending_task_ids.discard(task_id)
+                app_state.completed_task_ids.discard(task_id)
+                log_message(
+                    f"Thread {thread_id}: Task {task_id} was dropped by the quality judge. "
+                    "Not written to the dataset.", "WARNING")
+                save_generation_state()
+                q.task_done()
+                continue
+
             # --- Write Completed Conversation (Non-Duplication Mode) or Mark Task Complete (Duplication Mode) ---
             if not master_duplication_enabled_local:
                 # In non-duplication mode, conversation_history_for_output contains the full conversation.
@@ -1837,8 +1865,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     scene_characters=scene_character_names,
                                     logic_findings=logic_findings_this_task
                                 )
+                                # v11.4: the quality judge is a gatekeeper. A dropped
+                                # conversation (invalid JSON, a logic score 0, or every retry
+                                # failed) is NOT written to the dataset.
+                                if _quality_dropped(final_quality_result):
+                                    quality_dropped_this_task = True
+                                    log_message(
+                                        f"Thread {thread_id}: Task {task_id} dropped by the quality judge "
+                                        f"({final_quality_result.get('drop_reason')}). NOT saving to output.jsonl.",
+                                        "WARNING"
+                                    )
                                 # Optional: filter output by quality threshold
-                                if final_quality_result and app_state.quality_output_filter:
+                                elif final_quality_result and app_state.quality_output_filter:
                                     min_threshold = global_config.get('quality.min_score_threshold', 50)
                                     if final_quality_result['composite'] < min_threshold:
                                         log_message(
@@ -1849,30 +1887,37 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         # The row is still written and carries its score in its
                                         # metadata, so it can be filtered on quality_composite.
 
-                            with output_data_lock:
-                                if task_id not in app_state.completed_task_ids:
-                                    write_conversation(None, conversation_history_for_output, current_remove_reasoning,
-                                        current_remove_em_dash, current_remove_asterisks,
-                                        current_remove_asterisk_space_asterisk, current_remove_all_asterisks,
-                                        current_ensure_space_after_line_break, current_remove_markdown,
-                                        current_output_format, task_id, api_slot_idx_for_output_file=None,
-                                        mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
-                                        character_names=scene_character_names,
-                                        emotional_state=current_emotional_state_label,
-                                        user_emotional_state=current_user_emotional_state_label,
-                                        setting=meta_setting,
-                                        opening_mode=opening_mode_local,
-                                        has_greeting=has_greeting,
-                                        num_characters=len(opening_chars),
-                                        quality_result=final_quality_result,
-                                        include_metadata=include_metadata_local)
-                                    app_state.completed_task_ids.add(task_id)
-                                    log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
-                                else:
-                                    log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
-                            # Update UI tracking on success
-                            with app_state.task_queue_ui_lock:
-                                app_state.pending_task_ids.discard(task_id)
+                            if quality_dropped_this_task:
+                                # v11.4: the judge rejected this conversation, so it is never
+                                # written, never marked complete and never flagged.
+                                with app_state.task_queue_ui_lock:
+                                    app_state.pending_task_ids.discard(task_id)
+                                app_state.completed_task_ids.discard(task_id)
+                            else:
+                                with output_data_lock:
+                                    if task_id not in app_state.completed_task_ids:
+                                        write_conversation(None, conversation_history_for_output, current_remove_reasoning,
+                                            current_remove_em_dash, current_remove_asterisks,
+                                            current_remove_asterisk_space_asterisk, current_remove_all_asterisks,
+                                            current_ensure_space_after_line_break, current_remove_markdown,
+                                            current_output_format, task_id, api_slot_idx_for_output_file=None,
+                                            mask_greeting=has_greeting, leading_placeholder=leading_placeholder,
+                                            character_names=scene_character_names,
+                                            emotional_state=current_emotional_state_label,
+                                            user_emotional_state=current_user_emotional_state_label,
+                                            setting=meta_setting,
+                                            opening_mode=opening_mode_local,
+                                            has_greeting=has_greeting,
+                                            num_characters=len(opening_chars),
+                                            quality_result=final_quality_result,
+                                            include_metadata=include_metadata_local)
+                                        app_state.completed_task_ids.add(task_id)
+                                        log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
+                                    else:
+                                        log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
+                                # Update UI tracking on success
+                                with app_state.task_queue_ui_lock:
+                                    app_state.pending_task_ids.discard(task_id)
                             save_generation_state()
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {expected_messages} messages, got {actual_messages}. NOT saving to output.jsonl.", "WARNING")
@@ -4152,30 +4197,33 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     FINDINGS block so the conversation-level 'logic' dimension takes them into account
     without re-deriving the same contradictions from scratch.
 
-    As of v11.2, this function enqueues the scoring request to a dedicated queue processor
-    instead of blocking the worker thread. The actual scoring happens asynchronously.
-    When the queue processor is not running (tests), falls back to synchronous scoring.
-    Returns the quality result dict on success (synchronous fallback), None otherwise."""
+    Returns the verdict dict, or ``None`` when quality scoring is off/disabled. A verdict
+    with ``dropped=True`` means the judge rejected the conversation (invalid JSON, a logic
+    score of 0, or every retry failed): it is recorded in ``app_state.quality_dropped`` and
+    the caller MUST NOT write the row to the dataset (v11.4).
+
+    The judge is a gatekeeper, so this call waits for its verdict (the dedicated queue
+    processor still runs one judge at a time). v11.2's fire-and-forget behaviour let a row be
+    written before the judge had spoken, which made "drop it" impossible to enforce.
+    """
     try:
-        # v11.2: Use the quality scoring queue system to avoid blocking worker threads
-        # and to ensure the LLM judge processes one request at a time
-        queued = quality.enqueue_quality_scoring(
+        return quality.enqueue_quality_scoring(
             conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
             character_profile_text, scene_characters, logic_findings
         )
-        if queued:
-            log_message(f"Thread {thread_id}: Quality scoring queued for {task_id}.", "DEBUG")
-            # In synchronous fallback mode (tests), enqueue_quality_scoring returns the result
-            # In async mode, it returns True and we return None
-            # Check if the result was already stored (sync mode)
-            with app_state.quality_lock:
-                if task_id in app_state.quality_scores:
-                    return app_state.quality_scores[task_id]
-        # Async mode: result will be stored later by the processor
-        return None
     except Exception as e_quality:
         log_message(f"Thread {thread_id}: Quality scoring queue error for {task_id}: {e_quality}", "ERROR")
-        return None
+        # An unjudged conversation must not reach the dataset.
+        return quality._dropped_result(quality.DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+
+
+def _quality_dropped(quality_result):
+    """True when the quality judge rejected this conversation (v11.4).
+
+    Such a row is not written to output.jsonl, not stored as a score and not flagged for
+    review: the judge's job is to keep unjudged/rejected conversations out of the dataset.
+    """
+    return bool(isinstance(quality_result, dict) and quality_result.get("dropped"))
 
 
 def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_FILE_PATH is used

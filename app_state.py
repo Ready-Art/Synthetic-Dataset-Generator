@@ -116,6 +116,12 @@ use_conversation_history_for_fixers = True  # If True, pass conversation history
 # --- Quality Review Queue ---
 quality_review_ids = set()  # task_ids flagged for human review
 quality_review_lock = Lock()
+# --- Judge drops (v11.4) ---
+# Conversations the quality judge rejected (invalid JSON, a logic score of 0, or every
+# retry exhausted). They are never written to the dataset; the reasons are kept so the
+# dashboard can report them. Guarded by quality_lock.
+quality_dropped = {}  # {task_id: reason}
+dropped_task_ids = set()
 master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
 live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
 
