@@ -29,6 +29,67 @@ from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
 SPACING = 8  # UI padding constant (mirrors generate.py)
 QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate.py (UI label only)
 
+# ttk.Spinbox needs an explicit field colour on the 'superhero' theme. The theme configures the
+# Spinbox text as white (foreground #ffffff) but leaves `fieldbackground` unset, so the field
+# falls back to the platform's native white entry background: white text on white, i.e. an
+# apparently empty box the user cannot read. Setting `fieldbackground` to the theme's own entry
+# colour (#2f4357, what TEntry uses) restores the contrast the rest of the form has.
+SPINBOX_FIELD_STYLE = 'Readable.TSpinbox'
+
+
+def _relative_luminance(widget, color):
+    """WCAG relative luminance of a Tk colour name or #rrggbb string (None when unusable)."""
+    try:
+        red, green, blue = widget.winfo_rgb(color)
+    except tk.TclError:
+        return None
+    channels = []
+    for value in (red, green, blue):
+        value = value / 257.0 / 255.0
+        channels.append(value / 12.92 if value <= 0.03928
+                        else ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def color_contrast(widget, foreground, background):
+    """WCAG contrast ratio between two Tk colours, or 0.0 when either is unreadable."""
+    first = _relative_luminance(widget, foreground)
+    second = _relative_luminance(widget, background)
+    if first is None or second is None:
+        return 0.0
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)
+
+
+def configure_spinbox_style(widget):
+    """Make every spinbox field readable on the active theme; returns the style name.
+
+    Configured once per toplevel by ``ConfigEditor.__init__``. The colours are taken from the
+    theme's own ``TEntry`` so a spinbox matches the text fields beside it, but the pair is only
+    accepted when it actually has contrast: a theme (or platform) that reports a field colour equal
+    to its text colour would reproduce the white-on-white bug this exists to prevent, so the
+    fallback pair is used instead. The ``map`` entries keep the text legible while a spinbox is
+    disabled, which a plain ``configure`` would not do -- and the Regex Watch rounds box starts
+    disabled because the feature ships off.
+    """
+    style = ttk.Style(widget)
+    try:
+        field_bg = style.lookup('TEntry', 'fieldbackground') or '#2f4357'
+        text_fg = style.lookup('TEntry', 'foreground') or '#ebebeb'
+        if color_contrast(widget, text_fg, field_bg) < 4.5:
+            field_bg, text_fg = '#2f4357', '#ebebeb'
+        border = style.lookup('TEntry', 'bordercolor') or '#4d5d6c'
+        style.configure(SPINBOX_FIELD_STYLE, fieldbackground=field_bg, foreground=text_fg,
+                        background=style.lookup('TEntry', 'background') or '#2b3e50',
+                        bordercolor=border, lightcolor=field_bg, darkcolor=field_bg,
+                        arrowcolor=text_fg)
+        style.map(SPINBOX_FIELD_STYLE,
+                  fieldbackground=[('disabled', '#3a4a5a'), ('readonly', field_bg)],
+                  foreground=[('disabled', '#9aa7b4')])
+    except tk.TclError:
+        return 'TSpinbox'
+    return SPINBOX_FIELD_STYLE
+
 
 def validate_url(url):
     try:
@@ -70,14 +131,23 @@ def regex_watch_pattern_values(editor):
 
 
 def wrapped_checkbutton(parent, text, **kwargs):
-    """Keep long option descriptions readable without shrinking the checkbox."""
+    """Keep long option descriptions readable without shrinking the checkbox.
+
+    The description is wrapped against *parent*, never against the inner frame: the frame is
+    sized BY this label (it is gridded with ``sticky="w"`` at most call sites, so it takes its
+    requested width from the label). Wrapping against the frame therefore closes a feedback loop --
+    the label narrows, the frame narrows with it, the next ``<Configure>`` narrows the label
+    again -- which collapsed the text to one character per line (a "skyscraper" column ~20px wide
+    and hundreds of pixels tall). The parent always owns a real allocated width.
+    """
     frame = ttk.Frame(parent)
     frame.columnconfigure(1, weight=1)
     button = ttk.Checkbutton(frame, **kwargs)
     button.grid(row=0, column=0, sticky="nw", padx=(0, 4))
     label = ttk.Label(frame, text=text, justify="left", wraplength=1)
     label.grid(row=0, column=1, sticky="ew")
-    wrap_label(label, frame, padding=40)
+    # 60px covers the checkbox, its right padding and the label's own inner padding.
+    wrap_label(label, parent, padding=60)
     def toggle(event):
         button.focus_set()
         button.invoke()
@@ -97,6 +167,8 @@ class ConfigEditor(tk.Toplevel):
         self.no_user_impersonation_var = no_user_impersonation_var
         self.on_config_saved = on_config_saved
         self.title("Configuration Editor")
+        # Readable spinbox fields (see configure_spinbox_style); runs before any tab is built.
+        self.spinbox_style = configure_spinbox_style(self)
         fit_window(self, preferred=(1280, 900), minimum=(760, 520))
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
@@ -654,23 +726,14 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(pb_label, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
         self.persona_breakthrough_turn_var_editor = tk.StringVar(value="2")
-        # Explicit black-on-white: the 'superhero' theme gives ttk.Spinbox white text, but on
-        # some platforms the field falls back to a native white background, making the number
-        # unreadable (white on white). A dedicated style + direct widget options override the
-        # theme on every platform; the map keeps the text legible when disabled.
-        try:
-            self.persona_breakthrough_style = 'PersonaBreakthrough.TSpinbox'
-            ttk.Style(self).configure(self.persona_breakthrough_style,
-                                      foreground="#000000", background="#ffffff")
-            ttk.Style(self).map(self.persona_breakthrough_style,
-                                foreground=[("disabled", "#808080")],
-                                background=[("disabled", "#f0f0f0")])
-        except tk.TclError:
-            self.persona_breakthrough_style = None
+        # The 'superhero' theme gives ttk.Spinbox white text but leaves its field background
+        # unset, so the field can fall back to native white and the number becomes white-on-white.
+        # self.spinbox_style (configured in __init__) pins the field to the theme's entry colours
+        # and maps a readable disabled state, so every spinbox in this window matches.
         self.persona_breakthrough_spinbox = ttk.Spinbox(
             self.character_engine_content_frame, from_=1, to=99,
             textvariable=self.persona_breakthrough_turn_var_editor, width=6,
-            style=self.persona_breakthrough_style or 'TSpinbox')
+            style=self.spinbox_style)
         self.persona_breakthrough_spinbox.grid(
             row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, 0), sticky="w")
         character_engine_row_idx += 1
@@ -962,14 +1025,20 @@ class ConfigEditor(tk.Toplevel):
 
         rounds_row = ttk.Frame(regex_lf)
         rounds_row.pack(fill="x", pady=(0, 5))
-        ttk.Label(rounds_row, text="Rewrite rounds per reply (1-5):").pack(side=tk.LEFT)
+        rounds_caption = ttk.Label(rounds_row, text="Rewrite rounds per reply (1-5):",
+                                   justify="left", wraplength=1)
+        rounds_caption.pack(side=tk.LEFT)
+        wrap_label(rounds_caption, regex_lf, padding=2 * SPACING)
         self.regex_watch_max_rounds_var_editor = tk.StringVar(value="3")
         self.regex_watch_rounds_spinbox = ttk.Spinbox(
-            rounds_row, from_=1, to=5, width=4, textvariable=self.regex_watch_max_rounds_var_editor)
+            rounds_row, from_=1, to=5, width=4, textvariable=self.regex_watch_max_rounds_var_editor,
+            style=self.spinbox_style)
         self.regex_watch_rounds_spinbox.pack(side=tk.LEFT, padx=(SPACING, 0))
 
-        ttk.Label(regex_lf, text="Patterns (one regular expression per entry):",
-                  wraplength=1).pack(fill="x")
+        patterns_caption = ttk.Label(regex_lf, text="Patterns (one regular expression per entry):",
+                                     justify="left", wraplength=1)
+        patterns_caption.pack(fill="x")
+        wrap_label(patterns_caption, regex_lf, padding=2 * SPACING)
         self.regex_watch_patterns = []
         listbox_frame = ttk.Frame(regex_lf)
         listbox_frame.pack(fill="both", expand=True, pady=(0, 5))

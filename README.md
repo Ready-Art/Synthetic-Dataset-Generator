@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.6.1
+# ReadyArt Synthetic Dataset Generator v11.6.2
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -1853,7 +1853,12 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.6.1 (Current)
+### v11.6.2 (Current)
+- **Configuration Editor text no longer collapses into a vertical column** — some explanatory captions in the editor were rendering one character per line, producing a tall, unreadable sliver of text. The worst cases were the description directly beneath **Rewrite rounds per reply** on the Detection tab and the **Logit Bias** block on the Samplers tab. The cause was a wrapping loop: a label was being wrapped against a container that was itself sized by that label, so each pass made the text narrower until it was a single character wide. Labels now wrap against a container with a real, allocated width, and every affected caption across all tabs (including the long **Enable Bad Words** description) reads as normal prose at every supported window size, down to the 760×520 minimum
+- **Spinbox number fields are readable again** — the **Rewrite rounds per reply (1-5)** box on the Detection tab appeared as a solid white box with no visible number and could not be typed into. The dark theme sets spinbox text to white but never sets the field background, so the field fell back to the platform's native white: white text on white. Both spinboxes in the editor (the rewrite rounds box and **Persona Breakthrough Turn**) now share a single `Readable.TSpinbox` style that pins the field to the theme's own entry colours, keeps the digits legible while the box is disabled, and falls back to a known-good colour pair if a theme reports an unusable combination. The rounds box is also fully usable once Regex Watch is enabled
+- **New regression test** — `tests/test_editor_readability_ui.py` builds the real Configuration Editor under the production theme and asserts that no label collapses to a column and that every spinbox keeps readable contrast, including its disabled state. It runs under `xvfb-run` and skips cleanly without a display
+
+### v11.6.1
 - **Regex Watch tab readability fix** — the **🔎 Regex Watch** dashboard tab rendered its two tables with the theme's default `Treeview` metrics, which pack a 10pt font (17px linespace) into a flat 20px row. Every row had 3px of slack, so cell text was clipped top and bottom and the whole tab read as scrunched, overlapping text. Both tables now use a dedicated `RegexWatch.Treeview` style with an explicit font and a row height measured from that font's linespace plus padding (the same fix the Review and Queue tables already carry), and their columns are sized from the heading text so no header is truncated. The row height is stable at every supported window size
 
 ### v11.6

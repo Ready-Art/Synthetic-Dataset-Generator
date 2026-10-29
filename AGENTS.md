@@ -10,7 +10,8 @@ Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_per
 `tests/test_dataset_column_menu.py` also need a display; `tests/test_review_tab_ui.py` and
 `tests/test_regex_watch_tab_ui.py` need a display too (they build the real `generate.py` UI) and skip
 cleanly without one. `tests/test_quality_judge_settings_ui.py` also
-needs a display (it builds the real `ConfigEditor`) and skips cleanly without one.
+needs a display (it builds the real `ConfigEditor`) and skips cleanly without one, as does
+`tests/test_editor_readability_ui.py` (it also needs the 'superhero' theme, so run it under `xvfb-run`).
 
 ```sh
 python -m pip install -r requirements.txt            # the application
@@ -134,9 +135,11 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ### `config_editor.py` [7]
 **Purpose:** Configuration Editor UI window
-**Key:** `ConfigEditor` class, `save_config_handler()`, `load_config_handler()`, `DatasetsPanel` tab
+**Key:** `ConfigEditor` class, `save_config_handler()`, `load_config_handler()`, `DatasetsPanel` tab, `configure_spinbox_style()`, `color_contrast()`, `wrapped_checkbutton()`
 **Edit for:**
 - Add new config field → Add UI widget + bind to `save_config_handler()` + `load_config_handler()` (Quality Scoring section holds the `quality.roleplay_dimensions` toggle: `quality_roleplay_dims_var_editor`, saved/loaded with the rest of `quality.*`)
+- **Wrapping labels (v11.6.2)** → a `ttk.Label` created with `wraplength=1` is the "not wrapped yet" sentinel; it MUST be handed to `wrap_label(label, container, ...)` or it renders one character per line forever. **The container must own a real allocated width** — never a frame that is itself sized by the label (a `ttk.Frame` gridded `sticky="w"`, or a `.pack()`ed child). `wrap_label` binds `<Configure>` on that container and sets `wraplength` from its width, so wrapping against a label-sized frame closes a feedback loop: label narrows → frame narrows → label narrows again, collapsing to a ~20px-wide, several-hundred-pixel-tall column (the Detection "Rewrite rounds per reply" caption and the Samplers "Enable Bad Words" description both hit this). `wrapped_checkbutton()` therefore wraps its description against *parent*, not against its own inner frame. Guarded by `tests/test_editor_readability_ui.py`
+- **Spinboxes (v11.6.2)** → never create a bare `ttk.Spinbox`. The 'superhero' theme sets spinbox text white but leaves `fieldbackground` unset, so the field falls back to the native white entry background: white-on-white, an apparently empty box. Use `style=self.spinbox_style` (from `configure_spinbox_style()`, called once in `__init__` before any tab is built). It takes the colours from the theme's own `TEntry`, verifies them with `color_contrast()` (falls back to a known-good pair below 4.5:1), and `map`s a readable disabled state — the Regex Watch rounds box starts disabled. Guarded by `tests/test_editor_readability_ui.py`
 - New tab → Add `ttk.Frame` + `notebook.add()` in `__init__()`
 - Regex Watch panel (v11.6) → Detection tab `col1_frame`, a `LabelFrame` with `regex_watch_enabled_var_editor` + `_toggle_regex_watch_fields()`, a rounds `Spinbox` (`regex_watch_max_rounds_var_editor`), a Listbox backed by the plain list `self.regex_watch_patterns` (`_render_regex_patterns()`), an Entry plus Add/Update, Remove, Test and Restore buttons, and a status label. Handlers live in `ConfigEditor`; the save/validate helpers are MODULE-LEVEL (`regex_watch_rounds_value(editor)`, `regex_watch_enabled_value(editor)`, `regex_watch_pattern_values(editor)`) because the headless save-path tests drive a stub whose unknown attributes resolve to a Tk var — a method would be shadowed by that stub. **Patterns are saved VERBATIM**: `sanitize_input()` strips backslashes and quotes and would corrupt every expression
 - Validation → `validate_config_handler()`
@@ -300,6 +303,12 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Run:** `python -B tests/test_regex_watch_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
 **Edit for:** Add tab-layout cases; keep it free of source data, generation runs, network and model APIs
 
+### `tests/test_editor_readability_ui.py`
+**Purpose:** Display-dependent regression test for the v11.6.2 Configuration Editor readability fixes (builds the REAL `ConfigEditor` under the production 'superhero' theme; skips cleanly without a display)
+**Key:** no mapped label in any tab is taller than twice its width (a "skyscraper"), checked at a normal size AND at the 760x520 minimum; the Regex Watch patterns caption has a real `wraplength`; the Bad Words description is not a skyscraper; both spinboxes keep >=4.5:1 field/text contrast and >=3:1 while disabled; the rounds spinbox accepts typed input once enabled; every `TSpinbox` in the editor carries `SPINBOX_FIELD_STYLE`
+**Run:** `python -B tests/test_editor_readability_ui.py` (needs a display, e.g. under `xvfb-run`)
+**Edit for:** Add editor layout/contrast cases; keep it free of source data, generation runs, network and model APIs
+
 ### `tests/test_review_tab_ui.py`
 **Purpose:** Display-dependent regression test for the v11.4 Review tab (builds the REAL `generate.py` UI; skips cleanly without a display)
 **Key:** full-task-id Treeview items + single-click selection; transcript rendered from the output JSONL; the detail pane is read-only and scrollable; a refresh tick keeps the selection and the scroll position; Export Flagged → JSONL writes every row with `_quality_score`; the filter narrows and restores the list
@@ -433,6 +442,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Change how the judge's JSON is parsed (v11.5) | `quality.py` (`_extract_json_object()` ladder plus `_repair_json()` / `_lenient_json()` / `_repair_truncated_json()` / `_salvage_scores_from_text()` / `_coerce_score()`), `config/config.yml` (`quality.judge_json_repair_attempts` / `judge_max_tokens` / `judge_request_timeout` / `judge_structured_output`), `config_editor.py` (four fields), `tests/test_quality_json_robustness.py` / `tests/test_quality_judge_settings_ui.py` — keep the rule that only a genuinely unparsable reply drops a row |
 | Change the Review tab | `generate.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_iter_review_records()`, the `elif tab_name == "🔍 Review"` layout block), `tests/test_review_tab_ui.py` |
 | Fix a cramped / clipped Treeview table | `generate.py` — give the table its own style with an explicit `font` + `rowheight` from `font.metrics('linespace')`, and size columns from the heading text. Regex Watch does this via `REGEX_TREE_STYLE`, `_configure_regex_tree_style()`, `_configure_regex_tree_columns()`; guarded by `tests/test_regex_watch_tab_ui.py` |
+| Fix a label rendering one character per line (a "skyscraper") | `config_editor.py` — every `wraplength=1` label needs a `wrap_label(label, container, ...)` call, and the container must NOT be sized by that label (never a `ttk.Frame` gridded `sticky="w"`, never a frame packed around it). `wrapped_checkbutton()` wraps against `parent` for this reason. Guarded by `tests/test_editor_readability_ui.py` |
+| Fix an unreadable / white-on-white spinbox | `config_editor.py` — `configure_spinbox_style()` + `SPINBOX_FIELD_STYLE`; pass `style=self.spinbox_style` to every `ttk.Spinbox`. The theme sets white text but no `fieldbackground`. Guarded by `tests/test_editor_readability_ui.py` |
 | Add API profile | `config/api_profiles.yml` (new profile definition), no code change needed |
 | Modify API profile params | `config/api_profiles.yml` (`allow`, `rename` lists), `api_profiles.py` (if transform logic changes) |
 | Add character profile | `config/config.yml` (`prompts.character.characters[]`), `config_editor.py` (UI fields) |
