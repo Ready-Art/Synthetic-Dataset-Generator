@@ -25,6 +25,9 @@ import time
 import random
 import requests
 import hashlib
+import threading
+from queue import Queue, Empty
+from threading import Lock
 
 import app_state
 import text_utils
@@ -1224,3 +1227,164 @@ def get_quality_stats():
             "flag_counts": flag_counts,
             "threshold_failures": threshold_failures
         }
+
+
+# =============================================================================
+# Quality Scoring Queue System (v11.2)
+# =============================================================================
+# The LLM quality judge can only process one request at a time. This queue
+# system ensures that quality scoring requests from multiple worker threads
+# are processed sequentially without blocking the workers or losing requests.
+# =============================================================================
+
+# Quality scoring queue: holds tuples of (conversation_history, task_id, thread_id,
+# api_slot_idx, file_name, character_profile_text, scene_characters, logic_findings)
+_quality_scoring_queue = Queue()
+_quality_queue_lock = Lock()
+_quality_processor_thread = None
+_quality_processor_running = False
+
+
+def initialize_quality_queue():
+    """Initialize the quality scoring queue system. Called once at app startup."""
+    global _quality_processor_thread, _quality_processor_running
+    with _quality_queue_lock:
+        if _quality_processor_running:
+            return  # Already initialized
+        _quality_processor_running = True
+        _quality_processor_thread = threading.Thread(
+            target=_quality_queue_processor,
+            daemon=True,
+            name="QualityScoringProcessor"
+        )
+        _quality_processor_thread.start()
+        log_message("Quality scoring queue processor started.", "INFO")
+
+
+def shutdown_quality_queue():
+    """Shutdown the quality scoring queue processor. Called on app exit."""
+    global _quality_processor_running
+    with _quality_queue_lock:
+        _quality_processor_running = False
+    if _quality_processor_thread:
+        _quality_processor_thread.join(timeout=2.0)
+        log_message("Quality scoring queue processor stopped.", "INFO")
+
+
+def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_idx,
+                            file_name, character_profile_text, scene_characters,
+                            logic_findings):
+    """
+    Enqueue a quality scoring request. This is non-blocking and returns immediately.
+    The actual scoring happens asynchronously in the processor thread.
+    
+    When the queue processor is not running (e.g., in tests or if not initialized),
+    this falls back to synchronous scoring to maintain compatibility.
+    
+    Returns True if successfully queued/scored, False if the queue is shut down.
+    """
+    if not _quality_processor_running:
+        # Fallback to synchronous scoring when processor isn't running (e.g., tests)
+        log_message(f"Thread {thread_id}: Quality scoring queue not running, using synchronous scoring for {task_id}.", "DEBUG")
+        try:
+            qr = score_conversation(
+                conversation_history,
+                task_id,
+                thread_id,
+                api_slot_idx=api_slot_idx,
+                file_name=file_name,
+                character_profile_text=character_profile_text,
+                scene_characters=scene_characters,
+                logic_findings=logic_findings
+            )
+            with app_state.quality_lock:
+                if task_id not in app_state.quality_scores:
+                    app_state.quality_scores[task_id] = qr
+            min_threshold = global_config.get('quality.min_score_threshold', 50)
+            if qr.get('composite', 0) < min_threshold:
+                with app_state.quality_review_lock:
+                    app_state.quality_review_ids.add(task_id)
+            log_message(
+                f"Thread {thread_id}: Quality score for {task_id}: "
+                f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
+                "INFO"
+            )
+            return True
+        except Exception as e:
+            log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e}", "ERROR")
+            return False
+    
+    try:
+        _quality_scoring_queue.put((
+            conversation_history,
+            task_id,
+            thread_id,
+            api_slot_idx,
+            file_name,
+            character_profile_text,
+            scene_characters,
+            logic_findings
+        ), block=False)
+        log_message(f"Thread {thread_id}: Quality scoring queued for {task_id} (queue size: {_quality_scoring_queue.qsize()}).", "DEBUG")
+        return True
+    except Full:
+        log_message(f"Thread {thread_id}: Quality scoring queue full, dropping score for {task_id}.", "WARNING")
+        return False
+
+
+def _quality_queue_processor():
+    """
+    Background thread that processes quality scoring requests one at a time.
+    This ensures the LLM judge is never overwhelmed with concurrent requests.
+    """
+    log_message("Quality scoring processor thread started.", "DEBUG")
+    
+    while _quality_processor_running:
+        try:
+            # Wait for a scoring request with a timeout to allow checking _quality_processor_running
+            item = _quality_scoring_queue.get(timeout=1.0)
+        except Empty:
+            continue
+        
+        (conversation_history, task_id, thread_id, api_slot_idx, file_name,
+         character_profile_text, scene_characters, logic_findings) = item
+        
+        log_message(f"Quality processor: Starting score for {task_id} (from thread {thread_id}).", "DEBUG")
+        
+        try:
+            # Perform the actual scoring
+            qr = score_conversation(
+                conversation_history,
+                task_id,
+                thread_id,
+                api_slot_idx=api_slot_idx,
+                file_name=file_name,
+                character_profile_text=character_profile_text,
+                scene_characters=scene_characters,
+                logic_findings=logic_findings
+            )
+            
+            # Store the result (deduped by task_id)
+            with app_state.quality_lock:
+                if task_id not in app_state.quality_scores:
+                    app_state.quality_scores[task_id] = qr
+            
+            # Check threshold for review queue
+            min_threshold = global_config.get('quality.min_score_threshold', 50)
+            if qr.get('composite', 0) < min_threshold:
+                with app_state.quality_review_lock:
+                    app_state.quality_review_ids.add(task_id)
+            
+            log_message(
+                f"Quality processor: Score for {task_id}: "
+                f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
+                "INFO"
+            )
+            
+        except Exception as e:
+            log_message(f"Quality processor: Error scoring {task_id}: {e}", "ERROR")
+        
+        finally:
+            _quality_scoring_queue.task_done()
+    
+    log_message("Quality scoring processor thread exiting.", "DEBUG")

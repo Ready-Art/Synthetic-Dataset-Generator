@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.1
+# ReadyArt Synthetic Dataset Generator v11.2
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -650,6 +650,8 @@ gender: "female"  # "male", "female", or "neutral"
 > **Note:** Anti-Slop is a fully independent detection layer. It uses its own API (Slot 6), its own sampler settings, and its own phrase/fix lists. It is separate from Slop Detection (Slot 5) and can be configured independently.
 
 ### Quality Scoring
+
+**NEW in v11.2:** Quality scoring now uses an asynchronous queue system. When LLM scoring is enabled, scoring requests from worker threads are queued and processed sequentially by a dedicated processor thread. This prevents the LLM judge from being overwhelmed with concurrent requests, eliminates "invalid JSON" errors caused by rate limiting or timeouts, and ensures no scoring requests are lost. Worker threads no longer block waiting for quality scores.
 
 The quality scoring engine evaluates every completed conversation across six core dimensions and produces a weighted composite score from 0 to 100. Three additional roleplay-specific dimensions are available behind an opt-in toggle (see **Roleplay Dimensions** below).
 

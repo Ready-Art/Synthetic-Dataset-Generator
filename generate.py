@@ -1655,6 +1655,13 @@ def start_processing():
         total_threads = 10
         log_message(f"Warning: No valid thread count found in API configs. Using default of {total_threads}.", "WARNING")
     
+    # v11.2: Initialize the quality scoring queue system before starting worker threads
+    # This ensures quality scoring requests are processed asynchronously without blocking workers
+    if app_state.quality_enabled and global_config.get('quality.use_llm_scoring', False):
+        import quality
+        quality.initialize_quality_queue()
+        log_message("Quality scoring queue system initialized.", "INFO")
+    
     log_message(f"Starting {total_threads} worker threads based on API configurations.", "INFO")
     
     for i in range(total_threads):
@@ -2102,7 +2109,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.1",
+    text="v11.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2406,6 +2413,14 @@ def wait_for_threads_to_stop_for_clear():
         log_message("Stop & Clear: All worker threads joined or timed out.", "INFO")
         app_state.threads = [] # Clear the list of threads
 
+    # v11.2: Shutdown the quality scoring queue processor
+    try:
+        import quality
+        quality.shutdown_quality_queue()
+        log_message("Quality scoring queue processor shut down.", "INFO")
+    except Exception as e:
+        log_message(f"Error shutting down quality queue: {e}", "WARNING")
+
     app_state.processing_active = False # Mark processing as fully stopped
 
     if app_state.task_queue: # Clear and reinitialize the task queue
@@ -2488,6 +2503,14 @@ def quit_application():
                     except Exception as e:
                         log_message(f"Quit: Error joining thread {t.name}: {e}", "WARNING")
             log_message("Quit: All worker threads joined or timed out.", "INFO")
+
+        # v11.2: Shutdown the quality scoring queue processor
+        try:
+            import quality
+            quality.shutdown_quality_queue()
+            log_message("Quality scoring queue processor shut down.", "INFO")
+        except Exception as e:
+            log_message(f"Error shutting down quality queue: {e}", "WARNING")
 
         app_state.processing_active = False # Mark processing as fully stopped
 

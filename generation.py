@@ -4152,28 +4152,23 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     FINDINGS block so the conversation-level 'logic' dimension takes them into account
     without re-deriving the same contradictions from scratch.
 
-    Returns the quality result dict, or None on any failure."""
+    As of v11.2, this function enqueues the scoring request to a dedicated queue processor
+    instead of blocking the worker thread. The actual scoring happens asynchronously.
+    Returns None immediately (the result will be stored when the processor completes it)."""
     try:
-        qr = quality.score_conversation(conv_for_scoring, task_id, thread_id,
-                                        api_slot_idx=api_slot_idx, file_name=file_name,
-                                        character_profile_text=character_profile_text,
-                                        scene_characters=scene_characters,
-                                        logic_findings=logic_findings)
-        with app_state.quality_lock:
-            if task_id not in app_state.quality_scores:
-                app_state.quality_scores[task_id] = qr
-        min_threshold = global_config.get('quality.min_score_threshold', 50)
-        if qr.get('composite', 0) < min_threshold:
-            with app_state.quality_review_lock:
-                app_state.quality_review_ids.add(task_id)
-        log_message(
-            f"Thread {thread_id}: Quality score for {task_id}: "
-            f"{qr['composite']}/100 (method: {qr['method']}, flags: {qr['flags']})",
-            "INFO"
+        # v11.2: Use the quality scoring queue system to avoid blocking worker threads
+        # and to ensure the LLM judge processes one request at a time
+        queued = quality.enqueue_quality_scoring(
+            conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
+            character_profile_text, scene_characters, logic_findings
         )
-        return qr
+        if queued:
+            log_message(f"Thread {thread_id}: Quality scoring queued for {task_id}.", "DEBUG")
+        # Return None immediately since scoring is now async
+        # The result will be stored in app_state.quality_scores when the processor completes it
+        return None
     except Exception as e_quality:
-        log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e_quality}", "ERROR")
+        log_message(f"Thread {thread_id}: Quality scoring queue error for {task_id}: {e_quality}", "ERROR")
         return None
 
 
