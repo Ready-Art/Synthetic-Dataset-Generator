@@ -636,6 +636,22 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(self.placement_cache_warning_label, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
 
+        # Per-character emotional states/arcs: in a multi-character scene (2+ selected characters) each
+        # character gets its OWN randomly assigned state/arc instead of sharing one.
+        self.per_char_random_emotions_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(
+            self.character_engine_content_frame,
+            text="Per-Character Emotions (multi-character scenes: give each character its own random state/arc)",
+            variable=self.per_char_random_emotions_var_editor
+        ).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        per_char_emotion_help = ttk.Label(
+            self.character_engine_content_frame, wraplength=1,
+            text="(Applies only when 2 or more characters are selected. Off by default: every character "
+                 "shares one emotional state/arc.)")
+        per_char_emotion_help.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(per_char_emotion_help, self.character_engine_content_frame, padding=2 * SPACING)
+        character_engine_row_idx += 1
+
         # --- NEW (v10.6.0): User-side emotional states/arcs. Optional; steered onto the simulated
         # user's messages (opening question/first line + each continuation) rather than the character.
         self.enable_user_emotional_states_var_editor = tk.BooleanVar()
@@ -1485,6 +1501,7 @@ class ConfigEditor(tk.Toplevel):
                     # Saved as typed: an arc separates its stages with '->'
                     'states': [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'placement': self.emotion_placement_var_editor.get(),
+                    'per_character': self.per_char_random_emotions_var_editor.get(),
                 },
                 'user_emotional_states': {
                     'enabled': self.enable_user_emotional_states_var_editor.get(),
@@ -2054,6 +2071,7 @@ class ConfigEditor(tk.Toplevel):
             self.emotional_states_text.insert(tk.END, "\n".join(emotional_states_conf.get('states', [])))
             self.emotion_placement_var_editor.set(
                 note_placement(emotional_states_conf.get('placement')) or DEFAULT_NOTE_PLACEMENT)
+            self.per_char_random_emotions_var_editor.set(bool(emotional_states_conf.get('per_character', False)))
             self._toggle_emotional_states_fields()
 
             # NEW (v10.6.0): Load user-side emotional states/arcs

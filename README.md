@@ -1,8 +1,10 @@
-# ReadyArt Synthetic Dataset Generator v10.6.0
+# ReadyArt Synthetic Dataset Generator v10.7.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
 **NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v10.5.0-STABLE branch.
+
+**Changelog (v10.7.0):** Added an optional **Per-Character Emotions** toggle (Configuration Editor → Character Engine). In a multi-character scene (2 or more selected characters) with the option on, each character is now assigned its *own* randomly chosen emotional state/`->` arc from the pool instead of every character sharing one, and each character's note is scoped by its profile number (`For CHARACTER 1, …`) so the distinct emotions don't blur together; single-character scenes and the option-off path keep the original shared state/arc. The simulated USER's emotional states are untouched. The setting is persisted as `prompts.emotional_states.per_character` (off by default).
 
 **Changelog (v10.6.0):** Added an optional user-side emotional system so the simulated user in a generated conversation can carry their own emotional state (or a `->` emotional arc across the user's turns), steered onto the opening question/first line and each user continuation rather than the character's replies, with a matching toggle and text field in the Configuration Editor's Character Engine tab and a new `user_emotional_state` provenance field in the record metadata block (schema v4).
 

@@ -1253,6 +1253,8 @@ def start_processing():
     emotional_states_config = global_config.get('prompts.emotional_states', {})
     enable_emotional_states = emotional_states_config.get('enabled', False)
     emotional_states_list = emotional_states_config.get('states', [])
+    # When on, a multi-character scene gives each character its own random state/arc instead of one shared.
+    per_char_random_emotions = bool(emotional_states_config.get('per_character', False))
 
     if enable_emotional_states and not emotional_states_list:
         log_message("Warning: Emotional states enabled but no states defined. Disabling emotional states.", "WARNING")
@@ -1693,6 +1695,7 @@ def start_processing():
             'current_ooc_enabled': current_ooc_enabled,
             'user_emotional_states_enabled_local': enable_user_emotional_states,
             'user_emotional_states_list_local': user_emotional_states_list,
+            'per_char_random_emotions_local': per_char_random_emotions,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2076,7 +2079,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v10.6.0",
+    text="v10.7.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

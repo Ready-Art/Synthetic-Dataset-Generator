@@ -403,16 +403,23 @@ def _expand_emotional_arc(stages, num_turns):
     return [stages[min(last, max(0, round(p * last / span)))] for p in range(n)]
 
 
-def _emotional_state_injection(stage, arc_stages=None):
+def _emotional_state_injection(stage, arc_stages=None, who=None):
     """Prompt text for one assistant slot's emotional state. `stage` is the slot's state name;
     `arc_stages` is the whole arc it belongs to (from _split_emotional_arc_entry), or empty or a
-    single stage for a flat state."""
+    single stage for a flat state.
+
+    `who` is optional and names the character the state belongs to in a per-character multi-character
+    run; when given, the block is scoped to that character so each one carries its own distinct
+    emotion/arc instead of sharing one. With `who=None` the text is byte-identical to the legacy
+    single-character form (so dataset-compatibility runs are unaffected).
+    """
     if not stage:
         return ""
+    scope = f"For {who}, " if who else ""
     if arc_stages and len(arc_stages) > 1:
         instruction = (
             f"EMOTIONAL STATE (PROGRESSION): {' -> '.join(arc_stages).upper()}\n"
-            f"This conversation is a short emotional arc. In your current reply you are in the "
+            f"This conversation is a short emotional arc. {scope}In your current reply you are in the "
             f"{stage} state; earlier replies showed the earlier states, "
             f"later replies will show the later ones. Let the shift play out naturally through tone, "
             f"word choice, and what you choose to hide or reveal rather than announcing it.\n"
@@ -420,7 +427,7 @@ def _emotional_state_injection(stage, arc_stages=None):
     else:
         instruction = (
             f"EMOTIONAL STATE: {stage.upper()}\n"
-            f"Express this emotional state throughout your responses. "
+            f"{scope}Express this emotional state throughout your responses. "
             f"Use appropriate tone, word choice, and emotional expression that reflects {stage} feelings.\n"
         )
     return "\n\n" + instruction
@@ -600,6 +607,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_ooc_enabled=True,
            user_emotional_states_enabled_local=False,
            user_emotional_states_list_local=None,
+           per_char_random_emotions_local=False,
            ):
     """
     The main function executed by each worker thread.
@@ -619,6 +627,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
       * Each configured emotional state may be flat ('anxious') or an arc ('neutral -> anxious');
         arcs are expanded across the task's assistant turns so the state shifts over the
         conversation rather than being one static injection (see _expand_emotional_arc).
+      * Per-character emotions (per_char_random_emotions_local, off by default): when ON and 2+ of
+        the selected characters have distinct names, EACH character is assigned its OWN randomly
+        chosen state/arc from the pool, so a multi-character scene no longer has every character in
+        the same emotion at once. The note for each character is scoped by that character's name. A
+        single-character task keeps the original single shared state regardless of the option.
       * The same option exists on the SIMULATED USER's side (user_emotional_states_*): a chosen
         entry is flat or an '->' arc expanded across the task's USER turns (the generated opening
         question/first line plus each user continuation). Its note is appended to the ephemeral user
@@ -810,6 +823,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             character_injection = ""
             opening_chars = []  # Profiles actually added to the scene prompt (opening mode's greeting speaker)
             scene_character_names = []  # Names given to those profiles (random names when on), even when the prompt omits names
+            selected_profile_numbers = []  # profile header number of each VALID character (drives per-character emotion labels)
             meta_setting = ""  # First non-empty setting the scene prompt carries; "" when setting selection is off
             char_personas = []  # (profile number, inner persona) of selected characters that have one (breakthrough block)
             if enable_character_engine_local and character_list:
@@ -953,6 +967,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             f"--- END CHARACTER {idx+1} PROFILE ---\n"
                         )
                         character_profiles.append(character_profile)
+                        selected_profile_numbers.append(idx + 1)
                         opening_chars.append(selected_char)
                         scene_character_names.append(random_name)
                         # The ensemble is unified, so every selected char shares one setting; record it once.
@@ -978,24 +993,51 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             # Handle emotional states: a configured entry is either a flat state or an arc
             # ('neutral -> anxious'); arcs expand across the task's assistant turns.
-            current_emotional_state_label = ""  # metadata label: full arc string, or bare state
-            emotional_arc_turn_states = []  # one state name per assistant turn (1-based index-0)
+            # `emotion_plans` holds one (who, arc_stages, turn_states) tuple per distinct emotional
+            # voice in the scene. A single-character scene -- or a multi-character scene with the
+            # per-character option OFF -- yields ONE plan with who=None (the legacy shared state that
+            # every character used to get). With per-character emotions ON and 2+ characters selected,
+            # each character gets its OWN randomly chosen state/arc, who naming it so the notes do not
+            # blur together. The SIMULATED USER's states are handled separately and left unchanged.
+            emotion_plans = []  # list of (who|None, arc_stages, turn_states)
+            current_emotional_state_label = ""  # metadata label
+            emotional_arc_turn_states = []  # one state name per assistant slot (back-compat)
             arc_stages = ()
             if enable_emotional_states_local and emotional_states_list_local:
-                chosen_entry = str(random.choice(emotional_states_list_local)).strip()
-                current_emotional_state_label = chosen_entry
-                arc_stages = _split_emotional_arc_entry(chosen_entry)
-                if not arc_stages:
-                    current_emotional_state_label = ""
                 # In opening mode the greeting is an extra assistant slot (slot 1) before the turns
                 arc_slots = current_num_turns + 1 if opening_mode_local else current_num_turns
-                emotional_arc_turn_states = _expand_emotional_arc(arc_stages, arc_slots)
-                if current_emotional_state_label:
-                    log_message(
-                        f"Thread {thread_id}: Assigned emotional state '{current_emotional_state_label}' "
-                        f"for task {task_id} (turn plan: {' -> '.join(emotional_arc_turn_states)})",
-                        "DEBUG",
-                    )
+                if per_char_random_emotions_local and len(selected_profile_numbers) >= 2:
+                    # Multi-character, per-character on: a distinct emotion/arc per selected character.
+                    for number in selected_profile_numbers:
+                        chosen_entry = str(random.choice(emotional_states_list_local)).strip()
+                        stages = _split_emotional_arc_entry(chosen_entry)
+                        if not stages:
+                            continue
+                        who = f"CHARACTER {number}"
+                        plan = _expand_emotional_arc(stages, arc_slots)
+                        emotion_plans.append((who, stages, plan))
+                        current_emotional_state_label += ("; " if current_emotional_state_label else "") \
+                            + f"{who}: {chosen_entry}"
+                    if emotion_plans:
+                        log_message(
+                            f"Thread {thread_id}: Assigned per-character emotional states for task "
+                            f"{task_id} ({current_emotional_state_label})",
+                            "DEBUG",
+                        )
+                else:
+                    chosen_entry = str(random.choice(emotional_states_list_local)).strip()
+                    current_emotional_state_label = chosen_entry
+                    arc_stages = _split_emotional_arc_entry(chosen_entry)
+                    if not arc_stages:
+                        current_emotional_state_label = ""
+                    emotional_arc_turn_states = _expand_emotional_arc(arc_stages, arc_slots)
+                    if current_emotional_state_label:
+                        emotion_plans.append((None, arc_stages, emotional_arc_turn_states))
+                        log_message(
+                            f"Thread {thread_id}: Assigned emotional state '{current_emotional_state_label}' "
+                            f"for task {task_id} (turn plan: {' -> '.join(emotional_arc_turn_states)})",
+                            "DEBUG",
+                        )
 
             # Handle user-side emotional states/arcs (NEW in v10.6.0): the same flat / '->' arc
             # format, but steered onto the SIMULATED USER's messages -- the opening question/first
@@ -1047,16 +1089,20 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 """
                 return slot_no >= persona_breakthrough_turn
 
-            def _emotional_slot_state(slot_no):
-                """Which emotional-state label applies to a given assistant slot.
+            def _emotional_slot_states(slot_no):
+                """The per-character emotional state(s) for one assistant slot (1-based).
 
-                Flat states are constant; an arc starts at slot 1 and shifts one stage per slot, holding
-                the final stage past the planned number of turns (e.g. a single-turn retry continuation).
+                Returns a list of (who, stage, arc_stages) -- one entry per emotional plan, in scene
+                order. Each plan holds its final stage past the planned number of turns (a single-turn
+                retry continuation keeps the last state). Empty when no emotional states are active.
                 """
-                if not emotional_arc_turn_states:
-                    return None
-                idx = max(1, min(slot_no, len(emotional_arc_turn_states))) - 1
-                return emotional_arc_turn_states[idx]
+                out = []
+                for who, stages, turn_states in emotion_plans:
+                    if not turn_states:
+                        continue
+                    idx = max(1, min(slot_no, len(turn_states))) - 1
+                    out.append((who, turn_states[idx], stages))
+                return out
 
             persona_placement = note_placement(persona_placement_local) or DEFAULT_NOTE_PLACEMENT
             emotion_placement = note_placement(emotion_placement_local) or DEFAULT_NOTE_PLACEMENT
@@ -1072,9 +1118,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 notes = {"system": "", "depth0": ""}
                 if _persona_visible_at(slot_no) and persona_breakthrough_block:
                     notes[persona_placement] += persona_breakthrough_block
-                slot_state = _emotional_slot_state(slot_no)
-                if slot_state:
-                    notes[emotion_placement] += _emotional_state_injection(slot_state, arc_stages)
+                # In a per-character multi-character run each character contributes its OWN scoped
+                # state; otherwise there is a single unscoped plan (the legacy shared behaviour).
+                for who, slot_state, plan_stages in _emotional_slot_states(slot_no):
+                    if slot_state:
+                        notes[emotion_placement] += _emotional_state_injection(slot_state, plan_stages, who=who)
                 return notes["system"], notes["depth0"]
 
             current_system_prompt_for_task = base_scene_prompt

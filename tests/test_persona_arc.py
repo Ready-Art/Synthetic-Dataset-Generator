@@ -110,6 +110,17 @@ def main():
           [f"you are in the {s} state" in inject(s, arc) for s in plan] == [True, True, True]
           and plan == ["calm", "wary", "tense"])
 
+    print("Per-character scoping (_emotional_state_injection who=):")
+    check("no who -> byte-identical to the legacy text", inject("anxious", None) == flat)
+    scoped_flat = inject("anxious", None, who="CHARACTER 1")
+    check("who scopes the flat note to that character", "For CHARACTER 1, Express this emotional state" in scoped_flat)
+    scoped_arc = inject("wary", arc, who="CHARACTER 2")
+    check("who scopes the arc note while keeping PROGRESSION",
+          "PROGRESSION" in scoped_arc and "For CHARACTER 2, In your current reply you are in the wary state" in scoped_arc)
+    check("different characters produce different scoped notes",
+          inject("anxious", None, who="CHARACTER 1") != inject("anxious", None, who="CHARACTER 2"))
+    check("empty who behaves like no who", inject("anxious", None, who="") == flat)
+
     print("User-side emotional-state injection text (_user_emotional_state_injection):")
     uinject = g._user_emotional_state_injection
     uflat = uinject("curious")
@@ -196,6 +207,7 @@ def main():
         global_config=_EditorStub(config={}),
         persona_placement_var_editor=_Var("system"),
         emotion_placement_var_editor=_Var("depth0"),
+        per_char_random_emotions_var_editor=_Var(True),
     )
     saved = config_editor.ConfigEditor._get_current_editor_config_data(editor)['prompts']
     states = saved['emotional_states']['states']
@@ -205,6 +217,8 @@ def main():
     check("both placements saved",
           saved['character']['persona_breakthrough_placement'] == "system"
           and saved['emotional_states']['placement'] == "depth0")
+    check("per-character emotions toggle saved under emotional_states.per_character",
+          saved['emotional_states']['per_character'] is True)
     profile = saved['character']['characters'][0]
     check("every profile field saved as typed", all(profile[k] == typed for k in fields))
     # Same dump arguments as ConfigEditor.save_config_handler

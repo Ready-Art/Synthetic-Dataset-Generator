@@ -816,7 +816,8 @@ def test_generate_wiring():
                      "greeting_context_local", "first_line_styles_local", "persona_breakthrough_turn_local",
                      "persona_placement_local", "emotion_placement_local",
                      "current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled",
-                     "user_emotional_states_enabled_local", "user_emotional_states_list_local"})
+                     "user_emotional_states_enabled_local", "user_emotional_states_list_local",
+                     "per_char_random_emotions_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
@@ -1008,6 +1009,70 @@ def test_user_emotional_arc_requests():
           "USER EMOTIONAL STATE" not in json.dumps(ROUTER.bodies("greeting")[0]))
 
 
+EMO_POOL = ["happy", "sad", "calm -> wary -> tense"]
+
+
+def test_per_character_emotions():
+    """Per-character emotions (NEW): a multi-character scene gives each character its own state/arc,
+    scoped by profile number, instead of sharing one. Single-character scenes and the option-off path
+    keep the original shared behaviour."""
+    # Multi-character, option ON: both characters get an (independent) emotional note, scoped by number.
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, num_characters_local=2,
+               character_list=list(CHARACTERS), enable_emotional_states_local=True,
+               emotional_states_list_local=list(EMO_POOL), per_char_random_emotions_local=True)
+    notes = answer_notes()
+    check("per-char on (2 chars): every answer names BOTH characters' scopes",
+          len(notes) == 2 and all("For CHARACTER 1, " in n and "For CHARACTER 2, " in n for n in notes))
+    check("per-char on (2 chars): the note follows the answer prompt",
+          all(n.startswith(ANSWER_PROMPT) for n in notes))
+    check("per-char on (2 chars): metadata records one labelled entry per character",
+          read_rows()[0]["metadata"]["emotional_state"].count("CHARACTER ") == 2)
+
+    # With the pool reduced to a single arc, both characters carry that same arc text but each scoped;
+    # an arc keeps its PROGRESSION header while the flat states keep the plain header.
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=3, num_characters_local=2,
+               character_list=list(CHARACTERS), enable_emotional_states_local=True,
+               emotional_states_list_local=["calm -> wary -> tense"], per_char_random_emotions_local=True)
+    notes = answer_notes()
+    check("per-char on, single arc: both scopes present and named per turn",
+          len(notes) == 3
+          and all("For CHARACTER 1, " in n and "For CHARACTER 2, " in n for n in notes)
+          and all(names_stage(n, s) for n, s in zip(notes, ["calm", "wary", "tense"])))
+
+    # Option OFF with 2 characters: the legacy shared state -- ONE unscoped note, no per-character label.
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, num_characters_local=2,
+               character_list=list(CHARACTERS), enable_emotional_states_local=True,
+               emotional_states_list_local=["anxious"], per_char_random_emotions_local=False)
+    notes = answer_notes()
+    check("per-char off (2 chars): a single shared, unscoped emotional note",
+          len(notes) == 2
+          and all("EMOTIONAL STATE: ANXIOUS" in n and "For CHARACTER" not in n for n in notes))
+
+    # Option ON but only ONE character selected: behaves like the off path (no per-character scoping).
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2,
+               character_list=list(CHARACTERS[:1]), enable_emotional_states_local=True,
+               emotional_states_list_local=["anxious"], per_char_random_emotions_local=True)
+    notes = answer_notes()
+    check("per-char on, single char: falls back to the unscoped shared note",
+          len(notes) == 2
+          and all("EMOTIONAL STATE: ANXIOUS" in n and "For CHARACTER" not in n for n in notes))
+
+    # User emotions are unaffected by the per-character option (still one unscoped user note).
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, num_characters_local=2,
+               character_list=list(CHARACTERS), enable_emotional_states_local=True,
+               emotional_states_list_local=["anxious"], per_char_random_emotions_local=True,
+               user_emotional_states_enabled_local=True, user_emotional_states_list_local=["curious"])
+    question_note = ROUTER.bodies("question")[0]["messages"][-1]["content"]
+    check("per-char on: the simulated USER note stays unscoped and character notes stay scoped",
+          "USER EMOTIONAL STATE: CURIOUS" in question_note and "For CHARACTER" not in question_note
+          and all("For CHARACTER 1, " in n and "For CHARACTER 2, " in n for n in answer_notes()))
+
+
 def test_note_placement_requests():
     """Each block goes to the system prompt or the final user message as its placement says."""
     persona_char = dict(CHARACTERS[0], persona="Misses the open sea.")
@@ -1189,6 +1254,7 @@ def main():
     print("(4) emotional arc and persona through the worker")
     test_arc_and_persona_requests()
     test_user_emotional_arc_requests()
+    test_per_character_emotions()
     test_note_placement_requests()
     print("(5) record metadata")
     test_record_metadata()

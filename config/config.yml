@@ -230,6 +230,9 @@ prompts:
     - calm -> wary -> tense
     - composed -> guarded -> snapped
     placement: depth0
+    # When true, in a multi-character scene (2+ selected characters) each character is assigned its OWN
+    # random emotional state/arc instead of sharing one. Off by default (single shared state/arc).
+    per_character: false
   user_emotional_states:
     enabled: false
     states: []
