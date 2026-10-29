@@ -85,6 +85,7 @@ Indexed aliases such as `{{ds:name:2}}` are not supported.
 
 Static authored inputs are copied and expanded for each task: system/answer
 instructions, lore, enabled character fields, emotional-state entries, enabled
+user-side emotional-state entries (v10.6.0), enabled
 name/setting pools, opening styles, and applicable corrective/rotating instructions,
 including OOC fixes when that detector is active. Detection phrase lists keep their
 upstream literal semantics. The quality scorer receives the character profile
