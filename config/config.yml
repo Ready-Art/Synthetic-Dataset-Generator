@@ -118,6 +118,23 @@ quality:
   judge_retry_delay: 1.0
   # Seconds a worker waits for its queued judge verdict before dropping the row.
   result_timeout: 600
+  # v11.5 JSON robustness for the judge. Small local judges (e.g. Qwen 3.5 4B) usually get the
+  # evaluation right but wrap it in prose/markdown, cut it off at the token limit, or emit
+  # near-JSON. Instead of dropping those rows, the generator:
+  #  - extracts the JSON object from the reply (direct parse -> balanced scan -> repair ->
+  #    lenient normalisation -> numeric salvage),
+  #  - re-asks the same model for JSON-only output judge_json_repair_attempts times (0 = drop
+  #    immediately, i.e. v11.4 behaviour),
+  #  - retries a reply cut off by the token limit with double the budget.
+  judge_json_repair_attempts: 1
+  # Token budget per judge request (0 = automatic: 512 + 64 per extra dimension).
+  judge_max_tokens: 0
+  # HTTP timeout for one judge request (seconds). A local 4B judge writing a full evaluation plus
+  # evidence lists needs well over the old hard-coded 60s; a timeout only burns a retry cycle.
+  judge_request_timeout: 120
+  # Ask the server for constrained JSON: auto (send response_format json_object and fall back
+  # automatically when the endpoint rejects it), off, json_object or json_schema.
+  judge_structured_output: auto
   scoring_api:
     url: ''
     model: ''

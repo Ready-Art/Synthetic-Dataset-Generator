@@ -406,6 +406,37 @@ class ConfigEditor(tk.Toplevel):
                         "(Wait before the next judge attempt; grows linearly per attempt)")
         add_gen_setting("Judge Result Timeout (seconds):", 'quality_result_timeout_var',
                         "(How long a worker waits for its queued verdict before dropping the row)")
+        # v11.5 JSON robustness: small local judges usually get the evaluation right but wrap it
+        # in prose/fences or get cut off. These two knobs recover those replies instead of
+        # dropping the conversation.
+        add_gen_setting("Judge JSON Repair Rounds:", 'quality_judge_json_repair_var',
+                        "(When a judge reply is not valid JSON, re-ask the same model this many times for JSON-only output before dropping the row; 0 = drop immediately)")
+        add_gen_setting("Judge Max Tokens (0 = auto):", 'quality_judge_max_tokens_var',
+                        "(Token budget per judge request; a reply cut off at the limit is retried with double the budget)")
+        add_gen_setting("Judge Request Timeout (seconds):", 'quality_judge_request_timeout_var',
+                        "(HTTP timeout for one judge request; a slow local model needs well over 60)")
+        judge_format_field = ttk.Frame(gen_settings_frame)
+        judge_format_field.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        judge_format_field.columnconfigure(0, weight=1)
+        judge_format_label = ttk.Label(judge_format_field, text="Judge Structured Output:", justify="left", wraplength=1)
+        judge_format_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(judge_format_label, judge_format_field, padding=180)
+        self.quality_judge_structured_output_var = tk.StringVar(value="auto")
+        judge_format_combo = ttk.Combobox(
+            judge_format_field,
+            textvariable=self.quality_judge_structured_output_var,
+            values=["auto", "off", "json_object", "json_schema"],
+            state="readonly",
+            width=14,
+        )
+        judge_format_combo.grid(row=0, column=1, sticky="e")
+        judge_format_help = ttk.Label(
+            judge_format_field,
+            text="(auto = ask the server for JSON and fall back if it refuses; off = v11.4 behaviour)",
+            style='Small.TLabel', justify="left", wraplength=1)
+        judge_format_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(judge_format_help, judge_format_field)
+        row_idx += 1
 
         # Quality scoring API config
         ttk.Label(gen_settings_frame, text="Quality Scoring API URL:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
@@ -1504,6 +1535,10 @@ class ConfigEditor(tk.Toplevel):
                 'judge_max_attempts': max(1, min(10, int(self.quality_judge_max_attempts_var.get() or 3))),
                 'judge_retry_delay': max(0.0, float(self.quality_judge_retry_delay_var.get() or 0)),
                 'result_timeout': max(30, int(self.quality_result_timeout_var.get() or 600)),
+                'judge_json_repair_attempts': max(0, min(3, int(self.quality_judge_json_repair_var.get() or 0))),
+                'judge_max_tokens': max(0, int(self.quality_judge_max_tokens_var.get() or 0)),
+                'judge_request_timeout': max(5, min(1800, int(self.quality_judge_request_timeout_var.get() or 120))),
+                'judge_structured_output': self.quality_judge_structured_output_var.get(),
                 'scoring_api': {
                     'url': sanitize_input(self.quality_api_url_var.get()),
                     'model': sanitize_input(self.quality_api_model_var.get()),
@@ -2022,6 +2057,10 @@ class ConfigEditor(tk.Toplevel):
             self.quality_judge_max_attempts_var.set(str(quality_conf.get('judge_max_attempts', 3)))
             self.quality_judge_retry_delay_var.set(str(quality_conf.get('judge_retry_delay', 1.0)))
             self.quality_result_timeout_var.set(str(quality_conf.get('result_timeout', 600)))
+            self.quality_judge_json_repair_var.set(str(quality_conf.get('judge_json_repair_attempts', 1)))
+            self.quality_judge_max_tokens_var.set(str(quality_conf.get('judge_max_tokens', 0)))
+            self.quality_judge_request_timeout_var.set(str(quality_conf.get('judge_request_timeout', 120)))
+            self.quality_judge_structured_output_var.set(str(quality_conf.get('judge_structured_output', 'auto')))
             self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
             self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
             self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
@@ -2359,6 +2398,14 @@ class ConfigEditor(tk.Toplevel):
             assert 0 <= judge_delay_val <= 30, "Judge retry delay must be 0-30 seconds"
             result_timeout_val = int(self.quality_result_timeout_var.get() or 600)
             assert result_timeout_val >= 30, "Judge result timeout must be at least 30 seconds"
+            judge_repair_val = int(self.quality_judge_json_repair_var.get() or 0)
+            assert 0 <= judge_repair_val <= 3, "Judge JSON repair rounds must be between 0 and 3"
+            judge_max_tokens_val = int(self.quality_judge_max_tokens_var.get() or 0)
+            assert 0 <= judge_max_tokens_val <= 8192, "Judge max tokens must be between 0 (auto) and 8192"
+            judge_timeout_val = int(self.quality_judge_request_timeout_var.get() or 120)
+            assert 5 <= judge_timeout_val <= 1800, "Judge request timeout must be between 5 and 1800 seconds"
+            assert self.quality_judge_structured_output_var.get() in ('auto', 'off', 'json_object', 'json_schema'), \
+                "Judge structured output must be auto, off, json_object or json_schema"
             if self.quality_logic_check_var_editor.get():
                 logic_threshold_val = int(self.quality_logic_threshold_var.get() or 70)
                 assert 0 <= logic_threshold_val <= 100, "Logic check threshold must be 0-100"

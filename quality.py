@@ -957,65 +957,387 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
     return scores, flags, success, extras
 
 
+# --- Judge reply parsing (v11.5) -------------------------------------------------------
+# Small local judges (Qwen 3.5 4B and friends) usually produce the right *evaluation* but
+# wrap it in prose, a thinking block, a code fence, a truncated tail, or "85/100"-style
+# strings. Dropping those conversations throws away good data, so parsing is now a ladder:
+#
+#   1. extract the JSON object (direct -> balanced scan -> repair -> lenient -> salvage)
+#   2. if nothing parses, ask the SAME judge once more to re-emit the evaluation as JSON
+#      (quality.judge_json_repair_attempts, default 1) -- never a silent drop first
+#   3. only then is the reply "invalid JSON" and the conversation dropped
+#
+# A truncated reply (finish_reason == "length") is treated as TRANSIENT and retried with a
+# doubled token budget, because a cut-off tail is the most common cause of the
+# "Unterminated string" JSON errors. ``quality.judge_structured_output`` can additionally
+# ask the server for grammar-constrained JSON (with automatic fallback for servers that do
+# not support response_format).
+
+_REASONING_BLOCK_RE = re.compile(
+    r'<(think|thinking|reasoning|analysis|scratchpad)>[\s\S]*?</\1\s*>', re.IGNORECASE)
+_UNCLOSED_REASONING_RE = re.compile(
+    r'<(think|thinking|reasoning|analysis|scratchpad)>[\s\S]*$', re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(r'```[A-Za-z0-9_+-]*')
+
+# Servers that rejected ``response_format`` once; remembered for the rest of the run so the
+# fallback request is not repeated on every conversation.
+_JUDGE_NO_RESPONSE_FORMAT = set()
+
+JUDGE_SYSTEM_PROMPT = (
+    "You are a strict JSON-only API. Respond with ONLY a single valid JSON object. "
+    "No markdown, no code fences, no explanations, no extra text -- just raw JSON. "
+    "Rules: every key and every string uses double quotes; every string is closed before the "
+    "line ends; numbers are bare numbers (85, not \"85\"); booleans are true/false; no trailing "
+    "commas. Never put double quotes inside a string value -- paraphrase quoted dialogue instead."
+)
+
+
+def judge_max_tokens(dims=None, sampler_settings=None):
+    """Token budget for one judge request.
+
+    A reply cut off mid-string is the most common cause of "Unterminated string" JSON errors,
+    so the budget is configurable (``quality.judge_max_tokens``, 0 = automatic) and a
+    truncated reply doubles it for the next attempt. The automatic value keeps the historical
+    ``512 + 64``-per-extra-dimension formula so default behaviour is unchanged.
+    """
+    sampler = sampler_settings or {}
+    try:
+        explicit = int(sampler.get('max_tokens', 0) or 0)
+    except (TypeError, ValueError):
+        explicit = 0
+    if explicit > 0:
+        return explicit
+    try:
+        configured = int(global_config.get('quality.judge_max_tokens', 0) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    if configured > 0:
+        return max(64, min(8192, configured))
+    dims = list(dims or LLM_DIMENSIONS)
+    return 512 + max(0, len(dims) - len(LLM_DIMENSIONS)) * 64
+
+
+def judge_request_timeout(config=None):
+    """HTTP timeout for one judge request.
+
+    A local 4B judge writing a full evaluation plus evidence lists regularly needs more than the
+    old hard-coded 60 s, and a timeout used to burn a whole transient-retry cycle. ``quality.
+    judge_request_timeout`` (default 120 s) wins over the legacy ``quality.scoring_timeout``
+    (still honoured when set), and the value is clamped to 5-1800 s.
+    """
+    cfg = global_config if config is None else config
+    for key in ('quality.judge_request_timeout', 'quality.scoring_timeout'):
+        try:
+            value = cfg.get(key)
+        except AttributeError:
+            value = None
+        if value in (None, ''):
+            continue
+        try:
+            return max(5.0, min(1800.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    return 120.0
+
+
+def judge_json_repair_attempts(config=None):
+    """How many times an unparsable judge reply is re-asked for valid JSON.
+
+    ``quality.judge_json_repair_attempts`` (default 1, clamped to 0-3). This is NOT the
+    transient-failure retry count: it is a dedicated "format repair" round that sends the
+    model's own broken reply back and asks for the same evaluation as JSON. 0 disables it,
+    restoring the v11.4 behaviour where invalid JSON drops immediately.
+    """
+    cfg = global_config if config is None else config
+    try:
+        attempts = int(cfg.get('quality.judge_json_repair_attempts', 1))
+    except (TypeError, ValueError):
+        attempts = 1
+    return max(0, min(3, attempts))
+
+
+def judge_structured_output(config=None):
+    """How (whether) the judge request asks the server for constrained JSON.
+
+    ``quality.judge_structured_output``: ``auto`` (default -- send ``response_format``
+    ``json_object`` and fall back for servers that reject it), ``json_object``,
+    ``json_schema``, or ``off`` (v11.4 behaviour: no ``response_format`` at all).
+    """
+    cfg = global_config if config is None else config
+    mode = str(cfg.get('quality.judge_structured_output', 'auto') or 'auto').strip().lower()
+    return mode if mode in ('off', 'json_object', 'json_schema', 'auto') else 'auto'
+
+
+def _judge_response_format(mode, dims):
+    """Build the ``response_format`` payload for a judge request (or None)."""
+    if mode == 'off':
+        return None
+    if mode == 'json_schema':
+        properties = {}
+        for dim in dims:
+            properties[dim] = {"type": "integer", "minimum": 0, "maximum": 100}
+        properties["ooc_evidence"] = {"type": "array", "items": {"type": "string"}}
+        properties["logic_evidence"] = {"type": "array", "items": {"type": "string"}}
+        properties["rewrite_instruction"] = {"type": "string"}
+        properties["notes"] = {"type": "string"}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "quality_scores",
+                "strict": False,
+                "schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": list(dims),
+                    "additionalProperties": True,
+                },
+            },
+        }
+    # json_object, and the "auto" default: the widest-supported form.
+    return {"type": "json_object"}
+
+
+def _looks_like_response_format_rejection(response):
+    """True when a non-200 reply looks like the server refusing ``response_format``."""
+    try:
+        if response is None or response.status_code == 200:
+            return False
+        body = str(getattr(response, 'text', '') or '')[:4000].lower()
+    except Exception:
+        return False
+    return ('response_format' in body or 'json_schema' in body or 'json_object' in body)
+
+
+def _record_judge_response_time(slot, seconds):
+    """Track judge latency without disturbing the per-slot bookkeeping."""
+    try:
+        with api_response_times_lock:
+            if 0 <= slot < len(api_response_times_per_slot):
+                times = api_response_times_per_slot[slot]
+                times.append(seconds)
+                if len(times) > MAX_RESPONSE_TIMES_TO_TRACK:
+                    del times[:-MAX_RESPONSE_TIMES_TO_TRACK]
+    except Exception:
+        pass
+
+
+def _strip_judge_wrapping(content):
+    """Remove thinking blocks, code fences and prose padding around a JSON reply."""
+    text = content if isinstance(content, str) else str(content or "")
+    text = _REASONING_BLOCK_RE.sub(' ', text)
+    text = _UNCLOSED_REASONING_RE.sub(' ', text)
+    text = _CODE_FENCE_RE.sub(' ', text)
+    return text.strip()
+
+
+def _json_objects_in(text):
+    """Yield every complete JSON value that starts at a ``{`` or ``[`` in ``text``."""
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] not in '{[':
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except ValueError:
+            index += 1
+            continue
+        yield value
+        index = end if end > index else index + 1
+
+
+def _lenient_json(content):
+    """Normalize near-JSON: smart quotes, trailing commas, Python literals."""
+    text = content
+    for src, dst in (('\u201c', '"'), ('\u201d', '"'), ('\u2018', "'"),
+                     ('\u2019', "'"), ('\u00a0', ' ')):
+        text = text.replace(src, dst)
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    text = re.sub(r'(?<![\w"])(True|False|None)(?![\w"])',
+                  lambda m: {'True': 'true', 'False': 'false', 'None': 'null'}[m.group(1)],
+                  text)
+    return text
+
+
+def _repair_truncated_json(content, max_steps=800):
+    """Close a reply that was cut off mid-member (token limit, dropped connection).
+
+    The tail is trimmed back to the last complete member and the enclosing object/array is
+    closed, so ``{"coherence": 80, "naturalness": 78, "engag`` still yields the scores the
+    model had already committed to instead of being thrown away. Returns the repaired text or
+    None when no valid object can be built.
+    """
+    body = (content or '').strip()
+    if not body:
+        return None
+    stop = max(0, len(body) - max_steps)
+    for end in range(len(body), stop, -1):
+        chunk = body[:end].rstrip()
+        if not chunk or chunk[-1] in '{[,:':
+            continue
+        chunk = re.sub(r',\s*$', '', chunk)
+        chunk += ']' * max(0, chunk.count('[') - chunk.count(']'))
+        chunk += '}' * max(0, chunk.count('{') - chunk.count('}'))
+        try:
+            value = json.loads(chunk)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value:
+            return chunk
+    return None
+
+
+def _coerce_score(value, default=50.0):
+    """Coerce a judge value into a float, tolerating ``"85"``, ``"85/100"`` and prose."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r'-?\d+(?:\.\d+)?', str(value if value is not None else ''))
+    if not match:
+        return default
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return default
+
+
+def _extract_json_object(content, preferred_keys=None):
+    """Find the judge's JSON object in a messy reply.
+
+    Returns ``(dict_or_None, how)`` where ``how`` is one of ``object``, ``direct``,
+    ``scan``, ``repaired``, ``lenient`` or ``unparseable``. ``preferred_keys`` (the expected
+    score dimensions) lets a candidate object that actually carries scores win over an
+    unrelated ``{...}`` that happened to appear earlier in the prose.
+    """
+    if isinstance(content, dict):
+        return content, "object"
+    if not isinstance(content, str) or not content.strip():
+        return None, "unparseable"
+
+    text = _strip_judge_wrapping(content)
+    preferred = set(preferred_keys or ())
+
+    try:
+        direct = json.loads(text)
+        if isinstance(direct, dict) and direct:
+            return direct, "direct"
+    except ValueError:
+        pass
+
+    def _pick(candidates, how):
+        fallback = None
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or not candidate:
+                continue
+            if preferred and preferred.intersection(candidate.keys()):
+                return candidate, how
+            if fallback is None:
+                fallback = candidate
+        return (fallback, how) if fallback is not None else (None, None)
+
+    found, how = _pick(_json_objects_in(text), "scan")
+    if found is not None:
+        return found, how
+
+    for label, candidate_text in (("repaired", _repair_json(text)),
+                                  ("lenient", _lenient_json(text)),
+                                  ("truncated", _repair_truncated_json(text))):
+        if not candidate_text or candidate_text == text:
+            continue
+        try:
+            parsed = json.loads(candidate_text)
+            if isinstance(parsed, dict) and parsed:
+                return parsed, label
+        except ValueError:
+            pass
+        found, how = _pick(_json_objects_in(candidate_text), label)
+        if found is not None:
+            return found, how
+
+    return None, "unparseable"
+
+
+def _salvage_scores_from_text(text, dims):
+    """Last-resort numeric recovery from a reply that is not parseable JSON at all.
+
+    Every requested dimension must be present as ``"dim": <number>`` for the salvage to
+    count, so a partial or hallucinated fragment can never be mistaken for a full
+    evaluation. Callers treat a successful salvage as a normal (kept) verdict.
+    """
+    dims = list(dims or [])
+    if not text or not dims:
+        return {}
+    cleaned = _strip_judge_wrapping(text)
+    found = {}
+    for dim in dims:
+        match = re.search(r'["\']?%s["\']?\s*[:=]\s*["\']?\s*(-?\d+(?:\.\d+)?)'
+                          % re.escape(dim), cleaned, re.IGNORECASE)
+        if not match:
+            return {}
+        try:
+            found[dim] = float(match.group(1))
+        except ValueError:
+            return {}
+    return found
+
+
 def _repair_json(content):
     """Attempts to repair common JSON issues from LLM output.
-    
+
     LLMs often produce malformed JSON with:
     - Unescaped quotes within string values
     - Trailing commas
     - Missing closing braces/brackets
     - Newlines within strings
-    
-    This function applies targeted repairs while preserving the actual content.
+
+    This function applies targeted repairs while preserving the actual content. It is one
+    rung of the ladder in ``_extract_json_object``: ``_json_objects_in`` already recovers
+    well-formed objects from surrounding prose, so this only handles genuinely broken text.
     """
     if not content:
         return content
-    
-    content = content.strip()
-    
-    # Remove markdown code block markers if present
-    if content.startswith('```'):
-        content = re.sub(r'^```(?:json)?\s*', '', content)
-    if content.endswith('```'):
-        content = re.sub(r'\s*```$', '', content)
-    content = content.strip()
-    
+
+    content = _strip_judge_wrapping(content)
+
     # Remove trailing commas before } or ]
     content = re.sub(r',\s*([\]}])', r'\1', content)
-    
+
     # Try to find the JSON object boundaries
     json_match = re.search(r'\{[\s\S]*\}', content)
     if json_match:
         content = json_match.group(0)
-    
+
     # Fix unescaped quotes within string values
     # Strategy: parse character by character, tracking whether we're in a string
     result = []
     in_string = False
     escaped = False
     i = 0
-    
+
     while i < len(content):
         char = content[i]
-        
+
         if escaped:
             result.append(char)
             escaped = False
             i += 1
             continue
-        
+
         if char == '\\':
             result.append(char)
             escaped = True
             i += 1
             continue
-        
+
         if char == '"' and not in_string:
             in_string = True
             result.append(char)
             i += 1
             continue
-        
+
         if char == '"' and in_string:
             # Check if this quote should be escaped
             # Look ahead: if next non-space char is : or , or } or ], this quote ends the string
@@ -1023,7 +1345,7 @@ def _repair_json(content):
             look_ahead = i + 1
             while look_ahead < len(content) and content[look_ahead] in ' \t\n\r':
                 look_ahead += 1
-            
+
             if look_ahead < len(content):
                 next_char = content[look_ahead]
                 if next_char not in ':,}]':
@@ -1031,39 +1353,39 @@ def _repair_json(content):
                     result.append('\\"')
                     i += 1
                     continue
-            
+
             in_string = False
             result.append(char)
             i += 1
             continue
-        
-        # Handle newlines within strings - replace with space
+
+        # Handle newlines within strings - escape them
         if char == '\n' and in_string:
             result.append('\\n')
             i += 1
             continue
-        
+
         result.append(char)
         i += 1
-    
+
     repaired = ''.join(result)
-    
+
     # Close any unclosed strings, arrays, or objects
     # Count braces and brackets to determine what needs closing
     open_braces = repaired.count('{') - repaired.count('}')
     open_brackets = repaired.count('[') - repaired.count(']')
-    
+
     # If we're still in a string (odd number of quotes), close it
     quote_count = repaired.count('"') - repaired.count('\\"')
     if quote_count % 2 != 0:
         repaired += '"'
-    
+
     # Close any open brackets
-    repaired += ']' * open_brackets
-    
+    repaired += ']' * max(0, open_brackets)
+
     # Close any open braces
-    repaired += '}' * open_braces
-    
+    repaired += '}' * max(0, open_braces)
+
     return repaired
 
 
@@ -1079,21 +1401,30 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
     caller-facing extras but stripped from ``scores_dict`` so score consumers only ever
     see 0-100 numbers.
 
-    Retry policy (v11.4): a TRANSIENT failure -- a network error, a timeout, a non-200
-    status, or an unreadable response envelope -- is retried up to ``max_attempts``
-    times (``quality.judge_max_attempts``, default 3; ``1`` disables retries) with a
-    linear back-off of ``quality.judge_retry_delay`` seconds. An INVALID JSON reply is
-    final and is never retried: the returned flags carry ``llm_invalid_json`` and the
-    callers drop the conversation. The final flags always describe the last attempt.
+    Retry policy (v11.4, hardened in v11.5): a TRANSIENT failure -- a network error, a
+    timeout, a non-200 status, an unreadable response envelope, an empty reply, or a reply
+    cut off by the token limit -- is retried up to ``max_attempts`` times
+    (``quality.judge_max_attempts``, default 3; ``1`` disables retries) with a linear
+    back-off of ``quality.judge_retry_delay`` seconds. A reply cut off at the token limit
+    also doubles the request's token budget for the next attempt.
+
+    An unparsable reply is not dropped on the first sight: ``quality.judge_json_repair_attempts``
+    (default 1) format-repair rounds send the model's own broken text back and ask for the
+    same evaluation as JSON. Only when that also fails does the reply become
+    ``llm_invalid_json`` (final, the conversation is dropped).
     """
     attempts = judge_max_attempts() if max_attempts is None else max(1, int(max_attempts))
     delay = judge_retry_delay()
+    repair_rounds = judge_json_repair_attempts()
+    dims = list(expected_dims) if expected_dims is not None else (
+        list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else []))
+    max_tokens = judge_max_tokens(dims, sampler_settings)
 
     last = ({}, ["llm_exception"], False, {})
     for attempt in range(1, attempts + 1):
         scores, flags, success, extras = _call_logic_judge_once(
             api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
-            file_name, sampler_settings, prompt, expected_dims=expected_dims,
+            file_name, sampler_settings, prompt, expected_dims=dims, max_tokens=max_tokens,
         )
         last = (scores, flags, success, extras)
         if success:
@@ -1103,10 +1434,40 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
                     f"{attempt}/{attempts}.", "INFO")
             return last
         if JUDGE_FINAL_FAILURE_FLAGS.intersection(flags):
-            log_message(
-                f"Thread {thread_id}: Quality judge returned invalid JSON for {task_id}; "
-                f"not retrying (attempt {attempt}/{attempts}).", "WARNING")
-            return last
+            # The evaluation may well be fine -- only its packaging is broken. Ask the same
+            # model to re-emit it as JSON before giving up on the conversation.
+            broken = extras.get("_raw_content") or ""
+            for repair_round in range(1, repair_rounds + 1):
+                log_message(
+                    f"Thread {thread_id}: Quality judge reply for {task_id} was not valid JSON; "
+                    f"asking for a JSON-only re-emission ({repair_round}/{repair_rounds}).",
+                    "WARNING")
+                scores, flags, success, extras = _call_logic_judge_once(
+                    api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+                    file_name, sampler_settings, prompt, expected_dims=dims,
+                    max_tokens=max_tokens, repair_of=broken,
+                )
+                last = (scores, flags, success, extras)
+                if success:
+                    log_message(
+                        f"Thread {thread_id}: Quality judge recovered valid JSON for {task_id} "
+                        f"after a format-repair round.", "INFO")
+                    return last
+                broken = extras.get("_raw_content") or broken
+                if not JUDGE_FINAL_FAILURE_FLAGS.intersection(flags):
+                    break
+            if JUDGE_FINAL_FAILURE_FLAGS.intersection(flags):
+                log_message(
+                    f"Thread {thread_id}: Quality judge returned invalid JSON for {task_id}; "
+                    f"not retrying (attempt {attempt}/{attempts}).", "WARNING")
+                return last
+        if "llm_truncated" in flags:
+            grown = min(max(64, max_tokens) * 2, 8192)
+            if grown > max_tokens:
+                log_message(
+                    f"Thread {thread_id}: Quality judge reply for {task_id} hit the token "
+                    f"limit; retrying with max_tokens={grown}.", "WARNING")
+                max_tokens = grown
         if attempt < attempts:
             wait = delay * attempt
             log_message(
@@ -1121,30 +1482,52 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
 
 
 def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
-                           file_name, sampler_settings, prompt, expected_dims=None):
-    """One judge request. See ``_call_logic_judge`` for the retry wrapper around it."""
+                           file_name, sampler_settings, prompt, expected_dims=None,
+                           max_tokens=None, repair_of=None):
+    """One judge request. See ``_call_logic_judge`` for the retry wrapper around it.
+
+    ``repair_of`` is the model's own previous, unparsable reply: when set, the request asks
+    for the SAME evaluation again as a bare JSON object.
+    """
+    dims = list(expected_dims) if expected_dims is not None else (
+        list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else []))
+    if max_tokens is None:
+        max_tokens = judge_max_tokens(dims, sampler_settings)
+
     messages = [
-        {"role": "system", "content": "You are a strict JSON-only API. Respond with ONLY a valid JSON object. No markdown, no code blocks, no explanations, no extra text. Just raw JSON."},
-        {"role": "user", "content": prompt}
+        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
     ]
+    if repair_of:
+        messages.append({"role": "assistant", "content": str(repair_of)[:6000]})
+        messages.append({"role": "user", "content": (
+            "That reply could not be parsed as JSON. Reply again with ONLY the JSON object for "
+            "the same evaluation -- same keys, same values, double-quoted keys, every string "
+            "closed, no markdown and no commentary.")})
 
     payload_dict = {
         "model": model_name,
         "messages": messages,
         "temperature": sampler_settings.get('temperature', 0.1),
         "top_p": sampler_settings.get('top_p', 0.9),
-        # evidence lists and the per-turn rewrite instruction take space; give the
-        # judge headroom beyond bare scores
-        "max_tokens": sampler_settings.get('max_tokens', 512 + max(0, len(expected_dims or LLM_DIMENSIONS) - len(LLM_DIMENSIONS)) * 64),
-        "stream": False
+        # evidence lists and the per-turn rewrite instruction take space; a reply cut off by
+        # the token limit is the most common source of "unterminated string" JSON errors
+        "max_tokens": max_tokens,
+        "stream": False,
     }
 
-    payload = json.dumps(payload_dict)
     headers = {'Content-Type': 'application/json'}
     if api_key:
         headers['Authorization'] = f"Bearer {api_key}"
 
-    # Debug log
+    # Optional grammar-constrained JSON. Servers that reject response_format are remembered
+    # and the request is repeated without it (see the loop below).
+    response_format = _judge_response_format(judge_structured_output(), dims)
+    format_cache_key = (api_url or "", model_name or "")
+    if response_format and format_cache_key in _JUDGE_NO_RESPONSE_FORMAT:
+        response_format = None
+
+    # Debug log (request)
     try:
         current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{scoring_api_slot}.jsonl"
         with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
@@ -1169,63 +1552,118 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
     # Make the API call
     api_call_start = time.time()
     try:
-        timeout = global_config.get('quality.scoring_timeout', 60)
-        response = requests.post(api_url, headers=headers, data=payload, timeout=timeout)
+        timeout = judge_request_timeout()
+
+        response = None
+        for _format_try in range(2):
+            body = dict(payload_dict)
+            if response_format:
+                body['response_format'] = response_format
+            response = requests.post(api_url, headers=headers, data=json.dumps(body),
+                                     timeout=timeout)
+            if response.status_code == 200:
+                break
+            if response_format and _looks_like_response_format_rejection(response):
+                _JUDGE_NO_RESPONSE_FORMAT.add(format_cache_key)
+                log_message(
+                    f"Thread {thread_id}: Quality judge endpoint rejected response_format for "
+                    f"{task_id}; retrying without it.", "WARNING")
+                response_format = None
+                continue
+            break
+
         api_response_time = time.time() - api_call_start
+        _record_judge_response_time(scoring_api_slot, api_response_time)
 
-        with api_response_times_lock:
-            if scoring_api_slot < 6:
-                api_response_times_per_slot[scoring_api_slot].append(api_response_time)
-                if len(api_response_times_per_slot[scoring_api_slot]) > MAX_RESPONSE_TIMES_TO_TRACK:
-                    api_response_times_per_slot[scoring_api_slot] = api_response_times_per_slot[-MAX_RESPONSE_TIMES_TO_TRACK:]
-
-        if response.status_code != 200:
-            log_message(f"Thread {thread_id}: Quality scoring API returned {response.status_code} for {task_id}.", "WARNING")
-            return {}, [f"llm_error_{response.status_code}"], False, {}
-
-        response_data = response.json()
-        content = response_data['choices'][0]['message'].get('content', '')
-
-        # Parse the JSON response with robust extraction
-        content = content.strip()
-
-        # Try to extract JSON object from the response (handles explanatory text)
-        json_match = re.search(r'\{[\s\S]*\}', content)
-        if json_match:
-            content = json_match.group(0)
-        else:
-            # Fallback: strip markdown code blocks
-            if content.startswith('```') or '```' in content:
-                content = re.sub(r'```(?:json)?\s*', '', content)
-                content = re.sub(r'\s*```', '', content)
-            content = content.strip()
+        if response is None or response.status_code != 200:
+            status = getattr(response, 'status_code', 'no response')
+            log_message(f"Thread {thread_id}: Quality scoring API returned {status} for {task_id}.", "WARNING")
+            return {}, [f"llm_error_{status}"], False, {}
 
         try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as e:
-            # First attempt: try to repair common JSON issues (unescaped quotes, trailing commas)
-            repaired = _repair_json(content)
-            try:
-                parsed = json.loads(repaired)
-                log_message(f"Thread {thread_id}: Quality scoring LLM JSON repaired successfully for {task_id}.", "DEBUG")
-            except json.JSONDecodeError as e2:
-                log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}: {e2}. Content preview: {content[:500]}", "WARNING")
-                return {}, ["llm_invalid_json"], False, {}
-        if not isinstance(parsed, dict):
-            log_message(f"Thread {thread_id}: Quality scoring LLM returned JSON that is not an object for {task_id}: {content[:200]}", "WARNING")
-            return {}, ["llm_invalid_json"], False, {}
-        flags = []
+            response_data = response.json()
+        except ValueError:
+            log_message(
+                f"Thread {thread_id}: Quality scoring API returned an unreadable envelope for "
+                f"{task_id}.", "WARNING")
+            return {}, ["llm_bad_envelope"], False, {}
 
-        dims = expected_dims if expected_dims is not None else (
-            list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else [])
-        )
+        try:
+            choices = response_data.get('choices') or []
+            choice = choices[0] or {}
+            message = choice.get('message') or {}
+        except (AttributeError, IndexError, TypeError):
+            log_message(
+                f"Thread {thread_id}: Quality scoring API response had no usable choices for "
+                f"{task_id}.", "WARNING")
+            return {}, ["llm_bad_envelope"], False, {}
+
+        finish_reason = str(choice.get('finish_reason') or '').lower()
+        content = message.get('content')
+        if isinstance(content, list):
+            # Some servers return content parts instead of a single string.
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    parts.append(str(part.get('text') or part.get('content') or ''))
+                else:
+                    parts.append(str(part))
+            content = "".join(parts)
+        content = (content or "").strip()
+
+        # Debug log (response) -- the raw judge reply is what makes a JSON failure diagnosable
+        try:
+            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{scoring_api_slot}.jsonl"
+            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
+                debug_log.write(json.dumps({
+                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "thread_id": thread_id,
+                    "type": "quality_scoring_response",
+                    "api_slot_idx": scoring_api_slot,
+                    "task_id": task_id,
+                    "source_file": file_name,
+                    "finish_reason": finish_reason,
+                    "content": content,
+                }) + '\n')
+        except Exception:
+            pass
+
+        if not content:
+            if finish_reason == 'length':
+                log_message(
+                    f"Thread {thread_id}: Quality scoring LLM ran out of tokens before writing "
+                    f"anything for {task_id}.", "WARNING")
+                return {}, ["llm_truncated"], False, {"_raw_content": ""}
+            log_message(
+                f"Thread {thread_id}: Quality scoring LLM returned an empty reply for {task_id}.",
+                "WARNING")
+            return {}, ["llm_empty_reply"], False, {"_raw_content": ""}
+
+        # Parse the JSON response through the extraction ladder.
+        parsed, how = _extract_json_object(content, preferred_keys=dims)
+        if parsed is None:
+            salvaged = _salvage_scores_from_text(content, dims)
+            if salvaged:
+                parsed, how = salvaged, "salvaged"
+        if parsed is None:
+            if finish_reason == 'length':
+                log_message(
+                    f"Thread {thread_id}: Quality scoring LLM reply for {task_id} was cut off by "
+                    f"the token limit before it formed valid JSON.", "WARNING")
+                return {}, ["llm_truncated"], False, {"_raw_content": content}
+            log_message(
+                f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}: "
+                f"{content[:500]}", "WARNING")
+            return {}, ["llm_invalid_json"], False, {"_raw_content": content}
+        if how != "direct":
+            log_message(
+                f"Thread {thread_id}: Quality scoring LLM JSON recovered for {task_id} "
+                f"({how}).", "DEBUG")
+
+        flags = []
         scores = {}
         for dim in dims:
-            val = parsed.get(dim, 50)
-            try:
-                numeric = float(val)
-            except (TypeError, ValueError):
-                numeric = 50.0
+            numeric = _coerce_score(parsed.get(dim, 50), 50.0)
             scores[dim] = max(0, min(100, int(numeric)))
             if numeric < 40:
                 flags.append(f"low_{dim}")
@@ -1272,15 +1710,12 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
         }
         return scores, flags, True, extras
 
-    except json.JSONDecodeError:
-        log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}.", "WARNING")
-        return {}, ["llm_invalid_json"], False, {}
     except requests.exceptions.Timeout:
         log_message(f"Thread {thread_id}: Quality scoring LLM timed out for {task_id}.", "WARNING")
         return {}, ["llm_timeout"], False, {}
     except Exception as e:
         log_message(f"Thread {thread_id}: Quality scoring LLM error for {task_id}: {e}", "ERROR")
-        return {}, [f"llm_exception"], False, {}
+        return {}, ["llm_exception"], False, {}
 
 
 # --- Per-turn logic gate ---------------------------------------------------------------

@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.4
+# ReadyArt Synthetic Dataset Generator v11.5
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -653,6 +653,16 @@ gender: "female"  # "male", "female", or "neutral"
 
 **NEW in v11.4:** The judge is the dataset's gatekeeper. A transient judge failure (network error, timeout, non-200 status, unreadable response) is retried up to `judge_max_attempts` times (default 3) with a linear back-off; if every attempt fails the conversation is **dropped** — it is not written to the dataset, not stored as a score and not flagged for review. A reply that is not valid JSON, or a conversation-level `logic` score of 0, drops the conversation immediately with no retry. There is no heuristic fallback for a failed judge: an unjudged conversation can no longer reach the dataset.
 
+**NEW in v11.5 — the judge's JSON is now recovered, not dropped.** Small local judges (Qwen 3.5 4B and similar) usually produce the right *evaluation* and only get the *packaging* wrong, so a malformed reply is no longer the end of the conversation:
+
+- **Extraction ladder** — the reply is parsed directly, then by scanning for a balanced `{...}` object (this survives thinking blocks, prose before/after and ``` fences anywhere), then by structural repair (trailing commas, unescaped quotes, cut-off tails), then by lenient normalisation (smart quotes, Python literals), and finally by numeric salvage. A candidate object that actually carries the score keys wins over an unrelated `{...}` in the prose.
+- **Format-repair round** — if nothing parses, the model's own broken reply is sent back and it is asked for the same evaluation as JSON only (`judge_json_repair_attempts`, default 1; `0` restores the v11.4 immediate drop).
+- **Truncation is transient** — a reply cut off by the token limit (`finish_reason: length`) is salvaged when the scores were already written, otherwise retried with a doubled budget. `judge_max_tokens` (0 = automatic) sets the budget and `judge_request_timeout` (default 120 s, was a hard-coded 60 s) the request timeout.
+- **Structured output** — `judge_structured_output: auto` asks the server for `response_format: {"type": "json_object"}`, and an endpoint that rejects it is retried once without the field and remembered for the rest of the run (`off`, `json_object` and `json_schema` are also available).
+- **Better diagnostics** — the judge's raw reply, its `finish_reason` and how the JSON was recovered are written to the per-slot debug log, so a remaining failure can actually be diagnosed.
+
+A reply that is still unparsable after all of that is a genuine `invalid_json` drop, and a conversation-level `logic` score of 0 still drops the conversation immediately. There is no heuristic fallback for a failed judge: an unjudged conversation can never reach the dataset.
+
 **Since v11.2:** Quality scoring requests run through a dedicated queue processor, so the judge handles one conversation at a time. The worker waits for the verdict (the row cannot be written before the judge has spoken) while other workers keep generating.
 
 The quality scoring engine evaluates every completed conversation across six core dimensions and produces a weighted composite score from 0 to 100. Three additional roleplay-specific dimensions are available behind an opt-in toggle (see **Roleplay Dimensions** below).
@@ -668,6 +678,10 @@ quality:
   judge_max_attempts: 3            # Transient judge failures are retried this many times, then the row is dropped
   judge_retry_delay: 1.0           # Seconds between judge attempts (grows linearly per attempt)
   result_timeout: 600              # Seconds a worker waits for its queued verdict before dropping the row
+  judge_json_repair_attempts: 1     # Re-ask the model for JSON-only output this many times before dropping (0 = v11.4 behaviour)
+  judge_max_tokens: 0              # Token budget per judge request (0 = automatic; a token-limited reply is retried with double)
+  judge_request_timeout: 120        # HTTP timeout for one judge request (was a hard-coded 60s)
+  judge_structured_output: auto    # auto | off | json_object | json_schema (auto falls back when the server refuses)
   scoring_api:
     url: ""                        # Dedicated LLM endpoint for scoring (optional)
     model: ""                      # Model name for scoring LLM
@@ -1814,7 +1828,15 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.4 (Current)
+### v11.5 (Current)
+- **Judge JSON Is Recovered Instead of Dropped** — Small local judges (Qwen 3.5 4B and similar) used to lose roughly one conversation in five to malformed JSON. A reply is now parsed through a ladder: direct parse → balanced-object scan (survives thinking blocks, prose and ``` fences anywhere) → structural repair (trailing commas, unescaped quotes, cut-off tails) → lenient normalisation (smart quotes, Python literals) → numeric salvage. A candidate object that actually carries the score keys wins over an unrelated `{...}` in the prose
+- **Format-Repair Round** — if nothing parses, the model's own broken reply is sent back and it is asked for the same evaluation as JSON only (`quality.judge_json_repair_attempts`, default 1, `0` = v11.4 behaviour). Only a reply that still fails is an `invalid_json` drop
+- **Truncation Is Transient, Not Fatal** — a reply cut off by the token limit (`finish_reason: length`) is salvaged when the scores were already written, otherwise retried with a doubled token budget (`quality.judge_max_tokens`, 0 = automatic). This was the actual cause of most "Unterminated string" errors
+- **Optional Structured Output** — `quality.judge_structured_output` (`auto` by default) sends `response_format: {"type": "json_object"}`; an endpoint that rejects it is retried once without the field and remembered for the rest of the run (`json_schema` builds a real schema from the active dimensions, `off` keeps v11.4 payloads)
+- **Judge Replies Are Logged** — the raw reply, its `finish_reason` and how the JSON was recovered now go to the per-slot debug log, so a remaining failure is diagnosable instead of a one-line warning
+- **Smaller Fixes** — score values like `"85"`, `"85/100"` or `about 72` are coerced instead of defaulting to 50; an unreadable response envelope and an empty reply are transient failures (retried) rather than `invalid_json`; per-slot judge latency bookkeeping no longer slices the wrong list
+
+### v11.4
 - **Quality Judge Retries, Then Drops** — The quality judge now retries a transient failure (network error, timeout, non-200 status, unreadable response) up to 3 times, with a configurable back-off (`quality.judge_max_attempts`, `quality.judge_retry_delay`). If every attempt fails, the conversation is **dropped**: it is not written to the dataset, not stored as a score and not flagged for review
 - **Invalid JSON and Logic 0 Drop Immediately** — A judge reply that is not valid JSON, or a conversation-level `logic` score of 0, drops the conversation on the spot with no retry. There is no heuristic fallback for a failed judge any more: an unjudged conversation can no longer slip into the dataset
 - **Review Tab Rebuilt** — Flagged conversations are now selectable with a single click, the table has readable row heights and stretches its columns, the detail pane shows the real transcript (read back from the output files or the database) and scrolls on its own, the selection survives dashboard refresh ticks, and **Export Flagged → JSONL** actually writes `output/quality_review_flagged.jsonl` (main output, per-API duplication files and database rows)

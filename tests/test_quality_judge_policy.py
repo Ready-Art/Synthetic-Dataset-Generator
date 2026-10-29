@@ -148,7 +148,7 @@ def test_recovers_on_a_later_attempt():
 
 
 def test_invalid_json_is_final_and_drops():
-    print("(4) invalid JSON is final: no retry, immediate drop")
+    print("(4) invalid JSON: one format-repair round, then a final drop (never a transient retry)")
     calls = []
 
     def handler(url, headers=None, data=None, timeout=None):
@@ -157,12 +157,21 @@ def test_invalid_json_is_final_and_drops():
 
     real = _stub(handler)
     try:
+        # v11.5: a format-repair round re-asks the model once for JSON-only output; the
+        # evaluation itself is still not retried as a transient failure.
         set_config(judge_config())
         result = quality.score_conversation(CONV, "t-badjson", 1)
-        check("invalid JSON is not retried", len(calls) == 1)
+        check("invalid JSON gets exactly one format-repair round", len(calls) == 2)
         check("conversation is dropped", result.get("dropped") is True)
         check("drop reason is invalid_json", result.get("drop_reason") == "invalid_json")
         check("llm_invalid_json flag recorded", "llm_invalid_json" in (result.get("flags") or []))
+
+        # Repair disabled -> v11.4 behaviour: a single attempt, immediate drop.
+        calls[:] = []
+        set_config(judge_config(judge_json_repair_attempts=0))
+        result = quality.score_conversation(CONV, "t-badjson0", 1)
+        check("judge_json_repair_attempts=0 restores the immediate drop", len(calls) == 1)
+        check("still dropped as invalid_json", result.get("drop_reason") == "invalid_json")
     finally:
         quality.requests.post = real
 
