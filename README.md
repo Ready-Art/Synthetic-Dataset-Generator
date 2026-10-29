@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.2
+# ReadyArt Synthetic Dataset Generator v11.3
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -1793,6 +1793,23 @@ The application is organized into focused modules with one-way dependencies to p
 | `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.
+
+---
+
+## 📝 Version History
+
+### v11.3 (Current)
+- **Robust JSON Extraction for Quality Scoring** — The quality scoring LLM judge now uses robust JSON extraction with regex-based object finding, handling markdown code blocks anywhere in the response, explanatory text before/after JSON, and malformed responses. The system prompt was strengthened to "JSON-only API" language, and JSON parse errors now log the content preview for debugging. This eliminates the "Quality scoring LLM returned invalid JSON" errors that occurred with smaller models like Qwen 3.5 4B that occasionally add explanatory text or inconsistent markdown formatting.
+
+### v11.2
+- **Asynchronous Quality Scoring Queue** — Quality scoring requests are now processed through a dedicated queue system with a background processor thread, preventing concurrent API calls to the LLM judge and eliminating timeout/rate-limit JSON errors
+- Worker threads no longer block waiting for quality scores
+
+### v11.1
+- **Bad Words Support** — Added `samplers.use_bad_words` toggle and `samplers.bad_words` list for vLLM-style token blocking across all API requests (main generation, slop fixer, anti-slop fixer)
+
+### v11.0
+- **Dataset Bindings** — Optional dataset source binding with placeholder syntax (`{{ds:alias}}`) for prompt variables, column visibility controls, and schema-aware validation
 
 ---
 

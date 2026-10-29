@@ -854,7 +854,7 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
     only ever see 0-100 numbers.
     """
     messages = [
-        {"role": "system", "content": "You are a strict but fair quality evaluator. Respond only with valid JSON."},
+        {"role": "system", "content": "You are a strict JSON-only API. Respond with ONLY a valid JSON object. No markdown, no code blocks, no explanations, no extra text. Just raw JSON."},
         {"role": "user", "content": prompt}
     ]
 
@@ -916,14 +916,25 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
         response_data = response.json()
         content = response_data['choices'][0]['message'].get('content', '')
 
-        # Parse the JSON response
+        # Parse the JSON response with robust extraction
         content = content.strip()
-        # Handle cases where the LLM wraps in markdown code blocks
-        if content.startswith('```'):
-            content = re.sub(r'^```(?:json)?\s*', '', content)
-            content = re.sub(r'\s*```$', '', content)
 
-        parsed = json.loads(content)
+        # Try to extract JSON object from the response (handles explanatory text)
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            content = json_match.group(0)
+        else:
+            # Fallback: strip markdown code blocks
+            if content.startswith('```') or '```' in content:
+                content = re.sub(r'```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```', '', content)
+            content = content.strip()
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as e:
+            log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}: {e}. Content preview: {content[:200]}", "WARNING")
+            return {}, ["llm_invalid_json"], False, {}
         flags = []
 
         dims = expected_dims if expected_dims is not None else (
