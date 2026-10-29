@@ -811,11 +811,12 @@ def test_generate_wiring():
         for kw in call.keywords:
             if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
                 passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
-    check("start_processing passes the opening, persona-breakthrough, placement and OOC keywords to the worker",
+    check("start_processing passes the opening, persona-breakthrough, placement, OOC and user-emotion keywords to the worker",
           passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local",
                      "greeting_context_local", "first_line_styles_local", "persona_breakthrough_turn_local",
                      "persona_placement_local", "emotion_placement_local",
-                     "current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled"})
+                     "current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled",
+                     "user_emotional_states_enabled_local", "user_emotional_states_list_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
@@ -944,6 +945,69 @@ def test_arc_and_persona_requests():
           one_plain_system())
 
 
+USER_ARC = "curious -> defensive -> open"
+
+
+def test_user_emotional_arc_requests():
+    """The simulated user's own emotional state/arc (NEW in v10.6.0) rides on user-side messages only."""
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=3, user_emotional_states_enabled_local=True,
+               user_emotional_states_list_local=[USER_ARC])
+    question_note = ROUTER.bodies("question")[0]["messages"][-1]["content"]
+    continuation_notes = [b["messages"][-1]["content"] for b in ROUTER.bodies("continuation")]
+    user_stage = lambda text, stage: f"the user is in the {stage} state" in text
+    check("user arc over 3 turns: the opening question names the first stage",
+          user_stage(question_note, "curious")
+          and "USER EMOTIONAL STATE (PROGRESSION): CURIOUS -> DEFENSIVE -> OPEN" in question_note)
+    check("user arc over 3 turns: each continuation names its own stage in turn",
+          len(continuation_notes) == 2
+          and user_stage(continuation_notes[0], "defensive")
+          and user_stage(continuation_notes[1], "open"))
+    check("user side note follows the template text on both user message kinds",
+          question_note.startswith("QUESTION-PROMPT") and all(n.startswith("CONTINUE-PROMPT") for n in continuation_notes))
+    check("user note is user-only: character replies carry no user note",
+          not any("USER EMOTIONAL STATE" in json.dumps(b) for b in ROUTER.bodies("answer")))
+    check("user note is ephemeral: stored user history carries no user note",
+          not any("USER EMOTIONAL STATE" in m.get("value", m.get("content", ""))
+                  for row in read_rows() for m in row["conversations"]))
+    check("record metadata records the user's assigned arc",
+          read_rows()[0]["metadata"]["user_emotional_state"] == USER_ARC)
+    check("character replies get no user note in the plain system prompt",
+          one_plain_system())
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=1)
+    check("user emotional feature off: questions and continuations carry no user note",
+          not any("USER EMOTIONAL STATE" in json.dumps(b)
+                  for b in ROUTER.bodies("question") + ROUTER.bodies("continuation")))
+    check("feature off records an empty user emotional state",
+          read_rows()[0]["metadata"]["user_emotional_state"] == "")
+
+    reset_state()
+    run_worker(chunk_task(), current_num_turns=2, user_emotional_states_enabled_local=True,
+               user_emotional_states_list_local=["curious"])
+    check("a flat user state keeps its flat text on every user message",
+          all("USER EMOTIONAL STATE: CURIOUS" in b["messages"][-1]["content"]
+              for b in ROUTER.bodies("question") + ROUTER.bodies("continuation")))
+    check("flat user state records bare label in metadata",
+          read_rows()[0]["metadata"]["user_emotional_state"] == "curious")
+
+    reset_state()
+    run_opening(current_num_turns=2, user_emotional_states_enabled_local=True,
+                user_emotional_states_list_local=[USER_ARC])
+    first_line_body = ROUTER.bodies("first_line")[0]
+    check("opening mode: the user's first line request carries the arc's first stage only",
+          "USER EMOTIONAL STATE (PROGRESSION): CURIOUS -> DEFENSIVE -> OPEN" in first_line_body["messages"][-1]["content"]
+          and "the user is in the curious state" in first_line_body["messages"][-1]["content"]
+          and "USER EMOTIONAL STATE" not in json.dumps(first_line_body["messages"][0]))
+    opening_continuations = [b["messages"][-1]["content"] for b in ROUTER.bodies("continuation")]
+    # A 3-stage arc over 2 user turns expands to [first, last]; the greeting is character-side.
+    check("opening mode: the continuation picks up the later stage",
+          len(opening_continuations) == 1 and "the user is in the open state" in opening_continuations[0])
+    check("opening mode: the greeting is character-side and carries no user note",
+          "USER EMOTIONAL STATE" not in json.dumps(ROUTER.bodies("greeting")[0]))
+
+
 def test_note_placement_requests():
     """Each block goes to the system prompt or the final user message as its placement says."""
     persona_char = dict(CHARACTERS[0], persona="Misses the open sea.")
@@ -1030,18 +1094,23 @@ def test_record_metadata():
         {"composite": 87.3, "method": "hybrid", "flags": [],
          "dimensions": {"coherence": 90, "naturalness": 85.0, "engagement": 82.0, "diversity": 95.0,
                         "consistency": 88.0, "technical": 92.0}},
-        3, "2026-01-15 14:32:00")
+        3, "2026-01-15 14:32:00",
+        user_emotional_state="curious -> defensive")
     check("metadata with every input missing has no None", not any(_has_none(v) for v in empty.values()))
     check("metadata with every input missing has the populated key set", list(empty) == list(full))
     check("metadata with every input missing has the populated value types",
           {k: _shape(v) for k, v in empty.items()} == {k: _shape(v) for k, v in full.items()})
     check("unknown strings are empty, duplication_turn 0, unscored quality -1.0",
-          empty["emotional_state"] == empty["setting"] == empty["quality_method"] == empty["generated_at"] == ""
+          empty["emotional_state"] == empty["user_emotional_state"] == empty["setting"]
+          == empty["quality_method"] == empty["generated_at"] == ""
           and empty["duplication_turn"] == 0
           and all(v == -1.0 for k, v in empty.items() if k.startswith("quality_") and k != "quality_method"))
     # v3 adds the opt-in roleplay dimensions (quality.roleplay_dimensions); they carry
     # the usual -1.0 gap whenever unscored or toggled off.
-    check("meta_version is 3", empty["meta_version"] == full["meta_version"] == 3)
+    check("meta_version is 4", empty["meta_version"] == full["meta_version"] == 4)
+    check("user-side emotional state/arc recorded when set, empty when off",
+          full["user_emotional_state"] == "curious -> defensive"
+          and empty["user_emotional_state"] == "")
     check("populated quality numbers are recorded as floats",
           full["quality_composite"] == 87.3 and full["quality_coherence"] == 90.0
           and isinstance(full["quality_coherence"], float))
@@ -1119,6 +1188,7 @@ def main():
     test_generate_wiring()
     print("(4) emotional arc and persona through the worker")
     test_arc_and_persona_requests()
+    test_user_emotional_arc_requests()
     test_note_placement_requests()
     print("(5) record metadata")
     test_record_metadata()

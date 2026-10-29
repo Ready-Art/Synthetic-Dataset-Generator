@@ -110,6 +110,22 @@ def main():
           [f"you are in the {s} state" in inject(s, arc) for s in plan] == [True, True, True]
           and plan == ["calm", "wary", "tense"])
 
+    print("User-side emotional-state injection text (_user_emotional_state_injection):")
+    uinject = g._user_emotional_state_injection
+    uflat = uinject("curious")
+    check("user flat uses USER EMOTIONAL STATE header", "USER EMOTIONAL STATE: CURIOUS" in uflat)
+    check("user flat targets the user side, not the character",
+          "the user's message" in uflat.lower() and "you are in the" not in uflat.lower())
+    check("user empty label -> empty text", uinject("") == "")
+    uarc = split("curious -> defensive -> open")
+    uarc_txt = uinject("defensive", uarc)
+    check("user arc uses PROGRESSION header",
+          "USER EMOTIONAL STATE (PROGRESSION): CURIOUS -> DEFENSIVE -> OPEN" in uarc_txt)
+    check("user arc names the slot's stage",
+          "the user is in the defensive state" in uarc_txt)
+    check("user arc does not announce the shift outright",
+          "stating it outright" in uarc_txt)
+
     print("Persona breakthrough block (_persona_block_for_characters):")
     check("no personas -> empty block", persona([]) == "")
     one = persona([(1, "a hidden grief")], char_count_label=False)
