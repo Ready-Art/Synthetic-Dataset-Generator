@@ -809,8 +809,8 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         "Respond ONLY with a JSON object, no other text. Format:\n"
         '{"coherence": <0-100>, "naturalness": <0-100>, "engagement": <0-100>, "consistency": <0-100>, '
         '"logic": <0-100>, '
-        '"ooc_evidence": ["<very short description of each distinct out-of-character moment, or [] if there are none>"], '
-        '"logic_evidence": ["<very short description of each distinct logic/factual contradiction found in the assistant output, or [] if there are none>"], '
+        '"ooc_evidence": ["<very short description of each distinct out-of-character moment, or [] if there are none; avoid quotation marks>"], '
+        '"logic_evidence": ["<very short description of each distinct logic/factual contradiction found in the assistant output, or [] if there are none; avoid quotation marks>"], '
     )
 
     if is_roleplay_scoring_enabled():
@@ -840,6 +840,116 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
         sampler_settings, scoring_prompt, expected_dims=_judge_dims,
     )
     return scores, flags, success, extras
+
+
+def _repair_json(content):
+    """Attempts to repair common JSON issues from LLM output.
+    
+    LLMs often produce malformed JSON with:
+    - Unescaped quotes within string values
+    - Trailing commas
+    - Missing closing braces/brackets
+    - Newlines within strings
+    
+    This function applies targeted repairs while preserving the actual content.
+    """
+    if not content:
+        return content
+    
+    content = content.strip()
+    
+    # Remove markdown code block markers if present
+    if content.startswith('```'):
+        content = re.sub(r'^```(?:json)?\s*', '', content)
+    if content.endswith('```'):
+        content = re.sub(r'\s*```$', '', content)
+    content = content.strip()
+    
+    # Remove trailing commas before } or ]
+    content = re.sub(r',\s*([\]}])', r'\1', content)
+    
+    # Try to find the JSON object boundaries
+    json_match = re.search(r'\{[\s\S]*\}', content)
+    if json_match:
+        content = json_match.group(0)
+    
+    # Fix unescaped quotes within string values
+    # Strategy: parse character by character, tracking whether we're in a string
+    result = []
+    in_string = False
+    escaped = False
+    i = 0
+    
+    while i < len(content):
+        char = content[i]
+        
+        if escaped:
+            result.append(char)
+            escaped = False
+            i += 1
+            continue
+        
+        if char == '\\':
+            result.append(char)
+            escaped = True
+            i += 1
+            continue
+        
+        if char == '"' and not in_string:
+            in_string = True
+            result.append(char)
+            i += 1
+            continue
+        
+        if char == '"' and in_string:
+            # Check if this quote should be escaped
+            # Look ahead: if next non-space char is : or , or } or ], this quote ends the string
+            # Otherwise, it might be an unescaped quote within the string
+            look_ahead = i + 1
+            while look_ahead < len(content) and content[look_ahead] in ' \t\n\r':
+                look_ahead += 1
+            
+            if look_ahead < len(content):
+                next_char = content[look_ahead]
+                if next_char not in ':,}]':
+                    # This quote is likely within the string - escape it
+                    result.append('\\"')
+                    i += 1
+                    continue
+            
+            in_string = False
+            result.append(char)
+            i += 1
+            continue
+        
+        # Handle newlines within strings - replace with space
+        if char == '\n' and in_string:
+            result.append('\\n')
+            i += 1
+            continue
+        
+        result.append(char)
+        i += 1
+    
+    repaired = ''.join(result)
+    
+    # Close any unclosed strings, arrays, or objects
+    # Count braces and brackets to determine what needs closing
+    open_braces = repaired.count('{') - repaired.count('}')
+    open_brackets = repaired.count('[') - repaired.count(']')
+    
+    # If we're still in a string (odd number of quotes), close it
+    quote_count = repaired.count('"') - repaired.count('\\"')
+    if quote_count % 2 != 0:
+        repaired += '"'
+    
+    # Close any open brackets
+    repaired += ']' * open_brackets
+    
+    # Close any open braces
+    repaired += '}' * open_braces
+    
+    return repaired
 
 
 def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
@@ -933,8 +1043,14 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError as e:
-            log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}: {e}. Content preview: {content[:200]}", "WARNING")
-            return {}, ["llm_invalid_json"], False, {}
+            # First attempt: try to repair common JSON issues (unescaped quotes, trailing commas)
+            repaired = _repair_json(content)
+            try:
+                parsed = json.loads(repaired)
+                log_message(f"Thread {thread_id}: Quality scoring LLM JSON repaired successfully for {task_id}.", "DEBUG")
+            except json.JSONDecodeError as e2:
+                log_message(f"Thread {thread_id}: Quality scoring LLM returned invalid JSON for {task_id}: {e2}. Content preview: {content[:500]}", "WARNING")
+                return {}, ["llm_invalid_json"], False, {}
         flags = []
 
         dims = expected_dims if expected_dims is not None else (
@@ -1092,7 +1208,7 @@ def check_logic(answer, conversation_history, character_profile_text="", turn_nu
         "findings compound. A score below " + str(threshold) + " is a FAIL.\n\n"
         "Respond ONLY with a JSON object, no other text. Format:\n"
         '{"logic": <0-100>, '
-        '"logic_evidence": ["<very short description of each distinct logic error found, quoting the offending words where possible; [] if none>"], '
+        '"logic_evidence": ["<very short description of each distinct logic error found; avoid quotation marks; [] if none>"], '
         '"rewrite_instruction": "<one or two imperative sentences the author should follow to fix the specific errors above, referencing the exact profile fields or earlier-turn lines the errors contradict; empty string if the score is at or above the fail threshold>"}\n'
     )
     if profile_block:

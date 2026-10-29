@@ -129,7 +129,8 @@ class TraceHTTP:
             text = "First reply ROW={} preserves {}.".format(row, MODEL_LITERAL)
         elif kind == "quality":
             text = json.dumps({"coherence": 92, "naturalness": 88, "engagement": 86,
-                               "consistency": 94, "notes": "The voice follows the supplied profile."})
+                               "consistency": 94, "logic": 90,
+                               "notes": "The voice follows the supplied profile."})
         else:
             raise AssertionError("Unrouted request: {}".format(body))
         return self.harness.Resp(200, text, {"prompt_tokens": 11, "completion_tokens": 7})

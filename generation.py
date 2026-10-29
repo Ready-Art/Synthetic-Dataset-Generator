@@ -4154,7 +4154,8 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
 
     As of v11.2, this function enqueues the scoring request to a dedicated queue processor
     instead of blocking the worker thread. The actual scoring happens asynchronously.
-    Returns None immediately (the result will be stored when the processor completes it)."""
+    When the queue processor is not running (tests), falls back to synchronous scoring.
+    Returns the quality result dict on success (synchronous fallback), None otherwise."""
     try:
         # v11.2: Use the quality scoring queue system to avoid blocking worker threads
         # and to ensure the LLM judge processes one request at a time
@@ -4164,8 +4165,13 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
         )
         if queued:
             log_message(f"Thread {thread_id}: Quality scoring queued for {task_id}.", "DEBUG")
-        # Return None immediately since scoring is now async
-        # The result will be stored in app_state.quality_scores when the processor completes it
+            # In synchronous fallback mode (tests), enqueue_quality_scoring returns the result
+            # In async mode, it returns True and we return None
+            # Check if the result was already stored (sync mode)
+            with app_state.quality_lock:
+                if task_id in app_state.quality_scores:
+                    return app_state.quality_scores[task_id]
+        # Async mode: result will be stored later by the processor
         return None
     except Exception as e_quality:
         log_message(f"Thread {thread_id}: Quality scoring queue error for {task_id}: {e_quality}", "ERROR")
