@@ -285,6 +285,7 @@ def reset_all_stats_and_history():
     app_state.error_count_total = 0
     app_state.ooc_count_total = 0
     app_state.logic_issue_count_total = 0
+    app_state.regex_watch_count_total = 0
     anti_slop_count_total = 0
 
     for i in range(6): # For all 6 API slots
@@ -294,6 +295,7 @@ def reset_all_stats_and_history():
         app_state.error_counts_per_api[i] = 0
         app_state.ooc_counts_per_api[i] = 0
         app_state.logic_issue_counts_per_api[i] = 0
+        app_state.regex_watch_counts_per_api[i] = 0
         anti_slop_counts_per_api[i] = 0
         app_state.total_attempts_per_api[i] = 0
     
@@ -305,6 +307,7 @@ def reset_all_stats_and_history():
         app_state.recent_anti_slop_per_api[i] = []
         app_state.recent_ooc_per_api[i] = []
         app_state.recent_logic_per_api[i] = []
+        app_state.recent_regex_per_api[i] = []
 
     app_state.recent_refusals_total = []
     app_state.recent_user_speaking_total = []
@@ -313,7 +316,10 @@ def reset_all_stats_and_history():
     app_state.recent_errors_total = []
     app_state.recent_ooc_total = []
     app_state.recent_logic_total = []
-    
+    app_state.recent_regex_total = []
+    with app_state.regex_watch_log_lock:
+        app_state.regex_watch_log = []
+
     app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
     with app_state.quality_lock:
@@ -991,6 +997,81 @@ def _rebuild_quality_roleplay_layout(force=False):
     widgets["quality_tree"] = quality_tree
 
 
+def _update_regex_watch_tab(force=False):
+    """Populates the Regex Watch area: the configured patterns with their hit counts, and the
+    recent hits with the rewrite outcome for each one.
+
+    Gated to the visible tab (like ``_update_review_table``) and rebuilt only when its content
+    actually changed, so a 500 ms refresh tick never clears the user's selection. ``force=True``
+    is for the Refresh button and for a tab switch.
+    """
+    tab_name = "🔎 Regex Watch"
+    if tab_name not in app_state.dashboard_notebook.tabs_widgets:
+        return
+    if "Regex Watch" not in _active_dashboard_tab_text():
+        return
+    widgets = app_state.dashboard_notebook.tabs_widgets[tab_name]
+    pattern_tree = widgets.get('regex_pattern_tree')
+    hit_tree = widgets.get('regex_hit_tree')
+    if (pattern_tree is None or not pattern_tree.winfo_exists()
+            or hit_tree is None or not hit_tree.winfo_exists()):
+        return
+
+    configured = detection.validate_regex_patterns(
+        global_config.get('detection.regex_watch.patterns', []) or [])[0]
+    enabled = bool(global_config.get('detection.regex_watch.enabled', False))
+    with app_state.regex_watch_log_lock:
+        log_entries = list(app_state.regex_watch_log)
+
+    # Aggregate the log per pattern: total hits and the most recent status.
+    per_pattern = {}
+    for pattern, sentence, api_slot_idx, status in log_entries:
+        entry = per_pattern.setdefault(pattern, {"hits": 0, "status": ""})
+        entry["hits"] += 1
+        entry["status"] = status
+
+    signature = (enabled, tuple(configured), tuple(log_entries[-40:]))
+    if not force and widgets.get('regex_signature') == signature:
+        return
+    widgets['regex_signature'] = signature
+
+    status_label = getattr(app_state, 'regex_watch_status_label', None)
+    if status_label is not None and status_label.winfo_exists():
+        if enabled:
+            status_label.configure(
+                text="Regex Watch is ON with %d pattern(s). A hit is rewritten by the main API "
+                     "slot that produced the text, then re-checked." % len(configured),
+                foreground="lightgray")
+        else:
+            status_label.configure(
+                text="Regex Watch is off. Enable it in the Configuration Editor (Detection tab) "
+                     "to rewrite regex-shaped prose.",
+                foreground="#ffb86b")
+
+    for item in pattern_tree.get_children():
+        pattern_tree.delete(item)
+    if not configured:
+        pattern_tree.insert("", tk.END, values=("-", 0, "no patterns",
+                                              "Add patterns in the Configuration Editor."),
+                            tags=("unresolved",))
+    for index, pattern in enumerate(configured, start=1):
+        stats = per_pattern.get(pattern, {"hits": 0, "status": "-"})
+        pattern_tree.insert("", tk.END,
+                            values=(index, stats["hits"], stats["status"], pattern),
+                            tags=(stats["status"],) if stats["status"] in ("rewritten", "unresolved") else ())
+
+    for item in hit_tree.get_children():
+        hit_tree.delete(item)
+    for pattern, sentence, api_slot_idx, status in log_entries[-40:]:
+        hit_tree.insert("", tk.END,
+                        values=(time.strftime("%H:%M:%S"), f"Slot {api_slot_idx + 1}",
+                                status, pattern[:120], sentence[:200]),
+                        tags=(status,) if status in ("rewritten", "unresolved") else ())
+    children = hit_tree.get_children()
+    if children:
+        hit_tree.see(children[-1])
+
+
 def update_quality_tab():
     """Populates the Quality dashboard tab: per-dimension summary labels and the
     recent-scores table (latest 50).
@@ -1542,6 +1623,19 @@ def start_processing():
     current_ooc_fixes = global_config.get('detection.out_of_character.fixes', [])
     current_ooc_enabled = bool(global_config.get('detection.out_of_character.enabled', True))
 
+    # v11.6 Regex Watch: user-editable regular expressions for rhetorical shapes. An invalid
+    # pattern is dropped here (with a log line) rather than silently skipped on every reply.
+    current_regex_patterns, _regex_pattern_errors = detection.validate_regex_patterns(
+        global_config.get('detection.regex_watch.patterns', []) or [])
+    for _bad_pattern, _bad_reason in _regex_pattern_errors:
+        log_message(f"Regex Watch: ignoring invalid pattern '{_bad_pattern[:60]}': {_bad_reason}", "WARNING")
+    current_regex_watch_enabled = bool(global_config.get('detection.regex_watch.enabled', False))
+    try:
+        current_regex_watch_max_rounds = int(global_config.get('detection.regex_watch.max_rounds', 3))
+    except (TypeError, ValueError):
+        current_regex_watch_max_rounds = 3
+    current_regex_watch_max_rounds = max(1, min(5, current_regex_watch_max_rounds))
+
     current_slop_phrases = global_config.get('detection.slop.phrases', [])
     current_jailbreaks = global_config.get('detection.refusal.fixes', []) 
     current_slop_fixes_fallback = global_config.get('detection.slop.fixes', []) 
@@ -1906,6 +2000,9 @@ def start_processing():
             'user_emotional_states_enabled_local': enable_user_emotional_states,
             'user_emotional_states_list_local': user_emotional_states_list,
             'per_char_random_emotions_local': per_char_random_emotions,
+            'current_regex_patterns': current_regex_patterns,
+            'current_regex_watch_enabled': current_regex_watch_enabled,
+            'current_regex_watch_max_rounds': current_regex_watch_max_rounds,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -1989,6 +2086,7 @@ def start_processing():
                 update_quality_display()
                 _update_review_table()
                 update_quality_tab()
+                _update_regex_watch_tab()
             except Exception as e_gui:
                 log_message(f"GUI update error: {str(e_gui)}", "ERROR")
             finally:
@@ -2289,7 +2387,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.5",
+    text="v11.6",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2335,6 +2433,7 @@ app_state.user_speaking_label = _create_ttkbs_metric(metrics_frame, "User Speak"
 app_state.ooc_label = _create_ttkbs_metric(metrics_frame, "OOC", "🎭")
 app_state.logic_label = _create_ttkbs_metric(metrics_frame, "Logic", "🧠")
 app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
+app_state.regex_watch_label = _create_ttkbs_metric(metrics_frame, "Regex Watch", "🔎")
 app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 
 # Secondary metrics row
@@ -2778,7 +2877,7 @@ highlight_colors = {
     "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright red-orange (errors)
 }
 
-tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review"]
+tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review", "🔎 Regex Watch"]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors"] # Keys for accessing data and widgets
 
@@ -2989,7 +3088,7 @@ for tab_name in tab_names:
     app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
 
     # 3. Create Issue Panels (skip for custom tabs)
-    if tab_name not in ("Quality", "🔍 Review"):
+    if tab_name not in ("Quality", "🔍 Review", "🔎 Regex Watch"):
         panels_frame = ttk.Frame(parent_frame)
         panels_frame.grid(row=0, column=0, sticky="ew")
         panels = []
@@ -3125,6 +3224,65 @@ for tab_name in tab_names:
         detail_text.configure(state=tk.DISABLED)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['detail_text'] = detail_text
 
+    elif tab_name == "🔎 Regex Watch":
+        # Regex Watch is a diagnostics area, not an issue panel: it shows which configured
+        # expressions are actually firing, how often, and what the rewrite did with each hit.
+        # It has no search bar (the pattern table has its own filter) and no issue panels.
+        search_frame.grid_remove()
+        regex_page = ttk.Frame(tab_frame)
+        regex_page.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        regex_page.columnconfigure(0, weight=1)
+        regex_page.rowconfigure(2, weight=1, minsize=120)
+        regex_page.rowconfigure(4, weight=1, minsize=120)
+        tab_frame.rowconfigure(1, weight=1)
+        page_scroll.grid_remove()
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['regex_page'] = regex_page
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = regex_page
+
+        regex_header = ttk.Frame(regex_page)
+        regex_header.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 4))
+        regex_header.columnconfigure(0, weight=1)
+        app_state.regex_watch_status_label = ttk.Label(
+            regex_header, text="Regex Watch is off. Enable it in the Configuration Editor "
+                               "(Detection tab) to rewrite regex-shaped prose.",
+            style='Small.TLabel', justify="left", wraplength=1)
+        app_state.regex_watch_status_label.grid(row=0, column=0, sticky="ew")
+        wrap_label(app_state.regex_watch_status_label, regex_header)
+        ttk.Button(regex_header, text="🔄 Refresh",
+                   command=lambda: _update_regex_watch_tab(force=True)).grid(row=0, column=1, padx=(SPACING, 0))
+
+        # --- Configured patterns and their hit counts ---
+        patterns_lf = ttk.LabelFrame(regex_page, text="Configured Patterns (from the Configuration Editor)")
+        patterns_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, 4))
+        pattern_cols = ("#", "Hits", "Last Status", "Pattern")
+        regex_pattern_tree = ttk.Treeview(patterns_lf, columns=pattern_cols, show="headings",
+                                         height=7, selectmode="browse")
+        for col in pattern_cols:
+            regex_pattern_tree.heading(col, text=col)
+            regex_pattern_tree.column(col, width=110, minwidth=70, stretch=False, anchor="w")
+        regex_pattern_tree.column("Pattern", width=520, minwidth=220, stretch=True)
+        regex_pattern_tree.tag_configure("unresolved", foreground="#ff6b6b")
+        regex_pattern_tree.tag_configure("rewritten", foreground="#69f0ae")
+        _grid_scrollable_table(patterns_lf, regex_pattern_tree)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['regex_pattern_tree'] = regex_pattern_tree
+
+        # --- Recent hits and what the rewrite did ---
+        hits_lf = ttk.LabelFrame(regex_page, text="Recent Hits (newest last)")
+        hits_lf.grid(row=4, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
+        hit_cols = ("Time", "API", "Status", "Pattern", "Matched Text")
+        regex_hit_tree = ttk.Treeview(hits_lf, columns=hit_cols, show="headings",
+                                      height=7, selectmode="browse")
+        for col in hit_cols:
+            regex_hit_tree.heading(col, text=col)
+            regex_hit_tree.column(col, width=110, minwidth=70, stretch=False, anchor="w")
+        regex_hit_tree.column("Pattern", width=260, minwidth=140, stretch=True)
+        regex_hit_tree.column("Matched Text", width=340, minwidth=180, stretch=True)
+        regex_hit_tree.tag_configure("unresolved", foreground="#ff6b6b")
+        regex_hit_tree.tag_configure("rewritten", foreground="#69f0ae")
+        _grid_scrollable_table(hits_lf, regex_hit_tree)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['regex_hit_tree'] = regex_hit_tree
+
+
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)
 app_state.dashboard_notebook.add(queue_tab, text="📦 Queue")
@@ -3142,6 +3300,7 @@ def _on_dashboard_tab_changed(_event=None):
         update_dashboard()
         _update_review_table()
         update_quality_tab()
+        _update_regex_watch_tab(force=True)
     except Exception as e:
         log_message(f"Dashboard tab-change refresh error: {e}", "ERROR")
 

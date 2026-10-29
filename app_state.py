@@ -27,7 +27,8 @@ issue_timestamps = {
     'anti_slop': [],
     'incomplete_quotes': [],
     'out_of_character': [],
-    'logic_issues': []
+    'logic_issues': [],
+    'regex_watch': []
 }
 issue_timestamps_lock = Lock()
 loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded from state file
@@ -52,6 +53,8 @@ recent_ooc_per_api = {i: [] for i in range(6)}
 recent_ooc_total = []
 recent_logic_per_api = {i: [] for i in range(6)}
 recent_logic_total = []
+recent_regex_per_api = {i: [] for i in range(6)}
+recent_regex_total = []
 refusal_count_total = 0
 refusal_counts_per_api = {i: 0 for i in range(6)}
 slop_count_total = 0
@@ -74,6 +77,15 @@ ooc_count_total = 0
 ooc_counts_per_api = {i: 0 for i in range(6)}
 logic_issue_count_total = 0
 logic_issue_counts_per_api = {i: 0 for i in range(6)}
+regex_watch_count_total = 0
+regex_watch_counts_per_api = {i: 0 for i in range(6)}
+# --- Regex Watch (v11.6) ---
+# Every pattern hit that led to a rewrite, kept for the Regex Watch dashboard area so the user
+# can see WHICH pattern fires and what it matched. Bounded ring buffer, guarded by
+# regex_watch_lock. Entries are (pattern, matched_text, api_slot_idx, rewrite_status).
+regex_watch_log = []
+regex_watch_log_lock = Lock()
+MAX_REGEX_WATCH_LOG = 200
 character_counter = 0  # Round-robin counter for character selection
 character_counter_lock = Lock()  # Thread-safe access
 pending_task_ids = set()
@@ -140,6 +152,7 @@ token_label = None
 user_speaking_label = None
 ooc_label = None
 logic_label = None
+regex_watch_label = None
 # ^ dashboard widget handles — assigned in generate.py when the main window is built
 
 

@@ -261,6 +261,145 @@ def is_out_of_character(answer, ooc_phrases_list):
 
     return bool(detected_info), detected_info
 
+# --- Regex Watch (v11.6) ----------------------------------------------------------------
+# A phrase list cannot express a *shape* of prose ("it is not just X, it is Y"). Regex Watch
+# lets the end user keep a small, editable set of regular expressions that describe those
+# shapes. It mirrors the slop checks: same (bool, [(label, sentence), ...]) return shape, same
+# 1-hour timestamp bookkeeping, so the dashboard picks hits up automatically.
+#
+# Patterns are matched against the WHOLE answer (a rewrite target can span a clause boundary),
+# not sentence by sentence, so the reporting sentence is the one that contains the match.
+
+
+class RegexWatchError(ValueError):
+    """Raised for an unusable pattern (syntax error or an empty/oversized entry)."""
+
+
+MAX_REGEX_PATTERN_LENGTH = 2000
+
+# The patterns shipped in config/config.yml (detection.regex_watch.patterns). They describe
+# rhetorical SHAPES, not words, and are matched case-insensitively against the whole reply.
+# Written from scratch for this project: the point of each is the "X, but Y" pivot a model
+# falls into when it wants to sound emphatic, so every pattern is anchored on that pivot and
+# bounded (``{1,60}?``) so a match cannot run across a sentence break.
+DEFAULT_REGEX_WATCH_PATTERNS = (
+    # "not just/only/merely X, but (also) Y"
+    r"\bnot\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?\s*(?:[,;:\u2014\u2013-])?\s*but\s+(?:also\s+)?\w",
+    # "not only X but also Y" (the pivot needs no comma)
+    r"\bnot\s+only\s+[^.!?\n]{1,60}?\bbut\s+also\s+\w",
+    # "it is not just X, it is Y" -- the same subject restated
+    r"\bit(?:'s|\u2019s|\s+is)\s+not\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:'s|\u2019s|\s+is)\b",
+    # "X is not (just/about) Y, it is (about) Z"
+    r"\b\w+\s+is\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:about\s+)?[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:'s|\u2019s|\s+is)\s+(?:about\s+)?\w",
+    # "more than just a Z"
+    r"\bmore\s+than\s+just\s+(?:a|an|the)?\s*\w+",
+    # "less about X and more about Y"
+    r"\bless\s+about\s+[^.!?\n]{1,40}?\s+and\s+(?:more|so\s+much\s+more)\s+about\s+\w",
+)
+
+
+@functools.lru_cache(maxsize=64)
+def _compile_regex(pattern):
+    """Compile one user pattern, or raise :class:`RegexWatchError`.
+
+    ``IGNORECASE`` matches the phrase-driven checks. ``re.MULTILINE`` is deliberately NOT set
+    so ``^``/``$`` mean start/end of the reply, which is what a user writing an anchored
+    pattern expects.
+    """
+    if not isinstance(pattern, str):
+        raise RegexWatchError("pattern must be text")
+    text = pattern.strip()
+    if not text:
+        raise RegexWatchError("pattern is empty")
+    if len(text) > MAX_REGEX_PATTERN_LENGTH:
+        raise RegexWatchError(
+            "pattern is longer than %d characters" % MAX_REGEX_PATTERN_LENGTH)
+    try:
+        return re.compile(text, re.IGNORECASE)
+    except re.error as exc:
+        raise RegexWatchError(str(exc))
+
+
+def validate_regex_patterns(patterns):
+    """Return ``(valid_patterns, errors)`` for an editable pattern list.
+
+    ``errors`` is a list of ``(pattern, message)``; ``valid_patterns`` keeps the input order and
+    drops blanks and duplicates so a saved config never grows a dead or repeated entry.
+    """
+    valid, errors, seen = [], [], set()
+    for raw in patterns or ():
+        text = (raw or "").strip()
+        if not text:
+            continue
+        try:
+            _compile_regex(text)
+        except RegexWatchError as exc:
+            errors.append((text, str(exc)))
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        valid.append(text)
+    return valid, errors
+
+
+def _sentence_around(text, start, end):
+    """The sentence of *text* that contains ``text[start:end]`` (trimmed, capped for display)."""
+    left = 0
+    for marker in re.finditer(r'[.!?]\s|[\n]', text[:start]):
+        left = marker.end()
+    right_match = re.search(r'[.!?](\s|$)|\n', text[end:])
+    right = end + right_match.end() if right_match else len(text)
+    sentence = ' '.join(text[left:right].split())
+    if len(sentence) > 300:
+        sentence = sentence[:297] + "..."
+    return sentence
+
+
+def find_regex_matches(text, patterns):
+    """Return ``[(pattern, sentence, matched_text), ...]`` for every pattern that matches *text*.
+
+    Invalid patterns are skipped silently: the config editor validates on save, and a pattern
+    that breaks at run time must never stop generation. The first match per pattern is
+    reported, which is enough to drive one rewrite round; the caller re-runs the check after
+    each rewrite.
+    """
+    if not text:
+        return []
+    found = []
+    for pattern in patterns or ():
+        try:
+            compiled = _compile_regex(pattern)
+        except RegexWatchError:
+            continue
+        match = compiled.search(text)
+        if match is None or match.end() == match.start():
+            # A zero-width match has nothing to rewrite; it would loop forever.
+            continue
+        found.append((pattern.strip(),
+                      _sentence_around(text, match.start(), match.end()),
+                      match.group(0)))
+    return found
+
+
+def is_regex_watch(text, patterns, record_timestamp=True):
+    """Detects user-supplied regex shapes ("not just X, but Y") in *text*.
+
+    Same contract as the other ``is_*()`` checks: ``(bool, [(pattern, sentence), ...])``, plus a
+    timestamp in ``issue_timestamps['regex_watch']`` (1-hour rolling window) so the dashboard's
+    Regex Watch area and issue graph update on their own. ``record_timestamp=False`` is for
+    callers that only want to probe the text (e.g. a re-check after a rewrite).
+    """
+    matches = find_regex_matches(text, patterns)
+    if matches and record_timestamp and issue_timestamps is not None \
+            and issue_timestamps_lock is not None:
+        with issue_timestamps_lock:
+            issue_timestamps.setdefault('regex_watch', []).append(time.time())
+            cutoff = time.time() - 3600
+            issue_timestamps['regex_watch'] = [t for t in issue_timestamps['regex_watch'] if t > cutoff]
+    return bool(matches), [(pattern, sentence) for pattern, sentence, _matched in matches]
+
+
 def is_incomplete_quote(text):
     if not text:
         return False, []

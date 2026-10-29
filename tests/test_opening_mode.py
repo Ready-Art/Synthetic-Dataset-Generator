@@ -232,7 +232,9 @@ def worker_kwargs(**overrides):
         character_list=CHARACTERS[:1], enable_emotional_states_local=False, emotional_states_list_local=[],
         num_characters_local=1, no_user_impersonation_local=False, current_api_request_timeout=5,
         current_slop_to_anti_slop_fallback=False, current_lore="",
-        enable_random_names_local=False, random_names_list_local=None)
+        enable_random_names_local=False, random_names_list_local=None,
+        current_regex_patterns=(), current_regex_watch_enabled=False,
+        current_regex_watch_max_rounds=3)
     kwargs.update(overrides)
     return kwargs
 
@@ -865,7 +867,9 @@ def test_generate_wiring():
                      "current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled",
                      "user_emotional_states_enabled_local", "user_emotional_states_list_local",
                      "per_char_random_emotions_local",
-                     "per_turn_logic_check_local", "per_turn_logic_max_rewrites_local"})
+                     "per_turn_logic_check_local", "per_turn_logic_max_rewrites_local",
+                     "current_regex_patterns", "current_regex_watch_enabled",
+                     "current_regex_watch_max_rounds"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",

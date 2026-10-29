@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.5
+# ReadyArt Synthetic Dataset Generator v11.6
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -648,6 +648,31 @@ gender: "female"  # "male", "female", or "neutral"
 ```
 
 > **Note:** Anti-Slop is a fully independent detection layer. It uses its own API (Slot 6), its own sampler settings, and its own phrase/fix lists. It is separate from Slop Detection (Slot 5) and can be configured independently.
+
+### Regex Watch (v11.6)
+
+Slop and Anti-Slop match fixed *phrases*. A phrase list cannot describe a *shape* of prose — `"it is not just a sword, it is a promise"`, `"more than just a crossing"`, `"less about the money and more about respect"`. **Regex Watch** keeps an editable list of regular expressions for those shapes:
+
+```yaml
+detection:
+  regex_watch:
+    enabled: false          # off by default
+    max_rounds: 3           # rewrite rounds per reply (1-5)
+    patterns:
+    - '\bnot\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?\s*(?:[,;:\u2014\u2013-])?\s*but\s+(?:also\s+)?\w'
+```
+
+How it differs from Slop Detection:
+
+- **No fixer slot.** A hit is sent back to the *same main API slot that produced the text*, so the model rewrites in its own voice instead of handing the sentence to another endpoint.
+- **No fixes list.** The instruction is built from the pattern itself (the construction, plus the text it matched), so a new pattern needs no matching fix entry.
+- **Shapes, not words.** Patterns are matched case-insensitively against the whole reply, so a construction that spans a clause boundary is still caught. The reported sentence is the one containing the match.
+- **It reports, it does not discard.** After `max_rounds` rewrites the best available text is kept; a pattern that survives is counted and shown as `unresolved` rather than costing the conversation.
+- **Rewrites are validated.** A rewrite that is empty, much shorter than the original, still matches its own pattern, or unbalances quotation marks is thrown away and the original is kept.
+
+Patterns are curated in the Configuration Editor's **Detection** tab (add, edit, remove, test against a sample, restore the shipped defaults rolling back to `detection.DEFAULT_REGEX_WATCH_PATTERNS`). A pattern that does not compile is refused at save time; a pattern that is already in `config.yml` but does not compile is logged and skipped, never silently disabling the pass. The dashboard's **🔎 Regex Watch** area shows every configured pattern with its hit count and last status, plus the recent hits and what the rewrite did with each one.
+
+When it runs: after every phrase-driven check has passed on a reply (so a rewrite never races another fix), on assistant answers, generated questions, user continuations and opening-mode greetings/first lines.
 
 ### Quality Scoring
 
@@ -1828,7 +1853,14 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.5 (Current)
+### v11.6 (Current)
+- **Regex Watch** — a new detection area for rhetorical *shapes* rather than fixed phrases (`"it is not just X, it is Y"`, `"more than just a Z"`, `"less about X and more about Y"`). Patterns are regular expressions, shipped with six defaults and fully editable
+- **Rewritten by the main API, not a fixer slot** — a hit is sent back to the same main API slot that produced the text, so the model rewrites in its own voice. There is no fixer slot and no fixes list: the instruction is built from the pattern and the text it matched
+- **Bounded and validated** — up to `detection.regex_watch.max_rounds` rewrites per reply (default 3), each followed by a re-check of the whole reply, so a rewrite that introduces a second forbidden shape is caught in the same pass. A rewrite that is empty, too short, still matches its own pattern, or unbalances quotes is discarded and the original kept
+- **End-user curated** — add, edit, remove, test and restore patterns in the Configuration Editor's Detection tab. An uncompilable pattern is refused at save time; one already in `config.yml` is logged and skipped rather than silently disabling the pass
+- **Dashboard area** — a new **🔎 Regex Watch** tab lists every configured pattern with its hit count and last status, plus the recent hits and the rewrite outcome (`rewritten` / `unresolved`). Hits also feed the Regex Watch metric card and the issue graph
+
+### v11.5
 - **Judge JSON Is Recovered Instead of Dropped** — Small local judges (Qwen 3.5 4B and similar) used to lose roughly one conversation in five to malformed JSON. A reply is now parsed through a ladder: direct parse → balanced-object scan (survives thinking blocks, prose and ``` fences anywhere) → structural repair (trailing commas, unescaped quotes, cut-off tails) → lenient normalisation (smart quotes, Python literals) → numeric salvage. A candidate object that actually carries the score keys wins over an unrelated `{...}` in the prose
 - **Format-Repair Round** — if nothing parses, the model's own broken reply is sent back and it is asked for the same evaluation as JSON only (`quality.judge_json_repair_attempts`, default 1, `0` = v11.4 behaviour). Only a reply that still fails is an `invalid_json` drop
 - **Truncation Is Transient, Not Fatal** — a reply cut off by the token limit (`finish_reason: length`) is salvaged when the scores were already written, otherwise retried with a doubled token budget (`quality.judge_max_tokens`, 0 = automatic). This was the actual cause of most "Unterminated string" errors

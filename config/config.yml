@@ -339,6 +339,29 @@ detection:
   slop:
     phrases: []
     fixes: []
+  # v11.6 Regex Watch: an editable list of regular expressions that describe rhetorical
+  # SHAPES rather than fixed phrases ("it is not just X, it is Y", "more than just a Z").
+  # A hit is rewritten by the SAME main API slot that produced the text, then re-checked;
+  # unlike Slop/Anti-Slop there is no separate fixer slot and no phrase list. Patterns are
+  # matched case-insensitively against the whole reply; add or remove your own below.
+  regex_watch:
+    enabled: false
+    # Rounds of rewrite per reply (1-5). Each round fixes the first remaining hit, then the
+    # whole reply is re-checked, so a rewrite that introduces another shape is caught too.
+    max_rounds: 3
+    patterns:
+    # "not just/only/merely X, but (also) Y"
+    - '\bnot\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?\s*(?:[,;:\u2014\u2013-])?\s*but\s+(?:also\s+)?\w'
+    # "not only X but also Y" (no comma in the middle)
+    - '\bnot\s+only\s+[^.!?\n]{1,60}?\bbut\s+also\s+\w'
+    # "it is not just X, it is Y"
+    - '\bit(?:''s|\u2019s|\s+is)\s+not\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:''s|\u2019s|\s+is)\b'
+    # "X is not (just/about) Y, it is (about) Z"
+    - '\b\w+\s+is\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:about\s+)?[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:''s|\u2019s|\s+is)\s+(?:about\s+)?\w'
+    # "more than just a Z"
+    - '\bmore\s+than\s+just\s+(?:a|an|the)?\s*\w+'
+    # "less about X and more about Y"
+    - '\bless\s+about\s+[^.!?\n]{1,40}?\s+and\s+(?:more|so\s+much\s+more)\s+about\s+\w'
 samplers:
   priority:
   - repetition_penalty

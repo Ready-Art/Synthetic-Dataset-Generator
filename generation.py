@@ -32,6 +32,10 @@ from app_state import (
     global_config, task_retry_counts, task_retry_lock,
 )
 
+# Regex Watch (v11.6): default rewrite rounds per reply. Defined at module scope because the
+# worker signature uses it as a default value (see worker() and generate_answer_with_retries()).
+REGEX_WATCH_MAX_ROUNDS = 3
+
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
@@ -265,6 +269,7 @@ def save_generation_state():
                 'slop_count_total': app_state.slop_count_total,
                 'error_count_total': app_state.error_count_total,
                 'ooc_count_total': app_state.ooc_count_total,
+                'regex_watch_count_total': getattr(app_state, 'regex_watch_count_total', 0),
                 'refusal_counts_per_api': app_state.refusal_counts_per_api,
                 'total_input_tokens': app_state.total_input_tokens,
                 'total_output_tokens': app_state.total_output_tokens,
@@ -273,6 +278,7 @@ def save_generation_state():
                 'slop_counts_per_api': app_state.slop_counts_per_api,
                 'error_counts_per_api': app_state.error_counts_per_api,
                 'ooc_counts_per_api': app_state.ooc_counts_per_api,
+                'regex_watch_counts_per_api': getattr(app_state, 'regex_watch_counts_per_api', {}),
                 'total_attempts_per_api': app_state.total_attempts_per_api,
                 'anti_slop_count_total': app_state.anti_slop_count_total,
                 'anti_slop_counts_per_api': anti_slop_counts_per_api,
@@ -592,7 +598,9 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          current_slop_fixes_for_rotation, master_duplication_enabled_local,
                          no_user_impersonation_local, current_api_request_timeout,
                          current_slop_to_anti_slop_fallback,
-                         current_ooc_phrases, current_ooc_enabled, current_ooc_fixes):
+                         current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
+                         current_regex_patterns=(), current_regex_watch_enabled=False,
+                         current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
     ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
@@ -709,6 +717,9 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             ooc_phrases_local=current_ooc_phrases,
             ooc_enabled_local=current_ooc_enabled,
             ooc_fixes_local=current_ooc_fixes,
+            regex_patterns_local=current_regex_patterns,
+            regex_watch_enabled_local=current_regex_watch_enabled,
+            regex_watch_max_rounds=current_regex_watch_max_rounds,
         )
         if not retry_result or not retry_result[0]:
             log_message(
@@ -801,6 +812,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            user_emotional_states_enabled_local=False,
            user_emotional_states_list_local=None,
            per_char_random_emotions_local=False,
+           current_regex_patterns=(),
+           current_regex_watch_enabled=False,
+           current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
            ):
     """
     The main function executed by each worker thread.
@@ -1375,6 +1389,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         no_user_impersonation_local=no_user_impersonation_local,
                         context_template=greeting_context_local,
                         dataset_values=task_dataset_values, turn_note=greeting_turn_note,
+                        regex_patterns_local=current_regex_patterns,
+                        regex_watch_enabled_local=current_regex_watch_enabled,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
@@ -1393,6 +1409,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         styles=first_line_styles_local,
                         dataset_values=task_dataset_values,
                         user_turn_note=first_line_user_turn_note,
+                        regex_patterns_local=current_regex_patterns,
+                        regex_watch_enabled_local=current_regex_watch_enabled,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if not greeting_text or not initial_user_question:
@@ -1444,6 +1462,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     refusal_phrases_local=current_refusal_phrases,
                     slop_phrases_local=current_slop_phrases,
                     user_turn_note=opening_user_turn_note,
+                    regex_patterns_local=current_regex_patterns,
+                    regex_watch_enabled_local=current_regex_watch_enabled,
                 )
             
             if not initial_user_question:
@@ -1514,6 +1534,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 ooc_phrases_local=current_ooc_phrases,
                                 ooc_enabled_local=current_ooc_enabled,
                                 ooc_fixes_local=current_ooc_fixes,
+                                regex_patterns_local=current_regex_patterns,
+                                regex_watch_enabled_local=current_regex_watch_enabled,
+                                regex_watch_max_rounds=current_regex_watch_max_rounds,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
                                 # Per-turn logic gate on the primary (slot 1) answer only; the
@@ -1538,6 +1561,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         master_duplication_enabled_local, no_user_impersonation_local,
                                         current_api_request_timeout, current_slop_to_anti_slop_fallback,
                                         current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
+                                        current_regex_patterns, current_regex_watch_enabled,
+                                        current_regex_watch_max_rounds,
                                     ),
                                     answer_result[1] if len(answer_result) > 1 else False,
                                     answer_result[2] if len(answer_result) > 2 else False,
@@ -1681,6 +1706,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         ooc_phrases_local=current_ooc_phrases,
                         ooc_enabled_local=current_ooc_enabled,
                         ooc_fixes_local=current_ooc_fixes,
+                        regex_patterns_local=current_regex_patterns,
+                        regex_watch_enabled_local=current_regex_watch_enabled,
+                        regex_watch_max_rounds=current_regex_watch_max_rounds,
                     )
                     if per_turn_logic_check_local and answer_result and answer_result[0]:
                         # Per-turn logic gate BEFORE the answer enters the output history, so a
@@ -1702,6 +1730,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             master_duplication_enabled_local, no_user_impersonation_local,
                             current_api_request_timeout, current_slop_to_anti_slop_fallback,
                             current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
+                            current_regex_patterns, current_regex_watch_enabled,
+                            current_regex_watch_max_rounds,
                         )
 
                     if answer_result and answer_result[0]:  # Check if answer is not None
@@ -1799,6 +1829,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     refusal_phrases_local=current_refusal_phrases,
                     slop_phrases_local=current_slop_phrases,
                     user_turn_note=cont_user_turn_note,
+                    regex_patterns_local=current_regex_patterns,
+                    regex_watch_enabled_local=current_regex_watch_enabled,
                 )
 
                 if not user_continuation_reply:
@@ -2004,11 +2036,14 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       raw_subject_chunk, raw_context_chunk,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
-                      user_turn_note=""):
+                      user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False):
     """Generates an initial question using the LLM, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for the
     opening message; it is appended to this ephemeral prompt only and never stored in history.
+
+    `regex_patterns_local` (v11.6) runs the Regex Watch pass on the reply; a hit is rewritten by
+    this same slot before the text is returned.
     """
 
     if not api_url_local:
@@ -2225,6 +2260,15 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     else:
                         return None
 
+                # Regex Watch (v11.6): rewrite regex-shaped prose in place, same slot.
+                if regex_watch_enabled_local and regex_patterns_local:
+                    generated_question_text, _regex_hits = apply_regex_watch(
+                        generated_question_text, regex_patterns_local,
+                        {'url': api_url_local, 'model': model_name_local, 'key': api_key_local},
+                        sampler_settings_local, thread_id, api_slot_idx=api_slot_idx,
+                        file_name=file_name, max_attempts_param=current_max_attempts_param,
+                        api_request_timeout_param=api_request_timeout_param)
+
                 # Update question history with timeout
                 lock_acquired_qh_update = app_state.question_history_lock.acquire(timeout=7.0)
                 if lock_acquired_qh_update:
@@ -2315,11 +2359,14 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                                file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
-                               user_turn_note=""):
+                               user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False):
     """Generates the user's continuation reply, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for this
     message; appended to this ephemeral prompt only and never stored in the conversation history.
+
+    `regex_patterns_local` (v11.6) runs the Regex Watch pass on the reply; a hit is rewritten by
+    this same slot before the text is returned.
     """
 
 
@@ -2479,6 +2526,15 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     else:
                         return None
                 # --- FIX END ---
+
+                # Regex Watch (v11.6): rewrite regex-shaped prose in place, same slot.
+                if regex_watch_enabled_local and regex_patterns_local:
+                    user_reply_text, _regex_hits = apply_regex_watch(
+                        user_reply_text, regex_patterns_local,
+                        {'url': api_url_local, 'model': model_name_local, 'key': api_key_local},
+                        sampler_settings_local, thread_id, api_slot_idx=api_slot_idx,
+                        file_name=file_name, max_attempts_param=current_max_attempts_param,
+                        api_request_timeout_param=api_request_timeout_param)
                 return user_reply_text
             else: # API call failed
                 record_api_failure(api_slot_idx)
@@ -2631,7 +2687,8 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
                              thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                              api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                              file_name="", refusal_phrases_local=(), slop_phrases_local=(),
-                             user_speaking_phrases_local=(), no_user_impersonation_local=False):
+                             user_speaking_phrases_local=(), no_user_impersonation_local=False,
+                             regex_patterns_local=(), regex_watch_enabled_local=False):
     """Send one opening-mode request, retrying until a reply passes the checks or attempts run out.
 
     Shared by generate_greeting and generate_first_line. The reply is rejected and the request sent
@@ -2639,6 +2696,9 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
     max_text_length_malformed), a refusal, slop, or -- when check_user_speaking is set and
     no_user_impersonation is off -- matches a user-speaking phrase. The response cache is not used:
     a retry would get back the text that just failed. Returns the stripped text, or None.
+
+    ``regex_patterns_local`` (v11.6) runs the Regex Watch pass on the accepted reply; a hit is
+    rewritten by this same slot, not rejected and re-rolled.
     """
     if not api_url_local:
         log_message(f"Thread {thread_id}: API URL missing for {preview_type.lower()} (API Slot {api_slot_idx+1}).", "ERROR")
@@ -2750,6 +2810,15 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
                 log_message(f"Thread {thread_id}: {preview_type} rejected ({problem}) {attempt_label}. Snippet: '{text[:100]}...'", "WARNING")
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
+
+            # Regex Watch (v11.6): rewrite regex-shaped prose in place, same slot.
+            if regex_watch_enabled_local and regex_patterns_local:
+                text, _regex_hits = apply_regex_watch(
+                    text, regex_patterns_local,
+                    {'url': api_url_local, 'model': model_name_local, 'key': api_key_local},
+                    sampler_settings_local, thread_id, api_slot_idx=api_slot_idx,
+                    file_name=file_name, max_attempts_param=current_max_attempts_param,
+                    api_request_timeout_param=api_request_timeout_param)
             return text
         except requests.exceptions.Timeout:
             log_message(f"Thread {thread_id}: Timeout in {preview_type.lower()} request {attempt_label}.", "ERROR")
@@ -2784,7 +2853,8 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(),
                       user_speaking_phrases_local=(), no_user_impersonation_local=False, context_template="",
-                      dataset_values=None, turn_note=""):
+                      dataset_values=None, turn_note="", regex_patterns_local=(),
+                      regex_watch_enabled_local=False):
     """Write the character's opening message: [system: scene prompt, user: filled greeting prompt
     + turn note].
 
@@ -2802,14 +2872,15 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
         messages, 'max_tokens_answer', 'greeting_request', 'Greeting', True,
         thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
         api_slot_idx, current_max_attempts_param, api_request_timeout_param, file_name,
-        refusal_phrases_local, slop_phrases_local, user_speaking_phrases_local, no_user_impersonation_local)
+        refusal_phrases_local, slop_phrases_local, user_speaking_phrases_local, no_user_impersonation_local,
+        regex_patterns_local=regex_patterns_local, regex_watch_enabled_local=regex_watch_enabled_local)
 
 
 def generate_first_line(greeting, first_line_prompt_template, thread_id,
                         sampler_settings_local, api_url_local, model_name_local, api_key_local,
                         api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                         file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=(), dataset_values=None,
-                        user_turn_note=""):
+                        user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False):
     """Write the user's first line from the user's seat: [system: first-line prompt, user: greeting
     + turn note].
 
@@ -2830,7 +2901,229 @@ def generate_first_line(greeting, first_line_prompt_template, thread_id,
         messages, 'max_tokens_user_reply', 'first_line_request', 'First line', False,
         thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
         api_slot_idx, current_max_attempts_param, api_request_timeout_param, file_name,
-        refusal_phrases_local, slop_phrases_local)
+        refusal_phrases_local, slop_phrases_local,
+        regex_patterns_local=regex_patterns_local, regex_watch_enabled_local=regex_watch_enabled_local)
+
+
+# --- Regex Watch (v11.6) ----------------------------------------------------------------
+# A phrase list cannot describe a *shape* of prose ("it is not just X, it is Y"). Regex Watch
+# keeps an editable set of regular expressions for those shapes and, on a hit, sends the text
+# back to the MAIN API that produced it (the same slot, so the same model rewrites its own
+# voice) instead of to a dedicated fixer slot. It is the regex-shaped twin of Slop Detection:
+# same hit -> rewrite -> re-check loop, same dashboard bookkeeping.
+
+
+def _regex_watch_system_prompt(original_text):
+    """Instruction block for one regex rewrite round; the voice of the original is preserved."""
+    return (
+        "You are an editor. Rewrite the passage you are given so that it no longer uses the "
+        "rhetorical construction described below, while keeping the meaning, the point of view, "
+        "the tense, the voice and every quotation mark exactly as they are.\n\n"
+        "Keep the passage about the same length as the original. Do not add commentary, a preamble, "
+        "an explanation or a closing remark, and do not wrap the whole passage in quotes. "
+        "Reply with the rewritten passage only."
+    )
+
+
+def rewrite_regex_watch_text(text, pattern, matched_text,
+                            api_config, sampler_settings, thread_id,
+                            api_slot_idx=0, conversation_history=None, file_name="",
+                            max_attempts_param=3, api_request_timeout_param=300):
+    """Ask the MAIN API that produced *text* to rewrite it without *pattern*.
+
+    Returns the rewritten text, or ``None`` when no usable rewrite came back. A rewrite is
+    rejected (and the next attempt tried) when the request fails, when the reply is empty, when
+    the pattern still matches, when it is much shorter than the original, or when it unbalances
+    quotes -- a fix must not introduce the very defect another check exists to catch.
+    """
+    if not text or not pattern or not api_config or not api_config.get('url'):
+        return None
+
+    conversation_context = ""
+    if conversation_history:
+        lines = []
+        for message in list(conversation_history)[-6:]:
+            role = message.get('role', 'unknown')
+            content = (message.get('content') or '').strip()
+            if not content:
+                continue
+            lines.append("%s: %s" % ("User" if role == "user" else "Assistant", content))
+        if lines:
+            conversation_context = ("\n\n<conversation_context>\n" + "\n".join(lines)
+                                    + "\n</conversation_context>")
+
+    user_prompt = (
+        "The passage below uses the following construction, which reads as a formula rather "
+        "than as prose:\n\n"
+        "    %s\n\n"
+        "It matched: %s\n\n"
+        "Rewrite the passage so that this construction is gone -- say the same thing in a "
+        "plainer, more natural way. Do not merely swap a synonym into the same shape. "
+        "Preserve the meaning and all dialogue.%s\n\n"
+        "<passage>\n%s\n</passage>"
+        % (pattern, matched_text, conversation_context, text)
+    )
+    messages = [
+        {"role": "system", "content": _regex_watch_system_prompt(text)},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    for attempt_num in range(max(1, int(max_attempts_param or 1))):
+        if app_state.stop_processing or app_state.pause_processing:
+            return None
+        try:
+            update_live_prompt_preview(messages, {
+                'thread_id': thread_id,
+                'api_slot_idx': api_slot_idx + 1,
+                'message_type': 'Regex Rewrite',
+                'attempt': attempt_num + 1,
+                'timestamp': time.strftime('%H:%M:%S'),
+            })
+            payload_dict = {
+                "model": api_config.get('model'),
+                "messages": messages,
+                "temperature": sampler_settings.get("temperature", 0.5) if sampler_settings else 0.5,
+                "top_p": sampler_settings.get("top_p", 0.9) if sampler_settings else 0.9,
+                "min_p": sampler_settings.get("min_p", 0.0) if sampler_settings else 0.0,
+                "top_k": sampler_settings.get("top_k", 50) if sampler_settings else 50,
+                "repetition_penalty": sampler_settings.get("repetition_penalty", 1.1) if sampler_settings else 1.1,
+                "max_tokens": max(256, len(text.split()) * 3 + 128),
+                "stream": False,
+            }
+            payload_dict = apply_bad_words_to_payload(payload_dict, thread_id)
+            payload_dict = sanitize_payload_for_endpoint(payload_dict, api_config.get('url'), api_slot_idx)
+            headers = {'Content-Type': 'application/json'}
+            if api_config.get('key'):
+                headers['Authorization'] = "Bearer %s" % api_config['key']
+
+            global_rate_limiter.wait_if_needed(api_slot_idx)
+            if not check_circuit_breaker(api_slot_idx):
+                log_message("Thread %s: API Slot %d circuit open. Skipping regex rewrite."
+                            % (thread_id, api_slot_idx + 1), "DEBUG")
+                return None
+
+            response = requests.post(api_config['url'], headers=headers,
+                                     data=json.dumps(payload_dict),
+                                     timeout=(api_request_timeout_param, api_request_timeout_param))
+            if response.status_code != 200:
+                record_api_failure(api_slot_idx)
+                log_message("Thread %s: Regex rewrite failed (API Slot %d, status %s)."
+                            % (thread_id, api_slot_idx + 1, response.status_code), "WARNING")
+                if attempt_num < max_attempts_param - 1:
+                    time.sleep(random.uniform(0.5, 1.5))
+                    continue
+                return None
+            record_api_success(api_slot_idx)
+            response_data = response.json()
+            usage = response_data.get('usage') or {}
+            with app_state.system_prompt_lock:
+                app_state.total_input_tokens += usage.get('prompt_tokens', 0)
+                app_state.total_output_tokens += usage.get('completion_tokens', 0)
+
+            content = (response_data.get('choices') or [{}])[0].get('message', {}).get('content')
+            rewritten = (content or "").strip()
+            # A content rejection is FINAL for this attempt: re-sending the identical request
+            # tends to reproduce the identical answer, so it would only burn quota and time. Only
+            # transport failures (below) are retried. This mirrors call_slop_fixer_llm().
+            if not rewritten or len(rewritten) < 5:
+                log_message("Thread %s: Regex rewrite returned empty text." % thread_id, "WARNING")
+                return None
+            if len(rewritten) < 0.5 * len(text):
+                log_message("Thread %s: Regex rewrite returned a much shorter passage; discarding it."
+                            % thread_id, "WARNING")
+                return None
+            if detection.is_incomplete_quote(rewritten)[0]:
+                log_message("Thread %s: Regex rewrite unbalanced the quotes; discarding it."
+                            % thread_id, "WARNING")
+                return None
+            if detection.is_regex_watch(rewritten, [pattern], record_timestamp=False)[0]:
+                log_message("Thread %s: Regex rewrite still matches its own pattern; discarding it."
+                            % thread_id, "WARNING")
+                return None
+            # Only strip wrapper quotes the rewrite itself added.
+            original_wrapped = (text.strip().startswith('"') and text.strip().endswith('"')
+                                and len(text.strip()) > 2)
+            if (rewritten.startswith('"') and rewritten.endswith('"')
+                    and len(rewritten) > 2 and not original_wrapped):
+                rewritten = rewritten[1:-1]
+            return rewritten
+        except requests.exceptions.Timeout:
+            log_message("Thread %s: Regex rewrite timed out (API Slot %d)."
+                        % (thread_id, api_slot_idx + 1), "WARNING")
+        except Exception as exc_regex:
+            log_message("Thread %s: Exception in regex rewrite (API Slot %d): %s"
+                        % (thread_id, api_slot_idx + 1, exc_regex), "ERROR")
+        if attempt_num < max_attempts_param - 1:
+            time.sleep(random.uniform(0.5, 1.5))
+    return None
+
+
+def apply_regex_watch(text, patterns, api_config, sampler_settings, thread_id,
+                      api_slot_idx=0, conversation_history=None, file_name="",
+                      max_rounds=REGEX_WATCH_MAX_ROUNDS, max_attempts_param=3,
+                      api_request_timeout_param=300, record_stats=True):
+    """Rewrite *text* until no configured regex matches it (bounded), and report what happened.
+
+    Each round rewrites the FIRST remaining hit with the main API, then re-checks the whole text, so a
+    rewrite that introduces a different forbidden shape is caught in the same pass. Returns
+    ``(text, hits)`` where ``hits`` is ``[(pattern, sentence, status), ...]`` with ``status`` one of
+    ``rewritten`` / ``unresolved`` / ``skipped``. ``text`` is the last usable version: perfectly clean
+    when every hit was fixed, and the best available version otherwise.
+    """
+    hits = []
+    if not text or not patterns:
+        return text, hits
+
+    current = text
+    for _round in range(max(0, int(max_rounds or 0))):
+        if app_state.stop_processing or app_state.pause_processing:
+            break
+        matches = detection.find_regex_matches(current, patterns)
+        if not matches:
+            break
+        pattern, sentence, matched_text = matches[0]
+        rewritten = rewrite_regex_watch_text(
+            current, pattern, matched_text, api_config, sampler_settings, thread_id,
+            api_slot_idx=api_slot_idx, conversation_history=conversation_history,
+            file_name=file_name, max_attempts_param=max_attempts_param,
+            api_request_timeout_param=api_request_timeout_param)
+        if not rewritten:
+            hits.append((pattern, sentence, "unresolved"))
+            log_message("Thread %s: Regex Watch could not rewrite '%s'. Keeping the text."
+                        % (thread_id, pattern[:60]), "WARNING")
+            break
+        log_message("Thread %s: Regex Watch rewrote a '%s' match (API Slot %d)."
+                    % (thread_id, pattern[:60], api_slot_idx + 1), "INFO")
+        hits.append((pattern, sentence, "rewritten"))
+        current = rewritten
+
+    # Anything still matching after the rounds ran out stays in the log as unresolved.
+    remaining = detection.find_regex_matches(current, patterns)
+    for pattern, sentence, _matched in remaining:
+        if not any(hit[0] == pattern for hit in hits):
+            hits.append((pattern, sentence, "unresolved"))
+
+    if record_stats and hits:
+        with app_state.stats_lock:
+            app_state.regex_watch_count_total += 1
+            if api_slot_idx < len(app_state.regex_watch_counts_per_api):
+                app_state.regex_watch_counts_per_api[api_slot_idx] += 1
+            for pattern, sentence, status in hits:
+                if len(app_state.recent_regex_total) >= MAX_RECENT:
+                    app_state.recent_regex_total.pop(0)
+                app_state.recent_regex_total.append((pattern, sentence, api_slot_idx))
+                if api_slot_idx < len(app_state.recent_regex_per_api):
+                    per_api = app_state.recent_regex_per_api[api_slot_idx]
+                    if len(per_api) >= MAX_RECENT:
+                        per_api.pop(0)
+                    per_api.append((pattern, sentence))
+        with app_state.regex_watch_log_lock:
+            for pattern, sentence, status in hits:
+                app_state.regex_watch_log.append((pattern, sentence, api_slot_idx, status))
+            if len(app_state.regex_watch_log) > app_state.MAX_REGEX_WATCH_LOG:
+                del app_state.regex_watch_log[:-app_state.MAX_REGEX_WATCH_LOG]
+
+    return current, hits
 
 
 def call_slop_fixer_llm(text_context, slop_phrase,
@@ -3366,7 +3659,10 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  file_name="",
                                  ooc_phrases_local=(),
                                  ooc_enabled_local=True,
-                                 ooc_fixes_local=()):
+                                 ooc_fixes_local=(),
+                                 regex_patterns_local=(),
+                                 regex_watch_enabled_local=False,
+                                 regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
     out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
@@ -3376,6 +3672,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     ``ooc_enabled_local`` mirrors ``detection.out_of_character.enabled`` (default True so a
     missing config does not silently disable the check). Empty phrase lists short-circuit
     naturally via ``detection.is_out_of_character``.
+
+    ``regex_patterns_local`` is the user-editable list from ``detection.regex_watch.patterns``.
+    On a hit the answer is sent back to THIS SAME main API slot (index ``api_slot_idx``) for a
+    rewrite, then re-checked -- the regex-shaped twin of the slop loop. The regex pass runs
+    after every other check has passed, so it never rewrites text that another check is about
+    to replace.
     """
 
     refusal_detected_this_main_api_call = False
@@ -4073,6 +4375,32 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         # Uses the upgraded structural balancer instead of simple parity counting
                         answer = text_utils.normalize_quotes(answer.strip())
                         issue_detected_this_main_api_call = False  # Mark as resolved so it saves
+
+            # --- Regex Watch (v11.6) ---
+            # Runs only once every phrase-driven check has passed, so a rewrite never races
+            # another fix. A hit is timestamped (issue graph), counted (metric card) and logged
+            # (Regex Watch area), then the answer is rewritten by this same main API slot and
+            # re-checked. A pattern that survives the bounded rounds keeps the best text: the
+            # detector reports, it does not discard the turn.
+            if (not issue_detected_this_main_api_call and regex_watch_enabled_local
+                    and regex_patterns_local):
+                regex_hit, _regex_info = detection.is_regex_watch(answer, regex_patterns_local)
+                if regex_hit:
+                    log_message(
+                        f"Thread {thread_id}: Regex Watch matched in answer (API Slot {api_slot_idx+1}). "
+                        f"Snippet: {answer[:70]}...", "DEBUG")
+                    rewritten_answer, _hits = apply_regex_watch(
+                        answer, regex_patterns_local,
+                        {'url': api_url_local, 'model': model_name_local, 'key': api_key_local},
+                        sampler_settings_local, thread_id,
+                        api_slot_idx=api_slot_idx,
+                        conversation_history=conversation_history_for_llm,
+                        file_name=file_name, max_rounds=regex_watch_max_rounds,
+                        max_attempts_param=current_max_attempts_for_slop_fixer_call,
+                        api_request_timeout_param=api_request_timeout_param)
+                    if rewritten_answer and rewritten_answer != answer:
+                        answer = rewritten_answer
+                        issue_ever_detected_this_task = True
 
             if not issue_detected_this_main_api_call:
                 log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")

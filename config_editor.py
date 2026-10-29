@@ -38,6 +38,37 @@ def validate_url(url):
         return False
 
 
+# --- Regex Watch helpers (v11.6) -----------------------------------------------------
+# Module-level (not methods) so they work on a partial editor object too: the save path is
+# exercised headless by tests with a stub whose unknown attributes resolve to a Tk var.
+
+def regex_watch_rounds_value(editor, default=3):
+    """The configured rewrite rounds, clamped to 1-5 (absent or unparsable -> *default*)."""
+    var = getattr(editor, 'regex_watch_max_rounds_var_editor', None)
+    try:
+        rounds = int(str(var.get()).strip())
+    except (AttributeError, TypeError, ValueError):
+        return default
+    return max(1, min(5, rounds))
+
+
+def regex_watch_enabled_value(editor):
+    """The Regex Watch enable state (False when the widget does not exist)."""
+    var = getattr(editor, 'regex_watch_enabled_var_editor', None)
+    try:
+        return bool(var.get())
+    except AttributeError:
+        return False
+
+
+def regex_watch_pattern_values(editor):
+    """The edited pattern list, stripped of blanks (empty when no list exists)."""
+    patterns = getattr(editor, 'regex_watch_patterns', None)
+    if not isinstance(patterns, (list, tuple)):
+        return []
+    return [p.strip() for p in patterns if isinstance(p, str) and p.strip()]
+
+
 def wrapped_checkbutton(parent, text, **kwargs):
     """Keep long option descriptions readable without shrinking the checkbox."""
     frame = ttk.Frame(parent)
@@ -910,6 +941,74 @@ class ConfigEditor(tk.Toplevel):
 
         add_detection_list_pair(col1_frame, "Refusal Detection", 'refusal_phrases_text', 'refusal_fixes_text')
         add_detection_list_pair(col1_frame, "User Speaking Detection (Phrases/Fixes are Gender Specific)", 'user_speaking_phrases_text', 'user_speaking_fixes_text')
+
+        # --- Regex Watch (v11.6) ---
+        # An editable list of regular expressions for rhetorical SHAPES ("it is not just X, it is Y"),
+        # which a phrase list cannot express. A hit is rewritten by the main API slot that produced
+        # the text, so there is no fixer slot and no fixes list here. The patterns live in a Listbox
+        # (self.regex_watch_patterns) rather than a text area because each entry is one expression
+        # that must stay on one line -- a text area invites accidental line breaks mid-pattern.
+        regex_lf = ttk.LabelFrame(col1_frame, text="Regex Watch")
+        regex_lf._section_search_text = "Regex Watch"
+        regex_lf.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
+
+        self.regex_watch_enabled_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(
+            regex_lf,
+            text="Enable Regex Watch (catches rhetorical shapes such as \"not just X, but Y\"; "
+                 "a hit is rewritten by the main API, not a fixer slot)",
+            variable=self.regex_watch_enabled_var_editor,
+            command=self._toggle_regex_watch_fields).pack(fill="x", pady=(0, 5))
+
+        rounds_row = ttk.Frame(regex_lf)
+        rounds_row.pack(fill="x", pady=(0, 5))
+        ttk.Label(rounds_row, text="Rewrite rounds per reply (1-5):").pack(side=tk.LEFT)
+        self.regex_watch_max_rounds_var_editor = tk.StringVar(value="3")
+        self.regex_watch_rounds_spinbox = ttk.Spinbox(
+            rounds_row, from_=1, to=5, width=4, textvariable=self.regex_watch_max_rounds_var_editor)
+        self.regex_watch_rounds_spinbox.pack(side=tk.LEFT, padx=(SPACING, 0))
+
+        ttk.Label(regex_lf, text="Patterns (one regular expression per entry):",
+                  wraplength=1).pack(fill="x")
+        self.regex_watch_patterns = []
+        listbox_frame = ttk.Frame(regex_lf)
+        listbox_frame.pack(fill="both", expand=True, pady=(0, 5))
+        self.regex_watch_listbox = tk.Listbox(listbox_frame, height=8, activestyle="dotbox",
+                                             exportselection=False)
+        regex_list_scroll = ttk.Scrollbar(listbox_frame, orient="vertical",
+                                          command=self.regex_watch_listbox.yview)
+        self.regex_watch_listbox.configure(yscrollcommand=regex_list_scroll.set)
+        self.regex_watch_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        regex_list_scroll.pack(side=tk.RIGHT, fill="y")
+        self.regex_watch_listbox.bind("<<ListboxSelect>>", self._on_regex_pattern_selected)
+
+        entry_row = ttk.Frame(regex_lf)
+        entry_row.pack(fill="x", pady=(0, 4))
+        entry_row.columnconfigure(0, weight=1)
+        self.regex_watch_entry_var = tk.StringVar()
+        self.regex_watch_entry = ttk.Entry(entry_row, textvariable=self.regex_watch_entry_var)
+        self.regex_watch_entry.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        self.regex_watch_entry.bind("<Return>", lambda _event: self._add_regex_pattern())
+        self.regex_watch_add_button = ttk.Button(entry_row, text="➕ Add / Update",
+                                                 command=self._add_regex_pattern)
+        self.regex_watch_add_button.grid(row=0, column=1)
+
+        button_row = ttk.Frame(regex_lf)
+        button_row.pack(fill="x", pady=(0, 4))
+        self.regex_watch_remove_button = ttk.Button(button_row, text="➖ Remove Selected",
+                                                    command=self._remove_regex_pattern)
+        self.regex_watch_remove_button.pack(side=tk.LEFT, padx=(0, SPACING))
+        self.regex_watch_test_button = ttk.Button(button_row, text="🧪 Test Pattern",
+                                                  command=self._test_regex_pattern)
+        self.regex_watch_test_button.pack(side=tk.LEFT, padx=(0, SPACING))
+        self.regex_watch_reset_button = ttk.Button(button_row, text="↺ Restore Defaults",
+                                                   command=self._restore_default_regex_patterns)
+        self.regex_watch_reset_button.pack(side=tk.LEFT)
+
+        self.regex_watch_status_label = ttk.Label(regex_lf, text="", style='Small.TLabel',
+                                                  justify="left", wraplength=1)
+        self.regex_watch_status_label.pack(fill="x")
+        wrap_label(self.regex_watch_status_label, regex_lf)
         add_detection_list_pair(col2_frame, "Slop Detection", 'slop_phrases_text', 'slop_fixes_text')
         add_detection_list_pair(col2_frame, "Anti-Slop Detection", 'anti_slop_phrases_text', 'anti_slop_fixes_text')
 
@@ -1641,6 +1740,13 @@ class ConfigEditor(tk.Toplevel):
                 'slop': {
                     'phrases': [sanitize_input(line.strip()) for line in self.slop_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'fixes': [sanitize_input(line.strip()) for line in self.slop_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
+                },
+                # v11.6 Regex Watch: patterns are saved VERBATIM -- sanitize_input strips
+                # backslashes and quotes, which would silently corrupt every expression.
+                'regex_watch': {
+                    'enabled': regex_watch_enabled_value(self),
+                    'max_rounds': regex_watch_rounds_value(self),
+                    'patterns': regex_watch_pattern_values(self),
                 }
             },
             'samplers': {
@@ -1742,6 +1848,129 @@ class ConfigEditor(tk.Toplevel):
             field_widget = getattr(self, field_name, None)
             if field_widget is not None and field_widget.winfo_exists():
                 field_widget.configure(state='normal' if is_enabled else 'disabled')
+
+    # --- Regex Watch (v11.6) ---------------------------------------------------------
+    # Patterns are kept in the plain Python list ``self.regex_watch_patterns`` and mirrored into
+    # the Listbox. Every mutation re-renders the list, so the widget and the list can never
+    # disagree about which patterns will be saved.
+
+    def _render_regex_patterns(self):
+        """Re-fill the Listbox from ``self.regex_watch_patterns``."""
+        listbox = getattr(self, 'regex_watch_listbox', None)
+        if listbox is None or not listbox.winfo_exists():
+            return
+        listbox.delete(0, tk.END)
+        for index, pattern in enumerate(self.regex_watch_patterns, start=1):
+            listbox.insert(tk.END, "%d. %s" % (index, pattern))
+
+    def _set_regex_status(self, message, ok=True):
+        label = getattr(self, 'regex_watch_status_label', None)
+        if label is not None and label.winfo_exists():
+            label.configure(text=message, foreground="green" if ok else "#ff6b6b")
+
+    def _toggle_regex_watch_fields(self):
+        """Enable/disable the Regex Watch editor controls from the checkbox.
+
+        With the feature off the whole panel is read-only: the entry, the buttons and the rounds
+        spinner are disabled so a stray keystroke cannot change a pattern set that is not in use. The
+        Listbox stays visible (still scrollable) so the stored patterns can be read before enabling.
+        """
+        enabled = bool(self.regex_watch_enabled_var_editor.get())
+        state = 'normal' if enabled else 'disabled'
+        for widget_name in ('regex_watch_entry', 'regex_watch_add_button',
+                            'regex_watch_remove_button', 'regex_watch_test_button',
+                            'regex_watch_reset_button', 'regex_watch_rounds_spinbox'):
+            widget = getattr(self, widget_name, None)
+            if widget is not None and widget.winfo_exists():
+                widget.configure(state=state)
+
+    def _on_regex_pattern_selected(self, _event=None):
+        """Load the selected pattern into the entry so it can be edited or removed."""
+        listbox = self.regex_watch_listbox
+        selection = listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        if 0 <= index < len(self.regex_watch_patterns):
+            self.regex_watch_entry_var.set(self.regex_watch_patterns[index])
+
+    def _add_regex_pattern(self):
+        """Add the entry as a new pattern, or replace the selected one when it was edited."""
+        from detection import RegexWatchError, _compile_regex
+        pattern = self.regex_watch_entry_var.get().strip()
+        if not pattern:
+            self._set_regex_status("Type a regular expression first.", ok=False)
+            return
+        try:
+            _compile_regex(pattern)
+        except RegexWatchError as exc:
+            self._set_regex_status("Invalid regular expression: %s" % exc, ok=False)
+            return
+        selection = self.regex_watch_listbox.curselection()
+        if selection and 0 <= selection[0] < len(self.regex_watch_patterns):
+            self.regex_watch_patterns[selection[0]] = pattern
+            self._set_regex_status("Pattern updated.")
+        elif pattern in self.regex_watch_patterns:
+            self._set_regex_status("That pattern is already in the list.", ok=False)
+            return
+        else:
+            self.regex_watch_patterns.append(pattern)
+            self._set_regex_status("Pattern added (%d total)." % len(self.regex_watch_patterns))
+        self.regex_watch_entry_var.set("")
+        self._render_regex_patterns()
+
+    def _remove_regex_pattern(self):
+        """Remove the selected pattern (or the one typed in the entry)."""
+        selection = self.regex_watch_listbox.curselection()
+        index = selection[0] if selection else None
+        if index is None or not (0 <= index < len(self.regex_watch_patterns)):
+            typed = self.regex_watch_entry_var.get().strip()
+            if typed in self.regex_watch_patterns:
+                index = self.regex_watch_patterns.index(typed)
+        if index is None or not (0 <= index < len(self.regex_watch_patterns)):
+            self._set_regex_status("Select a pattern to remove.", ok=False)
+            return
+        removed = self.regex_watch_patterns.pop(index)
+        self.regex_watch_entry_var.set("")
+        self._render_regex_patterns()
+        self._set_regex_status("Removed: %s" % removed[:80])
+
+    def _test_regex_pattern(self):
+        """Dry-run the entry (or the selected pattern) against a sample and report the hit."""
+        from detection import RegexWatchError, _compile_regex
+        pattern = self.regex_watch_entry_var.get().strip()
+        if not pattern:
+            selection = self.regex_watch_listbox.curselection()
+            if selection and 0 <= selection[0] < len(self.regex_watch_patterns):
+                pattern = self.regex_watch_patterns[selection[0]]
+        if not pattern:
+            self._set_regex_status("Nothing to test: type a pattern or select one.", ok=False)
+            return
+        try:
+            compiled = _compile_regex(pattern)
+        except RegexWatchError as exc:
+            self._set_regex_status("Invalid regular expression: %s" % exc, ok=False)
+            return
+        sample = ("It is not just a sword, it is a promise. The ship sailed at dawn, "
+                  "and it was more than just a crossing.")
+        match = compiled.search(sample)
+        if match:
+            self._set_regex_status("Matches %r in the sample sentence." % match.group(0)[:80])
+        else:
+            self._set_regex_status("Valid pattern; no match in the built-in sample sentence.")
+
+    def _restore_default_regex_patterns(self):
+        """Restore the pattern set this build ships with (detection.DEFAULT_REGEX_WATCH_PATTERNS).
+
+        Deliberately the built-in defaults, not the patterns currently saved in config.yml: after a
+        user removes patterns and saves, restoring from the file would hand back the already-trimmed list.
+        """
+        from detection import DEFAULT_REGEX_WATCH_PATTERNS
+        defaults = [p for p in DEFAULT_REGEX_WATCH_PATTERNS if isinstance(p, str) and p.strip()]
+        self.regex_watch_patterns = defaults
+        self.regex_watch_entry_var.set("")
+        self._render_regex_patterns()
+        self._set_regex_status("Restored %d default pattern(s)." % len(defaults))
 
     def _add_placement_combobox(self, row, label_text, variable):
         """A 'depth0' / 'system' choice for one per-reply block; returns the next free row."""
@@ -2255,6 +2484,24 @@ class ConfigEditor(tk.Toplevel):
             self.slop_phrases_text.delete(1.0, tk.END); self.slop_phrases_text.insert(tk.END, "\n".join(slop_conf.get('phrases', [])))
             self.slop_fixes_text.delete(1.0, tk.END); self.slop_fixes_text.insert(tk.END, "\n".join(slop_conf.get('fixes', [])))
 
+            # Regex Watch (v11.6): load the editable pattern list. The widgets start disabled
+            # (off by default) and this Tk build drops edits on a disabled widget silently, so the
+            # enabled var is applied BEFORE the list is populated and the toggle runs last.
+            regex_conf = detection_conf.get('regex_watch', {}) or {}
+            self.regex_watch_enabled_var_editor.set(bool(regex_conf.get('enabled', False)))
+            try:
+                loaded_rounds = int(regex_conf.get('max_rounds', 3))
+            except (TypeError, ValueError):
+                loaded_rounds = 3
+            self.regex_watch_max_rounds_var_editor.set(str(max(1, min(5, loaded_rounds))))
+            loaded_patterns = [p for p in (regex_conf.get('patterns') or [])
+                               if isinstance(p, str) and p.strip()]
+            self.regex_watch_patterns = [p.strip() for p in loaded_patterns]
+            self.regex_watch_entry_var.set("")
+            self._render_regex_patterns()
+            self._toggle_regex_watch_fields()
+            self._set_regex_status("")
+
             # Anti-slop configuration loading
             anti_slop_conf = detection_conf.get('anti_slop', {})
             self.anti_slop_phrases_text.delete(1.0, tk.END)
@@ -2359,6 +2606,16 @@ class ConfigEditor(tk.Toplevel):
             get_text_as_list(self.refusal_phrases_text); get_text_as_list(self.refusal_fixes_text)
             get_text_as_list(self.slop_phrases_text); get_text_as_list(self.slop_fixes_text)
             get_text_as_list(self.ooc_phrases_text); get_text_as_list(self.ooc_fixes_text)
+
+            # Regex Watch (v11.6): a pattern that does not compile would be skipped silently at
+            # run time, so it is rejected here while the user can still see the error.
+            from detection import validate_regex_patterns
+            _valid_regex, _regex_errors = validate_regex_patterns(regex_watch_pattern_values(self))
+            if _regex_errors:
+                first_pattern, first_message = _regex_errors[0]
+                raise ValueError(
+                    "Regex Watch pattern is not a valid regular expression: %r (%s)"
+                    % (first_pattern[:60], first_message))
             get_text_as_list(self.sampler_priority_text)
             # v11.1 bad_words: do NOT strip -- leading whitespace on each entry is intentional
             # (matches vLLM semantics where ` For Example` and `For Example` are different tokens).
