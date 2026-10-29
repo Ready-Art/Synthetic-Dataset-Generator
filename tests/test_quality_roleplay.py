@@ -92,7 +92,8 @@ def test_toggle_off_is_default():
     set_config({"quality": {"enabled": True}})
     check("is_roleplay_scoring_enabled defaults off", quality.is_roleplay_scoring_enabled() is False)
     dims = quality.active_scoring_dimensions()
-    check("active set is the six generic dimensions", list(dims) == list(quality.SCORING_DIMENSIONS))
+    check("active set is the seven base dimensions (tic_density opt-in is off)",
+          list(dims) == list(quality.SCORING_DIMENSIONS) and "tic_density" not in dims)
     r = quality.score_conversation(DISTINCT_CONV, "t-off", 1,
                                    character_profile_text=ALICE_BOB_PROFILE,
                                    scene_characters=["Alice", "Bob"])
@@ -120,8 +121,10 @@ def test_toggle_on_scores_three_more():
     r = quality.score_conversation(DISTINCT_CONV, "t-on", 1,
                                    character_profile_text=ALICE_BOB_PROFILE,
                                    scene_characters=["Alice", "Bob"])
-    check("all ten dimensions present (7 generic + logic + 3 roleplay)",
-          len(r["dimensions"]) == 10 and "logic" in r["dimensions"])
+    # tic_density is opt-in and OFF here, so the active set is the 7 base dims + 3 roleplay = 10
+    # (unchanged from v11.6); the composite normalisation below therefore still holds.
+    check("all ten dimensions present (7 base incl. logic + 3 roleplay; tic off)",
+          len(r["dimensions"]) == 10 and "logic" in r["dimensions"] and "tic_density" not in r["dimensions"])
     check("roleplay dimensions scored 0-100",
           all(0 <= r["dimensions"][d] <= 100 for d in quality.ROLEPLAY_SCORING_DIMENSIONS))
     # Weight check: recompute the composite from the reported dimensions and weights.

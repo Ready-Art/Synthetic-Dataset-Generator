@@ -85,11 +85,21 @@ generation:
   discard_refused_conversations: false
   use_conversation_history_for_fixers: true
   include_metadata: true
+  # v11.7: also emit the flat style_metrics block (style_* columns) per record when the metadata
+  # block itself is on. Off by default so the default record stays small; the measurements are
+  # ported from the scotoma analysis layer (see style_metrics.py).
+  include_style_metrics: false
 quality:
   enabled: true
   use_llm_scoring: false
   output_filter: false
   roleplay_dimensions: false
+  # v11.7: opt-in tic_density dimension (scotoma style tics measured per reply by
+  # style_metrics.py: denial-corrections, negation runs, comma stacking, formulaic warm
+  # closers, shallow narration). Heuristic-only, no extra API calls; off by default so
+  # existing composite scores stay comparable. When on it joins the composite, the Quality
+  # tab and the per-record metadata (quality_tic_density).
+  tic_dimension: false
   # Per-turn internal-logic gate: after every assistant reply, the quality LLM checks
   # for objective contradictions (sexed anatomy vs. stated gender, profile-contradicting
   # body parts/clothing/injuries, impossible timelines or quantities). A failing turn is
@@ -362,6 +372,12 @@ detection:
     - '\bmore\s+than\s+just\s+(?:a|an|the)?\s*\w+'
     # "less about X and more about Y"
     - '\bless\s+about\s+[^.!?\n]{1,40}?\s+and\s+(?:more|so\s+much\s+more)\s+about\s+\w'
+    # v11.7 scotoma tic: denial-then-correction (scotoma/denial_correction.py; the shape the
+    # project was built around). Negate a predicate, then assert the replacement.
+    - '\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would|should)n[''\u2019]t\b[^.;!?\n]{0,80}[;.\u2014\u2013-]\s*(?:it|he|she|they|this|that|there|instead|rather)\b'
+    # v11.7 scotoma tic: comma-appended absolute trailer (scotoma/two_tics.py + trailer_rate.py;
+    # teacher 11.8% of sentences vs human 2.5% -> rewrite fraction 0.79).
+    - ',\s*(?:her|his|its|their|the|a|an)\s+\w+[^.!?\n]{0,40}\.'
 samplers:
   priority:
   - repetition_penalty

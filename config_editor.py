@@ -477,6 +477,10 @@ class ConfigEditor(tk.Toplevel):
         self.quality_roleplay_dims_var_editor = tk.BooleanVar(value=False)
         wrapped_checkbutton(gen_settings_frame, text="Roleplay dimensions: voice_distinctiveness, grounding, persona_alignment (adds weighted scoring + metadata columns; heuristic base, LLM-judge refined)", variable=self.quality_roleplay_dims_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
+        self.quality_tic_dim_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(gen_settings_frame, text="Tic density (v11.7): scores the assistant turns for scotoma style tics -- denial-corrections, negation runs, comma clause-stacking, formulaic warm closers, shallow narration. Heuristic-only, no extra API calls. Off by default so existing composite scores stay comparable",
+                        variable=self.quality_tic_dim_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
+
         # --- Per-turn logic gate ---
         # When on, every freshly generated assistant reply is checked by the quality
         # LLM for objective logic errors (sexed anatomy vs. stated gender, profile-
@@ -594,6 +598,10 @@ class ConfigEditor(tk.Toplevel):
         self.include_metadata_var_editor = tk.BooleanVar(value=True)
         wrapped_checkbutton(gen_settings_frame, text="Include Metadata in Output (Flat, schema-stable provenance block per record; trainer-safe, never modifies conversations[])",
                         variable=self.include_metadata_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
+
+        self.include_style_metrics_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(gen_settings_frame, text="Include Style Metrics in Metadata (v11.7: flat style_* columns from the scotoma measurements -- comma habits, negation runs, denial-corrections, trailers, tail-end positivity. Off by default so the default record stays small)",
+                        variable=self.include_style_metrics_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
         
         ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.output_format_var = tk.StringVar(value="sharegpt")
@@ -1687,13 +1695,15 @@ class ConfigEditor(tk.Toplevel):
                 'slop_to_anti_slop_fallback': self.slop_to_anti_slop_fallback_var_editor.get(),
                 'discard_refused_conversations': self.discard_refused_conversations_var_editor.get(),
                 'use_conversation_history_for_fixers': self.use_conversation_history_for_fixers_var_editor.get(),
-                'include_metadata': self.include_metadata_var_editor.get()
+                'include_metadata': self.include_metadata_var_editor.get(),
+                'include_style_metrics': self.include_style_metrics_var_editor.get()
             },
             'quality': {
                 'enabled': self.quality_enabled_var_editor.get(),
                 'use_llm_scoring': self.quality_use_llm_var_editor.get(),
                 'output_filter': self.quality_output_filter_var_editor.get(),
                 'roleplay_dimensions': self.quality_roleplay_dims_var_editor.get(),
+                'tic_dimension': self.quality_tic_dim_var_editor.get(),
                 'per_turn_logic_check': self.quality_logic_check_var_editor.get(),
                 'logic_threshold': int(self.quality_logic_threshold_var.get() or 70),
                 'logic_max_rewrites': max(0, int(self.quality_logic_max_rewrites_var.get() or 1)),
@@ -2340,12 +2350,14 @@ class ConfigEditor(tk.Toplevel):
             self.discard_refused_conversations_var_editor.set(gen_config.get('discard_refused_conversations', False))
             self.use_conversation_history_for_fixers_var_editor.set(gen_config.get('use_conversation_history_for_fixers', True))
             self.include_metadata_var_editor.set(gen_config.get('include_metadata', True))
+            self.include_style_metrics_var_editor.set(gen_config.get('include_style_metrics', False))
             # Load quality scoring config
             quality_conf = config.get('quality', {})
             self.quality_enabled_var_editor.set(quality_conf.get('enabled', True))
             self.quality_use_llm_var_editor.set(quality_conf.get('use_llm_scoring', False))
             self.quality_output_filter_var_editor.set(quality_conf.get('output_filter', False))
             self.quality_roleplay_dims_var_editor.set(quality_conf.get('roleplay_dimensions', False))
+            self.quality_tic_dim_var_editor.set(quality_conf.get('tic_dimension', False))
             self.quality_logic_check_var_editor.set(quality_conf.get('per_turn_logic_check', False))
             self.quality_logic_threshold_var.set(str(quality_conf.get('logic_threshold', 70)))
             self.quality_logic_max_rewrites_var.set(str(quality_conf.get('logic_max_rewrites', 1)))

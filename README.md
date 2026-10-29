@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.6.2
+# ReadyArt Synthetic Dataset Generator v11.7.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -75,8 +75,8 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Questions File Mode** — Use a predefined list of questions instead of LLM-generated ones
 
 ### Quality Scoring (NEW in v9.4.0)
-- **Hybrid Scoring Engine** — Scores every completed conversation across six core dimensions (coherence, naturalness, engagement, diversity, consistency, technical) using a fast heuristic pass plus optional LLM-based evaluation, and optionally three roleplay-specific dimensions (voice distinctiveness, grounding, persona alignment) behind a GUI toggle
-- **Composite Score (0–100)** — Weighted combination of all dimension scores; weights configurable per dimension
+- **Hybrid Scoring Engine** — Scores every completed conversation across seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical) using a fast heuristic pass plus optional LLM-based evaluation, and optionally two further opt-in dimension groups behind GUI toggles: three roleplay-specific dimensions (voice distinctiveness, grounding, persona alignment) and the v11.7 tic-density dimension
+- **Composite Score (0–100)** — Weighted combination of all active dimension scores; weights configurable per dimension
 - **Heuristic Dimensions** — Diversity (type-token ratio, sentence length variance, trigram repetition, paragraph structure) and Technical (quote balance, stray asterisks, em dashes, whitespace, all-lowercase detection) run without any API call
 - **Optional LLM Scoring** — Coherence, naturalness, engagement, and consistency can be scored by a dedicated LLM (separate API endpoint) for deeper evaluation; falls back to heuristic estimates if the LLM call fails
 - **Threshold Flagging** — Conversations scoring below a configurable minimum threshold are automatically flagged for human review
@@ -690,7 +690,7 @@ A reply that is still unparsable after all of that is a genuine `invalid_json` d
 
 **Since v11.2:** Quality scoring requests run through a dedicated queue processor, so the judge handles one conversation at a time. The worker waits for the verdict (the row cannot be written before the judge has spoken) while other workers keep generating.
 
-The quality scoring engine evaluates every completed conversation across six core dimensions and produces a weighted composite score from 0 to 100. Three additional roleplay-specific dimensions are available behind an opt-in toggle (see **Roleplay Dimensions** below).
+The quality scoring engine evaluates every completed conversation across seven core dimensions (the six original ones plus the internal-logic dimension `logic`) and produces a weighted composite score from 0 to 100. Three additional roleplay-specific dimensions are available behind an opt-in toggle (see **Roleplay Dimensions** below), and the v11.7 `tic_density` dimension sits behind its own opt-in toggle (see **Tic Density** below).
 
 ```yaml
 quality:
@@ -698,6 +698,7 @@ quality:
   use_llm_scoring: false           # Use LLM for coherence/naturalness/engagement/consistency (extra API calls)
   output_filter: false             # Flag conversations below threshold (for post-filtering)
   roleplay_dimensions: false       # Opt-in: score voice_distinctiveness, grounding, persona_alignment too
+  tic_dimension: false             # v11.7 opt-in: heuristic tic_density dimension (scotoma style tics)
   min_score_threshold: 50          # Conversations below this composite score are flagged for review
   max_chars_for_scoring: 8000      # Truncate conversation before sending to scoring LLM
   judge_max_attempts: 3            # Transient judge failures are retried this many times, then the row is dropped
@@ -739,6 +740,17 @@ When `quality.roleplay_dimensions: true` (toggleable in the Configuration Editor
 | Persona Alignment | 0.10 | Heuristic base (outward personality vs withheld inner `persona` timing around `persona_breakthrough_turn`); refined by the LLM judge |
 
 Each dimension runs a fast heuristic first — so it stays meaningful even with `use_llm_scoring: false` — and the LLM judge replaces its score when a judge call succeeds. New flags: `interchangeable_character_voices`, `similar_character_voices`, `insufficient_multi_character_dialogue`, `undifferentiated_multi_character`, `partial_line_attribution` (voice); `generic_filler_response`, `ungrounded_scene`, `weak_grounding`, `no_profile_for_grounding` (grounding); `early_inner_persona_leak`, `no_inner_persona_signals`, `no_inner_persona_to_align` (persona), plus the usual `low_<dimension>` below-40 marker. The Quality dashboard tab gains one summary label and one table column per enabled dimension (rebuilt automatically when the toggle changes), and each record's metadata block carries `quality_voice_distinctiveness`, `quality_grounding`, `quality_persona_alignment` (`-1.0` when off or unscored — see Record Metadata).
+
+### Tic Density (opt-in, v11.7)
+
+When `quality.tic_dimension: true` (toggleable in the Configuration Editor's Quality Scoring section; **off by default** so existing composite scores stay comparable), one more dimension joins the composite at default weight `0.10`:
+
+| Dimension | Weight | Method |
+|-----------|--------|--------|
+| Tic Density | 0.10 | Heuristic only, measured directly from `style_metrics.py` over every assistant turn — no LLM judge refinement, so the judge never fabricates a number for something that is actually measurable |
+
+The heuristic starts at 100 and subtracts per density band (each a *density* judgement ported from scotoma's teacher-vs-human arm comparisons, not a hard rule — re-calibrate from your own runs): denial-correction couplets in >20% of turns (−20, `denial_correction_tic`), consecutive negation runs in narration in >30% of turns (−15, `negation_runs`), comma clause-stacking with a mean share of 3+-comma sentences above 20% (−10, `comma_clause_stacking`), stacked comma-appended qualifiers in >15% of turns (−15, `qualification_stack`), formulaic warm/significance closers with a clamped tail lift ≥ 3.0 (−10, `formulaic_warm_closer`), and shallow narration — >40% asterisk-wrapped text with <1 interiority cue per 100 words (−10, `shallow_narration`). Empty input scores 0 with `no_assistant_text`; the score clamps to 0–100 like every other heuristic. The Quality tab and the dashboard stats pick the dimension up automatically from `active_scoring_dimensions()` (no layout code changed), and each record's metadata carries `quality_tic_density` (`-1.0` when the toggle is off or the conversation was unscored — see Record Metadata). The two tic shapes this dimension measures also ship as Regex Watch defaults, so the same signals can be *rewritten in-flight* (Regex Watch) while this dimension *scores them*. `question_handback` is measured by `style_metrics.question_handback()` but is deliberately not a rewrite regex — "final sentence ends on ?" is positional, and a whole-reply regex cannot express it.
+
 **LLM Scoring (optional, when `use_llm_scoring: true`):**
 - Sends the conversation (truncated to `max_chars_for_scoring`) to a dedicated LLM with a structured scoring prompt
 - Expects a JSON response with 0–100 scores for coherence, naturalness, engagement, and consistency (plus the three roleplay dimensions when `roleplay_dimensions` is on)
@@ -1152,7 +1164,7 @@ When `generation.include_metadata: true` (the default), every record also carrie
     {"from": "gpt", "value": "..."}
   ],
   "metadata": {
-    "meta_version": 4,
+    "meta_version": 6,
     "characters": ["Ines"],
     "emotional_state": "anxious",
     "user_emotional_state": "curious -> defensive",
@@ -1168,10 +1180,12 @@ When `generation.include_metadata: true` (the default), every record also carrie
     "quality_engagement": 82.0,
     "quality_diversity": 95.0,
     "quality_consistency": 88.0,
+    "quality_logic": 90.0,
     "quality_technical": 92.0,
     "quality_voice_distinctiveness": -1.0,
     "quality_grounding": -1.0,
     "quality_persona_alignment": -1.0,
+    "quality_tic_density": -1.0,
     "generated_at": "2026-01-15 14:32:00"
   }
 }
@@ -1183,10 +1197,11 @@ Field notes:
 - **`user_emotional_state`** — (NEW in v10.6.0) the simulated user's assigned emotional state/arc label when `prompts.user_emotional_states.enabled` is on; `""` when the user-side feature is off.
 - **`opening_mode` / `has_greeting`** — whether opening mode was active and the record starts with a greeting turn.
 - **`duplication_turn`** — in Duplication Mode, the 1-based turn number for per-turn rows; `0` for full-conversation rows.
-- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `-1.0` when the conversation was not scored (scoring disabled or failed, or an empty conversation); the three roleplay fields are additionally `-1.0` whenever `quality.roleplay_dimensions` is off. `quality_method` is `"heuristic_only"`, `"hybrid"`, `"none"` (empty conversation) or `""` (not scored).
+- **`quality_*`** — the quality score of this exact conversation (scoring runs *before* the write so the numbers always describe the row). All `-1.0` when the conversation was not scored (scoring disabled or failed, or an empty conversation); the three roleplay fields are additionally `-1.0` whenever `quality.roleplay_dimensions` is off; `quality_tic_density` (v11.7) is `-1.0` whenever `quality.tic_dimension` is off. `quality_method` is `"heuristic_only"`, `"hybrid"`, `"none"` (empty conversation) or `""` (not scored).
+- **`style_*`** — (NEW in v11.7, only when `generation.include_style_metrics: true`) the flat scotoma style measurements for this record's assistant turns, aggregated into means (`style_commas_per_sent`, `style_denial_correction`, `style_absolute_trailer`, `style_tail_affect_lift`, … plus `style_turns`). Same-key/same-type on every record; `-1.0` where a metric is unmeasured (e.g. `style_grounding_per_100w` with no context). Off by default, so the default record keeps exactly the keys shown above.
 - **`generated_at`** — when the row was written, local time.
 
-**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same 21 keys with the same scalar types, and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
+**Trainer safety:** the block is a sibling of `id` and `conversations` — it is never injected into `conversations[]`, so it does not enter any chat template. Every record carries the same keys with the same scalar types (23 with the style-metrics block off, a fixed additional ~24 `style_*` columns when `include_style_metrics` is on), and none is ever `null` (gaps are `""`, `0` or `-1.0`), so Hugging Face column inference and Axolotl's `load_dataset` + template mapping are unaffected, exactly like the pre-existing `id` field. In your Axolotl dataset entry, nothing changes:
 ```yaml
 datasets:
   - path: output.jsonl
@@ -1293,7 +1308,7 @@ readyart-dataset-generator/
 5. **Per-Reply Note (NEW in v10.0)** — The scene prompt (system prompt + lore + persona-free character profiles) is the system message of every request in a task (a retry still appends its fix instruction to it, as in step 3). Each assistant reply gets a note: the INNER PERSONA BREAKTHROUGH (from `persona_breakthrough_turn` onward) and the emotional-state injection (a flat state, or the current stage of an arc advanced one step per reply). Each block goes where its placement says. On `depth0` (the default) it follows the reply's final instruction (the `answer` prompt, or the `greeting` prompt in opening mode), after the conversation history, and is not stored in it, so the system prompt never changes and the server's prefix cache keeps the history. On `system` it is appended to that reply's system prompt, which changes whenever the block does; the user continuation after that reply shares its system prompt. Questions get the scene prompt without either block, and on `depth0` so do user continuations
 6. **Repeat** — Steps 3–5 repeat for the configured number of turns
 7. **Post-Processing** — Text cleaning (reasoning removal, asterisk handling, markdown stripping, quote normalization, straight quote repair, etc.)
-8. **Quality Scoring** — The completed conversation is scored across the six core dimensions plus, when `quality.roleplay_dimensions` is on, the three roleplay dimensions (heuristic always; LLM optional) *before* the write, so the score can be attached to the record's metadata. When LLM scoring is on the judge is the gatekeeper: a conversation it drops (invalid JSON, a `logic` score of 0, or every retry failed) is **not written at all**. Otherwise, if the composite score is below the threshold, the task is flagged for review
+8. **Quality Scoring** — The completed conversation is scored across the seven core dimensions plus, when `quality.roleplay_dimensions` is on, the three roleplay dimensions, and, when `quality.tic_dimension` is on, the tic-density dimension (all opt-in sets are heuristic-based; only the core set is LLM-refined) *before* the write, so the score can be attached to the record's metadata. When LLM scoring is on the judge is the gatekeeper: a conversation it drops (invalid JSON, a `logic` score of 0, or every retry failed) is **not written at all**. Otherwise, if the composite score is below the threshold, the task is flagged for review
 9. **Output** — Write to JSONL file or PostgreSQL database, appending the flat `metadata` provenance/quality block when `generation.include_metadata` is true (see [Record Metadata Block](#record-metadata-block-new-in-v990))
 10. **State Save** — Update crash recovery state (including quality scores, judge drops and review flags)
 
@@ -1853,7 +1868,16 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.6.2 (Current)
+### v11.7.0 (Current)
+- **Style metrics ported in from the scotoma analysis layer** — a new dependency-free `style_metrics.py` measures the style/quality signals scotoma worked out and calibrated against a human null: comma habits, tail-end positivity lift, narration share, interiority density, long-range grounding, coherence defects (script mix, foreign articles, determiner stutter, duplicate sentences), narration-only negation density/runs, denial-then-correction couplets, comma-appended absolute trailers, and turn-final question handback. It imports nothing project-local and nothing third-party, so it unit-tests headless (`tests/test_style_metrics.py`, 58 checks)
+- **Two new Regex Watch patterns** — the two tic shapes scotoma isolated now ship as defaults (eight total, was six): **denial-then-correction** (`"It wasn't anger. It was fear."` — the shape the whole scotoma project was built around, which the existing six rhetorical-pivot patterns did not cover) and the **comma-appended absolute trailer** (`"...her lips parted"`; measured teacher 11.8% of sentences vs human 2.5%, rewrite fraction 0.79). `config/config.yml` and `detection.DEFAULT_REGEX_WATCH_PATTERNS` stay in sync, so "Restore Defaults" rolls both back together. `question_handback` is deliberately NOT a regex — it is positional ("final sentence ends on ?"), which a whole-reply regex cannot express; it lives in `style_metrics.question_handback()` instead
+- **New opt-in `tic_density` quality dimension** (`quality.tic_dimension`, off by default) — a heuristic-only 0–100 score over the assistant turns built directly from the style metrics: denial-correction couplets in >20% of turns (−20, `denial_correction_tic`), negation runs in >30% (−15, `negation_runs`), comma clause-stacking (mean 3+-comma sentence share >20%, −10, `comma_clause_stacking`), stacked qualifiers in >15% (−15, `qualification_stack`), formulaic warm/significance closers (clamped tail lift ≥3.0, −10, `formulaic_warm_closer`), and shallow narration (>40% asterisk narration with <1 interiority cue per 100 words, −10, `shallow_narration`). It is registered as a *measured* heuristic (in `HEURISTIC_DIMENSIONS`, not `LLM_DIMENSIONS`), so the judge never fabricates a number for it. Off by default like the roleplay dimensions, so existing composite scores stay byte-comparable; when on it joins the composite, the Quality tab (the tab is dynamic — no layout code changed) and the dashboard stats
+- **Per-record style provenance** (`generation.include_style_metrics`, off by default) — when on, each output record's metadata gains a flat `style_*` block: the per-assistant-turn measurements aggregated into means (the arm-table analogue), flattened with a `style_` prefix so the schema-stable "flat dict of scalars, same keys/types on every record, −1.0 gaps" contract holds unchanged. Grounding without context stays a −1.0 gap, `style_turns` records the row count, and duplication rows measure only the turn they carry. Making the dataset self-describing about its own style is the point of the scotoma measurement family
+- **Metadata schema v5 → v6** — adds `quality_tic_density` (−1.0 gap when the toggle is off or unscored, exactly like the roleplay columns) and the optional `style_*` block; `tests/test_opening_mode.py` asserts the new keys and version
+- **Configuration Editor** — two new checkboxes: **Include Style Metrics in Metadata** (Generation section) and **Tic density** (Quality Scoring section), wired through save/load like their neighbours
+- **What was deliberately NOT ported from scotoma** — the spaCy-dependent parsers, the judge-server scorers (`basket_score`, `detect_tics`, `struct_census`), the offline span markers (`mark_*`, `mine_frames`), the capability probe (`lexical_probe`) and the embedding clusterer (`closer_concentration`): they either need dependencies this project doesn't take or duplicate machinery the generator already has (its own judge, its own rewrite loop). See plan.md §2 for the full triage
+
+### v11.6.2
 - **Configuration Editor text no longer collapses into a vertical column** — some explanatory captions in the editor were rendering one character per line, producing a tall, unreadable sliver of text. The worst cases were the description directly beneath **Rewrite rounds per reply** on the Detection tab and the **Logit Bias** block on the Samplers tab. The cause was a wrapping loop: a label was being wrapped against a container that was itself sized by that label, so each pass made the text narrower until it was a single character wide. Labels now wrap against a container with a real, allocated width, and every affected caption across all tabs (including the long **Enable Bad Words** description) reads as normal prose at every supported window size, down to the 760×520 minimum
 - **Spinbox number fields are readable again** — the **Rewrite rounds per reply (1-5)** box on the Detection tab appeared as a solid white box with no visible number and could not be typed into. The dark theme sets spinbox text to white but never sets the field background, so the field fell back to the platform's native white: white text on white. Both spinboxes in the editor (the rewrite rounds box and **Persona Breakthrough Turn**) now share a single `Readable.TSpinbox` style that pins the field to the theme's own entry colours, keeps the digits legible while the box is disabled, and falls back to a known-good colour pair if a theme reports an unusable combination. The rounds box is also fully usable once Regex Watch is enabled
 - **New regression test** — `tests/test_editor_readability_ui.py` builds the real Configuration Editor under the production theme and asserts that no label collapses to a column and that every spinbox keeps readable contrast, including its disabled state. It runs under `xvfb-run` and skips cleanly without a display

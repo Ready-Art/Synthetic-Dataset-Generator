@@ -1463,9 +1463,14 @@ def start_processing():
     log_message(f"Per-turn logic gate: enabled={per_turn_logic_check}, "
                 f"max_rewrites={per_turn_logic_max_rewrites}", "INFO")
     include_metadata = global_config.get('generation.include_metadata', True)
+    # v11.7: flat style_* provenance columns inside the metadata block (scotoma measurements
+    # via style_metrics); off by default so the default record stays small. It only makes
+    # sense when the metadata block itself is on, so it inherits its gate.
+    include_style_metrics = bool(
+        include_metadata and global_config.get('generation.include_style_metrics', False))
     log_message(f"Quality scoring: enabled={app_state.quality_enabled}, output_filter={app_state.quality_output_filter}", "INFO")
     log_message(f"Conversation history for fixers: enabled={app_state.use_conversation_history_for_fixers}", "INFO")
-    log_message(f"Output metadata block: enabled={include_metadata}", "INFO")
+    log_message(f"Output metadata block: enabled={include_metadata}, style_metrics={include_style_metrics}", "INFO")
     if current_lore:
         log_message(f"Lore loaded ({len(current_lore)} chars).", "INFO")
     else:
@@ -2003,6 +2008,7 @@ def start_processing():
             'current_regex_patterns': current_regex_patterns,
             'current_regex_watch_enabled': current_regex_watch_enabled,
             'current_regex_watch_max_rounds': current_regex_watch_max_rounds,
+            'include_style_metrics_local': include_style_metrics,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2387,7 +2393,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.6.2",
+    text="v11.7.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

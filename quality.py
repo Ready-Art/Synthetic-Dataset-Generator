@@ -31,6 +31,7 @@ from threading import Lock
 
 import app_state
 import text_utils
+import style_metrics
 from logging_config import log_message
 from api_handler import (
     global_rate_limiter,
@@ -72,8 +73,19 @@ ROLEPLAY_SCORING_DIMENSIONS = {
     "persona_alignment": 0.10,
 }
 
+# --- Tic-density dimension (v11.7, opt-in via quality.tic_dimension; off by default so
+# existing composite scores stay comparable, exactly like the roleplay dimensions). It has a
+# REAL heuristic (style_metrics measurements over the assistant turns), so it is registered in
+# HEURISTIC_DIMENSIONS and deliberately NOT in LLM_DIMENSIONS -- the judge-refined path would
+# fabricate a number for something we can measure directly. When active its weight is taken
+# from TIC_SCORING_DIMENSIONS and folded into the composite; when inactive it never appears in
+# scored results, statistics or output metadata. ---
+TIC_SCORING_DIMENSIONS = {
+    "tic_density": 0.10,
+}
+
 # --- Heuristic-only dimensions (no LLM needed) ---
-HEURISTIC_DIMENSIONS = {"diversity", "technical"}
+HEURISTIC_DIMENSIONS = {"diversity", "technical", "tic_density"}
 
 # --- LLM-based dimensions (require an API call) ---
 LLM_DIMENSIONS = {"coherence", "naturalness", "engagement", "consistency", "logic"}
@@ -171,6 +183,17 @@ def _judge_drop_reason(scores, flags, success):
     return DROP_REASON_JUDGE_FAILED
 
 
+def is_tic_scoring_enabled(config=None):
+    """Whether the tic_density dimension is included in this run's scoring.
+
+    Driven by ``quality.tic_dimension`` in config.yml (GUI toggle in the Configuration
+    Editor's Quality Scoring section), default off so existing composite scores stay
+    comparable (plan.md open question 6.1, decided: opt-in).
+    """
+    cfg = global_config if config is None else config
+    return bool(cfg.get('quality.tic_dimension', False))
+
+
 def is_roleplay_scoring_enabled(config=None):
     """Whether the roleplay-specific dimensions are included in this run's scoring.
 
@@ -189,6 +212,8 @@ def active_scoring_dimensions(config=None):
     labels and table columns from it without special-casing.
     """
     dims = dict(SCORING_DIMENSIONS)
+    if is_tic_scoring_enabled(config):
+        dims.update(TIC_SCORING_DIMENSIONS)
     if is_roleplay_scoring_enabled(config):
         dims.update(ROLEPLAY_SCORING_DIMENSIONS)
     return dims
@@ -246,6 +271,15 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
     dimension_scores["technical"] = technical_score
     flags.extend(diversity_flags)
     flags.extend(technical_flags)
+
+    # Tic density (v11.7, opt-in via quality.tic_dimension): scotoma style tics measured
+    # per reply. Heuristic-only (a real measurement, not a judge guess), so no LLM fallback
+    # is ever applied to it below.
+    tic_active = is_tic_scoring_enabled()
+    if tic_active:
+        tic_score, tic_flags = _score_tic_density(conversation_history)
+        dimension_scores["tic_density"] = tic_score
+        flags.extend(tic_flags)
 
     # --- Roleplay dimensions (always heuristic-scored when the toggle is on; the LLM
     # judge refines them below when available) ---
@@ -324,6 +358,8 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
     # user configs still produce a meaningful 0-100 score.
     active_dims = active_scoring_dimensions()
     default_weights = dict(SCORING_DIMENSIONS)
+    if tic_active:
+        default_weights.update(TIC_SCORING_DIMENSIONS)
     if roleplay_active:
         default_weights.update(ROLEPLAY_SCORING_DIMENSIONS)
     custom_weights = global_config.get('quality.weights', {}) or {}
@@ -356,6 +392,59 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
         "scored_at": time.strftime('%Y-%m-%d %H:%M:%S'),
         "method": method
     }
+
+
+def _score_tic_density(conversation_history):
+    """Scores the density of scotoma style tics across the assistant turns (v11.7).
+
+    Heuristic-only; every number comes from ``style_metrics.response_metrics()`` measured
+    per assistant turn (no LLM judge, no network). Returns (score 0-100, flags).
+
+    The cut points are DENSITY judgements ported from scotoma's teacher-vs-human arm
+    comparisons, not hard rules (plan.md 6.2: ship them, log the raw values, re-calibrate
+    from real runs). A clean conversation scores 100; each band that trips subtracts and
+    carries its flag so the Review tab can explain the deduction.
+    """
+    flags = []
+    turns = [turn.get("content", "") for turn in conversation_history
+             if turn.get("role") == "assistant"]
+    rows = [style_metrics.response_metrics(t) for t in turns if (t or "").strip()]
+    if not rows:
+        return 0, ["no_assistant_text"]
+
+    def turn_fraction(predicate):
+        return sum(1 for r in rows if predicate(r)) / len(rows)
+
+    score = 100.0
+    # Denial-then-correction couplets: the tic the whole scotoma project was built around.
+    if turn_fraction(lambda r: r["denial_correction"] > 0) > 0.20:
+        score -= 20
+        flags.append("denial_correction_tic")
+    # Consecutive negation runs in narration ("She didn't move. She didn't speak.").
+    if turn_fraction(lambda r: r["narr_neg_run_ge2"] > 0) > 0.30:
+        score -= 15
+        flags.append("negation_runs")
+    # Comma clause stacking: a mean share of sentences carrying 3+ commas.
+    mean_commas_3plus = sum(r["sents_3plus_commas_pct"] for r in rows) / len(rows)
+    if mean_commas_3plus > 20:
+        score -= 10
+        flags.append("comma_clause_stacking")
+    # Stacked qualifiers (two comma-appended absolutes in one sentence).
+    if turn_fraction(lambda r: r["qualification_stack"] > 0) > 0.15:
+        score -= 15
+        flags.append("qualification_stack")
+    # Formulaic warm/significance closers at the end of turns.
+    mean_tail_lift = sum(max(r["tail_affect_lift"], r["tail_sig_lift"]) for r in rows) / len(rows)
+    if mean_tail_lift >= 3.0:
+        score -= 10
+        flags.append("formulaic_warm_closer")
+    # Shallow narration: heavy asterisked narration with almost no interiority signal.
+    mean_narr_pct = sum(r["narration_pct"] for r in rows) / len(rows)
+    mean_interior = sum(r["interior_per_100w"] for r in rows) / len(rows)
+    if mean_narr_pct > 40 and mean_interior < 1.0:
+        score -= 10
+        flags.append("shallow_narration")
+    return max(0, min(100, score)), flags
 
 
 def _score_diversity(conversation_history):

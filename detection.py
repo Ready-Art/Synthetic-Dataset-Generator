@@ -295,6 +295,15 @@ DEFAULT_REGEX_WATCH_PATTERNS = (
     r"\bmore\s+than\s+just\s+(?:a|an|the)?\s*\w+",
     # "less about X and more about Y"
     r"\bless\s+about\s+[^.!?\n]{1,40}?\s+and\s+(?:more|so\s+much\s+more)\s+about\s+\w",
+    # v11.7 scotoma tic: denial-then-correction (scotoma/denial_correction.py -- the shape the
+    # analysis project was built around). Negate a predicate, then assert the replacement.
+    # The metric-side counterpart (style_metrics.denial_correction_hits) rejects a negated
+    # correction tail; the rewrite-side pattern deliberately does not, so an LLM pass gets to
+    # judge each candidate instead of the regex deciding.
+    r"\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would|should)n['\u2019]t\b[^.;!?\n]{0,80}[;.\u2014\u2013-]\s*(?:it|he|she|they|this|that|there|instead|rather)\b",
+    # v11.7 scotoma tic: comma-appended absolute trailer (scotoma/two_tics.py +
+    # trailer_rate.py; measured teacher 11.8% of sentences vs human 2.5%, rewrite fraction 0.79).
+    r",\s*(?:her|his|its|their|the|a|an)\s+\w+[^.!?\n]{0,40}\.",
 )
 
 

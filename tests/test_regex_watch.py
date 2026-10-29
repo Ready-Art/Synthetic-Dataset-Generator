@@ -286,6 +286,47 @@ def test_rounds_are_bounded():
           any(h[2] == "unresolved" for h in hits))
 
 
+def test_scotoma_tic_patterns():
+    """v11.7: the two scotoma tic shapes (denial-then-correction, absolute trailer)
+    shipped as defaults -- they compile through the real validator, fire on the corpus
+    shapes, and stay quiet on clean prose."""
+    import yaml
+    with open(REPO / "config" / "config.yml", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    shipped = list(config["detection"]["regex_watch"]["patterns"])
+    check("defaults now ship eight patterns (six v11.6 + two scotoma tics)",
+          len(detection.DEFAULT_REGEX_WATCH_PATTERNS) == 8 and len(shipped) == 8)
+    denial = shipped[6]
+    trailer = shipped[7]
+    # The rewrite-side pattern and the config entry are the same string in both copies.
+    check("config and DEFAULT_REGEX_WATCH_PATTERNS hold the same two scotoma entries",
+          denial in detection.DEFAULT_REGEX_WATCH_PATTERNS
+          and trailer in detection.DEFAULT_REGEX_WATCH_PATTERNS)
+
+    for text in ["It wasn't anger. It was fear.",
+                 "She didn't run. She walked, slow and steady."]:
+        found, _info = detection.is_regex_watch(text, [denial], record_timestamp=False)
+        check("denial pattern matches: %r" % text, found)
+    # The pattern targets the contracted 'n't form; an uncontracted "would not" is out of
+    # scope by construction (recall-first regex approximation, per the pattern comment).
+    found, _info = detection.is_regex_watch(
+        "He would not leave. Instead he turned back to the door.", [denial], record_timestamp=False)
+    check("an uncontracted negation is not a denial-pattern match", not found)
+    for text in ['She turned toward the door, her lips parted.',
+                 'The street went quiet, the neon bleeding red.']:
+        found, _info = detection.is_regex_watch(text, [trailer], record_timestamp=False)
+        check("trailer pattern matches: %r" % text, found)
+    # Note: the rewrite-side pattern is deliberately recall-first -- rejecting a negated
+    # correction tail ("She didn't move. She didn't speak." is a RUN, not a couplet) happens
+    # in style_metrics.denial_correction_hits, which tests/test_style_metrics.py asserts;
+    # here the LLM rewrite pass gets to judge each regex candidate instead.
+    # And the whole shipped default set still stays quiet on clean prose.
+    for text in ["The ship sailed at dawn.", "Nothing happened that night.",
+                 "She nodded once and left the room."]:
+        found, info = detection.is_regex_watch(text, shipped, record_timestamp=False)
+        check("shipped defaults all stay quiet: %r" % text, not found and info == [])
+
+
 def test_config_defaults():
     import yaml
     with open(REPO / "config" / "config.yml", encoding="utf-8") as handle:
@@ -310,6 +351,7 @@ def main():
     test_timestamp_bookkeeping()
     test_rewrite_pass()
     test_rounds_are_bounded()
+    test_scotoma_tic_patterns()
     test_config_defaults()
     if FAILURES:
         print("\n%d FAILED check(s):" % len(FAILURES))

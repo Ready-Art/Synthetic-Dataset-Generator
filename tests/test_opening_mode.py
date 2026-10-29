@@ -869,7 +869,9 @@ def test_generate_wiring():
                      "per_char_random_emotions_local",
                      "per_turn_logic_check_local", "per_turn_logic_max_rewrites_local",
                      "current_regex_patterns", "current_regex_watch_enabled",
-                     "current_regex_watch_max_rounds"})
+                     "current_regex_watch_max_rounds",
+                     # v11.7: style-metrics metadata flag, plumbed config -> start_processing -> worker kwargs
+                     "include_style_metrics_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
@@ -1225,7 +1227,9 @@ def test_record_metadata():
     # v3 adds the opt-in roleplay dimensions (quality.roleplay_dimensions); they carry
     # the usual -1.0 gap whenever unscored or toggled off.
     # v5 adds quality_logic (the internal-logic dimension); -1.0 when unscored.
-    check("meta_version is 5", empty["meta_version"] == full["meta_version"] == 5)
+    # v6 adds quality_tic_density (v11.7 opt-in tic dimension; -1.0 gap when off/unscored)
+    # and, when generation.include_style_metrics is on, the flat style_* block (checked below).
+    check("meta_version is 6", empty["meta_version"] == full["meta_version"] == 6)
     check("user-side emotional state/arc recorded when set, empty when off",
           full["user_emotional_state"] == "curious -> defensive"
           and empty["user_emotional_state"] == "")
@@ -1243,6 +1247,19 @@ def test_record_metadata():
               ["Ines"], None, None, False, False, 1,
               {"composite": 80.0, "method": "heuristic_only", "flags": [],
                "dimensions": {"logic": 90}}, None, "")["quality_logic"] == 90.0)
+    # v6: the opt-in tic_density dimension carries the usual -1.0 gap when off/unscored
+    check("tic density key exists, -1.0 when unscored, float when scored",
+          empty["quality_tic_density"] == -1.0
+          and full["quality_tic_density"] == -1.0
+          and g._build_record_metadata(
+              ["Ines"], None, None, False, False, 1,
+              {"composite": 80.0, "method": "heuristic_only", "flags": [],
+               "dimensions": {"tic_density": 78.5}}, None, "")["quality_tic_density"] == 78.5)
+    # v6: the flat style_* block is gated behind generation.include_style_metrics (off by
+    # default), so the default record keeps exactly the builder's pre-v11.7 key set.
+    check("style_* columns are absent while generation.include_style_metrics is off",
+          not any(k.startswith("style_") for k in empty)
+          and not any(k.startswith("style_") for k in full))
     rp_full = g._build_record_metadata(
         ["Ines"], None, None, False, False, 1,
         {"composite": 80.0, "method": "heuristic_only", "flags": [],
@@ -1269,6 +1286,45 @@ def test_record_metadata():
           not any(_has_none(v) for v in meta.values()))
     check("a worker row's metadata has the populated key set and value types",
           {k: _shape(v) for k, v in meta.items()} == {k: _shape(v) for k, v in full.items()})
+
+
+def test_style_metrics_metadata_block():
+    """v11.7: the flat style_* provenance block (scotoma measurements per record)."""
+    reset_state()
+    history = [
+        u("The crossing is late again."),
+        a('She checks the mooring lines. "Rain like this keeps most people home."'),
+        u("Are we going?"),
+        a("She nods once, head lolling back against the salt wind. It wasn't patience. It was arithmetic."),
+    ]
+    write(history, task_id="style_on_1", include_metadata=True, include_style_metrics=True)
+    write([u("a"), a("One short line.")], task_id="style_on_2", include_metadata=True,
+          include_style_metrics=True)
+    rows = {r["id"]: r["metadata"] for r in read_rows()}
+    m1, m2 = rows["style_on_1"], rows["style_on_2"]
+    style_keys = sorted(k for k in m1 if k.startswith("style_"))
+    check("the style block appears on every record with the flag on",
+          len(style_keys) >= 20 and "style_turns" in m1 and "style_absolute_trailer" in m1)
+    check("every style cell is a plain number, never None",
+          all(isinstance(m1[k], (int, float)) for k in style_keys)
+          and all(isinstance(m2[k], (int, float)) for k in style_keys))
+    check("both records carry the identical style key set",
+          style_keys == sorted(k for k in m2 if k.startswith("style_")))
+    check("style_turns counts the assistant turns of the record",
+          m1["style_turns"] == 2.0 and m2["style_turns"] == 1.0)
+    check("grounding is the -1.0 gap when no context was supplied",
+          m1["style_grounding_per_100w"] == -1.0)
+    check("the measurements respond to the text (denial-correction on the longer record)",
+          m1["style_denial_correction"] > 0 and m2["style_denial_correction"] == 0.0)
+    # Flag off: the write keeps exactly the metadata builder's key set (no style_* columns).
+    reset_state()
+    write(history, task_id="style_off_1", include_metadata=True)
+    m3 = read_rows()[0]["metadata"]
+    built = g._build_record_metadata(["Ines"], None, None, False, False, 1, None, None, "")
+    check("the flag off leaves no style_ columns",
+          not any(k.startswith("style_") for k in m3))
+    check("the flag-off key set matches the metadata builder",
+          list(m3) == list(built))
 
 
 # --- v11.1 bad_words toggle ---------------------------------------------------------------

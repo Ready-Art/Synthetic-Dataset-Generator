@@ -18,6 +18,7 @@ import app_state
 import detection
 import text_utils
 import quality
+import style_metrics
 from dataset_tasks import bind_task_datasets, render_task_inputs, validate_task_templates
 from dataset_templates import render_with_native_placeholders
 from queue import Queue, Empty, Full
@@ -815,7 +816,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_regex_patterns=(),
            current_regex_watch_enabled=False,
            current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
-           ):
+           include_style_metrics_local=False,
+           ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
     It fetches tasks from the queue, processes them by interacting with LLMs
@@ -1672,7 +1674,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     has_greeting=has_greeting,
                                                     num_characters=len(opening_chars),
                                                     quality_result=primary_turn_quality_result,
-                                                    include_metadata=include_metadata_local)                
+                                                    include_metadata=include_metadata_local,
+                                                    include_style_metrics=include_style_metrics_local)                
                 else: # --- Non-Duplication Mode: Single API call for answer ---
                     if app_state.stop_processing or app_state.pause_processing: break
                     start_time_api_task = time.time()
@@ -1942,7 +1945,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                             has_greeting=has_greeting,
                                             num_characters=len(opening_chars),
                                             quality_result=final_quality_result,
-                                            include_metadata=include_metadata_local)
+                                            include_metadata=include_metadata_local,
+                                            include_style_metrics=include_style_metrics_local)
                                         app_state.completed_task_ids.add(task_id)
                                         log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
                                     else:
@@ -4440,7 +4444,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 #     stated gender, profile-contradicting body parts/clothing, impossible timelines).
 #     -1.0 when unscored; the composite weight shift is small (15/100 -> ~15/115)
 #     and well-defined because the composite is normalized by total active weight.
-_METADATA_SCHEMA_VERSION = 5
+#   v6 (v11.7): adds quality_tic_density (opt-in tic_density dimension, -1.0 gap when off or
+#     unscored, exactly like the roleplay columns) and, when generation.include_style_metrics
+#     is on, the flat style_* block (style_metrics.aggregate over the record's assistant turns,
+#     flattened with a 'style_' prefix so the metadata contract stays a dict of scalars;
+#     n is emitted as style_turns; UNMEASURED cells keep the -1.0 gap convention).
+_METADATA_SCHEMA_VERSION = 6
 
 
 def _safe_float(value, default=None):
@@ -4456,7 +4465,7 @@ def _safe_float(value, default=None):
 
 def _build_record_metadata(character_names, emotional_state, setting, opening_mode, has_greeting,
                            num_characters, quality_result, duplication_turn, generated_at,
-                           user_emotional_state=None):
+                           user_emotional_state=None, include_style_metrics=False):
     """Builds the flat, schema-stable metadata block for one output record.
     Always returns every key with the same type, never None, so all rows match.
     duplication_turn is the turn number (1-based) for per-turn duplication rows,
@@ -4464,6 +4473,11 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
     Quality numbers are -1.0 when the conversation was not scored.
     user_emotional_state (NEW in v10.6.0) is the simulated user's assigned state/arc label;
     "" when the user-side emotional feature is off.
+
+    include_style_metrics (NEW in v11.7): also emit the record's style provenance as flat
+    style_* columns (style_metrics.aggregate over every assistant turn of THIS record). The
+    aggregate's nested-dict-of-floats shape is flattened with a prefix so the metadata
+    contract (flat scalars, same keys/types on every record, -1.0 gaps) holds unchanged.
     """
     quality_result = quality_result or {}
     dims = quality_result.get("dimensions", {}) if isinstance(quality_result.get("dimensions"), dict) else {}
@@ -4502,8 +4516,33 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
         "quality_voice_distinctiveness": score(dims.get("voice_distinctiveness")),
         "quality_grounding": score(dims.get("grounding")),
         "quality_persona_alignment": score(dims.get("persona_alignment")),
+        # Opt-in tic_density dimension (v11.7, quality.tic_dimension); -1.0 when off/unscored,
+        # keeping the same keys/types on every record for Axolotl/HF column inference.
+        "quality_tic_density": score(dims.get("tic_density")),
         "generated_at": str(generated_at) if generated_at else "",
     }
+
+
+def _style_metrics_for_record(turns):
+    """The flat style_* columns for one record (v11.7).
+
+    ``turns`` is the list of assistant turn texts as WRITTEN to the dataset (post-cleaning,
+    i.e. the values that end up in conversations[]). Each row is measured individually and
+    the result aggregated (the arm-table analogue); UNMEASURED cells (-1.0, e.g. grounding
+    with no context) are excluded from means by aggregate() and re-emitted as -1.0 gaps so
+    the schema stays type-stable. Returns an empty dict for a record without assistant text.
+    """
+    rows = [style_metrics.response_metrics(t) for t in turns if (t or "").strip()]
+    if not rows:
+        return {}
+    agg = style_metrics.aggregate(rows)
+    out = {}
+    for key, value in agg.items():
+        if key == "n":
+            continue  # the row count travels as the explicitly-named style_turns column
+        out["style_" + key] = float(value)
+    out["style_turns"] = float(len(rows))
+    return out
 
 
 def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
@@ -4580,6 +4619,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
                        num_characters=0,
                        quality_result=None,
                        include_metadata=True,
+                       include_style_metrics=False,
                        ):
     """
     Writes a completed conversation (or a single turn in duplication mode) to the output JSONL file.
@@ -4633,14 +4673,28 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
     }
 
     if include_metadata:
-        output_data["metadata"] = _build_record_metadata(
+        record_metadata = _build_record_metadata(
             character_names, emotional_state, setting,
             opening_mode, has_greeting, num_characters,
             quality_result,
             (turn_number_for_duplication if is_duplication_turn and turn_number_for_duplication else None),
             time.strftime('%Y-%m-%d %H:%M:%S'),
             user_emotional_state=user_emotional_state,
+            include_style_metrics=include_style_metrics,
         )
+        if include_style_metrics:
+            # Measure the turns exactly as they leave the writer (post-cleaning), so the
+            # style_* columns describe the shipped text, not the raw model output.
+            if is_duplication_turn:
+                # A per-turn duplication row carries the full scratch history plus the NEW
+                # answer; only that answer belongs to this record.
+                assistant_texts = [rec["value"] for rec in processed_conversation_turns
+                                   if rec["from"] == "gpt"][-1:]
+            else:
+                assistant_texts = [rec["value"] for rec in processed_conversation_turns
+                                   if rec["from"] == "gpt"]
+            record_metadata.update(_style_metrics_for_record(assistant_texts))
+        output_data["metadata"] = record_metadata
 
     use_db = global_config.get('database.enabled', False)
 
