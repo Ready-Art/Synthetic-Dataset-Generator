@@ -376,8 +376,13 @@ detection:
     # project was built around). Negate a predicate, then assert the replacement.
     - '\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would|should)n[''\u2019]t\b[^.;!?\n]{0,80}[;.\u2014\u2013-]\s*(?:it|he|she|they|this|that|there|instead|rather)\b'
     # v11.7 scotoma tic: comma-appended absolute trailer (scotoma/two_tics.py + trailer_rate.py;
-    # teacher 11.8% of sentences vs human 2.5% -> rewrite fraction 0.79).
-    - ',\s*(?:her|his|its|their|the|a|an)\s+\w+[^.!?\n]{0,40}\.'
+    # teacher 11.8% of sentences vs human 2.5% -> rewrite fraction 0.79). This string is
+    # style_metrics.TRAILER_PATTERN verbatim (single definition, mirrored in
+    # detection.DEFAULT_REGEX_WATCH_PATTERNS); keep the three in sync. The segment must be
+    # verbless -- no finite verb, no speech attribution -- and carry a predicate signal, so an
+    # ordinary clause ("the man said", "the boat is leaving") and the comma that closes a line
+    # of dialogue are never treated as an absolute trailer.
+    - '(?<!said)(?<!says)(?<!say)(?<!asked)(?<!asks)(?<!replied)(?<!replies)(?<!muttered)(?<!murmured)(?<!whispered)(?<!called)(?<!calls)(?<!answered)(?<!told)(?<!added)(?<!began)(?<!continued)(?<!snapped)(?<!growled)(?<!laughed)(?<!sighed),(?!\s*[\"\u201d''\u2019])(?![^,.;!?\n]*\b(?:is|are|was|were|am|be|been|being|has|have|had|do|does|did|will|would|shall|can|could|should|may|might|must|isn[''\u2019]t|aren[''\u2019]t|wasn[''\u2019]t|weren[''\u2019]t|don[''\u2019]t|doesn[''\u2019]t|didn[''\u2019]t|won[''\u2019]t|can[''\u2019]t|couldn[''\u2019]t|shouldn[''\u2019]t|wouldn[''\u2019]t|hasn[''\u2019]t|haven[''\u2019]t|hadn[''\u2019]t)\b)(?![^,.;!?\n]*\b(?:said|says|say|asked|asks|replied|replies|muttered|murmured|whispered|called|calls|answered|told|added|began|continued|snapped|growled|laughed|sighed)\b)[^,.;!?\n]*?(?:\b(?:head|eyes|gaze|hands?|fingers?|lips?|mouth|jaw|breath|shoulders?|chest|back|voice|body|frame|face|brow|hair|legs?|arms?|knees?|pulse|heart|throat)\b|\b\w+ing\b|\b\w+ly\b)'
 samplers:
   priority:
   - repetition_penalty

@@ -99,6 +99,50 @@ def test_trailers():
     check("clean prose has no trailer",
           not sm.trailer_hits("She walked to the door and opened it."))
 
+    # A trailer is a VERBLESS absolute. Every ordinary clause below carries a finite verb or a
+    # speech verb, so none of them is this construction -- the first port dropped that test and
+    # flagged all of them.
+    for clause in ("She paused, the words stuck in her throat.",
+                   "He waited, his breath fogging the glass.",
+                   "The street went quiet, the neon bleeding red.",
+                   "She set down the cup, steam curling upward.",
+                   "She stood at the rail, head lolling."):
+        check("a verbless absolute is a trailer: %r" % clause, bool(sm.trailer_hits(clause)))
+    for clause in ('"Wait for me, the boat is leaving."',
+                   '"Give me a minute, the rain is coming."',
+                   '"Take it, the door is open."',
+                   '"Not now, her brother is waiting."',
+                   "I don't know, the man said.",
+                   "It was a long night, and the storm had passed.",
+                   "She turned, and walked away.",
+                   "He nodded, then smiled."):
+        check("an ordinary clause is not a trailer: %r" % clause,
+              not sm.trailer_hits(clause))
+
+
+def test_trailers_ignore_dialogue_commas():
+    """A comma that closes or follows a line of dialogue must never read as an absolute trailer.
+
+    This is the reported false-positive class: '"This is text," the man said.' -- the comma
+    ends the speech and the clause after it is an attribution, not a body-status appositive.
+    """
+    print("trailer_hits: dialogue commas")
+    for line in ('"This is text," the man said.',
+                 '"This is text,"',
+                 '"This is text," she said, turning away.',
+                 '"Come in," she said, holding the door.',
+                 '"She is here," he said, stepping inside.',
+                 '"I don\'t know," the old man muttered.',
+                 '"And more," he added.'):
+        check("dialogue comma is not a trailer: %r" % line, not sm.trailer_hits(line))
+    # A comma following a speech verb opens post-dialogue narration, so it is NOT a trailer even
+    # when the narration that follows is verbless -- that is the lookbehind guard.
+    check("a comma directly after a speech verb is not a trailer",
+          not sm.trailer_hits('"Wait," he called, breath fogging the glass.'))
+    # Without the speech verb the same verbless absolute IS a trailer.
+    check("the same verbless absolute without a speech verb is a trailer",
+          bool(sm.trailer_hits("He called out, breath fogging the glass.")))
+
 
 def test_question_handback():
     print("question_handback")
@@ -178,7 +222,8 @@ def test_response_metrics_contract():
 
 def main():
     for fn in (test_denial_correction, test_narration_segments, test_negation_profile,
-               test_trailers, test_question_handback, test_comma_stats,
+               test_trailers, test_trailers_ignore_dialogue_commas,
+               test_question_handback, test_comma_stats,
                test_tail_positivity, test_depth_proxies, test_coherence_defects,
                test_response_metrics_contract):
         fn()

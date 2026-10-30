@@ -320,6 +320,25 @@ def test_scotoma_tic_patterns():
     # correction tail ("She didn't move. She didn't speak." is a RUN, not a couplet) happens
     # in style_metrics.denial_correction_hits, which tests/test_style_metrics.py asserts;
     # here the LLM rewrite pass gets to judge each regex candidate instead.
+
+    # The trailer pattern has ONE definition, in style_metrics; config.yml and the defaults
+    # both mirror that exact string, so the measurement and the rewrite can never drift.
+    import style_metrics
+    check("the trailer pattern is style_metrics.TRAILER_PATTERN verbatim",
+          trailer == style_metrics.TRAILER_PATTERN
+          and detection.DEFAULT_REGEX_WATCH_PATTERNS[7] == style_metrics.TRAILER_PATTERN)
+
+    # A trailer is a VERBLESS absolute. A comma that closes a line of dialogue, or that is
+    # followed by an ordinary clause, must never be rewritten -- this is the reported bug.
+    for line in ('"This is text," the man said.',
+                 '"This is text," she said, turning away.',
+                 '"Come in," she said, holding the door.',
+                 '"Wait for me, the boat is leaving."',
+                 '"Take it, the door is open."',
+                 "I don't know, the man said.",
+                 "She walked to the door and opened it."):
+        found, info = detection.is_regex_watch(line, [trailer], record_timestamp=False)
+        check("no trailer match on ordinary prose/dialogue: %r" % line, not found and info == [])
     # And the whole shipped default set still stays quiet on clean prose.
     for text in ["The ship sailed at dawn.", "Nothing happened that night.",
                  "She nodded once and left the room."]:

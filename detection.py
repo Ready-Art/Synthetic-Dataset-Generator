@@ -4,6 +4,8 @@ import functools
 import re
 import time
 
+import style_metrics
+
 # These will be set by generate.py after import
 issue_timestamps = None
 issue_timestamps_lock = None
@@ -303,7 +305,13 @@ DEFAULT_REGEX_WATCH_PATTERNS = (
     r"\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would|should)n['\u2019]t\b[^.;!?\n]{0,80}[;.\u2014\u2013-]\s*(?:it|he|she|they|this|that|there|instead|rather)\b",
     # v11.7 scotoma tic: comma-appended absolute trailer (scotoma/two_tics.py +
     # trailer_rate.py; measured teacher 11.8% of sentences vs human 2.5%, rewrite fraction 0.79).
-    r",\s*(?:her|his|its|their|the|a|an)\s+\w+[^.!?\n]{0,40}\.",
+    # The pattern is DEFINED ONCE, in style_metrics.TRAILER_PATTERN, so the measurement and the
+    # rewrite can never drift apart; config/config.yml mirrors that exact string and
+    # tests/test_regex_watch.py asserts all three are identical. It requires the segment to be
+    # verbless (no finite verb, no speech attribution) and to carry a predicate signal, which is
+    # what keeps ordinary clauses -- "the man said", "the boat is leaving", "the door is open" --
+    # and the comma that closes a line of dialogue out of the match.
+    style_metrics.TRAILER_PATTERN,
 )
 
 

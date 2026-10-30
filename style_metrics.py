@@ -313,28 +313,94 @@ def denial_correction_hits(text):
 
 
 # --- comma-appended absolute trailers (trailer_rate / two_tics) ---------------
-# A trailer opens with a possessive/determiner+noun, a bare body noun, an -ing participle or
-# an -ly adverb, and carries no finite verb (the absolute/participial appositive).
+# scotoma's discriminator (trailer_rate.py): a comma-APPENDED segment is a trailer when it
+#
+#   (a) carries NO finite verb and NO attribution verb -- THIS is the test the first port
+#       dropped. Without it every ordinary narration clause ("the man said", "the boat is
+#       leaving", "the door is open") was scored as an absolute, so dialogue and clean prose
+#       were flagged; and
+#   (b) carries a predicate signal: a body noun, an -ing participle or an -ly adverb.
+#
+# A comma that CLOSES a line of dialogue ('"This is text," the man said.') never opens one.
 _BODY_NOUN = (r"(?:head|eyes|gaze|hands?|fingers?|lips?|mouth|jaw|breath|shoulders?|chest|back|"
               r"voice|body|frame|face|brow|hair|legs?|arms?|knees?|pulse|heart|throat)")
-_TRAILER = re.compile(
-    r",\s*(?:" + _BODY_NOUN + r"\b|[a-z]+ing\b|[a-z]+ly\b|"
-    r"(?:her|his|its|their|the|a|an)\s+\w+)", re.I)
-_STACK = re.compile(
-    r",\s*(?:" + _BODY_NOUN + r"\b|\w+ing\b|\w+ly\b|(?:her|his|its|their)\s+\w+)", re.I)
+
+# Finite verbs, modals and negated auxiliaries. Their presence means the segment is a CLAUSE.
+_FINITE_CORE = (r"(?:is|are|was|were|am|be|been|being|has|have|had|do|does|did|"
+                r"will|would|shall|can|could|should|may|might|must|"
+                r"isn['\u2019]t|aren['\u2019]t|wasn['\u2019]t|weren['\u2019]t|don['\u2019]t|"
+                r"doesn['\u2019]t|didn['\u2019]t|won['\u2019]t|can['\u2019]t|couldn['\u2019]t|"
+                r"shouldn['\u2019]t|wouldn['\u2019]t|hasn['\u2019]t|haven['\u2019]t|hadn['\u2019]t)")
+
+# Speech verbs. The comma AFTER one ("...she said, holding the door") opens the narration that
+# follows the dialogue, not an absolute trailer, so a segment must not begin after one.
+_ATTRIBUTION_WORDS = ("said", "says", "say", "asked", "asks", "replied", "replies",
+                      "muttered", "murmured", "whispered", "called", "calls", "answered",
+                      "told", "added", "began", "continued", "snapped", "growled",
+                      "laughed", "sighed")
+_ATTRIBUTION_CORE = r"(?:" + "|".join(_ATTRIBUTION_WORDS) + r")"
+
+# The predicate signal: a body noun, an -ing participle or an -ly adverb.
+_PREDICATE_CORE = r"(?:\b" + _BODY_NOUN + r"\b|\b\w+ing\b|\b\w+ly\b)"
+
+_FINITE = re.compile(r"\b" + _FINITE_CORE + r"\b", re.I)
+_ATTRIBUTION = re.compile(r"\b" + _ATTRIBUTION_CORE + r"\b", re.I)
+_PREDICATE = re.compile(_PREDICATE_CORE, re.I)
+
+# The single-regex form, shipped as a Regex Watch default. config/config.yml mirrors this
+# string VERBATIM and tests/test_regex_watch.py asserts the three stay identical, so there is
+# exactly one definition of the construction in the codebase.
+#
+# The lookbehind is the third guard: a comma that DIRECTLY follows a speech verb
+# ('...she said, turning away.') opens the narration after the dialogue, not an absolute.
+# Python's `re` only allows fixed-width lookbehinds, which is why the attribution words are
+# spelled out as one alternation of literals rather than a word class.
+_ATTRIBUTION_LOOKBEHIND = "".join("(?<!%s)" % word for word in _ATTRIBUTION_WORDS)
+
+TRAILER_PATTERN = (
+    _ATTRIBUTION_LOOKBEHIND
+    + r",(?!\s*[\"\u201d'\u2019])"                      # a comma closing dialogue opens nothing
+    r"(?![^,.;!?\n]*\b" + _FINITE_CORE + r"\b)"          # the segment is not a finite clause
+    r"(?![^,.;!?\n]*\b" + _ATTRIBUTION_CORE + r"\b)"     # and carries no speech verb
+    r"[^,.;!?\n]*?"                                       # any lead-in ...
+    + _PREDICATE_CORE)                                    # ... up to the predicate signal
+
+
+def _is_trailer_segment(segment, previous_segment=''):
+    """True when one comma-appended segment is an absolute/participial trailer.
+
+    ``previous_segment`` is the text before this comma; it is consulted so a segment that
+    follows an attribution verb ('...she said, holding the door') is not counted.
+    """
+    segment = (segment or '').strip().rstrip('.\"\u201d\'\u2019)*')
+    if not segment or len(segment.split()) > 12:
+        return False
+    if _FINITE.search(segment) or _ATTRIBUTION.search(segment):
+        return False
+    tail = re.findall(r"[A-Za-z'\u2019]+", previous_segment or '')
+    if tail and tail[-1].lower() in _ATTRIBUTION_WORDS:
+        return False
+    return bool(_PREDICATE.search(segment))
 
 
 def trailer_hits(text):
-    """Comma-appended absolute/participial trailers, per sentence."""
+    """Comma-appended absolute/participial trailers, per sentence.
+
+    Only the segments AFTER the first comma are candidates (a trailer is comma-APPENDED),
+    and each must be a verbless absolute -- see :func:`_is_trailer_segment`. A segment that
+    carries a finite verb is an ordinary clause, not this construction.
+    """
     out = []
     for sent in split_sentences(text, min_words=5):
-        hits = _TRAILER.findall(sent)
-        if not hits:
+        parts = sent.split(',')
+        n = sum(1 for i, seg in enumerate(parts[1:], start=1)
+                if _is_trailer_segment(seg, parts[i - 1]))
+        if not n:
             continue
         out.append({
             'span': sent,
-            'n_trailers': len(hits),
-            'stacked': int(len(_STACK.findall(sent)) >= 2 and sent.count(',') >= 3),
+            'n_trailers': n,
+            'stacked': int(n >= 2),
         })
     return out
 
