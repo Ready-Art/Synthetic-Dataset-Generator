@@ -76,6 +76,11 @@ generation:
   remove_all_asterisks: false
   ensure_space_after_line_break: false
   remove_markdown: false
+  # v11.7.1 "Experiment: Retry missing quotations": when on, a generated reply whose spoken
+  # line came back with NO quotation marks at all ("Its funny she says" instead of
+  # "\"Its funny,\" she says") is sent back to the SAME main API for one retry before the turn
+  # is kept. Off by default so existing output is unchanged.
+  retry_missing_quotations: false
   max_slop_sentence_fix_iterations: 5
   output_format: sharegpt
   api_request_timeout: 300

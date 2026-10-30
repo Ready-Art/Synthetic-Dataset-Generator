@@ -1647,6 +1647,11 @@ def start_processing():
     current_slop_fixes_for_rotation = global_config.get('detection.slop.fixes', [])
     current_slop_to_anti_slop_fallback = global_config.get('generation.slop_to_anti_slop_fallback', False)
 
+    # v11.7.1 "Experiment: Retry missing quotations": when a generated reply comes back with a
+    # spoken line but NO quotation marks at all ("Its funny she says"), send that same answer
+    # back to the SAME main API for one retry before keeping it. Off by default.
+    current_retry_missing_quotations = bool(global_config.get('generation.retry_missing_quotations', False))
+
     # --- Initialize Processing State ---
     app_state.stop_processing = False 
     app_state.pause_processing = False 
@@ -2009,6 +2014,7 @@ def start_processing():
             'current_regex_watch_enabled': current_regex_watch_enabled,
             'current_regex_watch_max_rounds': current_regex_watch_max_rounds,
             'include_style_metrics_local': include_style_metrics,
+            'retry_missing_quotations_local': current_retry_missing_quotations,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2393,7 +2399,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.7.0",
+    text="v11.7.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

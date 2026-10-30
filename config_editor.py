@@ -581,6 +581,9 @@ class ConfigEditor(tk.Toplevel):
         self.remove_markdown_var_editor = tk.BooleanVar()
         wrapped_checkbutton(gen_settings_frame, text="Experimental: Remove Markdown Formatting (Convert to plain text)", variable=self.remove_markdown_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
+        self.retry_missing_quotations_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(gen_settings_frame, text="Experiment: Retry missing quotations (If a generated reply's spoken line has no quotation marks at all -- e.g. \"Its funny she says\" instead of \"\"Its funny,\" she says\" -- send that same answer back to the SAME main API for one retry before keeping the turn. Off by default)", variable=self.retry_missing_quotations_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
+
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
 
         self.slop_to_anti_slop_fallback_var_editor = tk.BooleanVar()
@@ -1687,6 +1690,7 @@ class ConfigEditor(tk.Toplevel):
                 'remove_all_asterisks': self.remove_all_asterisks_var_editor.get(),
                 'ensure_space_after_line_break': self.ensure_space_after_line_break_var_editor.get(),
                 'remove_markdown': self.remove_markdown_var_editor.get(),
+                'retry_missing_quotations': self.retry_missing_quotations_var_editor.get(),
                 'max_slop_sentence_fix_iterations': int(self.max_slop_sentence_fix_iterations_var.get()),
                 'output_format': self.output_format_var.get(),
                 'api_request_timeout': int(self.api_request_timeout_var.get()),
@@ -2345,6 +2349,7 @@ class ConfigEditor(tk.Toplevel):
             self.remove_all_asterisks_var_editor.set(gen_config.get('remove_all_asterisks', False))
             self.remove_markdown_var_editor.set(gen_config.get('remove_markdown', False))
             self.ensure_space_after_line_break_var_editor.set(gen_config.get('ensure_space_after_line_break', False))
+            self.retry_missing_quotations_var_editor.set(gen_config.get('retry_missing_quotations', False))
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
             self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
             self.discard_refused_conversations_var_editor.set(gen_config.get('discard_refused_conversations', False))

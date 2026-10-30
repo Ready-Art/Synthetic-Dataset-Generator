@@ -9,9 +9,10 @@ Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_per
 `tests/test_dataset_compatibility.py`) or the Datasets panel need Tk; `tests/test_datasets_panel.py` and
 `tests/test_dataset_column_menu.py` also need a display; `tests/test_review_tab_ui.py` and
 `tests/test_regex_watch_tab_ui.py` need a display too (they build the real `generate.py` UI) and skip
-cleanly without one. `tests/test_quality_judge_settings_ui.py` also
-needs a display (it builds the real `ConfigEditor`) and skips cleanly without one, as does
-`tests/test_editor_readability_ui.py` (it also needs the 'superhero' theme, so run it under `xvfb-run`).
+cleanly without one. `tests/test_quality_judge_settings_ui.py`, `tests/test_missing_quotations_ui.py`
+and `tests/test_user_emotional_states_ui.py` also need a display (they build the real `ConfigEditor`)
+and skip cleanly without one, as does `tests/test_editor_readability_ui.py` (it also needs the
+'superhero' theme, so run it under `xvfb-run`).
 
 ```sh
 python -m pip install -r requirements.txt            # the application
@@ -84,6 +85,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 - Random settings pool → `prompts.random_settings.enabled`, `prompts.random_settings.settings[]` (analogous to `random_names`). When `setting_enabled` is true and a selected character's own `setting` is empty, a setting is sampled from this pool (when enabled) instead of the hardcoded default. For a multi-character ensemble the per-character settings are unified to ONE shared setting picked from the ensemble, so the whole scene happens in a single location
 - Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
 - Output metadata → `generation.include_metadata` (flat, schema-stable provenance block per output.jsonl record; trainer-safe; never modifies `conversations[]`; false = legacy two-field records)
+- Retry missing quotations (v11.7.1) → `generation.retry_missing_quotations` (off by default; GUI label **"Experiment: Retry missing quotations"** in the Config Editor Generation tab, var `retry_missing_quotations_var_editor`). When on, a generated answer whose spoken line has NO quotation marks at all (e.g. `Its funny she says`) is detected by `detection.is_missing_quotation()` inside `generate_answer_with_retries()` (runs AFTER every phrase check + the incomplete-quote check, BEFORE Regex Watch) and sent back to the SAME main API slot for one retry (no fixer slot, nothing appended to the system prompt so prefix caches survive; if it comes back mark-less again the best-effort answer is kept, never dropped). Distinct from `is_incomplete_quote`, which only sees UNBALANCED quotes. Threaded as worker kwarg `retry_missing_quotations_local` (never positional) into `_per_turn_logic_gate` → its rewrite call. Guarded by `tests/test_missing_quotations.py`
 - Style metrics (v11.7) → `generation.include_style_metrics` (off by default; when on AND `include_metadata` is on, each record's metadata gains a flat `style_*` block: `style_metrics.aggregate()` over the record's assistant turns, flattened with a `style_` prefix; duplication rows measure only the turn they carry)
 - Quality scoring → `quality.enabled`, `quality.use_llm_scoring`, `quality.output_filter`, `quality.roleplay_dimensions` (opt-in roleplay dimensions: voice_distinctiveness / grounding / persona_alignment), `quality.min_score_threshold`, `quality.max_chars_for_scoring`, `quality.max_profile_chars_for_scoring`, `quality.judge_max_attempts` / `quality.judge_retry_delay` / `quality.result_timeout` (v11.4 judge retry-and-drop policy), `quality.judge_json_repair_attempts` / `quality.judge_max_tokens` / `quality.judge_request_timeout` / `quality.judge_structured_output` (v11.5 judge JSON robustness: format-repair rounds, token budget, request timeout, optional `response_format`), `quality.tic_dimension` (v11.7 opt-in heuristic-only `tic_density` dimension, weight 0.10; measured from `style_metrics.py`, off by default like the roleplay dimensions), `quality.scoring_api.{url,model,key}`
 - Datasets → `datasets.sources[]` (default `{sources: []}`) — names-only source definitions (kind, location, config/split/revision selectors, imported column names, aliases, visibility). Dataset *records* and credentials are never stored here; see `docs/dataset-bindings.md`
@@ -164,7 +166,8 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 
 ### `detection.py` [10]
 **Purpose:** Issue detection (refusals, user speaking, slop, anti-slop, out-of-character drift, Regex Watch)
-**Key:** `is_refusal()`, `is_user_speaking()`, `is_slop()`, `is_anti_slop()`, `is_out_of_character()`, `is_incomplete_quote()`, `is_regex_watch()`, `find_regex_matches()`, `validate_regex_patterns()`, `DEFAULT_REGEX_WATCH_PATTERNS`, `RegexWatchError`
+**Key:** `is_refusal()`, `is_user_speaking()`, `is_slop()`, `is_anti_slop()`, `is_out_of_character()`, `is_incomplete_quote()`, `is_missing_quotation()`, `is_regex_watch()`, `find_regex_matches()`, `validate_regex_patterns()`, `DEFAULT_REGEX_WATCH_PATTERNS`, `RegexWatchError`
+`is_missing_quotation()` (v11.7.1): mirrors the other `is_*()` shape `(bool, [(label, snippet), ...])` but takes only `text` (no phrase list) and records NO timestamp (it is an opt-in retry trigger, not a dashboard-tracked issue). It fires only when the reply has words to check, contains NO quote glyph of any kind (`"`/`'`/`‘`/`’`/`“`/`”`), is longer than 3 words, and carries a speech-attribution verb (a curated list: says/said/whispered/told/asked/sighs/…). A quoted reply — balanced or unbalanced — never matches: the balanced case is `normalize_quotes`, the unbalanced one is `is_incomplete_quote`
 **Regex Watch (v11.6):** `is_regex_watch(text, patterns)` mirrors the other `is_*()` shape (`(bool, [(pattern, sentence), ...])`, timestamp into `issue_timestamps['regex_watch']`, 1hr cutoff) but matches WHOLE-REPLY regular expressions instead of word-boundary phrases. `_compile_regex()` is `lru_cache`d and raises `RegexWatchError`; `validate_regex_patterns()` returns `(valid, [(pattern, message), ...])` and drops blanks/duplicates, so an editor save and a config load share one definition of "usable". An invalid pattern is skipped at run time (never raises), a zero-width match is ignored (it has nothing to rewrite and would loop). `find_regex_matches()` reports `(pattern, sentence, matched_text)`; the sentence is the one containing the match, capped at 300 chars
 **Edit for:**
 - Add detection type → New `is_*()` function + add key to `app_state.issue_timestamps`
@@ -316,6 +319,16 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Run:** `python -B tests/test_review_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
 **Edit for:** Add Review-tab behaviour cases; keep it free of source data, generation runs, network and model APIs
 
+### `tests/test_missing_quotations.py`
+**Purpose:** Headless tests for the v11.7.1 "Experiment: Retry missing quotations" pipeline (no model/network/display; `requests.post` is stubbed)
+**Key:** the detector flags a spoken line with NO quotation marks and an attribution verb (straight/curly-quoted replies, pure narration and short fragments are all non-hits); the retry pass — off → mark-less reply written as-is (exactly one main-API request); on → the answer is sent back to the SAME main API slot, nothing appended to the system prompt (prefix-cache friendly), the quoted re-reply is what gets written; a still-broken retry is kept (bounded to one retry per attempt, never dropped); a properly quoted reply needs no extra request
+**Run:** `python -B tests/test_missing_quotations.py`
+
+### `tests/test_missing_quotations_ui.py`
+**Purpose:** Display-dependent regression test for the v11.7.1 "Experiment: Retry missing quotations" checkbox in the REAL `ConfigEditor` (skips cleanly without a display)
+**Key:** save -> `config.yml` holds `retry_missing_quotations: true`; reopen -> checkbox ticked again; unmodified reopen+save -> flag survives (no clobber to the off default). Mirrors `tests/test_user_emotional_states_ui.py`
+**Run:** `python -B tests/test_missing_quotations_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
+
 ### `tests/test_worker_launch.py` [21]
 **Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
 **Key:** Rebuilds the `worker()` signature from its AST, extracts the actual `threading.Thread(target=worker, args=..., kwargs=...)` call from `start_processing()`, and binds them via `inspect.Signature.bind()`; then asserts the OOC kwargs (`current_ooc_phrases`/`current_ooc_fixes`/`current_ooc_enabled`) are supplied by keyword from same-named locals (never positionally) — no app config, GUI, or network code is evaluated
@@ -446,6 +459,7 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 | Add/modify a Regex Watch pattern | `config/config.yml` (`detection.regex_watch.patterns[]`) and `detection.py` (`DEFAULT_REGEX_WATCH_PATTERNS` — the Restore Defaults source; keep the two in sync), `config_editor.py` (Detection tab panel, `_restore_default_regex_patterns()`), `tests/test_regex_watch.py` |
 | Change how Regex Watch rewrites text | `generation.py` (`rewrite_regex_watch_text()` / `apply_regex_watch()`), `config/config.yml` (`detection.regex_watch.max_rounds`), `generate.py` (`current_regex_watch_max_rounds`), `tests/test_regex_watch.py` |
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
+| Add/modify missing-quotations retry (v11.7.1) | `detection.py` (`is_missing_quotation()`), `generation.py` (`generate_answer_with_retries()` check + `retry_missing_quotations_local` kwarg on worker/`_per_turn_logic_gate`/call sites), `generate.py` (read `generation.retry_missing_quotations` + worker kwargs), `config/config.yml` (default), `config_editor.py` (Generation tab checkbox + save/load), `tests/test_missing_quotations.py` |
 | Add UI metric | `app_state.py` (widget ref), `generate.py` (create widget), `dashboard.py` (update) |
 | Change rate limit | `config/config.yml` (`api.apis[].rate_limit_rpm`), `config_editor.py` (UI field), `api_handler.py` (`set_rate_limit()`) |
 | Modify retry logic | `generation.py` (`generate_answer_with_retries()`, `MAX_TASK_REQUEUES`) |

@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.7.0
+# ReadyArt Synthetic Dataset Generator v11.7.1
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -124,6 +124,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - Remove all asterisks
 - Ensure spaces after line breaks
 - Strip markdown formatting to plain text
+- **Experiment: Retry missing quotations** (v11.7.1) — when on, a generated reply whose spoken line came back with NO quotation marks at all (`Its funny she says` instead of `"Its funny," she says`) is sent back to the SAME main API for one retry before the turn is kept
 - Normalize and balance quotation marks (handles both straight `"` and curly `""` quotes, with special handling to avoid breaking inch marks and intentional unquoted dialogue)
 - **Structural Quote Repair** — `repair_straight_quotes()` applies heuristic-based fixes for unbalanced straight quotes (prepends opener or appends closer based on text structure) before the final normalization pass
 
@@ -456,6 +457,7 @@ generation:
   remove_all_asterisks: false
   ensure_space_after_line_break: false
   remove_markdown: false
+  retry_missing_quotations: false     # v11.7.1 Experiment: send a quote-less spoken line back to the same main API for one retry
 ```
 
 ### Prompts & Character Engine
@@ -1868,7 +1870,11 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.7.0 (Current)
+### v11.7.1 (Current)
+- **Experiment: Retry missing quotations** — Sometimes the model writes a spoken line with its quotation marks missing ENTIRELY: instead of `"Its funny," she says` it emits `Its funny she saystext`. The existing *incomplete-quote* check only ever saw UNBALANCED quotes (an odd count or mismatched openers/closers), so a reply that dropped every mark was written straight to the dataset as narration. A new `detection.is_missing_quotation()` flags a reply that (a) contains NO quotation glyph of any kind (straight `"`/`'` or curly `‘ ’ “ ”`), (b) has enough words to be narration, and (c) carries a speech-attribution verb (`says`, `said`, `whispered`, `told`, `asked`, …). When the new GUI toggle **Experiment: Retry missing quotations** (`generation.retry_missing_quotations`, off by default) is on, such an answer is sent back to the SAME main API slot that produced it for one retry (mirroring Regex Watch: the same slot rewrites in its own voice, no fixer slot); if the mark-less reply comes back again the best-effort answer is kept rather than dropped. It runs only after every other check has passed, is deliberately not added to the system prompt so prefix-caching servers keep their cache, and when off the pipeline is byte-identical to v11.7
+- **Wiring** — `generation.py` (`worker` kwarg `retry_missing_quotations_local`, the check inside `generate_answer_with_retries()`, and the per-turn logic-gate retry inherit it), `generate.py` (reads `generation.retry_missing_quotations` at run start and passes it as a worker `kwargs=` entry), `config/config.yml` (new default), `config_editor.py` (Generation tab checkbox + save/load). Guarded by `tests/test_missing_quotations.py`
+
+### v11.7.0
 - **The absolute-trailer detector no longer fires on ordinary commas** — a report that generated text ending a line of dialogue on a comma (`"This is text,"`) was being rewritten turned out to be a real false-positive class. scotoma's `trailer_rate.py` requires a comma-appended segment to be **verbless** (no finite verb, no speech verb) and to carry a predicate signal (a body noun, an `-ing` participle or an `-ly` adverb); the first port kept the predicate test and dropped the verbless one, so every ordinary clause after a comma — `the man said`, `the boat is leaving`, `the door is open` — read as an absolute. The detector now enforces both tests, plus a third guard: a comma that *directly follows a speech verb* (`"...she said, turning away."`) opens the narration after the dialogue and is not a trailer either. The construction is defined **once**, as `style_metrics.TRAILER_PATTERN`, and both `config/config.yml` and `detection.DEFAULT_REGEX_WATCH_PATTERNS` mirror that exact string (`tests/test_regex_watch.py` asserts all three are identical), so the metric and the rewrite can never drift apart. It also now catches participle trailers it previously missed (`steam curling upward`). Regression cases are asserted in both `tests/test_style_metrics.py` and `tests/test_regex_watch.py`
 - **Style metrics ported in from the scotoma analysis layer** — a new dependency-free `style_metrics.py` measures the style/quality signals scotoma worked out and calibrated against a human null: comma habits, tail-end positivity lift, narration share, interiority density, long-range grounding, coherence defects (script mix, foreign articles, determiner stutter, duplicate sentences), narration-only negation density/runs, denial-then-correction couplets, comma-appended absolute trailers, and turn-final question handback. It imports nothing project-local and nothing third-party, so it unit-tests headless (`tests/test_style_metrics.py`, 58 checks)
 - **Two new Regex Watch patterns** — the two tic shapes scotoma isolated now ship as defaults (eight total, was six): **denial-then-correction** (`"It wasn't anger. It was fear."` — the shape the whole scotoma project was built around, which the existing six rhetorical-pivot patterns did not cover) and the **comma-appended absolute trailer** (`"...her lips parted"`; measured teacher 11.8% of sentences vs human 2.5%, rewrite fraction 0.79). The trailer pattern is the verbless-absolute test scotoma used — see the fix note above; an ordinary clause or a dialogue-closing comma never matches it. `config/config.yml` and `detection.DEFAULT_REGEX_WATCH_PATTERNS` stay in sync, so "Restore Defaults" rolls both back together. `question_handback` is deliberately NOT a regex — it is positional ("final sentence ends on ?"), which a whole-reply regex cannot express; it lives in `style_metrics.question_handback()` instead

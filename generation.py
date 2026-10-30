@@ -601,7 +601,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          current_slop_to_anti_slop_fallback,
                          current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
                          current_regex_patterns=(), current_regex_watch_enabled=False,
-                         current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS):
+                         current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
+                         current_retry_missing_quotations=False):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
     ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
@@ -721,6 +722,7 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             regex_patterns_local=current_regex_patterns,
             regex_watch_enabled_local=current_regex_watch_enabled,
             regex_watch_max_rounds=current_regex_watch_max_rounds,
+            retry_missing_quotations_local=current_retry_missing_quotations,
         )
         if not retry_result or not retry_result[0]:
             log_message(
@@ -817,6 +819,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_regex_watch_enabled=False,
            current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
            include_style_metrics_local=False,
+           retry_missing_quotations_local=False,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -1539,6 +1542,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 regex_patterns_local=current_regex_patterns,
                                 regex_watch_enabled_local=current_regex_watch_enabled,
                                 regex_watch_max_rounds=current_regex_watch_max_rounds,
+                                retry_missing_quotations_local=retry_missing_quotations_local,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
                                 # Per-turn logic gate on the primary (slot 1) answer only; the
@@ -1565,6 +1569,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
                                         current_regex_patterns, current_regex_watch_enabled,
                                         current_regex_watch_max_rounds,
+                                        current_retry_missing_quotations=retry_missing_quotations_local,
                                     ),
                                     answer_result[1] if len(answer_result) > 1 else False,
                                     answer_result[2] if len(answer_result) > 2 else False,
@@ -1712,6 +1717,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         regex_patterns_local=current_regex_patterns,
                         regex_watch_enabled_local=current_regex_watch_enabled,
                         regex_watch_max_rounds=current_regex_watch_max_rounds,
+                        retry_missing_quotations_local=retry_missing_quotations_local,
                     )
                     if per_turn_logic_check_local and answer_result and answer_result[0]:
                         # Per-turn logic gate BEFORE the answer enters the output history, so a
@@ -1735,6 +1741,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
                             current_regex_patterns, current_regex_watch_enabled,
                             current_regex_watch_max_rounds,
+                            current_retry_missing_quotations=retry_missing_quotations_local,
                         )
 
                     if answer_result and answer_result[0]:  # Check if answer is not None
@@ -3666,7 +3673,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  ooc_fixes_local=(),
                                  regex_patterns_local=(),
                                  regex_watch_enabled_local=False,
-                                 regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS):
+                                 regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
+                                 retry_missing_quotations_local=False):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
     out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
@@ -3682,6 +3690,14 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     rewrite, then re-checked -- the regex-shaped twin of the slop loop. The regex pass runs
     after every other check has passed, so it never rewrites text that another check is about
     to replace.
+
+    ``retry_missing_quotations_local`` (Experiment: Retry missing quotations, v11.7.1, off by
+    default) re-checks the accepted answer with ``detection.is_missing_quotation()`` -- a spoken
+    line that arrived with NO quotation marks at all (unlike ``is_incomplete_quote``, which only
+    sees UNBALANCED quotes) -- and sends it back to the same main API for one retry, bounded per
+    attempt. Nothing is appended to the system prompt, so a server that caches the prompt prefix
+    per slot keeps its cache; the reply content (sampler randomness / temperature) supplies the
+    variance. Off, the check never runs and replies are byte-identical to v11.7.
     """
 
     refusal_detected_this_main_api_call = False
@@ -3698,7 +3714,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
         if app_state.stop_processing or app_state.pause_processing: return None
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
-        fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0}
+        fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
+                                 'missing_quotation': 0}
         issue_detected_this_main_api_call = False
 
         while True:
@@ -4379,6 +4396,27 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         # Uses the upgraded structural balancer instead of simple parity counting
                         answer = text_utils.normalize_quotes(answer.strip())
                         issue_detected_this_main_api_call = False  # Mark as resolved so it saves
+
+            # --- Missing Quotations retry (v11.7.1, opt-in "Experiment: Retry missing quotations") ---
+            # A spoken line that came back with no quote marks AT ALL -- "Its funny she says"
+            # instead of '"Its funny," she says'. is_incomplete_quote above only sees UNBALANCED
+            # quotes, so when the model drops them entirely the turn was written as-is. When the
+            # experiment is on, one extra retry sends the answer back to THIS SAME main API (no
+            # fixer slot); nothing is appended to the system prompt so a prefix-caching server
+            # keeps its cache, and the bound mirrors the incomplete-quote retry policy.
+            if (not issue_detected_this_main_api_call and retry_missing_quotations_local):
+                missing_quotation_detected, _missing_quotation_info = detection.is_missing_quotation(answer)
+                if missing_quotation_detected:
+                    issue_detected_this_main_api_call = True
+                    log_message(f"Thread {thread_id}: Missing quotation detected (API Slot {api_slot_idx+1}). "
+                                f"Snippet: {answer[:80]}... Retrying the same main API.", "DEBUG")
+                    if fix_attempts_specific['missing_quotation'] < 1:
+                        fix_attempts_specific['missing_quotation'] += 1
+                        continue
+                    else:
+                        log_message(f"Thread {thread_id}: Missing quotation persists after the retry; keeping the "
+                                    f"best-effort answer (API Slot {api_slot_idx+1}).", "WARNING")
+                        issue_detected_this_main_api_call = False
 
             # --- Regex Watch (v11.6) ---
             # Runs only once every phrase-driven check has passed, so a rewrite never races

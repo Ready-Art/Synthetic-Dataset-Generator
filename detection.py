@@ -434,3 +434,46 @@ def is_incomplete_quote(text):
         return True, [("Incomplete quote (unbalanced curly quotes)", snippet)]
 
     return False, []
+
+# --- Missing quotations (v11.7.1) -----------------------------------------------------------
+# Complements is_incomplete_quote(): that check catches a reply whose quote marks are
+# UNBALANCED (one missing), while is_missing_quotation() catches a reply whose spoken
+# line is missing its quote marks ENTIRELY -- "Its funny she says" instead of
+# "\"Its funny,\" she says." The generated question/continuation prompts ask the model to
+# put speech in quotation marks, so a reply with narration + a clear speech-attribution
+# verb but no " / ' / ‘ / “ quote glyph at all is treated as a missing-quotations defect.
+# It is opt-in (Experiment: Retry missing quotations) and, when on, sends the answer back
+# to the SAME main API for one retry before the turn is kept.
+_MISSING_QUOTATION_ATTRIBUTION_RE = re.compile(
+    r'\b(?:says?|said|shouted|whispered|whispers?|murmured|muttered|called|cried|asked|' 
+    r'replied|answered|retorted|exclaimed|gasped|laughed|sighs?|groaned|yawned|hissed|' 
+    r'snarled|growled|told|telling|asks?|speaks?|spoke|replies?)\b', re.IGNORECASE)
+
+
+def is_missing_quotation(text):
+    """Detect a spoken line that is missing its quotation marks entirely.
+
+    Returns ``(True, [(label, snippet), ...])`` only when ALL of the following hold:
+    the text has words to check, it contains NO quotation mark of any kind (straight
+    double/single or curly open/close), it narrates (more than a handful of words), and
+    it carries a speech-attribution verb (\"...she says\", \"he said\", ...).
+
+    Deliberate non-hits: any reply containing at least one quote glyph (the balanced case
+    is handled by ``normalize_quotes`` and unbalanced ones by ``is_incomplete_quote``),
+    pure narration with no speech attribution, single-word fragments, and empty input.
+    Mirrors the other ``is_*()`` shape; it records no timestamp because it is an
+    experimental, opt-in retry trigger rather than a dashboard-tracked issue type.
+    """
+    if not text or not str(text).strip():
+        return False, []
+    text = str(text)
+    if any(mark in text for mark in ('"', "'", '\u2018', '\u2019', '\u201c', '\u201d')):
+        return False, []
+    words = text.split()
+    if len(words) < 4:
+        return False, []
+    if not _MISSING_QUOTATION_ATTRIBUTION_RE.search(text):
+        return False, []
+    snippet = text.strip()[:150]
+    label = "Missing quotation (spoken line with no quotation marks)"
+    return True, [(label, snippet + ("..." if len(text.strip()) > 150 else ""))]
