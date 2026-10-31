@@ -3,13 +3,15 @@
 Run directly: ``python -B tests/test_quality_judge_settings_ui.py`` (needs a display, e.g. under
 ``xvfb-run``; skips cleanly without one).
 
-The three new Quality Scoring settings -- Judge JSON Repair Rounds, Judge Max Tokens and Judge
-Structured Output -- must survive a save/reopen round trip through the REAL ``ConfigEditor``:
+The Quality Scoring judge settings -- Judge JSON Repair Rounds, Judge Max Tokens, Judge
+Request Timeout, Judge Structured Output and (v11.8) the vLLM priority toggle + value -- must
+survive a save/reopen round trip through the REAL ``ConfigEditor``:
 
   1. type values -> save -> ``config.yml`` holds them under ``quality.*``
   2. reopen the editor -> the values are visible again
   3. reopen -> save without editing -> the values survive (no clobber back to defaults)
   4. out-of-range values are rejected by the editor's validation instead of being written
+  5. the priority spinbox is disabled until the toggle is on (it is never sent when off)
 
 No source data, generation run, network or model API is touched.
 """
@@ -46,6 +48,7 @@ class JudgeSettingsUiTests(unittest.TestCase):
     MAX_TOKENS = "1024"
     TIMEOUT = "180"
     STRUCTURED = "json_schema"
+    PRIORITY = "10"
 
     @classmethod
     def setUpClass(cls):
@@ -83,6 +86,9 @@ class JudgeSettingsUiTests(unittest.TestCase):
             editor.quality_judge_max_tokens_var.set(self.MAX_TOKENS)
             editor.quality_judge_request_timeout_var.set(self.TIMEOUT)
             editor.quality_judge_structured_output_var.set(self.STRUCTURED)
+            editor.quality_judge_priority_enabled_var.set(True)
+            editor._toggle_judge_priority_field()
+            editor.quality_judge_priority_var.set(self.PRIORITY)
             self.assertTrue(editor.save_config_handler(silent=True), "save reported failure")
             saved = self._read_saved_quality()
             self.assertEqual(saved.get("judge_json_repair_attempts"), 2,
@@ -93,6 +99,10 @@ class JudgeSettingsUiTests(unittest.TestCase):
                              "judge_request_timeout not saved")
             self.assertEqual(saved.get("judge_structured_output"), self.STRUCTURED,
                              "judge_structured_output not saved")
+            self.assertEqual(saved.get("judge_priority_enabled"), True,
+                             "judge_priority_enabled not saved")
+            self.assertEqual(saved.get("judge_priority"), 10,
+                             "judge_priority not saved")
         finally:
             editor.destroy()
 
@@ -102,6 +112,10 @@ class JudgeSettingsUiTests(unittest.TestCase):
             self.assertEqual(editor2.quality_judge_max_tokens_var.get(), self.MAX_TOKENS)
             self.assertEqual(editor2.quality_judge_request_timeout_var.get(), self.TIMEOUT)
             self.assertEqual(editor2.quality_judge_structured_output_var.get(), self.STRUCTURED)
+            self.assertEqual(editor2.quality_judge_priority_enabled_var.get(), True)
+            self.assertEqual(editor2.quality_judge_priority_var.get(), self.PRIORITY)
+            # A saved-on toggle reopens enabled, so the spinbox must be editable again.
+            self.assertEqual(str(editor2.quality_judge_priority_spinbox.cget("state")), "normal")
         finally:
             editor2.destroy()
 
@@ -116,6 +130,10 @@ class JudgeSettingsUiTests(unittest.TestCase):
                              "unmodified save clobbered judge_request_timeout")
             self.assertEqual(saved.get("judge_structured_output"), self.STRUCTURED,
                              "unmodified save clobbered judge_structured_output")
+            self.assertEqual(saved.get("judge_priority_enabled"), True,
+                             "unmodified save clobbered judge_priority_enabled")
+            self.assertEqual(saved.get("judge_priority"), 10,
+                             "unmodified save clobbered judge_priority")
         finally:
             editor3.destroy()
 
@@ -124,6 +142,13 @@ class JudgeSettingsUiTests(unittest.TestCase):
         try:
             self.assertEqual(editor.quality_judge_structured_output_var.get(), "auto",
                              "structured output should default to auto")
+            # v11.8: the priority field is opt-in and defaults to 0 (accepted by every vLLM server).
+            self.assertFalse(editor.quality_judge_priority_enabled_var.get(),
+                             "judge priority should be off by default")
+            self.assertEqual(editor.quality_judge_priority_var.get(), "0",
+                             "judge priority should default to 0")
+            self.assertEqual(str(editor.quality_judge_priority_spinbox.cget("state")), "disabled",
+                             "the priority spinbox should be disabled while the toggle is off")
         finally:
             editor.destroy()
 

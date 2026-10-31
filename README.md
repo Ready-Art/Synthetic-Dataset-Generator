@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.7.2
+# ReadyArt Synthetic Dataset Generator v11.8.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -84,6 +84,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Quality Metrics Bar** — Real-time average composite score (color-coded green/amber/red), count of below-threshold conversations, and most frequent flag displayed in the main metrics area
 - **Quality Score Table** — Dashboard tab showing the latest 50 scored conversations with per-dimension breakdown and method used
 - **Output Filtering** — Optional flag to mark below-threshold conversations for post-processing (score metadata attached to exported JSONL)
+- **vLLM Judge Priority** (v11.8) — Optional `priority` field (0-99, lower = earlier) on every judge request for vLLM's priority scheduling, so the judge queues behind the generation traffic. Off by default, because backends without priority support reject the unknown field and vLLM rejects a non-zero priority when the served model is not priority-scheduled
 - **Quality State Persistence** — Scores and review flags are saved in the generation state file for crash recovery
 
 ### Quality Control & Detection
@@ -686,6 +687,17 @@ When it runs: after every phrase-driven check has passed on a reply (so a rewrit
 - **Format-repair round** — if nothing parses, the model's own broken reply is sent back and it is asked for the same evaluation as JSON only (`judge_json_repair_attempts`, default 1; `0` restores the v11.4 immediate drop).
 - **Truncation is transient** — a reply cut off by the token limit (`finish_reason: length`) is salvaged when the scores were already written, otherwise retried with a doubled budget. `judge_max_tokens` (0 = automatic) sets the budget and `judge_request_timeout` (default 120 s, was a hard-coded 60 s) the request timeout.
 - **Structured output** — `judge_structured_output: auto` asks the server for `response_format: {"type": "json_object"}`, and an endpoint that rejects it is retried once without the field and remembered for the rest of the run (`off`, `json_object` and `json_schema` are also available).
+- **vLLM priority (v11.8)** — `judge_priority_enabled: true` adds a top-level `priority` field to every judge request (`judge_priority`, **0-99**, lower is handled earlier; default `0`). vLLM's OpenAI-compatible server uses it for priority scheduling, which lets the judge's low-volume but bursty requests queue behind the generation traffic instead of competing with it:
+
+  ```json
+  {
+    "model": "your-model-name",
+    "messages": [{"role": "user", "content": "This is a low-priority batch request."}],
+    "priority": 10
+  }
+  ```
+
+  The field is **opt-in twice over**, because it is not part of the OpenAI schema. A backend that does not know it (OpenAI, Anthropic, llama.cpp, most hosted gateways) rejects the unknown field outright, and vLLM itself raises an error for any priority other than `0` when the served model does not use priority scheduling. So `judge_priority_enabled` defaults to **false** — the field is never sent at all, and the payload is byte-identical to v11.7 — and `judge_priority` defaults to **0**, which every vLLM server accepts. The value is clamped to `0-99` (a hand-edited config cannot break a run) and it rides on every attempt, including the format-repair and `response_format`-fallback requests, so a retried judge request keeps its place in the queue.
 - **Better diagnostics** — the judge's raw reply, its `finish_reason` and how the JSON was recovered are written to the per-slot debug log, so a remaining failure can actually be diagnosed.
 
 A reply that is still unparsable after all of that is a genuine `invalid_json` drop, and a conversation-level `logic` score of 0 still drops the conversation immediately. There is no heuristic fallback for a failed judge: an unjudged conversation can never reach the dataset.
@@ -710,6 +722,8 @@ quality:
   judge_max_tokens: 0              # Token budget per judge request (0 = automatic; a token-limited reply is retried with double)
   judge_request_timeout: 120        # HTTP timeout for one judge request (was a hard-coded 60s)
   judge_structured_output: auto    # auto | off | json_object | json_schema (auto falls back when the server refuses)
+  judge_priority_enabled: false    # v11.8: send vLLM's priority field with judge requests (off = field never sent)
+  judge_priority: 0                # 0-99, lower is handled earlier; 0 is the vLLM default and always accepted
   scoring_api:
     url: ""                        # Dedicated LLM endpoint for scoring (optional)
     model: ""                      # Model name for scoring LLM
@@ -1870,7 +1884,14 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.7.2 (Current)
+### v11.8.0 (Current)
+- **vLLM request priority for the quality judge** — vLLM's OpenAI-compatible server accepts a top-level `priority` integer (**0-99**, lower means earlier handling; default `0`) for priority scheduling. The judge's requests are low-volume but bursty, so a high number parks them behind the generation traffic instead of competing with it. Two new Quality Scoring settings: **Send vLLM priority with judge requests** (`quality.judge_priority_enabled`, **off by default**) and **Judge Priority** (`quality.judge_priority`, **0-99**, default `0`)
+- **Opt-in twice over, on purpose** — `priority` is not part of the OpenAI schema. A backend that does not know it (OpenAI, Anthropic, llama.cpp, most hosted gateways) rejects the unknown field outright, and vLLM itself raises an error for any priority other than `0` when the served model does not use priority scheduling. So the toggle defaults to off (the field is never sent at all; the payload is byte-identical to v11.7) and the value defaults to `0`, which every vLLM server accepts. The value is clamped to `0-99`, so a hand-edited `config.yml` cannot break a run
+- **It rides on every attempt** — the field is merged into the request body once, so the transient retries, the format-repair rounds and the `response_format`-fallback request all keep the same priority and a retried judge request does not lose its place in the queue
+- **Configuration Editor** — the Quality Scoring section gains the checkbox plus a spinbox that is disabled while the toggle is off (the value is kept, not reset, so re-enabling restores it)
+- **Wiring** — `quality.py` (`judge_priority_enabled()`, `judge_priority()`, `_judge_priority_field()`, `JUDGE_PRIORITY_MIN` / `JUDGE_PRIORITY_MAX`, merged into the judge payload in `_call_logic_judge_once()`), `config/config.yml` (two new defaults), `config_editor.py` (checkbox + spinbox + `_toggle_judge_priority_field()` + save/load/validate). Guarded by the new priority cases in `tests/test_quality_json_robustness.py` and `tests/test_quality_judge_settings_ui.py`
+
+### v11.7.2
 - **The missing-quotations check no longer goes blind on contractions** — a report that mark-less spoken lines were still reaching the dataset, and that a downstream cleaner was removing ~18% of records (`330 conversations / 60 removed`) for containing no quotation marks at all, traced back to the v11.7.1 detector's guard. `is_missing_quotation()` bailed out if the reply contained **any** quote-like glyph, and that list included the plain apostrophe `'` and `’`. Ordinary English prose is full of contractions and possessives, so `It's not funny she says`, `She doesn't care, he said` and `Melody's hand trembles as she speaks` all disabled the check entirely: the experiment appeared enabled but effectively never fired on realistic text, and the replies were written to the dataset verbatim. The detector now discounts **word-internal** apostrophes before testing for quote glyphs — a contraction or possessive is not a quotation mark, while genuine single-quoted dialogue (`'Its funny,' she says`) still counts as quoted. The rule is defined **once**, in the new `detection.has_dialogue_quote_marks()`, which `is_missing_quotation()` calls. A **plural possessive** (`dogs'`, `the clocks' hands` — apostrophe after the final word character) is deliberately left counted, because it is indistinguishable from a closing single quote; that direction only *suppresses* the check (no pointless retry, turn kept), which is the safe failure mode. Guarded by new apostrophe-positive and `has_dialogue_quote_marks()` cases in `tests/test_missing_quotations.py`. Note the check remains **opt-in** (`generation.retry_missing_quotations`, off by default), so this fix only takes effect on runs that enable it
 - **Wiring** — `detection.py` (`has_dialogue_quote_marks()` + `_APOSTROPHE_IN_WORD_RE` + `_DIALOGUE_QUOTE_MARKS`; `is_missing_quotation()` calls the helper instead of its inline `any(mark in text ...)` guard). No config, GUI or call-site change: the signature, label, snippet, word-count floor and attribution-verb list are all unchanged, so the retry policy and prefix-cache behaviour are byte-identical to v11.7.1
 

@@ -545,6 +545,39 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(judge_format_help, judge_format_field)
         row_idx += 1
 
+        # v11.8: vLLM priority scheduling for the judge. Opt-in twice over -- the toggle decides
+        # whether the field is sent at all (backends that do not support it reject an unknown
+        # field, and vLLM itself rejects a non-zero priority on a server without priority
+        # scheduling), and the value defaults to 0, which every vLLM server accepts.
+        self.quality_judge_priority_enabled_var = tk.BooleanVar(value=False)
+        wrapped_checkbutton(
+            gen_settings_frame,
+            text="Send vLLM priority with judge requests (only for backends that support priority scheduling; leave off for OpenAI, Anthropic, llama.cpp, ...)",
+            variable=self.quality_judge_priority_enabled_var,
+            command=self._toggle_judge_priority_field,
+        ).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
+
+        judge_priority_field = ttk.Frame(gen_settings_frame)
+        judge_priority_field.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        judge_priority_field.columnconfigure(0, weight=1)
+        judge_priority_label = ttk.Label(judge_priority_field, text="Judge Priority (0-99, lower is handled earlier):",
+                                         justify="left", wraplength=1)
+        judge_priority_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(judge_priority_label, judge_priority_field, padding=180)
+        self.quality_judge_priority_var = tk.StringVar(value="0")
+        self.quality_judge_priority_spinbox = ttk.Spinbox(
+            judge_priority_field, from_=0, to=99, width=6,
+            textvariable=self.quality_judge_priority_var,
+            style=self.spinbox_style, state='disabled')
+        self.quality_judge_priority_spinbox.grid(row=0, column=1, sticky="e")
+        judge_priority_help = ttk.Label(
+            judge_priority_field,
+            text="(0 = default priority, accepted by every vLLM server; a non-zero value makes a server without priority scheduling reject the request)",
+            style='Small.TLabel', justify="left", wraplength=1)
+        judge_priority_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(judge_priority_help, judge_priority_field)
+        row_idx += 1
+
         # Quality scoring API config
         ttk.Label(gen_settings_frame, text="Quality Scoring API URL:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
         self.quality_api_url_var = tk.StringVar()
@@ -1721,6 +1754,8 @@ class ConfigEditor(tk.Toplevel):
                 'judge_max_tokens': max(0, int(self.quality_judge_max_tokens_var.get() or 0)),
                 'judge_request_timeout': max(5, min(1800, int(self.quality_judge_request_timeout_var.get() or 120))),
                 'judge_structured_output': self.quality_judge_structured_output_var.get(),
+                'judge_priority_enabled': self.quality_judge_priority_enabled_var.get(),
+                'judge_priority': max(0, min(99, int(self.quality_judge_priority_var.get() or 0))),
                 'scoring_api': {
                     'url': sanitize_input(self.quality_api_url_var.get()),
                     'model': sanitize_input(self.quality_api_model_var.get()),
@@ -1966,6 +2001,23 @@ class ConfigEditor(tk.Toplevel):
             widget = getattr(self, widget_name, None)
             if widget is not None and widget.winfo_exists():
                 widget.configure(state=state)
+
+    def _toggle_judge_priority_field(self):
+        """Enable/disable the judge priority spinbox from its checkbox (v11.8).
+
+        With the toggle off the value is never sent, so the box is disabled to make that
+        obvious; the stored value is kept (not reset) so re-enabling restores it.
+        """
+        spinbox = getattr(self, 'quality_judge_priority_spinbox', None)
+        if spinbox is None:
+            return
+        try:
+            if not spinbox.winfo_exists():
+                return
+            spinbox.configure(
+                state='normal' if self.quality_judge_priority_enabled_var.get() else 'disabled')
+        except Exception:
+            pass
 
     def _on_regex_pattern_selected(self, _event=None):
         """Load the selected pattern into the entry so it can be edited or removed."""
@@ -2376,6 +2428,9 @@ class ConfigEditor(tk.Toplevel):
             self.quality_judge_max_tokens_var.set(str(quality_conf.get('judge_max_tokens', 0)))
             self.quality_judge_request_timeout_var.set(str(quality_conf.get('judge_request_timeout', 120)))
             self.quality_judge_structured_output_var.set(str(quality_conf.get('judge_structured_output', 'auto')))
+            self.quality_judge_priority_enabled_var.set(bool(quality_conf.get('judge_priority_enabled', False)))
+            self.quality_judge_priority_var.set(str(quality_conf.get('judge_priority', 0)))
+            self._toggle_judge_priority_field()
             self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
             self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
             self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
@@ -2749,6 +2804,8 @@ class ConfigEditor(tk.Toplevel):
             assert 5 <= judge_timeout_val <= 1800, "Judge request timeout must be between 5 and 1800 seconds"
             assert self.quality_judge_structured_output_var.get() in ('auto', 'off', 'json_object', 'json_schema'), \
                 "Judge structured output must be auto, off, json_object or json_schema"
+            judge_priority_val = int(self.quality_judge_priority_var.get() or 0)
+            assert 0 <= judge_priority_val <= 99, "Judge priority must be between 0 and 99"
             if self.quality_logic_check_var_editor.get():
                 logic_threshold_val = int(self.quality_logic_threshold_var.get() or 70)
                 assert 0 <= logic_threshold_val <= 100, "Logic check threshold must be 0-100"

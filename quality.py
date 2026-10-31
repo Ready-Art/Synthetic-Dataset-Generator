@@ -1157,6 +1157,59 @@ def judge_structured_output(config=None):
     return mode if mode in ('off', 'json_object', 'json_schema', 'auto') else 'auto'
 
 
+# vLLM priority scheduling for the judge request (v11.8).
+#
+# vLLM's OpenAI-compatible server accepts a top-level ``priority`` integer (0-99): lower values
+# are handled earlier. Any priority OTHER THAN 0 makes a server that does not use priority
+# scheduling reject the request outright, and other backends (OpenAI, Anthropic, llama.cpp)
+# reject the unknown field entirely. So the field is opt-in twice over: a toggle decides
+# whether it is sent at all, and the value defaults to 0 (the vLLM default, always accepted).
+JUDGE_PRIORITY_MIN = 0
+JUDGE_PRIORITY_MAX = 99
+
+
+def judge_priority_enabled(config=None):
+    """Whether the judge request should carry a vLLM ``priority`` field.
+
+    ``quality.judge_priority_enabled`` (default false). Off means the field is NEVER sent, so
+    backends without priority support see a payload identical to v11.7.
+    """
+    cfg = global_config if config is None else config
+    try:
+        value = cfg.get('quality.judge_priority_enabled', False)
+    except AttributeError:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
+def judge_priority(config=None):
+    """The vLLM ``priority`` value to send (0-99, lower = earlier handling).
+
+    ``quality.judge_priority`` (default 0) is clamped to 0-99 rather than raising: a bad
+    config value must not break a run. Only meaningful when ``judge_priority_enabled()`` is
+    true -- the caller must check that before adding the field.
+    """
+    cfg = global_config if config is None else config
+    try:
+        value = cfg.get('quality.judge_priority', 0)
+    except AttributeError:
+        value = 0
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        priority = 0
+    return max(JUDGE_PRIORITY_MIN, min(JUDGE_PRIORITY_MAX, priority))
+
+
+def _judge_priority_field():
+    """The payload fragment for the judge request, or ``{}`` when the toggle is off."""
+    if not judge_priority_enabled():
+        return {}
+    return {"priority": judge_priority()}
+
+
 def _judge_response_format(mode, dims):
     """Build the ``response_format`` payload for a judge request (or None)."""
     if mode == 'off':
@@ -1604,6 +1657,10 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
         "max_tokens": max_tokens,
         "stream": False,
     }
+    # vLLM priority scheduling (opt-in, see judge_priority_enabled): sent on EVERY attempt,
+    # including the format-repair and response_format-fallback requests, so a retried judge
+    # request keeps its place in the queue. Absent entirely when the toggle is off.
+    payload_dict.update(_judge_priority_field())
 
     headers = {'Content-Type': 'application/json'}
     if api_key:

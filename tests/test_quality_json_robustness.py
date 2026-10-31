@@ -22,6 +22,9 @@ Covers:
     is retried once without it and remembered for the rest of the run
   * an unreadable envelope / empty reply is transient, not a JSON failure
   * the judge request timeout defaults to 120s and honours both the new and legacy config keys
+  * v11.8: the vLLM ``priority`` field is opt-in (``quality.judge_priority_enabled``), is
+    never sent when the toggle is off, defaults to 0, is clamped to 0-99, and rides on
+    every attempt (format-repair and response_format fallback included)
 """
 
 import json
@@ -349,6 +352,97 @@ def test_request_timeout_is_configurable():
         quality.requests.post = real
 
 
+def test_judge_priority_field():
+    print("(10) vLLM judge priority is opt-in, defaults to 0 and is clamped to 0-99")
+    captured = []
+
+    def handler(url, headers=None, data=None, timeout=None):
+        captured.append(json.loads(data))
+        return _Resp(json.dumps(GOOD))
+
+    real = _stub(handler)
+    try:
+        # Off by default: the field must not be sent at all, so backends that do not know it
+        # (OpenAI, Anthropic, llama.cpp) see a payload identical to v11.7.
+        set_config(judge_config())
+        quality.score_conversation(CONV, "t-prio-off", 1)
+        check("priority is absent when the toggle is off",
+              captured and "priority" not in captured[0])
+
+        # Enabled with the default value: 0 is accepted by every vLLM server.
+        captured[:] = []
+        set_config(judge_config(judge_priority_enabled=True))
+        quality.score_conversation(CONV, "t-prio-default", 1)
+        check("priority defaults to 0", captured and captured[0].get("priority") == 0)
+
+        # A real value is forwarded as an integer.
+        captured[:] = []
+        set_config(judge_config(judge_priority_enabled=True, judge_priority=10))
+        quality.score_conversation(CONV, "t-prio-set", 1)
+        check("configured priority is sent", captured and captured[0].get("priority") == 10)
+
+        # Out-of-range values are clamped, never sent raw (a server rejects them outright).
+        for raw, expected in ((-5, 0), (150, 99), ("42", 42), ("nonsense", 0)):
+            captured[:] = []
+            set_config(judge_config(judge_priority_enabled=True, judge_priority=raw))
+            quality.score_conversation(CONV, "t-prio-clamp-%s" % raw, 1)
+            check("priority %r is clamped to %d" % (raw, expected),
+                  captured and captured[0].get("priority") == expected)
+
+        # The toggle accepts string forms so a hand-edited config.yml works.
+        for raw, expected in (("true", True), ("yes", True), ("0", False), (False, False)):
+            set_config(judge_config(judge_priority_enabled=raw, judge_priority=5))
+            check("judge_priority_enabled=%r -> %r" % (raw, expected),
+                  quality.judge_priority_enabled() is expected)
+    finally:
+        quality.requests.post = real
+
+    # The field rides on the retry and format-repair attempts too, so a retried judge
+    # request keeps its place in the vLLM queue.
+    calls = []
+
+    def flaky(url, headers=None, data=None, timeout=None):
+        calls.append(json.loads(data))
+        if len(calls) == 1:
+            return _Resp("not json at all")
+        return _Resp(json.dumps(GOOD))
+
+    real = _stub(flaky)
+    try:
+        set_config(judge_config(judge_priority_enabled=True, judge_priority=7))
+        result = quality.score_conversation(CONV, "t-prio-repair", 1)
+        check("two judge calls", len(calls) == 2)
+        check("the format-repair request keeps the priority",
+              all(c.get("priority") == 7 for c in calls))
+        check("conversation is kept", not result.get("dropped"))
+    finally:
+        quality.requests.post = real
+
+    # The response_format fallback rebuilds the body from payload_dict, so priority survives it.
+    quality._JUDGE_NO_RESPONSE_FORMAT.clear()
+    calls = []
+
+    def rejecting(url, headers=None, data=None, timeout=None):
+        body = json.loads(data)
+        calls.append(body)
+        if "response_format" in body:
+            return _Resp("", status_code=400,
+                         text='{"error": "response_format is not supported"}')
+        return _Resp(json.dumps(GOOD))
+
+    real = _stub(rejecting)
+    try:
+        set_config(judge_config(judge_structured_output="auto",
+                                judge_priority_enabled=True, judge_priority=3))
+        quality.score_conversation(CONV, "t-prio-fmt", 1)
+        check("priority survives the response_format fallback",
+              len(calls) == 2 and all(c.get("priority") == 3 for c in calls)
+              and "response_format" not in calls[1])
+    finally:
+        quality.requests.post = real
+        quality._JUDGE_NO_RESPONSE_FORMAT.clear()
+
+
 def test_bad_envelope_is_transient():
     print("(9) an unreadable envelope / empty reply is transient, not invalid JSON")
     calls = []
@@ -396,6 +490,7 @@ def main():
     test_truncated_reply_retries_with_bigger_budget()
     test_structured_output_and_fallback()
     test_request_timeout_is_configurable()
+    test_judge_priority_field()
     test_bad_envelope_is_transient()
     print()
     if FAILURES:

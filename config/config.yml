@@ -150,6 +150,16 @@ quality:
   # Ask the server for constrained JSON: auto (send response_format json_object and fall back
   # automatically when the endpoint rejects it), off, json_object or json_schema.
   judge_structured_output: auto
+  # v11.8: vLLM request priority for the judge. Off by default because any priority other
+  # than 0 makes a server WITHOUT priority scheduling reject the request outright.
+  #  - judge_priority_enabled: when false the "priority" field is never sent at all, so
+  #    backends that do not understand it (OpenAI, Anthropic, llama.cpp, ...) are unaffected.
+  #  - judge_priority: 0-99, lower means earlier handling (vLLM semantics: 0 is the default
+  #    priority and is always accepted, even by servers without priority scheduling).
+  # Judge requests are low-volume but bursty, so a high number parks them behind the
+  # generation traffic instead of competing with it.
+  judge_priority_enabled: false
+  judge_priority: 0
   scoring_api:
     url: ''
     model: ''
