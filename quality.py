@@ -1159,13 +1159,18 @@ def judge_structured_output(config=None):
 
 # vLLM priority scheduling for the judge request (v11.8).
 #
-# vLLM's OpenAI-compatible server accepts a top-level ``priority`` integer (0-99): lower values
-# are handled earlier. Any priority OTHER THAN 0 makes a server that does not use priority
-# scheduling reject the request outright, and other backends (OpenAI, Anthropic, llama.cpp)
-# reject the unknown field entirely. So the field is opt-in twice over: a toggle decides
-# whether it is sent at all, and the value defaults to 0 (the vLLM default, always accepted).
-JUDGE_PRIORITY_MIN = 0
-JUDGE_PRIORITY_MAX = 99
+# vLLM's OpenAI-compatible server accepts a top-level ``priority`` integer: lower values are
+# handled earlier, so **-10 is the highest priority** (it jumps the queue) and **10 is the
+# lowest**. 0 is the server's own default. The range exposed here is deliberately narrow
+# (-10..10) rather than vLLM's full int64 span -- a handful of steps either side of the default
+# is all a judge needs, and a tight bounded field cannot be mis-typed into a runaway value.
+# Any priority OTHER THAN 0 makes a server that does not use priority scheduling reject the
+# request outright, and other backends (OpenAI, Anthropic, llama.cpp) reject the unknown field
+# entirely. So the field is opt-in twice over: a toggle decides whether it is sent at all, and the
+# value defaults to 0 (the vLLM default, accepted everywhere, including by servers without
+# priority scheduling).
+JUDGE_PRIORITY_MIN = -10
+JUDGE_PRIORITY_MAX = 10
 
 
 def judge_priority_enabled(config=None):
@@ -1185,11 +1190,12 @@ def judge_priority_enabled(config=None):
 
 
 def judge_priority(config=None):
-    """The vLLM ``priority`` value to send (0-99, lower = earlier handling).
+    """The vLLM ``priority`` value to send (-10 to 10, lower = earlier handling).
 
-    ``quality.judge_priority`` (default 0) is clamped to 0-99 rather than raising: a bad
-    config value must not break a run. Only meaningful when ``judge_priority_enabled()`` is
-    true -- the caller must check that before adding the field.
+    ``quality.judge_priority`` (default 0) is clamped to -10..10 rather than raising: a bad
+    config value must not break a run. **-10 is the highest priority** (handled ahead of
+    everything else), 0 is the vLLM default, 10 the lowest. Only meaningful when
+    ``judge_priority_enabled()`` is true -- the caller must check that before adding the field.
     """
     cfg = global_config if config is None else config
     try:

@@ -48,7 +48,9 @@ class JudgeSettingsUiTests(unittest.TestCase):
     MAX_TOKENS = "1024"
     TIMEOUT = "180"
     STRUCTURED = "json_schema"
-    PRIORITY = "10"
+    # -10 is the HIGHEST priority (vLLM: lower is handled earlier), so the round trip is
+    # exercised with the value most likely to be mangled by a 0-floor or a bad cast.
+    PRIORITY = "-10"
 
     @classmethod
     def setUpClass(cls):
@@ -101,7 +103,7 @@ class JudgeSettingsUiTests(unittest.TestCase):
                              "judge_structured_output not saved")
             self.assertEqual(saved.get("judge_priority_enabled"), True,
                              "judge_priority_enabled not saved")
-            self.assertEqual(saved.get("judge_priority"), 10,
+            self.assertEqual(saved.get("judge_priority"), -10,
                              "judge_priority not saved")
         finally:
             editor.destroy()
@@ -132,7 +134,7 @@ class JudgeSettingsUiTests(unittest.TestCase):
                              "unmodified save clobbered judge_structured_output")
             self.assertEqual(saved.get("judge_priority_enabled"), True,
                              "unmodified save clobbered judge_priority_enabled")
-            self.assertEqual(saved.get("judge_priority"), 10,
+            self.assertEqual(saved.get("judge_priority"), -10,
                              "unmodified save clobbered judge_priority")
         finally:
             editor3.destroy()
@@ -149,6 +151,13 @@ class JudgeSettingsUiTests(unittest.TestCase):
                              "judge priority should default to 0")
             self.assertEqual(str(editor.quality_judge_priority_spinbox.cget("state")), "disabled",
                              "the priority spinbox should be disabled while the toggle is off")
+            # The widget must span the full -10..10 range in BOTH directions: a 0 floor would
+            # make the highest priority unreachable, and a positive-only ceiling would make the
+            # lowest unreachable.
+            self.assertEqual(int(float(editor.quality_judge_priority_spinbox.cget("from"))), -10,
+                             "the priority spinbox should start at -10")
+            self.assertEqual(int(float(editor.quality_judge_priority_spinbox.cget("to"))), 10,
+                             "the priority spinbox should end at 10")
         finally:
             editor.destroy()
 

@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.8.0
+# ReadyArt Synthetic Dataset Generator v11.8.1
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -84,7 +84,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Quality Metrics Bar** — Real-time average composite score (color-coded green/amber/red), count of below-threshold conversations, and most frequent flag displayed in the main metrics area
 - **Quality Score Table** — Dashboard tab showing the latest 50 scored conversations with per-dimension breakdown and method used
 - **Output Filtering** — Optional flag to mark below-threshold conversations for post-processing (score metadata attached to exported JSONL)
-- **vLLM Judge Priority** (v11.8) — Optional `priority` field (0-99, lower = earlier) on every judge request for vLLM's priority scheduling, so the judge queues behind the generation traffic. Off by default, because backends without priority support reject the unknown field and vLLM rejects a non-zero priority when the served model is not priority-scheduled
+- **vLLM Judge Priority** (v11.8) — Optional `priority` field (**-10 to 10**, lower = earlier; **-10 is highest**, 0 the default, **10 lowest**) on every judge request for vLLM's priority scheduling, so the judge can be parked behind the generation traffic or pushed ahead of it. Off by default, because backends without priority support reject the unknown field and vLLM rejects a non-zero priority when the served model is not priority-scheduled
 - **Quality State Persistence** — Scores and review flags are saved in the generation state file for crash recovery
 
 ### Quality Control & Detection
@@ -687,7 +687,7 @@ When it runs: after every phrase-driven check has passed on a reply (so a rewrit
 - **Format-repair round** — if nothing parses, the model's own broken reply is sent back and it is asked for the same evaluation as JSON only (`judge_json_repair_attempts`, default 1; `0` restores the v11.4 immediate drop).
 - **Truncation is transient** — a reply cut off by the token limit (`finish_reason: length`) is salvaged when the scores were already written, otherwise retried with a doubled budget. `judge_max_tokens` (0 = automatic) sets the budget and `judge_request_timeout` (default 120 s, was a hard-coded 60 s) the request timeout.
 - **Structured output** — `judge_structured_output: auto` asks the server for `response_format: {"type": "json_object"}`, and an endpoint that rejects it is retried once without the field and remembered for the rest of the run (`off`, `json_object` and `json_schema` are also available).
-- **vLLM priority (v11.8)** — `judge_priority_enabled: true` adds a top-level `priority` field to every judge request (`judge_priority`, **0-99**, lower is handled earlier; default `0`). vLLM's OpenAI-compatible server uses it for priority scheduling, which lets the judge's low-volume but bursty requests queue behind the generation traffic instead of competing with it:
+- **vLLM priority (v11.8)** — `judge_priority_enabled: true` adds a top-level `priority` field to every judge request (`judge_priority`, **-10 to 10**, lower is handled earlier; default `0`). vLLM's OpenAI-compatible server uses it for priority scheduling, which lets the judge's low-volume but bursty requests queue behind the generation traffic instead of competing with it — or, at `-10`, jump ahead of it:
 
   ```json
   {
@@ -697,7 +697,9 @@ When it runs: after every phrase-driven check has passed on a reply (so a rewrit
   }
   ```
 
-  The field is **opt-in twice over**, because it is not part of the OpenAI schema. A backend that does not know it (OpenAI, Anthropic, llama.cpp, most hosted gateways) rejects the unknown field outright, and vLLM itself raises an error for any priority other than `0` when the served model does not use priority scheduling. So `judge_priority_enabled` defaults to **false** — the field is never sent at all, and the payload is byte-identical to v11.7 — and `judge_priority` defaults to **0**, which every vLLM server accepts. The value is clamped to `0-99` (a hand-edited config cannot break a run) and it rides on every attempt, including the format-repair and `response_format`-fallback requests, so a retried judge request keeps its place in the queue.
+  The range is **-10 to 10** and lower means earlier, so **-10 is the highest priority**: it jumps the queue. `0` is vLLM's own default, and `10` is the lowest — the natural choice for parking the judge behind the generation traffic. The range is deliberately narrow: a handful of steps either side of the default is all a judge needs, and a tight bounded field cannot be mistyped into a runaway value.
+
+  The field is **opt-in twice over**, because it is not part of the OpenAI schema. A backend that does not know it (OpenAI, Anthropic, llama.cpp, most hosted gateways) rejects the unknown field outright, and vLLM itself raises an error for any priority other than `0` when the served model does not use priority scheduling. So `judge_priority_enabled` defaults to **false** — the field is never sent at all, and the payload is byte-identical to v11.7 — and `judge_priority` defaults to **0**, which every vLLM server accepts. The value is clamped to `-10..10` (a hand-edited config cannot break a run) and it rides on every attempt, including the format-repair and `response_format`-fallback requests, so a retried judge request keeps its place in the queue.
 - **Better diagnostics** — the judge's raw reply, its `finish_reason` and how the JSON was recovered are written to the per-slot debug log, so a remaining failure can actually be diagnosed.
 
 A reply that is still unparsable after all of that is a genuine `invalid_json` drop, and a conversation-level `logic` score of 0 still drops the conversation immediately. There is no heuristic fallback for a failed judge: an unjudged conversation can never reach the dataset.
@@ -723,7 +725,7 @@ quality:
   judge_request_timeout: 120        # HTTP timeout for one judge request (was a hard-coded 60s)
   judge_structured_output: auto    # auto | off | json_object | json_schema (auto falls back when the server refuses)
   judge_priority_enabled: false    # v11.8: send vLLM's priority field with judge requests (off = field never sent)
-  judge_priority: 0                # 0-99, lower is handled earlier; 0 is the vLLM default and always accepted
+  judge_priority: 0                # -10 to 10, lower is handled earlier; -10 = highest, 0 = vLLM default and always accepted
   scoring_api:
     url: ""                        # Dedicated LLM endpoint for scoring (optional)
     model: ""                      # Model name for scoring LLM
@@ -1884,9 +1886,12 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.8.0 (Current)
-- **vLLM request priority for the quality judge** — vLLM's OpenAI-compatible server accepts a top-level `priority` integer (**0-99**, lower means earlier handling; default `0`) for priority scheduling. The judge's requests are low-volume but bursty, so a high number parks them behind the generation traffic instead of competing with it. Two new Quality Scoring settings: **Send vLLM priority with judge requests** (`quality.judge_priority_enabled`, **off by default**) and **Judge Priority** (`quality.judge_priority`, **0-99**, default `0`)
-- **Opt-in twice over, on purpose** — `priority` is not part of the OpenAI schema. A backend that does not know it (OpenAI, Anthropic, llama.cpp, most hosted gateways) rejects the unknown field outright, and vLLM itself raises an error for any priority other than `0` when the served model does not use priority scheduling. So the toggle defaults to off (the field is never sent at all; the payload is byte-identical to v11.7) and the value defaults to `0`, which every vLLM server accepts. The value is clamped to `0-99`, so a hand-edited `config.yml` cannot break a run
+### v11.8.1 (Current)
+- **Judge priority range is now -10 to 10** — v11.8.0 shipped the field as 0-99, which made the most useful half of vLLM's range unreachable: lower means earlier handling, so the values that actually push the judge to the front of the queue are the negative ones. The range is now **-10 to 10** — **-10 is the highest priority**, `0` is vLLM's default, **10 is the lowest** — and every negative value passes through unmodified instead of being clamped up to `0` (v11.8.0's `max(0, ...)` silently demoted a judge the user had deliberately put first). The narrow window is deliberate: a handful of steps either side of the default is all a judge needs, and a tight bound cannot be mistyped into a runaway value. The spinbox, the save clamp and the validation assert all moved together, and the tests now walk both ends of the range (`-10` and `10` sent as-is, the negative half `-10/-7/-3/-1`, and `-99→-10` / `11→10` clamping) so a 0-floor cannot creep back in
+
+### v11.8.0
+- **vLLM request priority for the quality judge** — vLLM's OpenAI-compatible server accepts a top-level `priority` integer (lower means earlier handling) for priority scheduling. The judge's requests are low-volume but bursty, so a high number parks them behind the generation traffic instead of competing with it. Two new Quality Scoring settings: **Send vLLM priority with judge requests** (`quality.judge_priority_enabled`, **off by default**) and **Judge Priority** (`quality.judge_priority`, default `0`; the range was widened to -10..10 in v11.8.1)
+- **Opt-in twice over, on purpose** — `priority` is not part of the OpenAI schema. A backend that does not know it (OpenAI, Anthropic, llama.cpp, most hosted gateways) rejects the unknown field outright, and vLLM itself raises an error for any priority other than `0` when the served model does not use priority scheduling. So the toggle defaults to off (the field is never sent at all; the payload is byte-identical to v11.7) and the value defaults to `0`, which every vLLM server accepts. The value is clamped to a fixed range, so a hand-edited `config.yml` cannot break a run (see v11.8.1 for the current bounds)
 - **It rides on every attempt** — the field is merged into the request body once, so the transient retries, the format-repair rounds and the `response_format`-fallback request all keep the same priority and a retried judge request does not lose its place in the queue
 - **Configuration Editor** — the Quality Scoring section gains the checkbox plus a spinbox that is disabled while the toggle is off (the value is kept, not reset, so re-enabling restores it)
 - **Wiring** — `quality.py` (`judge_priority_enabled()`, `judge_priority()`, `_judge_priority_field()`, `JUDGE_PRIORITY_MIN` / `JUDGE_PRIORITY_MAX`, merged into the judge payload in `_call_logic_judge_once()`), `config/config.yml` (two new defaults), `config_editor.py` (checkbox + spinbox + `_toggle_judge_priority_field()` + save/load/validate). Guarded by the new priority cases in `tests/test_quality_json_robustness.py` and `tests/test_quality_judge_settings_ui.py`

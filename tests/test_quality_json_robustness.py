@@ -23,8 +23,9 @@ Covers:
   * an unreadable envelope / empty reply is transient, not a JSON failure
   * the judge request timeout defaults to 120s and honours both the new and legacy config keys
   * v11.8: the vLLM ``priority`` field is opt-in (``quality.judge_priority_enabled``), is
-    never sent when the toggle is off, defaults to 0, is clamped to 0-99, and rides on
-    every attempt (format-repair and response_format fallback included)
+    never sent when the toggle is off, defaults to 0, is clamped to -10..10 (-10 is the HIGHEST
+    priority, 10 the lowest), and rides on every attempt (format-repair and response_format
+    fallback included)
 """
 
 import json
@@ -353,7 +354,7 @@ def test_request_timeout_is_configurable():
 
 
 def test_judge_priority_field():
-    print("(10) vLLM judge priority is opt-in, defaults to 0 and is clamped to 0-99")
+    print("(10) vLLM judge priority is opt-in, defaults to 0 and is clamped to -10..10")
     captured = []
 
     def handler(url, headers=None, data=None, timeout=None):
@@ -377,12 +378,36 @@ def test_judge_priority_field():
 
         # A real value is forwarded as an integer.
         captured[:] = []
-        set_config(judge_config(judge_priority_enabled=True, judge_priority=10))
+        set_config(judge_config(judge_priority_enabled=True, judge_priority=3))
         quality.score_conversation(CONV, "t-prio-set", 1)
-        check("configured priority is sent", captured and captured[0].get("priority") == 10)
+        check("configured priority is sent", captured and captured[0].get("priority") == 3)
+
+        # -10 is the HIGHEST priority (vLLM: lower is handled earlier), so it must pass through
+        # unmodified -- clamping it up to 0 would silently demote the user's top-priority judge.
+        captured[:] = []
+        set_config(judge_config(judge_priority_enabled=True, judge_priority=-10))
+        quality.score_conversation(CONV, "t-prio-highest", 1)
+        check("-10 (highest priority) is sent as-is",
+              captured and captured[0].get("priority") == -10)
+
+        # +10 is the LOWEST priority, and must survive just as cleanly.
+        captured[:] = []
+        set_config(judge_config(judge_priority_enabled=True, judge_priority=10))
+        quality.score_conversation(CONV, "t-prio-lowest", 1)
+        check("10 (lowest priority) is sent as-is",
+              captured and captured[0].get("priority") == 10)
+
+        # Both directions of the range are usable, not just the positive half.
+        for negative in (-10, -7, -3, -1):
+            captured[:] = []
+            set_config(judge_config(judge_priority_enabled=True, judge_priority=negative))
+            quality.score_conversation(CONV, "t-prio-neg-%d" % negative, 1)
+            check("negative priority %d is forwarded unmodified" % negative,
+                  captured and captured[0].get("priority") == negative)
 
         # Out-of-range values are clamped, never sent raw (a server rejects them outright).
-        for raw, expected in ((-5, 0), (150, 99), ("42", 42), ("nonsense", 0)):
+        for raw, expected in ((-99, -10), (-10, -10), (-1, -1), (0, 0), (1, 1), (10, 10),
+                              (11, 10), (99, 10), ("-4", -4), ("7", 7), ("nonsense", 0)):
             captured[:] = []
             set_config(judge_config(judge_priority_enabled=True, judge_priority=raw))
             quality.score_conversation(CONV, "t-prio-clamp-%s" % raw, 1)

@@ -560,19 +560,19 @@ class ConfigEditor(tk.Toplevel):
         judge_priority_field = ttk.Frame(gen_settings_frame)
         judge_priority_field.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
         judge_priority_field.columnconfigure(0, weight=1)
-        judge_priority_label = ttk.Label(judge_priority_field, text="Judge Priority (0-99, lower is handled earlier):",
+        judge_priority_label = ttk.Label(judge_priority_field, text="Judge Priority (-10 to 10, lower is handled earlier; -10 is highest):",
                                          justify="left", wraplength=1)
         judge_priority_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
         wrap_label(judge_priority_label, judge_priority_field, padding=180)
         self.quality_judge_priority_var = tk.StringVar(value="0")
         self.quality_judge_priority_spinbox = ttk.Spinbox(
-            judge_priority_field, from_=0, to=99, width=6,
+            judge_priority_field, from_=-10, to=10, width=6,
             textvariable=self.quality_judge_priority_var,
             style=self.spinbox_style, state='disabled')
         self.quality_judge_priority_spinbox.grid(row=0, column=1, sticky="e")
         judge_priority_help = ttk.Label(
             judge_priority_field,
-            text="(0 = default priority, accepted by every vLLM server; a non-zero value makes a server without priority scheduling reject the request)",
+            text="(-10 = highest priority, jumps the queue; 0 = vLLM's default and the only value a server without priority scheduling accepts; 10 = lowest)",
             style='Small.TLabel', justify="left", wraplength=1)
         judge_priority_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
         wrap_label(judge_priority_help, judge_priority_field)
@@ -1755,7 +1755,7 @@ class ConfigEditor(tk.Toplevel):
                 'judge_request_timeout': max(5, min(1800, int(self.quality_judge_request_timeout_var.get() or 120))),
                 'judge_structured_output': self.quality_judge_structured_output_var.get(),
                 'judge_priority_enabled': self.quality_judge_priority_enabled_var.get(),
-                'judge_priority': max(0, min(99, int(self.quality_judge_priority_var.get() or 0))),
+                'judge_priority': max(-10, min(10, int(self.quality_judge_priority_var.get() or 0))),
                 'scoring_api': {
                     'url': sanitize_input(self.quality_api_url_var.get()),
                     'model': sanitize_input(self.quality_api_model_var.get()),
@@ -2805,7 +2805,9 @@ class ConfigEditor(tk.Toplevel):
             assert self.quality_judge_structured_output_var.get() in ('auto', 'off', 'json_object', 'json_schema'), \
                 "Judge structured output must be auto, off, json_object or json_schema"
             judge_priority_val = int(self.quality_judge_priority_var.get() or 0)
-            assert 0 <= judge_priority_val <= 99, "Judge priority must be between 0 and 99"
+            assert -10 <= judge_priority_val <= 10, "Judge priority must be between -10 and 10"
+            # -10 is "jump the queue"; 0 is the only value a server without priority
+            # scheduling accepts, so any non-zero value needs the toggle on to be sent at all.
             if self.quality_logic_check_var_editor.get():
                 logic_threshold_val = int(self.quality_logic_threshold_var.get() or 70)
                 assert 0 <= logic_threshold_val <= 100, "Logic check threshold must be 0-100"

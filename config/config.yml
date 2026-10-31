@@ -154,10 +154,12 @@ quality:
   # than 0 makes a server WITHOUT priority scheduling reject the request outright.
   #  - judge_priority_enabled: when false the "priority" field is never sent at all, so
   #    backends that do not understand it (OpenAI, Anthropic, llama.cpp, ...) are unaffected.
-  #  - judge_priority: 0-99, lower means earlier handling (vLLM semantics: 0 is the default
-  #    priority and is always accepted, even by servers without priority scheduling).
-  # Judge requests are low-volume but bursty, so a high number parks them behind the
-  # generation traffic instead of competing with it.
+  #  - judge_priority: -10 to 10, lower means earlier handling. -10 is the HIGHEST priority
+  #    (jumps the queue), 0 is vLLM's default and the only value a server without priority
+  #    scheduling accepts, 10 is the lowest.
+  # Judge requests are low-volume but bursty, so a positive number parks them behind the
+  # generation traffic instead of competing with it; a negative one does the opposite and lets
+  # the judge jump ahead of it.
   judge_priority_enabled: false
   judge_priority: 0
   scoring_api:
