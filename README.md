@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.9.0
+# ReadyArt Synthetic Dataset Generator v11.10.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -56,6 +56,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Task Requeue on Host Failure](#task-requeue-on-host-failure)
   - [Budget Enforcement](#budget-enforcement)
   - [Malformed Response Detection](#malformed-response-detection)
+  - [Non-Latin Script Check (v11.10.0)](#non-latin-script-check-v11100)
 - [Troubleshooting](#-troubleshooting)
 - [Performance Tips](#-performance-tips)
 - [License](#-license)
@@ -99,6 +100,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 - **Conversation History for Fixers** — Slop and anti-slop fixer LLMs can optionally receive the full conversation context (last 6 messages) for more coherent rephrasing (configurable via `generation.use_conversation_history_for_fixers`)
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
 - **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds (`max_newlines_malformed`, `max_text_length_malformed`)
+- **Non-Latin Script Check** (v11.10.0) — Flags and regenerates replies containing stray characters from another script (Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, emoji). The check is a **Unicode range allow-list**, so it needs no LLM call, no phrase list and no network request
 
 ### Character & Persona Engine
 - **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues (1–10 characters per conversation)
@@ -663,6 +665,10 @@ detection:
   anti_slop:
     phrases: ["additional phrase"]
     fixes: ["Rephrase to avoid this pattern."]
+
+  non_latin:                      # v11.10.0 (off by default)
+    enabled: false
+    fixes: []                     # empty = built-in instruction
 ```
 
 The **gender** setting (`config.yml` top level) determines which user speaking phrase list is active:
@@ -696,6 +702,29 @@ How it differs from Slop Detection:
 Patterns are curated in the Configuration Editor's **Detection** tab (add, edit, remove, test against a sample, restore the shipped defaults rolling back to `detection.DEFAULT_REGEX_WATCH_PATTERNS`). A pattern that does not compile is refused at save time; a pattern that is already in `config.yml` but does not compile is logged and skipped, never silently disabling the pass. The dashboard's **🔎 Regex Watch** area shows every configured pattern with its hit count and last status, plus the recent hits and what the rewrite did with each one.
 
 When it runs: after every phrase-driven check has passed on a reply (so a rewrite never races another fix), on assistant answers, generated questions, user continuations and opening-mode greetings/first lines.
+
+### Non-Latin Script Check (v11.10.0)
+
+A model trained on more than one language occasionally drops a stray glyph into an otherwise English reply — a Chinese character, a Cyrillic word, a Greek letter used as decoration, an emoji. Those strays poison a Latin-script dataset, and a phrase list cannot catch them because there is no fixed phrase to list.
+
+**The check needs no LLM.** It is a Unicode range **allow-list** in `detection.is_non_latin()`: a character is accepted when it is Latin script (Basic Latin, Latin-1 Supplement, Latin Extended-A/B/Additional/C/D, the ligatures), a digit, whitespace, or one of the punctuation/symbol blocks a roleplay reply legitimately uses — curly quotes, dashes, ellipses, bullets, arrows, mathematical operators, box drawing, a star or a heart. Everything else is flagged: Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, and the emoji planes.
+
+An **allow-list**, not a block-list, is the point: a block-list of known scripts silently misses every script nobody thought to list, while anything outside Latin is, by definition, not Latin. Accented Latin (`Café`, `naïve`, `straße`), curly quotes, guillemets and em dashes all pass, so the check never fights ordinary English prose. `text.isascii()` is the fast path, so a pure-ASCII reply costs one method call.
+
+```yaml
+detection:
+  non_latin:
+    enabled: false        # off by default
+    fixes: []             # one instruction per retry round; empty = built-in default
+```
+
+On a hit the reply is reported once per distinct script (with the sentence that holds the first offending character) and then:
+
+- **Assistant answers** are regenerated with one fix from `detection.non_latin.fixes` appended to the system prompt (empty falls back to `generation.DEFAULT_NON_LATIN_FIX`, so switching the check on works without authoring a list). Once the fixes are exhausted the turn fails for that attempt and a fresh attempt starts — the same policy as an unfixable refusal or OOC drift — so a permanently stray reply is never written to the dataset.
+- **Generated questions, user continuations and opening-mode greetings/first lines** are re-rolled, because they are authored dataset text rather than prose to be rewritten.
+- **It reports, it does not discard silently.** Every hit bumps the `Non-Latin` metric card, fills the `Recent Non-Latin` panel on the Totals and per-API tabs, and adds a series to the issue graph.
+
+The Config Editor's **Detection** tab has a **Non-Latin Script Check** panel (toggle + fix list, the field disabled while the toggle is off). Off by default, so existing output is unchanged.
 
 ### Quality Scoring
 
@@ -1294,7 +1323,7 @@ When **quality scoring is enabled**, flagged conversations exported via the Revi
 readyart-dataset-generator/
 ├── generate.py              # Main application (GUI, orchestration, worker threads)
 ├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
-├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes)
+├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, quotes, non-Latin script)
 ├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal)
 ├── quality.py               # Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions)
 ├── config_loader.py         # Configuration management, profiles, YAML load/save
@@ -1597,6 +1626,8 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Inner persona never shows up** | The persona is intentionally withheld until `persona_breakthrough_turn` (default 2), so on a 1-turn conversation you will only ever see the outward profile. Bump `generation.num_turns` above the breakthrough slot, or set `persona_breakthrough_turn: 1`, to expose the persona sooner |
 | **Persona or emotional state missing from the system prompt in the Prompt Viewer** | With the default `depth0` placement they are not in the system prompt: they are at the end of the last USER message of each Answer (and Greeting) request. Question and User Continuation requests never carry them, and the persona appears only from `persona_breakthrough_turn`. Set `persona_breakthrough_placement` or `emotional_states.placement` to `system` to send them in the system prompt, at the cost of prefix-cache reuse |
 | **Emotional arc doesn't seem to shift** | Arcs (`a -> b -> c`) need multiple assistant turns to spread across. Outside opening mode, a 1-turn conversation resolves an arc to just its start stage, and a 2-turn one to its start and end stages (opening mode adds the greeting as one more reply); raise `generation.num_turns` so the middle stages have turns to land on. Flat states are constant by design |
+| **Stray Chinese / Cyrillic / other non-Latin characters in the output** | Enable `detection.non_latin.enabled` (Detection tab → **Non-Latin Script Check**). The check is a Unicode range allow-list, so it needs no LLM and no phrase list. It regenerates assistant answers and re-rolls generated questions, continuations and opening-mode text; add your own instruction under `detection.non_latin.fixes` if you want a stronger one than the built-in default |
+| **A reply with an emoji or a fancy Unicode bullet is being rejected** | The allow-list deliberately keeps a star, a heart and the common punctuation/symbol blocks, but flags the emoji planes. If your run legitimately needs emoji, that is a code change to `detection.LATIN_ALLOWED_PATTERN`, not a config change |
 | **Slop fixer breaking quotes** | This is expected behavior — the fixer checks for unbalanced quotes after each rewrite and skips replacements that would break quote structure |
 | **Characters with empty names** | Characters with empty or whitespace-only names are automatically skipped with a warning; ensure all character entries have valid names |
 | **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
@@ -1888,7 +1919,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
 | `config_editor.py` | Configuration editor GUI (tabbed interface, validation, search) | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
 | `dashboard.py` | Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview) | `app_state`, `api_handler`, `logging_config` |
-| `detection.py` | Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes) | `app_state` (for timestamps, issue tracking) |
+| `detection.py` | Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes, non-Latin script) | `app_state` (for timestamps, issue tracking) |
 | `text_utils.py` | Text post-processing (quote normalization, reasoning removal, markdown stripping) | None (stdlib only) |
 | `config_loader.py` | Configuration management, profiles, YAML load/save | `logging_config` |
 | `api_handler.py` | Rate limiting, Valkey/Redis caching, response time tracking | `logging_config` |
@@ -1898,6 +1929,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `tests/test_api_profiles.py` | Unit tests for API compatibility profiles | `api_profiles` |
 | `tests/test_opening_mode.py` | Integration tests for opening mode (worker run against fake server) | `generation`, `app_state`, `logging_config` |
 | `tests/test_persona_arc.py` | Unit tests for the persona-breakthrough + emotional-arc helpers (parsing, expansion, injection) | `generation` |
+| `tests/test_non_latin.py` | Headless tests for the non-Latin script check (Unicode allow-list detector + the answer/question/continuation/opening-mode retry paths) | `detection`, `generation`, `app_state` |
 | `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.
@@ -1906,7 +1938,16 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.9.0 (Current)
+### v11.10.0 (Current)
+- **Non-Latin script check** — a model trained on more than one language occasionally drops a stray glyph into an otherwise English reply: a Chinese character, a Cyrillic word, a Greek letter used as decoration, an emoji. A phrase list cannot catch those (there is no fixed phrase to list), and an LLM round trip per reply would be expensive. The new check is **purely character-class based**: a Unicode range **allow-list**, so it costs nothing, needs no model and no network, and cannot miss a script nobody thought to list
+- **Allow-list, not block-list** — a character is accepted when it is Latin script (any accent or extension, including the ligatures), a digit, whitespace, or one of the punctuation/symbol blocks a roleplay reply legitimately uses (curly quotes, dashes, ellipses, bullets, arrows, mathematical operators, box drawing, a star or a heart). Everything else is flagged — Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, the emoji planes — because anything outside Latin is, by definition, not Latin. Accented Latin (`Café`, `naïve`, `straße`), curly quotes and guillemets all pass, so the check does not fight ordinary English prose
+- **One row per script, not per character** — a reply that is a whole sentence in another script reports one entry per distinct script (with the sentence that holds the first offending character), so the dashboard is readable and the fix instruction is not repeated hundreds of times. `text.isascii()` is the fast path, so a pure-ASCII reply costs a single method call
+- **What happens on a hit** — assistant answers are regenerated with one fix appended to the system prompt (the same shape as refusal/slop/OOC drift), and once `detection.non_latin.fixes` is exhausted the turn fails for that attempt and a fresh attempt starts, so a permanently stray reply is never written to the dataset. The generated question, the user continuation and opening-mode greetings/first lines are **re-rolled** instead (they are authored dataset text, not rewritable prose). Off by default, so existing output is unchanged
+- **Configuration** — `detection.non_latin.enabled` (off by default) and `detection.non_latin.fixes` (one instruction per retry round; empty falls back to the built-in `generation.DEFAULT_NON_LATIN_FIX`, so switching the check on works without authoring a list). The Config Editor Detection tab gains a **Non-Latin Script Check** panel; the main window gains a **Non-Latin** metric card, a **Recent Non-Latin** issue panel on the Totals and per-API tabs, and a `Non-Latin` series in the issue graph. Both counters are persisted in the generation state file
+- **Wiring** — `detection.py` (`is_non_latin()`, `find_non_latin_characters()`, `NON_LATIN_SCRIPT_RANGES`, `LATIN_ALLOWED_PATTERN`), `generation.py` (`DEFAULT_NON_LATIN_FIX`, the answer retry branch, the question/continuation/opening-mode re-roll, worker kwargs), `generate.py` (config read + worker kwargs + metric card + issue panel), `config/config.yml` (new defaults), `config_editor.py` (Detection tab panel + save/load/toggle), `app_state.py` (counters, recent lists, timestamp key), `dashboard.py` (metric label, panels, graph series). Guarded by `tests/test_non_latin.py`
+
+### v11.9.0
+
 - **Dataset variables in `input/questions.txt`** — a questions-file line is authored text, so it now accepts the same `{{ds:alias}}` placeholders the Datasets tab maps, and **one alias value can be appended to every line** instead of being written into each one. Two new settings: `prompts.questions_dataset.append_alias` (a single bare alias; empty means "placeholders only, append nothing") and `append_separator` (the text placed between the line and the appended value, default two newlines). The Config Editor gains a **Questions File Dataset Variables** panel on the Prompts tab, where the separator is shown escaped (`\n`) because a single-line field cannot hold a real newline
 - **Same row, same task, same identity** — the value is expanded by the worker at the point where it already holds that task's frozen binding, through `dataset_tasks.render_question_task()` / `dataset_templates.render_question_line()`. The placeholder and the appended value therefore always come from the same dataset row, the task's ID, file name and index are untouched (so retries and resume keep working), and substitution is single-pass — a cell containing `{{ds:other}}` or `{context}` is inserted literally
 - **Failures are loud, not silent** — an unmapped alias fails the task instead of reaching the model as literal text, `{{ ds:name }}` with spaces is a malformed placeholder, and an empty appended value appends nothing rather than leaving a dangling separator. `append_alias` needs the questions file on: the editor refuses to save it otherwise, and Start logs a warning and ignores a hand-edited value

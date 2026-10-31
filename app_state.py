@@ -28,7 +28,8 @@ issue_timestamps = {
     'incomplete_quotes': [],
     'out_of_character': [],
     'logic_issues': [],
-    'regex_watch': []
+    'regex_watch': [],
+    'non_latin': []
 }
 issue_timestamps_lock = Lock()
 loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded from state file
@@ -55,6 +56,8 @@ recent_logic_per_api = {i: [] for i in range(6)}
 recent_logic_total = []
 recent_regex_per_api = {i: [] for i in range(6)}
 recent_regex_total = []
+recent_non_latin_per_api = {i: [] for i in range(6)}
+recent_non_latin_total = []
 refusal_count_total = 0
 refusal_counts_per_api = {i: 0 for i in range(6)}
 slop_count_total = 0
@@ -79,6 +82,11 @@ logic_issue_count_total = 0
 logic_issue_counts_per_api = {i: 0 for i in range(6)}
 regex_watch_count_total = 0
 regex_watch_counts_per_api = {i: 0 for i in range(6)}
+# --- Non-Latin script check (v11.10.0) ---
+# A Unicode-range allow-list (detection.is_non_latin) flags stray characters from another
+# script. Purely character-class based: no LLM call, no phrase list, no network request.
+non_latin_count_total = 0
+non_latin_counts_per_api = {i: 0 for i in range(6)}
 # --- Regex Watch (v11.6) ---
 # Every pattern hit that led to a rewrite, kept for the Regex Watch dashboard area so the user
 # can see WHICH pattern fires and what it matched. Bounded ring buffer, guarded by
@@ -153,6 +161,7 @@ user_speaking_label = None
 ooc_label = None
 logic_label = None
 regex_watch_label = None
+non_latin_label = None
 # ^ dashboard widget handles — assigned in generate.py when the main window is built
 
 

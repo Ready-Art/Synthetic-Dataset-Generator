@@ -876,7 +876,10 @@ def test_generate_wiring():
                      "retry_missing_quotations_local",
                      # v11.9.0: dataset variables in input/questions.txt, plumbed
                      # config -> start_processing -> worker kwargs
-                     "questions_append_alias_local", "questions_append_separator_local"})
+                     "questions_append_alias_local", "questions_append_separator_local",
+                     # v11.10.0: non-Latin script check, plumbed
+                     # config -> start_processing -> worker kwargs
+                     "current_non_latin_enabled", "current_non_latin_fixes"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",

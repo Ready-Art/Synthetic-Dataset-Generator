@@ -234,6 +234,7 @@ def load_generation_state():
                 app_state.slop_count_total = state_data.get('slop_count_total', 0)
                 app_state.error_count_total = state_data.get('error_count_total', 0)
                 app_state.ooc_count_total = state_data.get('ooc_count_total', 0)
+                app_state.non_latin_count_total = state_data.get('non_latin_count_total', 0)
                 anti_slop_count_total = state_data.get('anti_slop_count_total', 0)
                 anti_slop_counts_per_api = load_per_api_stat('anti_slop_counts_per_api', lambda: 0)
 
@@ -242,6 +243,7 @@ def load_generation_state():
                 app_state.slop_counts_per_api = load_per_api_stat('slop_counts_per_api', lambda: 0)
                 app_state.error_counts_per_api = load_per_api_stat('error_counts_per_api', lambda: 0)
                 app_state.ooc_counts_per_api = load_per_api_stat('ooc_counts_per_api', lambda: 0)
+                app_state.non_latin_counts_per_api = load_per_api_stat('non_latin_counts_per_api', lambda: 0)
                 app_state.total_attempts_per_api = load_per_api_stat('total_attempts_per_api', lambda: 0)
 
                 if current_master_duplication_mode and 'api_processed_tasks_snapshot' in state_data:
@@ -287,6 +289,7 @@ def reset_all_stats_and_history():
     app_state.ooc_count_total = 0
     app_state.logic_issue_count_total = 0
     app_state.regex_watch_count_total = 0
+    app_state.non_latin_count_total = 0
     anti_slop_count_total = 0
 
     for i in range(6): # For all 6 API slots
@@ -297,6 +300,7 @@ def reset_all_stats_and_history():
         app_state.ooc_counts_per_api[i] = 0
         app_state.logic_issue_counts_per_api[i] = 0
         app_state.regex_watch_counts_per_api[i] = 0
+        app_state.non_latin_counts_per_api[i] = 0
         anti_slop_counts_per_api[i] = 0
         app_state.total_attempts_per_api[i] = 0
     
@@ -309,6 +313,7 @@ def reset_all_stats_and_history():
         app_state.recent_ooc_per_api[i] = []
         app_state.recent_logic_per_api[i] = []
         app_state.recent_regex_per_api[i] = []
+        app_state.recent_non_latin_per_api[i] = []
 
     app_state.recent_refusals_total = []
     app_state.recent_user_speaking_total = []
@@ -318,6 +323,7 @@ def reset_all_stats_and_history():
     app_state.recent_ooc_total = []
     app_state.recent_logic_total = []
     app_state.recent_regex_total = []
+    app_state.recent_non_latin_total = []
     with app_state.regex_watch_log_lock:
         app_state.regex_watch_log = []
 
@@ -1655,6 +1661,15 @@ def start_processing():
     # back to the SAME main API for one retry before keeping it. Off by default.
     current_retry_missing_quotations = bool(global_config.get('generation.retry_missing_quotations', False))
 
+    # v11.10.0 non-Latin script check: a Unicode range allow-list in detection.is_non_latin(), so
+    # there is nothing to validate here (no pattern to compile, no phrase list to sanitize) -- just
+    # a toggle and an optional fix list. An empty fix list falls back to generation.DEFAULT_NON_LATIN_FIX.
+    current_non_latin_enabled = bool(global_config.get('detection.non_latin.enabled', False))
+    current_non_latin_fixes = global_config.get('detection.non_latin.fixes', []) or []
+    if not isinstance(current_non_latin_fixes, list):
+        current_non_latin_fixes = []
+    current_non_latin_fixes = [str(fix).strip() for fix in current_non_latin_fixes if str(fix).strip()]
+
     # v11.9.0 dataset aliases in input/questions.txt. A questions-file line is authored text, so
     # it may contain {{ds:alias}} placeholders and may have ONE alias value appended to it
     # (prompts.questions_dataset.append_alias). Both are expanded per task by the worker, which
@@ -2038,6 +2053,8 @@ def start_processing():
             'current_regex_watch_max_rounds': current_regex_watch_max_rounds,
             'include_style_metrics_local': include_style_metrics,
             'retry_missing_quotations_local': current_retry_missing_quotations,
+            'current_non_latin_enabled': current_non_latin_enabled,
+            'current_non_latin_fixes': current_non_latin_fixes,
             'questions_append_alias_local': current_questions_append_alias,
             'questions_append_separator_local': current_questions_append_separator,
         }, name=f"Worker-{i}")
@@ -2424,7 +2441,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.9.0",
+    text="v11.10.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2471,6 +2488,7 @@ app_state.ooc_label = _create_ttkbs_metric(metrics_frame, "OOC", "🎭")
 app_state.logic_label = _create_ttkbs_metric(metrics_frame, "Logic", "🧠")
 app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
 app_state.regex_watch_label = _create_ttkbs_metric(metrics_frame, "Regex Watch", "🔎")
+app_state.non_latin_label = _create_ttkbs_metric(metrics_frame, "Non-Latin", "🔤")
 app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 
 # Secondary metrics row
@@ -2915,8 +2933,8 @@ highlight_colors = {
 }
 
 tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review", "🔎 Regex Watch"]
-issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors"]
-issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors"] # Keys for accessing data and widgets
+issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors", "Non-Latin"]
+issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors", "non_latin"] # Keys for accessing data and widgets
 
 # --- Rich Prompt Viewer Tab Setup ---
 preview_tab = ttk.Frame(app_state.dashboard_notebook)
@@ -3180,7 +3198,8 @@ for tab_name in tab_names:
             key = issue_keys[idx]
             columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
             color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
-                         "anti_slop": "#ffd43b", "out_of_character": "#ff922b", "errors": "#fc8181"}
+                         "anti_slop": "#ffd43b", "out_of_character": "#ff922b", "errors": "#fc8181",
+                         "non_latin": "#20c997"}
 
             panel = ttk.LabelFrame(panels_frame, text=f"Recent {issue_type_title}")
             panels.append(panel)

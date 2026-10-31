@@ -175,7 +175,7 @@ def draw_issue_graph(canvas_widget, height=400):
     counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
               'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins,
               'out_of_character': [0]*num_bins, 'logic_issues': [0]*num_bins,
-              'regex_watch': [0]*num_bins}
+              'regex_watch': [0]*num_bins, 'non_latin': [0]*num_bins}
 
     with app_state.issue_timestamps_lock:
         for key in counts.keys():
@@ -202,10 +202,11 @@ def draw_issue_graph(canvas_widget, height=400):
     # Cohesive, accessible color palette
     colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
               'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b',
-              'logic_issues': '#38d9a9', 'regex_watch': '#b197fc'}
+              'logic_issues': '#38d9a9', 'regex_watch': '#b197fc', 'non_latin': '#20c997'}
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
               'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift',
-              'logic_issues': 'Logic Errors', 'regex_watch': 'Regex Watch'}
+              'logic_issues': 'Logic Errors', 'regex_watch': 'Regex Watch',
+              'non_latin': 'Non-Latin'}
 
     # Plot bars & add value labels
     for i, key in enumerate(counts.keys()):
@@ -302,7 +303,7 @@ def update_issue_graph(canvas_widget):
         sig = tuple(
             len(app_state.issue_timestamps.get(k, []))
             for k in ("refusals", "user_speaking", "slop", "errors", "anti_slop", "out_of_character",
-                      "logic_issues", "regex_watch")
+                      "logic_issues", "regex_watch", "non_latin")
         )
     if (now - _graph_last_draw["t"]) < _GRAPH_REDRAW_MIN_INTERVAL and sig == _graph_last_draw["data_sig"]:
         return
@@ -325,7 +326,7 @@ def update_issue_graph(canvas_widget):
     counts = {'refusals': [0]*num_bins, 'user_speaking': [0]*num_bins,
               'slop': [0]*num_bins, 'errors': [0]*num_bins, 'anti_slop': [0]*num_bins,
               'out_of_character': [0]*num_bins, 'logic_issues': [0]*num_bins,
-              'regex_watch': [0]*num_bins}
+              'regex_watch': [0]*num_bins, 'non_latin': [0]*num_bins}
 
     with app_state.issue_timestamps_lock:
         for key in counts.keys():
@@ -348,10 +349,11 @@ def update_issue_graph(canvas_widget):
     offsets = [((i + 0.5) - n_series / 2) * width for i in range(n_series)]
     colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
               'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b',
-              'logic_issues': '#38d9a9', 'regex_watch': '#b197fc'}
+              'logic_issues': '#38d9a9', 'regex_watch': '#b197fc', 'non_latin': '#20c997'}
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
               'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift',
-              'logic_issues': 'Logic Errors', 'regex_watch': 'Regex Watch'}
+              'logic_issues': 'Logic Errors', 'regex_watch': 'Regex Watch',
+              'non_latin': 'Non-Latin'}
 
     for i, key in enumerate(counts.keys()):
         bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
@@ -401,6 +403,7 @@ def update_dashboard():
     ooc_percent = (app_state.ooc_count_total / total_attempts_for_calc) * 100
     logic_percent = (app_state.logic_issue_count_total / total_attempts_for_calc) * 100
     regex_percent = (getattr(app_state, 'regex_watch_count_total', 0) / total_attempts_for_calc) * 100
+    non_latin_percent = (getattr(app_state, 'non_latin_count_total', 0) / total_attempts_for_calc) * 100
 
     # Calculate cost (ensure you have the price per 1k tokens from config)
     price_per_token = global_config.get('api.pricing.cost_per_1k_tokens', 0) / 1000
@@ -436,6 +439,11 @@ def update_dashboard():
             _regex_label.config(
                 text=f"{getattr(app_state, 'regex_watch_count_total', 0)} replies with regex hits "
                      f"({regex_percent:.1f}%)")
+        _non_latin_label = getattr(app_state, 'non_latin_label', None)
+        if _non_latin_label is not None and hasattr(_non_latin_label, 'winfo_exists') and _non_latin_label.winfo_exists():
+            _non_latin_label.config(
+                text=f"{getattr(app_state, 'non_latin_count_total', 0)} non-Latin replies "
+                     f"({non_latin_percent:.1f}%)")
 
         # NEW: Update token and cost labels (you need to create these labels in the UI first)
         app_state.token_label.config(text=f"Tokens: {app_state.total_input_tokens + app_state.total_output_tokens}")
@@ -520,6 +528,7 @@ def update_dashboard():
         update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, is_total_tab=True)
         update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, is_total_tab=True)
         update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["out_of_character"], app_state.recent_ooc_total, is_total_tab=True)
+        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["non_latin"], app_state.recent_non_latin_total, is_total_tab=True)
 
     for i in range(6):
         api_tab_name = f"API {i+1}"
@@ -530,6 +539,7 @@ def update_dashboard():
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["out_of_character"], app_state.recent_ooc_per_api.get(i,[]))
             update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]))
+            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["non_latin"], app_state.recent_non_latin_per_api.get(i,[]))
 
     # Update the graph on the Totals tab — only while that tab is visible.
     if active_tab == "Totals" and "Totals" in app_state.dashboard_notebook.tabs_widgets:
@@ -558,6 +568,7 @@ def clear_dashboard():
     app_state.recent_ooc_total = []
     app_state.recent_logic_total = []
     app_state.recent_regex_total = []
+    app_state.recent_non_latin_total = []
     with app_state.regex_watch_log_lock:
         app_state.regex_watch_log = []
 
@@ -571,6 +582,7 @@ def clear_dashboard():
         app_state.recent_ooc_per_api[i] = []
         app_state.recent_logic_per_api[i] = []
         app_state.recent_regex_per_api[i] = []
+        app_state.recent_non_latin_per_api[i] = []
 
     # Clear graph timestamps safely
     with app_state.issue_timestamps_lock:

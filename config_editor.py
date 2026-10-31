@@ -1249,6 +1249,29 @@ class ConfigEditor(tk.Toplevel):
         self.ooc_fixes_text = scrolledtext.ScrolledText(ooc_lf, wrap=tk.WORD, height=12, width=1, undo=True)
         self.ooc_fixes_text.pack(fill="both", expand=True)
 
+        # --- Non-Latin Script Check (v11.10.0) ---
+        # A Unicode range allow-list, so there is nothing to configure beyond the toggle and an
+        # optional fix list; the check itself runs without an LLM call.
+        non_latin_lf = ttk.LabelFrame(col2_frame, text="Non-Latin Script Check")
+        non_latin_lf._section_search_text = "Non-Latin Script Check"
+        non_latin_lf.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
+        self.non_latin_enabled_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(
+            non_latin_lf,
+            text="Enable Non-Latin Script Check (flags stray Chinese / Japanese / Korean / Cyrillic / "
+                 "Greek / Arabic characters and emoji in a Latin-script reply -- a Unicode range "
+                 "allow-list, so no LLM is used for the check itself)",
+            variable=self.non_latin_enabled_var_editor,
+            command=self._toggle_non_latin_fields).pack(fill="x", pady=(0, 5))
+        non_latin_fixes_label = ttk.Label(
+            non_latin_lf,
+            text="Fixes (one per line; appended to the system prompt on a retry, empty = built-in default):",
+            wraplength=1)
+        non_latin_fixes_label.pack(fill="x")
+        wrap_label(non_latin_fixes_label, non_latin_lf)
+        self.non_latin_fixes_text = scrolledtext.ScrolledText(non_latin_lf, wrap=tk.WORD, height=6, width=1, undo=True)
+        self.non_latin_fixes_text.pack(fill="both", expand=True)
+
         anti_slop_note_frame = ttk.Frame(col2_frame)
         anti_slop_note_frame.pack(padx=SPACING, pady=(0, SPACING), fill="x")
         ttk.Label(
@@ -1955,6 +1978,12 @@ class ConfigEditor(tk.Toplevel):
                     'phrases': [sanitize_input(line.strip()) for line in self.ooc_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'fixes': [line.strip() for line in self.ooc_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
+                # v11.10.0 non-Latin script check: a Unicode range allow-list, so there is no
+                # pattern or phrase list to sanitize -- only the toggle and an optional fix list.
+                'non_latin': {
+                    'enabled': bool(self.non_latin_enabled_var_editor.get()),
+                    'fixes': [line.strip() for line in self.non_latin_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
+                },
                 'refusal': {
                     'phrases': [sanitize_input(line.strip()) for line in self.refusal_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'fixes': [line.strip() for line in self.refusal_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
@@ -2079,6 +2108,18 @@ class ConfigEditor(tk.Toplevel):
             field_widget = getattr(self, field_name, None)
             if field_widget is not None and field_widget.winfo_exists():
                 field_widget.configure(state='normal' if is_enabled else 'disabled')
+
+    def _toggle_non_latin_fields(self):
+        """Enables/disables the non-Latin fix list based on its checkbox state.
+
+        The field starts enabled and is only disabled here, so the load path can write into it
+        before the toggle runs -- this Tk build drops ``delete``/``insert`` on a disabled Text
+        widget silently (see the v10.7.1 note in AGENTS.md).
+        """
+        field_widget = getattr(self, 'non_latin_fixes_text', None)
+        if field_widget is not None and field_widget.winfo_exists():
+            field_widget.configure(
+                state='normal' if self.non_latin_enabled_var_editor.get() else 'disabled')
 
     # --- Regex Watch (v11.6) ---------------------------------------------------------
     # Patterns are kept in the plain Python list ``self.regex_watch_patterns`` and mirrored into
@@ -2730,6 +2771,16 @@ class ConfigEditor(tk.Toplevel):
             self.ooc_fixes_text.delete(1.0, tk.END)
             self.ooc_fixes_text.insert(tk.END, "\n".join(ooc_conf.get('fixes', [])))
             self._toggle_ooc_fields()
+
+            # Non-Latin script check (v11.10.0). The Text field is written while still enabled,
+            # then the toggle applies the saved state -- this Tk build drops edits on a disabled
+            # Text widget silently.
+            non_latin_conf = detection_conf.get('non_latin', {})
+            self.non_latin_enabled_var_editor.set(bool(non_latin_conf.get('enabled', False)))
+            self.non_latin_fixes_text.configure(state='normal')
+            self.non_latin_fixes_text.delete(1.0, tk.END)
+            self.non_latin_fixes_text.insert(tk.END, "\n".join(non_latin_conf.get('fixes', []) or []))
+            self._toggle_non_latin_fields()
             
             user_speaking_conf = detection_conf.get('user_speaking', {}) 
             for gender_val in ["male", "female", "neutral"]: 
@@ -2867,6 +2918,7 @@ class ConfigEditor(tk.Toplevel):
             get_text_as_list(self.refusal_phrases_text); get_text_as_list(self.refusal_fixes_text)
             get_text_as_list(self.slop_phrases_text); get_text_as_list(self.slop_fixes_text)
             get_text_as_list(self.ooc_phrases_text); get_text_as_list(self.ooc_fixes_text)
+            get_text_as_list(self.non_latin_fixes_text)
 
             # Regex Watch (v11.6): a pattern that does not compile would be skipped silently at
             # run time, so it is rejected here while the user can still see the error.

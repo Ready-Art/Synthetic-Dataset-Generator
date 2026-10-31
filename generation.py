@@ -39,6 +39,16 @@ from app_state import (
 # worker signature uses it as a default value (see worker() and generate_answer_with_retries()).
 REGEX_WATCH_MAX_ROUNDS = 3
 
+# Non-Latin script check (v11.10.0): the instruction appended to the system prompt when a reply
+# comes back with characters from another script. Used when `detection.non_latin.fixes` is empty,
+# so switching the check on in the config editor works without also authoring a fix list. Defined
+# at module scope because the retry loop reads it and tests assert on it.
+DEFAULT_NON_LATIN_FIX = (
+    "Write the entire reply in English using only the Latin alphabet. Do not use characters "
+    "from any other writing system (no Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, "
+    "Hebrew or Devanagari characters, and no emoji)."
+)
+
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
@@ -273,6 +283,7 @@ def save_generation_state():
                 'error_count_total': app_state.error_count_total,
                 'ooc_count_total': app_state.ooc_count_total,
                 'regex_watch_count_total': getattr(app_state, 'regex_watch_count_total', 0),
+                'non_latin_count_total': getattr(app_state, 'non_latin_count_total', 0),
                 'refusal_counts_per_api': app_state.refusal_counts_per_api,
                 'total_input_tokens': app_state.total_input_tokens,
                 'total_output_tokens': app_state.total_output_tokens,
@@ -282,6 +293,7 @@ def save_generation_state():
                 'error_counts_per_api': app_state.error_counts_per_api,
                 'ooc_counts_per_api': app_state.ooc_counts_per_api,
                 'regex_watch_counts_per_api': getattr(app_state, 'regex_watch_counts_per_api', {}),
+                'non_latin_counts_per_api': getattr(app_state, 'non_latin_counts_per_api', {}),
                 'total_attempts_per_api': app_state.total_attempts_per_api,
                 'anti_slop_count_total': app_state.anti_slop_count_total,
                 'anti_slop_counts_per_api': anti_slop_counts_per_api,
@@ -604,7 +616,9 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          current_ooc_phrases, current_ooc_enabled, current_ooc_fixes,
                          current_regex_patterns=(), current_regex_watch_enabled=False,
                          current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
-                         current_retry_missing_quotations=False):
+                         current_retry_missing_quotations=False,
+                         current_non_latin_enabled=False,
+                         current_non_latin_fixes=()):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
     ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
@@ -725,6 +739,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             regex_watch_enabled_local=current_regex_watch_enabled,
             regex_watch_max_rounds=current_regex_watch_max_rounds,
             retry_missing_quotations_local=current_retry_missing_quotations,
+            non_latin_enabled_local=current_non_latin_enabled,
+            non_latin_fixes_local=current_non_latin_fixes,
         )
         if not retry_result or not retry_result[0]:
             log_message(
@@ -822,6 +838,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
            include_style_metrics_local=False,
            retry_missing_quotations_local=False,
+           current_non_latin_enabled=False,
+           current_non_latin_fixes=(),
            questions_append_alias_local="",
            questions_append_separator_local=DEFAULT_QUESTION_SEPARATOR,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
@@ -1405,6 +1423,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         dataset_values=task_dataset_values, turn_note=greeting_turn_note,
                         regex_patterns_local=current_regex_patterns,
                         regex_watch_enabled_local=current_regex_watch_enabled,
+                        non_latin_enabled_local=current_non_latin_enabled,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
@@ -1425,6 +1444,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         user_turn_note=first_line_user_turn_note,
                         regex_patterns_local=current_regex_patterns,
                         regex_watch_enabled_local=current_regex_watch_enabled,
+                        non_latin_enabled_local=current_non_latin_enabled,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if not greeting_text or not initial_user_question:
@@ -1484,6 +1504,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     user_turn_note=opening_user_turn_note,
                     regex_patterns_local=current_regex_patterns,
                     regex_watch_enabled_local=current_regex_watch_enabled,
+                    non_latin_enabled_local=current_non_latin_enabled,
                 )
             
             if not initial_user_question:
@@ -1558,6 +1579,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 regex_watch_enabled_local=current_regex_watch_enabled,
                                 regex_watch_max_rounds=current_regex_watch_max_rounds,
                                 retry_missing_quotations_local=retry_missing_quotations_local,
+                                non_latin_enabled_local=current_non_latin_enabled,
+                                non_latin_fixes_local=current_non_latin_fixes,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
                                 # Per-turn logic gate on the primary (slot 1) answer only; the
@@ -1733,6 +1756,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         regex_watch_enabled_local=current_regex_watch_enabled,
                         regex_watch_max_rounds=current_regex_watch_max_rounds,
                         retry_missing_quotations_local=retry_missing_quotations_local,
+                        non_latin_enabled_local=current_non_latin_enabled,
+                        non_latin_fixes_local=current_non_latin_fixes,
                     )
                     if per_turn_logic_check_local and answer_result and answer_result[0]:
                         # Per-turn logic gate BEFORE the answer enters the output history, so a
@@ -1856,6 +1881,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     user_turn_note=cont_user_turn_note,
                     regex_patterns_local=current_regex_patterns,
                     regex_watch_enabled_local=current_regex_watch_enabled,
+                    non_latin_enabled_local=current_non_latin_enabled,
                 )
 
                 if not user_continuation_reply:
@@ -2062,7 +2088,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       raw_subject_chunk, raw_context_chunk,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
-                      user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False):
+                      user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
+                      non_latin_enabled_local=False):
     """Generates an initial question using the LLM, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for the
@@ -2286,6 +2313,17 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     else:
                         return None
 
+                # Non-Latin script check (v11.10.0): a question is authored text that goes into the
+                # dataset, so a stray character from another script is rejected and re-rolled here
+                # rather than reaching the record.
+                if non_latin_enabled_local and detection.is_non_latin(generated_question_text)[0]:
+                    log_message(f"Thread {thread_id}: Question contains non-Latin characters. Snippet: '{generated_question_text[:100]}...'", "WARNING")
+                    if attempt_num < current_max_attempts_param - 1:
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
+
                 # Regex Watch (v11.6): rewrite regex-shaped prose in place, same slot.
                 if regex_watch_enabled_local and regex_patterns_local:
                     generated_question_text, _regex_hits = apply_regex_watch(
@@ -2385,7 +2423,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                                thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                                file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
-                               user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False):
+                               user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
+                               non_latin_enabled_local=False):
     """Generates the user's continuation reply, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for this
@@ -2548,6 +2587,18 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     log_message(f"Thread {thread_id}: User reply contains {'a refusal' if refusal_detected else 'slop'}. Snippet: '{user_reply_text[:100]}...'", "WARNING")
                     if attempt_num < current_max_attempts_param - 1:
                         time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    else:
+                        return None
+
+                # Non-Latin script check (v11.10.0): the simulated user's line is dataset text too,
+                # so a stray character from another script is re-rolled here.
+                if non_latin_enabled_local and detection.is_non_latin(user_reply_text)[0]:
+                    log_message(f"Thread {thread_id}: User reply contains non-Latin characters. Snippet: '{user_reply_text[:100]}...'", "WARNING")
+                    sleep_dur = random.uniform(0.5, 1.5)
+                    if current_attempt_wait + sleep_dur <= MAX_TOTAL_RETRY_WAIT:
+                        time.sleep(sleep_dur)
+                        current_attempt_wait += sleep_dur
                         continue
                     else:
                         return None
@@ -2714,7 +2765,8 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
                              api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                              file_name="", refusal_phrases_local=(), slop_phrases_local=(),
                              user_speaking_phrases_local=(), no_user_impersonation_local=False,
-                             regex_patterns_local=(), regex_watch_enabled_local=False):
+                             regex_patterns_local=(), regex_watch_enabled_local=False,
+                             non_latin_enabled_local=False):
     """Send one opening-mode request, retrying until a reply passes the checks or attempts run out.
 
     Shared by generate_greeting and generate_first_line. The reply is rejected and the request sent
@@ -2832,6 +2884,10 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
             elif (check_user_speaking and not no_user_impersonation_local
                   and detection.is_user_speaking(text, user_speaking_phrases_local)[0]):
                 problem = "the user speaking"
+            elif non_latin_enabled_local and detection.is_non_latin(text)[0]:
+                # v11.10.0: opening-mode text is dataset text too -- a stray character from
+                # another script is rejected and re-rolled, not rewritten.
+                problem = "non-Latin characters"
             if problem:
                 log_message(f"Thread {thread_id}: {preview_type} rejected ({problem}) {attempt_label}. Snippet: '{text[:100]}...'", "WARNING")
                 time.sleep(random.uniform(0.5, 1.5))
@@ -2880,7 +2936,7 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(),
                       user_speaking_phrases_local=(), no_user_impersonation_local=False, context_template="",
                       dataset_values=None, turn_note="", regex_patterns_local=(),
-                      regex_watch_enabled_local=False):
+                      regex_watch_enabled_local=False, non_latin_enabled_local=False):
     """Write the character's opening message: [system: scene prompt, user: filled greeting prompt
     + turn note].
 
@@ -2899,14 +2955,16 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
         thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
         api_slot_idx, current_max_attempts_param, api_request_timeout_param, file_name,
         refusal_phrases_local, slop_phrases_local, user_speaking_phrases_local, no_user_impersonation_local,
-        regex_patterns_local=regex_patterns_local, regex_watch_enabled_local=regex_watch_enabled_local)
+        regex_patterns_local=regex_patterns_local, regex_watch_enabled_local=regex_watch_enabled_local,
+        non_latin_enabled_local=non_latin_enabled_local)
 
 
 def generate_first_line(greeting, first_line_prompt_template, thread_id,
                         sampler_settings_local, api_url_local, model_name_local, api_key_local,
                         api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                         file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=(), dataset_values=None,
-                        user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False):
+                        user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
+                        non_latin_enabled_local=False):
     """Write the user's first line from the user's seat: [system: first-line prompt, user: greeting
     + turn note].
 
@@ -2928,7 +2986,8 @@ def generate_first_line(greeting, first_line_prompt_template, thread_id,
         thread_id, sampler_settings_local, api_url_local, model_name_local, api_key_local,
         api_slot_idx, current_max_attempts_param, api_request_timeout_param, file_name,
         refusal_phrases_local, slop_phrases_local,
-        regex_patterns_local=regex_patterns_local, regex_watch_enabled_local=regex_watch_enabled_local)
+        regex_patterns_local=regex_patterns_local, regex_watch_enabled_local=regex_watch_enabled_local,
+        non_latin_enabled_local=non_latin_enabled_local)
 
 
 # --- Regex Watch (v11.6) ----------------------------------------------------------------
@@ -3689,7 +3748,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  regex_patterns_local=(),
                                  regex_watch_enabled_local=False,
                                  regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
-                                 retry_missing_quotations_local=False):
+                                 retry_missing_quotations_local=False,
+                                 non_latin_enabled_local=False,
+                                 non_latin_fixes_local=()):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
     out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
@@ -3713,6 +3774,14 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     attempt. Nothing is appended to the system prompt, so a server that caches the prompt prefix
     per slot keeps its cache; the reply content (sampler randomness / temperature) supplies the
     variance. Off, the check never runs and replies are byte-identical to v11.7.
+
+    ``non_latin_enabled_local`` (v11.10.0) runs ``detection.is_non_latin()`` -- a Unicode range
+    allow-list, so no LLM is involved in the CHECK itself -- and on a hit appends one fix from
+    ``non_latin_fixes_local`` (or ``DEFAULT_NON_LATIN_FIX``) to the system prompt and regenerates,
+    the same shape as refusal/slop/OOC. It runs FIRST among the retry checks because a reply that
+    is half in another script is wrong at the character level: every later check (quotes, slop,
+    regex) would be inspecting text that is about to be thrown away. Once the fixes are exhausted
+    the attempt fails and a fresh one starts, so a permanently stray reply is never written.
     """
 
     refusal_detected_this_main_api_call = False
@@ -3730,7 +3799,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
-                                 'missing_quotation': 0}
+                                 'missing_quotation': 0, 'non_latin': 0}
         issue_detected_this_main_api_call = False
 
         while True:
@@ -4018,6 +4087,43 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
             ooc_detected, ooc_info = False, []
             if ooc_enabled_local and ooc_phrases_local:
                 ooc_detected, ooc_info = detection.is_out_of_character(answer, ooc_phrases_local)
+
+            # --- Non-Latin script check (v11.10.0) ---
+            # Runs BEFORE the phrase-driven branches: a reply that is half in another script is
+            # wrong at the character level, so regenerating it is cheaper than running every
+            # later check (quotes, slop, regex) on text that is about to be replaced. The check
+            # itself is a Unicode range allow-list in detection.py -- no LLM call, no phrase list,
+            # no network request.
+            if non_latin_enabled_local:
+                non_latin_detected, non_latin_info = detection.is_non_latin(answer)
+                if non_latin_detected:
+                    issue_detected_this_main_api_call = True
+                    issue_ever_detected_this_task = True
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    if lock_acquired:
+                        try:
+                            app_state.non_latin_count_total += 1
+                            if api_slot_idx < len(app_state.non_latin_counts_per_api):
+                                app_state.non_latin_counts_per_api[api_slot_idx] += 1
+                            if non_latin_info:
+                                detected_script, detected_sentence = non_latin_info[0]
+                                if len(app_state.recent_non_latin_total) >= MAX_RECENT: app_state.recent_non_latin_total.pop(0)
+                                app_state.recent_non_latin_total.append((detected_script, detected_sentence, api_slot_idx))
+                                if api_slot_idx < len(app_state.recent_non_latin_per_api):
+                                    if len(app_state.recent_non_latin_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_non_latin_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_non_latin_per_api[api_slot_idx].append((detected_script, detected_sentence))
+                        finally:
+                            app_state.system_prompt_lock.release()
+                    non_latin_fix_list = non_latin_fixes_local or (DEFAULT_NON_LATIN_FIX,)
+                    if fix_attempts_specific['non_latin'] < len(non_latin_fix_list):
+                        current_system_prompt_iter += f" {non_latin_fix_list[fix_attempts_specific['non_latin']]}"
+                        fix_attempts_specific['non_latin'] += 1
+                        log_message(f"Thread {thread_id}: Non-Latin script detected (API Slot {api_slot_idx+1}). "
+                                    f"Snippet: {answer[:80]}... Applying fix {fix_attempts_specific['non_latin']}. Retrying API call.", "DEBUG")
+                        continue
+                    else:
+                        log_message(f"Thread {thread_id}: Non-Latin script detected (API Slot {api_slot_idx+1}), fixes "
+                                    f"exhausted for attempt {attempt+1}. Discarding this attempt's answer.", "WARNING")
 
             if refusal_detected:
                 issue_detected_this_main_api_call = True

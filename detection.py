@@ -417,6 +417,130 @@ def is_regex_watch(text, patterns, record_timestamp=True):
     return bool(matches), [(pattern, sentence) for pattern, sentence, _matched in matches]
 
 
+# --- Non-Latin script check (v11.10.0) --------------------------------------------------
+# A model that has been trained on more than one language occasionally drops a stray glyph into an
+# otherwise English reply -- a Chinese character, a Cyrillic word, a Greek letter used as decoration.
+# Those strays poison a dataset whose target language is Latin-script only, and a phrase list cannot
+# catch them (there is no fixed phrase to list). This check is PURELY CHARACTER-CLASS BASED: it needs
+# no LLM call, no phrase list and no network round trip, so it costs nothing per reply.
+#
+# The rule is an ALLOW-LIST, not a block-list: a character is accepted when it belongs to the Latin
+# script (plus digits, whitespace, punctuation and the handful of symbol blocks a roleplay reply
+# legitimately uses), and flagged otherwise. A block-list of known scripts would silently miss every
+# script nobody thought to list; an allow-list catches them all -- Chinese, Japanese, Korean, Cyrillic,
+# Greek, Arabic, Hebrew, Devanagari, Thai, emoji -- because anything outside Latin is, by definition,
+# not Latin. The script NAMES below only make the report readable; the decision is the allow-list.
+
+# Script ranges reported by name. These are for the human-readable label ONLY; a character outside
+# every one of them but also outside the Latin allow-list is still flagged (as "Other non-Latin").
+NON_LATIN_SCRIPT_RANGES = (
+    ('Chinese (CJK)', '\u2e80-\u2eff\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef'),
+    ('Japanese (Kana)', '\u3040-\u30ff'),
+    ('Korean (Hangul)', '\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af'),
+    ('Cyrillic', '\u0400-\u052f\u2de0-\u2dff\ua640-\ua69f'),
+    ('Greek', '\u0370-\u03ff\u1f00-\u1fff'),
+    ('Arabic', '\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufeff'),
+    ('Hebrew', '\u0590-\u05ff'),
+    ('Devanagari', '\u0900-\u097f'),
+    ('Thai', '\u0e00-\u0e7f'),
+    ('Emoji / symbols', '\u2300-\u23ff\u2b00-\u2bff\U0001f000-\U0001faff'),
+)
+
+# The allow-list. A reply may use anything in these ranges:
+#   \u0000-\u024f  Basic Latin, Latin-1 Supplement, Latin Extended-A and -B
+#   \u0250-\u02af  IPA extensions (Latin-script phonetics)
+#   \u1d00-\u1d7f  Phonetic extensions (Latin letters)
+#   \u1e00-\u1eff  Latin Extended Additional / Extended-C
+#   \u2c60-\u2c7f  Latin Extended-C
+#   \ua720-\ua7ff  Latin Extended-D
+#   \u2000-\u206f  General punctuation (curly quotes, dashes, ellipsis, narrow spaces)
+#   \u2070-\u209f  Super/subscripts
+#   \u20a0-\u20cf  Currency symbols
+#   \u2100-\u214f  Letterlike symbols (e.g. the numero sign, the degree sign)
+#   \u2190-\u21ff  Arrows
+#   \u2200-\u22ff  Mathematical operators
+#   \u2500-\u257f  Box drawing (scene separators)
+#   \u25a0-\u25ff  Geometric shapes (bullets, decorative separators)
+#   \u2600-\u27bf  Miscellaneous symbols + dingbats (a reply may use a star or a heart)
+#   \ufb00-\ufb4f  Latin ligatures (ff, fi, fl, ...)
+#   \ufffd          The Unicode replacement character (a decode artefact, not a script)
+# Everything else -- including the emoji planes, which sit above the BMP -- is flagged.
+LATIN_ALLOWED_PATTERN = (
+    r'[\u0000-\u024f\u0250-\u02af\u1d00-\u1d7f\u1e00-\u1eff'
+    r'\u2c60-\u2c7f\ua720-\ua7ff'
+    r'\u2000-\u206f\u2070-\u209f\u20a0-\u20cf\u2100-\u214f'
+    r'\u2190-\u21ff\u2200-\u22ff\u2500-\u257f\u25a0-\u25ff\u2600-\u27bf'
+    r'\ufb00-\ufb4f\ufffd]'
+)
+
+_NON_LATIN_ALLOWED_RE = re.compile(LATIN_ALLOWED_PATTERN)
+_NON_LATIN_SCRIPT_RES = tuple(
+    (name, re.compile('[%s]' % ranges)) for name, ranges in NON_LATIN_SCRIPT_RANGES)
+
+
+def _non_latin_script_name(character):
+    """Name the script *character* belongs to, or ``"Other non-Latin"``.
+
+    Only used to make the report readable; the flag itself comes from the allow-list.
+    """
+    for name, pattern in _NON_LATIN_SCRIPT_RES:
+        if pattern.match(character):
+            return name
+    return "Other non-Latin"
+
+
+def find_non_latin_characters(text):
+    """Return ``[(script_name, character, sentence), ...]`` for every non-Latin character.
+
+    One entry per DISTINCT script (not per character): a Chinese sentence would otherwise
+    produce hundreds of identical rows, and one entry is all the fix instruction needs. The
+    reported sentence is the one that holds the first offending character, trimmed and capped.
+    """
+    if not text:
+        return []
+    text = str(text)
+    found, seen = [], set()
+    for match in re.finditer(r'[^\x00-\x7f]', text):
+        character = match.group(0)
+        if _NON_LATIN_ALLOWED_RE.match(character):
+            continue
+        script = _non_latin_script_name(character)
+        if script in seen:
+            continue
+        seen.add(script)
+        found.append((script, character, _sentence_around(text, match.start(), match.end())))
+    return found
+
+
+def is_non_latin(text):
+    """Detect characters outside the Latin script (Chinese, Cyrillic, Greek, emoji, ...).
+
+    The check is an allow-list over Unicode ranges, so it needs no LLM call and no phrase list:
+    a character is accepted when it is Latin script (any accent or extension), a digit, a space,
+    or one of the punctuation/symbol blocks a roleplay reply legitimately uses, and flagged
+    otherwise. ASCII replies are the fast path -- ``text.isascii()`` returns immediately.
+
+    Same contract as the other ``is_*()`` checks: ``(bool, [(label, sentence), ...])`` plus a
+    timestamp in ``issue_timestamps['non_latin']`` (1-hour rolling window) so the dashboard's
+    metric card, issue panel and graph update on their own.
+    """
+    if not text or not str(text).strip():
+        return False, []
+    text = str(text)
+    if text.isascii():
+        return False, []  # fast path: pure ASCII is pure Latin
+    hits = find_non_latin_characters(text)
+    if not hits:
+        return False, []
+    if issue_timestamps is not None and issue_timestamps_lock is not None:
+        with issue_timestamps_lock:
+            issue_timestamps.setdefault('non_latin', []).append(time.time())
+            cutoff = time.time() - 3600
+            issue_timestamps['non_latin'] = [t for t in issue_timestamps['non_latin'] if t > cutoff]
+    return True, [("Non-Latin script (%s)" % script, sentence)
+                  for script, _character, sentence in hits]
+
+
 def is_incomplete_quote(text):
     if not text:
         return False, []

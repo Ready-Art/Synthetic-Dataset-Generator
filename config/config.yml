@@ -344,6 +344,18 @@ prompts:
     - An airport gate during a delayed flight
 detection:
   no_user_impersonation: false
+  # v11.10.0 non-Latin script check: catches stray characters from another script (Chinese,
+  # Japanese, Korean, Cyrillic, Greek, Arabic, emoji, ...) in an otherwise Latin-script reply.
+  # The check is a Unicode range allow-list, so it needs NO LLM call, no phrase list and no
+  # network request -- every character outside the Latin script is flagged. On a hit the reply
+  # is regenerated with a fix appended to the system prompt (same shape as refusal/slop/OOC);
+  # once the fixes run out the attempt fails and a fresh one starts, so a permanently stray
+  # reply is never written. Off by default so existing output is unchanged.
+  non_latin:
+    enabled: false
+    # Appended to the system prompt, one per retry round. Empty means a built-in default
+    # instruction is used, so switching the check on works without editing the config.
+    fixes: []
   out_of_character:
     enabled: true
     phrases:
