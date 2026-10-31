@@ -1,4 +1,46 @@
-# AGENTS.md - Codebase Cheat Sheet
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+ReadyArt Synthetic Dataset Generator
+Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+
+All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+it is unlikely any of that code survives. Unless you have the original MIT-era code to
+compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+-->
+
+# AGENTS.md - Codebase Cheat Sheet (hub)
+
+This file is the **entry point** and stays short on purpose: it holds only the rules
+that apply to every change. The per-file reference is split into small topic files
+under `docs/agents/`, so you never have to hold the whole cheat sheet in context.
+
+## How to use this doc set
+
+1. Read this file first.
+2. Open the ONE topic file below that matches what you are editing, and read only that.
+3. If you know the task but not the files, open `docs/agents/task-index.md` and find
+   the row. Each topic file also ends with the task rows that touch its files.
+4. If a topic file is still long, read it in sections — its `## Contents` list is the map.
+5. Only open a second topic file when a change genuinely spans two areas.
+
+| Topic file | Read it when |
+|------------|--------------|
+| [`docs/agents/task-index.md`](docs/agents/task-index.md) | you know WHAT you want to change and need the list of files to edit. |
+| [`docs/agents/config.md`](docs/agents/config.md) | you are changing `config/config.yml`, `config/api_profiles.yml` or the dependency pins. |
+| [`docs/agents/core-modules.md`](docs/agents/core-modules.md) | you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py` or `style_metrics.py`. |
+| [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, table styles, the Review tab or the Regex Watch tab. |
+| [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the editor, or fixing editor layout/readability. |
+| [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
+| [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, retries, prompts, cast/arc helpers, metadata or output writing. |
+| [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check. |
+| [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
+| [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. |
+| [`docs/agents/tools-and-docs.md`](docs/agents/tools-and-docs.md) | you are touching `tools/*.py`, `docs/gemma4-chat-template.md` or `docs/scene-cast.md`. |
+
+Cross-cutting tasks (a new detection type, a new quality dimension, scene cast) are
+listed in every topic file they touch.
 
 ## Setup and Tests
 
@@ -22,7 +64,7 @@ python -m pip install -r requirements-datasets.txt   # the application + Hugging
 
 Run tests from the repository root. Every test file runs on its own and exits non-zero on a failure; none needs a
 model, a network connection or a running server. While working, run the test for the module you change, where the
-File Reference below names one. Before finishing, and before opening a pull request, run all of them and say in
+topic file for that module names one. Before finishing, and before opening a pull request, run all of them and say in
 the pull request which ones you ran and whether they passed:
 
 ```sh
@@ -37,7 +79,7 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 - Importing `logging_config` creates `output/` in the working directory, and `logging_config.LOG_FILE_PATH` is
   relative to it, so `tests/test_api_profiles.py` appends to the repository's `output/log.txt`. `tests/test_opening_mode.py` and
   `tests/test_persona_arc.py` change into a temporary directory first.
-- `tools/check_gui_layout.py` and `tools/check_dataset_hub.py` are not part of the test run (see Tools).
+- `tools/check_gui_layout.py` and `tools/check_dataset_hub.py` are not part of the test run (see `docs/agents/tools-and-docs.md`).
 - `tools/gemma4_thought_fix.py` is **outside this project**: nothing here imports, reads or tests it. It is a
   standalone axolotl helper for Gemma 4 fine-tunes, documented in `docs/gemma4-chat-template.md`. **It was written
   by Karki (a user on Discord), not by this repository** — we only applied robustness fixes, so keep his credit in
@@ -54,8 +96,7 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 - **Never commit an API key.** `config/config.yml` is tracked and ships with every `key: ''` empty.
 - **Ask before changing the wording of a shipped prompt** in `config/config.yml` (`prompts.*`). The prompts are
   short and general on purpose, and every output row depends on them.
-- **New worker options go in the `kwargs=` dict** of the worker launch in `generate.py`, never in `args=` (see
-  `generate.py` below).
+- **New worker options go in the `kwargs=` dict** of the worker launch in `generate.py`, never in `args=` (see `docs/agents/generate-ui.md`).
 - **Dataset settings hold names only.** Source selectors, column names and aliases go in `datasets.sources[]`;
   record values and credentials never do, and the Datasets panel never shows cell values (`dataset_settings.py`,
   `datasets_panel.py` docstrings).
@@ -69,511 +110,6 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
               dashboard.py (display updates)
 ```
 
-## File Reference
-
-### `config/config.yml` [1]
-**Purpose:** Main configuration file for API settings, generation parameters, prompts, detection, and samplers
-**Key:** `api.apis[]`, `generation.*`, `prompts.*`, `detection.*`, `samplers.*`
-**Edit for:**
-- API endpoints → `api.apis[].url`, `api.apis[].model`, `api.apis[].key`
-- Rate limits → `api.apis[].rate_limit_rpm`, `api.apis[].threads`
-- Generation settings → `generation.max_character_cards`, `generation.num_turns`, `generation.output_format`
-- Prompts → `prompts.system.base`, `prompts.question`, `prompts.answer`, `prompts.greeting`, `prompts.first_line`
-- Questions-file dataset variables (v11.9.0) → `prompts.questions_dataset.append_alias` (ONE bare alias whose value is appended to every `input/questions.txt` line; `''` = placeholders only, append nothing) and `append_separator` (text between the line and the appended value, real characters, default `"\n\n"`; the editor stores it escaped because a Tk Entry cannot hold a newline). A questions-file line is authored text, so it may also contain `{{ds:alias}}` placeholders. Chunk-mode source `.txt` is deliberately NOT rendered: a chunk is cut at a random character offset and could split a placeholder in half
-- Opening mode → `prompts.opening_mode`, `prompts.greeting_context`, `prompts.first_line_styles`
-- Detection phrases → `detection.refusal.phrases`, `detection.slop.phrases`, `detection.user_speaking.*.phrases`, `detection.out_of_character.phrases` (+ `enabled`, `fixes`)
-- Non-Latin script check (v11.10.0) → `detection.non_latin.enabled` (off by default) and `detection.non_latin.fixes[]` (one instruction per retry round; empty falls back to `generation.DEFAULT_NON_LATIN_FIX`, so switching the check on needs no fix list). A Unicode range allow-list in `detection.is_non_latin()`: no pattern to compile, no phrase list to sanitize, no LLM call
-- Regex Watch (v11.6) → `detection.regex_watch.enabled` (off by default), `detection.regex_watch.max_rounds` (1-5, default 3), `detection.regex_watch.patterns[]` (regular expressions, user-editable; shipped defaults are mirrored by `detection.DEFAULT_REGEX_WATCH_PATTERNS`). A hit is rewritten by the SAME main API slot, not a fixer slot; there is no fixes list
-- Sampler params → `samplers.temperature`, `samplers.top_p`, `samplers.repetition_penalty`
-- Bad words (v11.1) → `samplers.use_bad_words` (bool, off by default), `samplers.bad_words` (list of strings; leading whitespace on every entry is preserved exactly as typed, matching vLLM semantics). The single toggle drives every main-API request (question/answer/user-continuation/opening-mode greeting+first-line) plus the Slop Fixer (slot 5) and Anti-Slop Fixer (slot 6), even when those fixers carry their own `slop_fixer_params` / `anti_slop_params` sampler overrides — `generation.apply_bad_words_to_payload()` reads from the TOP-LEVEL `samplers.*` keys so it works regardless of per-slot override state
-- Character profiles → `prompts.character.characters[]` (name, race, job, hair, hair_color, clothing, appearance, persona, personality, traits, backstory, setting) — `persona` = inner personality (private self), `personality` = outward behavior (observed manner); `persona` is withheld from the profile and re-injected as a breakthrough block from `prompts.character.persona_breakthrough_turn` onward
-- Emotional states/arcs → `prompts.emotional_states.states[]` — each entry is a flat state or a `'->'`-joined progression (`'neutral -> tense -> angry'`) expanded across the conversation's assistant turns
-- User-side emotional states/arcs (v10.6.0, optional) → `prompts.user_emotional_states.{enabled,states[]}` — same flat/'->' arc format as `emotional_states` but applied to the SIMULATED USER's messages (generated opening question/first line + each user continuation); off by default; note is ephemeral (user prompt only, never history/system); placement does not apply. **Editor pitfall (fixed v10.7.1):** the editor's text field for this key is created `disabled`, and this Tk build drops `delete`/`insert` on a disabled Text widget *silently* (no exception) — any handler that writes into a config-editor text field must ensure its state is `normal` first (see `load_config_handler()` order)
-- Scene cast / join-leave (v12.0) → `prompts.scene_cast.{enabled,shape,min_present,max_churn,max_deferrals,placement,exit_guidance,arrival_guidance,allow_cutaway,cutaway_note}` (off by default; acts ONLY with 2+ selected characters). **The generator owns the cast**: `generation._build_scene_cast_plan()` computes who is present at each assistant slot BEFORE any request is sent, the model is told the state in the per-turn note and only NARRATES the transitions. `shape` is `minimal` (at most one join + one leave), `churn` (up to `max_churn` of each) or `none`. **A join AND a leave each cost one present character**, so 2 characters with `min_present: 2` can never change cast (the worker logs a WARNING and runs a static cast — do not "fix" this into a silent no-op). `placement` is `depth0` (default) or `system`, parsed by `note_placement()`
-- Scene continuity check (v12.0) → `detection.scene_continuity.{enabled,fixes,max_rounds}` (enabled by default but INERT unless `prompts.scene_cast.enabled` is also on). A character who `exited` or is still `absent` may not speak or act. `detection.check_scene_continuity()` is **code-only** (attributed quoted lines + a curated narration action-verb list; no LLM, no phrase list to sanitize), so an empty `fixes` list falls back to `generation.DEFAULT_SCENE_CONTINUITY_FIX`
-- Random names → `prompts.random_names.enabled`, `prompts.random_names.names[]` (optional list of names to randomly assign to characters, overrides character Name field when enabled)
-- Random settings pool → `prompts.random_settings.enabled`, `prompts.random_settings.settings[]` (analogous to `random_names`). When `setting_enabled` is true and a selected character's own `setting` is empty, a setting is sampled from this pool (when enabled) instead of the hardcoded default. For a multi-character ensemble the per-character settings are unified to ONE shared setting picked from the ensemble, so the whole scene happens in a single location
-- Conversation history for fixers → `generation.use_conversation_history_for_fixers` (whether to pass conversation context to slop/anti-slop fixer LLMs)
-- Output metadata → `generation.include_metadata` (flat, schema-stable provenance block per output.jsonl record; trainer-safe; never modifies `conversations[]`; false = legacy two-field records)
-- Retry missing quotations (v11.7.1) → `generation.retry_missing_quotations` (off by default; GUI label **"Experiment: Retry missing quotations"** in the Config Editor Generation tab, var `retry_missing_quotations_var_editor`). When on, a generated answer whose spoken line has NO quotation marks at all (e.g. `Its funny she says`) is detected by `detection.is_missing_quotation()` inside `generate_answer_with_retries()` (runs AFTER every phrase check + the incomplete-quote check, BEFORE Regex Watch) and sent back to the SAME main API slot for one retry (no fixer slot, nothing appended to the system prompt so prefix caches survive; if it comes back mark-less again the best-effort answer is kept, never dropped). Distinct from `is_incomplete_quote`, which only sees UNBALANCED quotes. Threaded as worker kwarg `retry_missing_quotations_local` (never positional) into `_per_turn_logic_gate` → its rewrite call. Guarded by `tests/test_missing_quotations.py`
-- Style metrics (v11.7) → `generation.include_style_metrics` (off by default; when on AND `include_metadata` is on, each record's metadata gains a flat `style_*` block: `style_metrics.aggregate()` over the record's assistant turns, flattened with a `style_` prefix; duplication rows measure only the turn they carry)
-- Quality scoring → `quality.enabled`, `quality.use_llm_scoring`, `quality.output_filter`, `quality.roleplay_dimensions` (opt-in roleplay dimensions: voice_distinctiveness / grounding / persona_alignment), `quality.cast_continuity` (v12.0 opt-in `cast_continuity` dimension: **LLM-ONLY, never in HEURISTIC_DIMENSIONS** — there is no measurable proxy for "was that exit earned?", and the objective half of the question is already answered for free by `detection.check_scene_continuity()`; registered in `CAST_LLM_DIMENSIONS` only, and it joins the composite through `active_scoring_dimensions()`), `quality.min_score_threshold`, `quality.max_chars_for_scoring`, `quality.max_profile_chars_for_scoring`, `quality.judge_max_attempts` / `quality.judge_retry_delay` / `quality.result_timeout` (v11.4 judge retry-and-drop policy), `quality.judge_json_repair_attempts` / `quality.judge_max_tokens` / `quality.judge_request_timeout` / `quality.judge_structured_output` (v11.5 judge JSON robustness: format-repair rounds, token budget, request timeout, optional `response_format`), `quality.judge_priority_enabled` / `quality.judge_priority` (v11.8.x vLLM priority scheduling: the toggle decides whether the `priority` field is sent at all — off by default, because backends without priority support reject the unknown field and vLLM rejects a non-zero priority when the served model is not priority-scheduled — and the value is clamped -10..10 with a default of 0, which every vLLM server accepts; -10 is the HIGHEST priority and must stay reachable, never flattened up to 0), `quality.tic_dimension` (v11.7 opt-in heuristic-only `tic_density` dimension, weight 0.10; measured from `style_metrics.py`, off by default like the roleplay dimensions), `quality.scoring_api.{url,model,key}`
-- Datasets → `datasets.sources[]` (default `{sources: []}`) — names-only source definitions (kind, location, config/split/revision selectors, imported column names, aliases, visibility). Dataset *records* and credentials are never stored here; see `docs/dataset-bindings.md`
-
-### `config/api_profiles.yml` [2]
-**Purpose:** API compatibility profiles for request payload filtering per endpoint
-**Key:** Profile definitions with `allow`, `rename`, `detect_hosts`, `label`
-**Edit for:**
-- Add new profile → Add new top-level key with `label`, `allow`, `rename`, `detect_hosts`
-- Modify allowed params → Change `allow` list (use `all` or `from_config` for special cases)
-- Key renames → `rename` dict (e.g., `repetition_penalty: frequency_penalty`)
-- Auto-detection hosts → `detect_hosts` list (exact or `.suffix` for subdomains)
-**Profiles:** `openai_compatible`, `openai`, `mistral`, `xai_grok`, `gemini_openai`, `anthropic_openai`, `custom`
-
-### `tools/check_gui_layout.py` [3]
-**Purpose:** GUI layout testing tool for checking UI at various window sizes without running generation
-**Key:** `run()`, `check_gui_layout()`, `widget_info()`, `check_navigation()`, `check_character_profiles()`, `check_opening_mode_round_trip()`, `check_prompt_interactions()`
-**Edit for:**
-- Add new layout check → New `check_*()` function + call in `run()`
-- Modify test sizes → `DEFAULT_SIZES` list or `--size` CLI arg
-- Add screenshot capture → `--screenshots` flag + `take_screenshot()` calls
-- Test character profiles → `--character-count` flag + `check_character_profiles()`
-- Test opening mode → `check_opening_mode_round_trip()` validates greeting/prompt persistence
-- Test prompt interactions → `check_prompt_interactions()` validates caret placement, scrolling, keyboard nav
-**CLI:** `--check` (exit nonzero on fail), `--config-editor`, `--screenshots`, `--scale`, `--allow-below-minimum`
-
-### `api_handler.py` [4]
-**Purpose:** API calls, rate limiting, Valkey caching
-**Key:** `RateLimiter`, `global_rate_limiter`, `get/set_cached_response`
-**Edit for:**
-- Rate limit logic → `RateLimiter.wait_if_needed()`
-- Cache TTL → `set_cached_response()` ttl param
-- Response time tracking → `api_response_times_per_slot`
-
-### `api_profiles.py` [5]
-**Purpose:** Filter request payloads per API endpoint compatibility
-**Key:** `apply_profile_for_slot()`, `detect_profile()`, `set_slot_profile()`
-**Edit for:**
-- Add new API profile → `config/api_profiles.yml` (not code)
-- Param rename logic → `_RENAME_TRANSFORMS`
-- Always-allowed keys → `_ALWAYS_ALLOWED`
-
-### `app_state.py` [6]
-**Purpose:** Shared runtime state, counters, locks, GUI handles
-**Key:** All globals (counters, locks, widget refs)
-**Edit for:**
-- Add new counter → Add to module level + init in `reset_all_stats_and_history()`
-- Add new lock → `threading.Lock()` at module level
-- GUI widget refs → Assign in `generate.py` after widget creation
-
-### `config_editor.py` [7]
-**Purpose:** Configuration Editor UI window
-**Key:** `ConfigEditor` class, `save_config_handler()`, `load_config_handler()`, `DatasetsPanel` tab, `configure_spinbox_style()`, `color_contrast()`, `wrapped_checkbutton()`
-**Edit for:**
-- Add new config field → Add UI widget + bind to `save_config_handler()` + `load_config_handler()` (Quality Scoring section holds the `quality.roleplay_dimensions` toggle: `quality_roleplay_dims_var_editor`, saved/loaded with the rest of `quality.*`)
-- **Wrapping labels (v11.6.2)** → a `ttk.Label` created with `wraplength=1` is the "not wrapped yet" sentinel; it MUST be handed to `wrap_label(label, container, ...)` or it renders one character per line forever. **The container must own a real allocated width** — never a frame that is itself sized by the label (a `ttk.Frame` gridded `sticky="w"`, or a `.pack()`ed child). `wrap_label` binds `<Configure>` on that container and sets `wraplength` from its width, so wrapping against a label-sized frame closes a feedback loop: label narrows → frame narrows → label narrows again, collapsing to a ~20px-wide, several-hundred-pixel-tall column (the Detection "Rewrite rounds per reply" caption and the Samplers "Enable Bad Words" description both hit this). `wrapped_checkbutton()` therefore wraps its description against *parent*, not against its own inner frame. Guarded by `tests/test_editor_readability_ui.py`
-- **Spinboxes (v11.6.2)** → never create a bare `ttk.Spinbox`. The 'superhero' theme sets spinbox text white but leaves `fieldbackground` unset, so the field falls back to the native white entry background: white-on-white, an apparently empty box. Use `style=self.spinbox_style` (from `configure_spinbox_style()`, called once in `__init__` before any tab is built). It takes the colours from the theme's own `TEntry`, verifies them with `color_contrast()` (falls back to a known-good pair below 4.5:1), and `map`s a readable disabled state — the Regex Watch rounds box starts disabled. Guarded by `tests/test_editor_readability_ui.py`
-- **Questions File Dataset Variables (v11.9.0)** → Prompts tab `questions_ds_lf` LabelFrame (after the first-line styles area): `questions_append_alias_var_editor` + `questions_append_separator_var_editor` Entries, plus a `wrap_label`ed description. The separator is shown ESCAPED (`\n`, `\t`, `\\`) because a Tk Entry cannot hold a real newline. Module-level helpers do the conversion and work on a stub editor too (the save path is driven headless by tests): `encode_escape_sequence()`, `decode_escape_sequence()` (only those four escapes; a lone trailing backslash is kept as typed), `questions_append_alias_value()`, `questions_append_separator_value()` (empty field falls back to `DEFAULT_QUESTION_SEPARATOR`). Saved as `prompts.questions_dataset.{append_alias,append_separator}`; validated (invalid alias, or an alias while the questions file is off). Guarded by `tests/test_questions_dataset_ui.py`
-- **Non-Latin Script Check (v11.10.0)** → Detection tab `col2_frame`, a `LabelFrame` with `non_latin_enabled_var_editor` + `_toggle_non_latin_fields()` and a `non_latin_fixes_text` ScrolledText (the field starts ENABLED and is only disabled by the toggle, so the load path can write into it before the state is applied — this Tk build drops `delete`/`insert` on a disabled Text widget silently). Saved as `detection.non_latin.{enabled,fixes}` (fixes saved verbatim, not through `sanitize_input`); validated by a `get_text_as_list` touch. There is no pattern list to validate — the check is a Unicode range allow-list in `detection.py`
-- **Scene Cast + Scene Continuity + cast dimension (v12.0)** → THREE new places. (1) Character Engine tab: a `ttk.LabelFrame` "Scene Cast — Characters Join and Leave" with `enable_scene_cast_var_editor` + `_toggle_scene_cast_fields()`, a `scene_cast_shape_var_editor` Combobox, three `ttk.Spinbox`es (`scene_cast_min_present_spinbox` / `_max_churn_spinbox` / `_max_deferrals_spinbox`, each `style=self.spinbox_style`), `scene_cast_placement_var_editor` via `_add_placement_combobox`, an allow-cutaway checkbox, and three `ScrolledText` guidance fields. (2) Detection tab `col2_frame`: a `scene_continuity_lf` LabelFrame with `scene_continuity_enabled_var_editor` + `_toggle_scene_continuity_fields()`, a rounds Spinbox and a fixes `ScrolledText` (created ENABLED, only disabled by the toggle, so the load path can write into it). (3) Quality Scoring: `quality_cast_continuity_var_editor`. **Every guidance/fix list is saved VERBATIM** (no `sanitize_input`) like the regex patterns and the opening-mode prompts — it strips backslashes and quotes and would corrupt authored text. `_toggle_scene_cast_fields()` is called at the END of the load path so a config saved with the toggle on reopens editable
-- New tab → Add `ttk.Frame` + `notebook.add()` in `__init__()`
-- Regex Watch panel (v11.6) → Detection tab `col1_frame`, a `LabelFrame` with `regex_watch_enabled_var_editor` + `_toggle_regex_watch_fields()`, a rounds `Spinbox` (`regex_watch_max_rounds_var_editor`), a Listbox backed by the plain list `self.regex_watch_patterns` (`_render_regex_patterns()`), an Entry plus Add/Update, Remove, Test and Restore buttons, and a status label. Handlers live in `ConfigEditor`; the save/validate helpers are MODULE-LEVEL (`regex_watch_rounds_value(editor)`, `regex_watch_enabled_value(editor)`, `regex_watch_pattern_values(editor)`) because the headless save-path tests drive a stub whose unknown attributes resolve to a Tk var — a method would be shadowed by that stub. **Patterns are saved VERBATIM**: `sanitize_input()` strips backslashes and quotes and would corrupt every expression
-- **Judge priority (v11.8.x)** → Quality Scoring section: `quality_judge_priority_enabled_var` checkbox (`command=self._toggle_judge_priority_field`) + `quality_judge_priority_spinbox` (`from_=-10, to=10` — -10 is the HIGHEST priority, so a 0 floor would make the top of the range unreachable from the GUI, and a positive-only ceiling would lose the bottom; created `state='disabled'`, uses `style=self.spinbox_style`). `_toggle_judge_priority_field()` flips it between `normal`/`disabled` and is ALSO called at the end of the load path, so a config saved with the toggle on reopens editable. The value is kept (never reset) while the toggle is off. Saved as `quality.judge_priority_enabled` / `judge_priority`, validated to -10..10
-- Validation → `validate_config_handler()`
-- Datasets tab → `DatasetsPanel(self.notebook)` added in `__init__()`; config gathered in `save_config_handler()` (`config_data['datasets'] = self.datasets_panel.get_config()`), loaded in `load_config_handler()` (`self.datasets_panel.load_config(...)`), validated in `validate_config_handler()`; `DatasetSettingsError` surfaces on the status bar
-
-### `config_loader.py` [8]
-**Purpose:** Load/save config.yml and profiles
-**Key:** `ConfigLoader` class, `get()`, `set()`, `save_profile()`
-**Edit for:**
-- Config path → `__init__(path=...)`
-- Profile operations → `save_profile()`, `load_profile_to_main_config()`, `delete_profile()`
-
-### `dashboard.py` [9]
-**Purpose:** Dashboard display, issue panels, progress bars, status labels
-**Key:** `update_dashboard()`, `update_issue_graph()`, `create_modern_issue_panel()`
-**Edit for:**
-- New metric label → Add to `app_state.py` + update in `update_dashboard()`
-- Issue graph series → `draw_issue_graph()` and `update_issue_graph()` each have parallel `counts` / `colors` / `labels` dicts that must contain the same keys (a missing key = KeyError; an uncounted series = IndexError). `offsets` is computed from `len(counts)`, so adding a series only requires extending the three dicts in BOTH functions. The v11.10.0 `non_latin` series was added this way (plus the `_graph_last_draw` signature key list, which must also list every series or the graph will not redraw when only that series changes); **the v12.0 `scene_continuity` series (label `Cast Drift`, colour `#e599f7`) was added exactly the same way — four dicts plus the signature tuple**
-- Issue panel → `create_modern_issue_panel()` + `update_modern_issue_panel()`
-- Progress bar style → `configure_animated_progress_styles()`, `get_progress_style_name()`
-
-### `detection.py` [10]
-**Purpose:** Issue detection (refusals, user speaking, slop, anti-slop, out-of-character drift, Regex Watch)
-**Key:** `is_refusal()`, `is_user_speaking()`, `is_slop()`, `is_anti_slop()`, `is_out_of_character()`, `is_incomplete_quote()`, `is_missing_quotation()`, `is_non_latin()`, `find_non_latin_characters()`, `LATIN_ALLOWED_PATTERN`, `NON_LATIN_SCRIPT_RANGES`, `is_regex_watch()`, `check_scene_continuity()`, `find_attributed_speakers()`, `find_character_actions()`, `find_regex_matches()`, `validate_regex_patterns()`, `DEFAULT_REGEX_WATCH_PATTERNS`, `RegexWatchError`
-`is_missing_quotation()` (v11.7.1, apostrophe guard fixed in v11.7.2): mirrors the other `is_*()` shape `(bool, [(label, snippet), ...])` but takes only `text` (no phrase list) and records NO timestamp (it is an opt-in retry trigger, not a dashboard-tracked issue). It fires only when the reply has words to check, contains NO quote glyph (see `has_dialogue_quote_marks()` below), is longer than 3 words, and carries a speech-attribution verb (a curated list: says/said/whispered/told/asked/sighs/…). A quoted reply — balanced or unbalanced — never matches: the balanced case is `normalize_quotes`, the unbalanced one is `is_incomplete_quote`
-**`has_dialogue_quote_marks()` (v11.7.2):** the single definition of "did the model mark its speech at all?", used by `is_missing_quotation()`. It strips word-internal apostrophes FIRST (`_APOSTROPHE_IN_WORD_RE` = `(?<=\w)['’](?=\w)`) and only then looks for `"`/`'`/`‘`/`’`/`“`/`”`. **This ordering is the point:** v11.7.1 bailed out on any apostrophe at all, so ordinary prose (`It's not funny she says`, `Melody's hand trembles as she speaks`) silently disabled the whole check and mark-less spoken lines reached the dataset — the experiment appeared on but never fired on realistic text. A **plural possessive** (`dogs'`, `the clocks' hands` — apostrophe after the final word character) is deliberately NOT stripped, because it is genuinely ambiguous with a closing single quote; leaving it counted only suppresses the check (no pointless retry), which is the safe direction. Regression cases for both sides live in `tests/test_missing_quotations.py` (`test_detector()` apostrophe positives + `test_has_dialogue_quote_marks()`)
-**Non-Latin script check (v11.10.0):** `is_non_latin(text)` mirrors the other `is_*()` shape (`(bool, [(label, sentence), ...])`, timestamp into `issue_timestamps['non_latin']`, 1hr cutoff) but takes only `text` and is **purely character-class based** -- no LLM, no phrase list, no network. It is an **allow-list**, not a block-list: `LATIN_ALLOWED_PATTERN` accepts Basic Latin through Latin Extended-D, the ligatures, General Punctuation, super/subscripts, currency, letterlike, arrows, math operators, box drawing, geometric shapes and miscellaneous symbols/dingbats; anything outside it is flagged (Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, the emoji planes). The allow-list is the point: a block-list of known scripts silently misses every script nobody listed, while anything outside Latin is by definition not Latin. `NON_LATIN_SCRIPT_RANGES` only supplies the readable script NAME in the label (plus `'Other non-Latin'` / `'Emoji / symbols'`); the decision is the allow-list. `find_non_latin_characters()` reports one entry per DISTINCT script (a CJK sentence would otherwise produce hundreds of rows), with the sentence holding the first offending character. `text.isascii()` is the fast path, so a pure-ASCII reply costs one method call. Accented Latin (`Café`, `naïve`, `straße`), curly quotes, guillemets and em dashes all pass -- the check must not fight ordinary English prose
-
-**Regex Watch (v11.6):** `is_regex_watch(text, patterns)` mirrors the other `is_*()` shape (`(bool, [(pattern, sentence), ...])`, timestamp into `issue_timestamps['regex_watch']`, 1hr cutoff) but matches WHOLE-REPLY regular expressions instead of word-boundary phrases. `_compile_regex()` is `lru_cache`d and raises `RegexWatchError`; `validate_regex_patterns()` returns `(valid, [(pattern, message), ...])` and drops blanks/duplicates, so an editor save and a config load share one definition of "usable". An invalid pattern is skipped at run time (never raises), a zero-width match is ignored (it has nothing to rewrite and would loop). `find_regex_matches()` reports `(pattern, sentence, matched_text)`; the sentence is the one containing the match, capped at 300 chars
-**Edit for:**
-- Add detection type → New `is_*()` function + add key to `app_state.issue_timestamps`
-- Non-Latin script check → `detection.py` (`is_non_latin()` / `find_non_latin_characters()` / `LATIN_ALLOWED_PATTERN` / `NON_LATIN_SCRIPT_RANGES`), `generation.py` (`DEFAULT_NON_LATIN_FIX` + the answer branch + the question/continuation/opening-mode re-roll), `generate.py` (config read + worker kwargs + metric card + issue panel), `config/config.yml` (`detection.non_latin.*`), `config_editor.py` (Detection tab panel + `_toggle_non_latin_fields()`), `dashboard.py` (metric label + panels + graph series), `app_state.py` (`non_latin_*`), `tests/test_non_latin.py`
-- Scene continuity (v12.0) → `check_scene_continuity(text, blocked_names, expected_names=())` mirrors the `is_*()` shape `(bool, [(kind, name, sentence), ...])` and a timestamp into `issue_timestamps['scene_continuity']`, but takes a LIST OF BLOCKED NAMES instead of a phrase list: a character in state `absent`/`exited` may not speak or act. **Code-only, no LLM.** Attribution = an explicit speaker prefix (`Melody:` — script style, needs no verb), or the character's name within ~60 chars before / ~40 after a quoted span WITH a speech verb nearby; the span's own text is never searched, so a character merely *mentioned* in someone else's line (`"Where is Melody?"`) never flags. `find_character_actions()` blanks quoted dialogue FIRST (narration-only, the same rule `is_out_of_character` uses) and requires the name to PRECEDE the action verb in the same sentence, so `Cole nodded at Melody` blames Cole. `_scene_name_pattern()` uses word-char lookarounds, NOT `\b`, because `\b` never matches a name ending in punctuation (`A.B.`, `Dr. Vance`). Only `exited_speaks`/`exited_acts` are HARD (regenerate); `expected_missing` is SOFT (reported, never rewrites — the state machine settles a forgotten beat for free). **Attribution deliberately re-implements the closest-name heuristic from `quality._spoken_lines_by_character()` rather than importing it**: `quality.py` imports `app_state` and the judge machinery while `detection.py` is a leaf, so importing quality here would invert the dependency graph for ~30 lines of regex. Do not "deduplicate" it
-- Regex Watch → `detection.py` (`is_regex_watch()` / `find_regex_matches()` / `validate_regex_patterns()` / `DEFAULT_REGEX_WATCH_PATTERNS`), `config/config.yml` (`detection.regex_watch.*`), `generate.py` (config load + validation, worker kwargs, metric card, `🔎 Regex Watch` tab + `_update_regex_watch_tab()`), `generation.py` (`apply_regex_watch()` / `rewrite_regex_watch_text()` + the four call sites), `config_editor.py` (Detection tab panel), `dashboard.py` (graph series + `clear_dashboard()`), `app_state.py` (counters, recent lists, `regex_watch_log`), `tests/test_regex_watch.py` / `tests/test_regex_watch_ui.py`
-- Out-of-character drift → `is_out_of_character(answer, ooc_phrases)` mirrors the other `is_*()` shape (phrase-driven, word-boundary matching via `_candidate_patterns`, timestamp into `issue_timestamps['out_of_character']` on a 1hr cutoff) **but matches narration only**: `_strip_quoted_dialogue()` blanks every quoted span (straight and curly double/single quotes) before matching, so a listed phrase spoken by a character *inside* dialogue does NOT flag/regenerate the turn. Catches helpful-bot narration breaks ("As a helpful AI…", "Is there anything else I can help you with today?"), god-viewing the user, and fourth-wall drops that the LLM-judge consistency dimension then scores against the character card
-- Phrase lists → Passed from config via `generate.py` → `worker()` (`current_ooc_phrases` / `current_ooc_fixes` / `current_ooc_enabled`)
-- Regex Watch patterns → `generate.py` validates `detection.regex_watch.patterns` at run start (invalid entries are logged and dropped) and passes `current_regex_patterns` / `current_regex_watch_enabled` / `current_regex_watch_max_rounds` to `worker()` as kwargs
-- GUI config → Config Editor Detection tab has an "Out-of-Character (OOC) Detection" LabelFrame (`col2_frame`) with an enable checkbox (`ooc_enabled_var_editor` + `_toggle_ooc_fields()`), phrases/fixes text areas (`ooc_phrases_text` / `ooc_fixes_text`), saved to / loaded from `detection.out_of_character.{enabled,phrases,fixes}`, validated in `validate_config_handler()`
-- Timestamp tracking → `issue_timestamps[key].append(time.time())` with 1hr cutoff
-
-### `generate.py` [11]
-**Purpose:** Main UI, Tkinter app, worker thread management, queue setup
-**Key:** `start_processing()`, `worker()` launch, UI widgets, `ConfigEditor`
-**Edit for:**
-- Queue dataset wiring → `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` in `start_processing()` attaches an in-memory `DatasetTaskAttachments` service to the run's task queue; attachments die with the queue and are NOT persisted across app restarts
-- Worker launch → `threading.Thread(target=worker, args=(...), kwargs={...})` in `start_processing()`. **New worker options MUST be added to the `kwargs=` dict, not `args=`** — the v12.0 scene-cast options (`scene_cast_enabled_local`, `scene_cast_config_local`, `scene_continuity_enabled_local`, `scene_continuity_fixes_local`, `scene_continuity_max_rounds`) are the most recent additions, and `tests/test_opening_mode.py` asserts the EXACT kwarg key set, so that set literal must be extended with them — the positional list length is fixed and the OOC/opening-mode params (`current_ooc_*`, `opening_mode_local`, etc.) are kwarg-sourced; adding a positional arg silently shifts every later slot and `tests/test_worker_launch.py` fails on the mismatch
-- New UI tab → Add to `dashboard_notebook` + populate widgets; custom tabs (Quality / 🔍 Review / 🔎 Regex Watch) need their own gated per-tick refresher (`update_quality_tab()` / `_update_review_table()` / `_update_regex_watch_tab()`), called from the periodic GUI update loop and from `_on_dashboard_tab_changed()` so the incoming tab isn't stale — `update_dashboard()` itself only handles Totals/API issue panels and the graph
-- New Treeview table → Give it a dedicated style with an explicit `font` and `rowheight` (see "Table row heights" above); a bare `ttk.Treeview` inherits the theme's cramped 20px row and clips its own text
-- Quality tab → `update_quality_tab()` fills the dimension summary labels (from `quality.get_quality_stats()['dimension_averages']`) and the latest-50 scores Treeview from `app_state.quality_scores`
-- **🔍 Review tab (v11.4)** → a fixed, non-scrolling split view (`page_scroll.grid_remove()` + a `review_page` frame) because nesting a scrolling table and a scrolling Text in the page's `ScrollableFrame` made both unusable. Widget registry keys: `review_page`, `review_tree`, `review_filter_var`, `review_count_label`, `detail_text`, `review_signature`, `review_detail_task`. Helpers: `_record_belongs_to_task()` (id matching, `_api` suffix for duplication rows), `_review_output_files()` / `_iter_review_records()` (main output + per-API files + database), `_find_review_record()`, `_format_review_conversation()` (ShareGPT `conversations[]` or `messages[]`), `_review_signature()` / `_update_review_table(force=False)` (rebuild only on change so a tick never clears the selection), `_show_review_detail(review_tree, force=False)` (skips re-render of the same selection so the scroll position survives), `_export_flagged_review()`. **The Treeview item id is the FULL task id** — never reintroduce a truncated display id in the item id or in the detail lookup. `<<TreeviewSelect>>` (single click) opens the transcript; the detail pane must keep its own scrollbar and stay out of the page canvas
-- **🔎 Regex Watch tab (v11.6)** → a fixed, non-scrolling diagnostics area (`page_scroll.grid_remove()` + `regex_page`), not an issue panel: it is added to `tab_names` but skipped by the `tab_name not in (...)` issue-panel block. Widget registry keys: `regex_page`, `regex_pattern_tree`, `regex_hit_tree`, `regex_signature`. Refresher `_update_regex_watch_tab(force=False)` is called from the periodic GUI tick and from `_on_dashboard_tab_changed()`; like the Review tab it is gated to the visible tab and rebuilds only when its signature changes, so a tick never clears the selection. It reads the configured patterns from `global_config` and the hits from `app_state.regex_watch_log`. The metric card is `app_state.regex_watch_label` (`_create_ttkbs_metric(metrics_frame, "Regex Watch", "🔎")`)
-- **Non-Latin metric card + panels (v11.10.0)** → `app_state.non_latin_label` (`_create_ttkbs_metric(metrics_frame, "Non-Latin", "🔤")`) plus a `"Non-Latin"` entry in BOTH `issue_types` and `issue_keys` (key `non_latin`) and a `color_map` entry, so the Totals and per-API tabs get a `Recent Non-Latin` panel automatically. The panel is fed by `dashboard.update_dashboard()` (`app_state.recent_non_latin_total` / `recent_non_latin_per_api`), and `tests/test_regex_watch_tab_ui.py`-style tab gating does not apply (it is a normal issue panel)
-- **Scene cast metric card + panels (v12.0)** → `app_state.scene_continuity_label` (`_create_ttkbs_metric(metrics_frame, "Cast Drift", "🎭")`) plus a `"Cast Drift"` entry in BOTH `issue_types` and `issue_keys` (key `scene_continuity`) and a `color_map` entry, so the Totals and per-API tabs get a `Recent Cast Drift` panel automatically. Fed by `dashboard.update_dashboard()` from `app_state.recent_scene_continuity_total` / `_per_api`, and by the `scene_continuity` series in the graph
-- **Table row heights (v11.6.1)** → a `ttk.Treeview` with no explicit style inherits the theme's default `Treeview`, whose `rowheight` Tk falls back to a flat 20px for a 10pt font (17px linespace). That 3px of slack clips glyph ascenders/descenders and makes a table read as scrunched, overlapping text — the Review, Queue and Regex Watch tables each hit this. Every table needs its own style with an explicit `font` and a `rowheight` derived from `font.metrics('linespace') + padding`. Regex Watch uses `REGEX_TREE_STYLE` (`'RegexWatch.Treeview'`) plus the module-level `REGEX_TREE_BODY_FONT` / `REGEX_TREE_HEADING_FONT` constants, configured once by `_configure_regex_tree_style()` (called just above the `for tab_name in tab_names:` loop, so it runs before any tab is built) and applied to both trees via `style=REGEX_TREE_STYLE`. Columns are sized by `_configure_regex_tree_columns(tree, columns, widths=..., stretch_columns=...)`, which never lets a column fall below the width its own heading text needs. `tests/test_regex_watch_tab_ui.py` guards all of this
-- **Dropped conversations (v11.4)** → `generation._quality_dropped(verdict)` gates both write paths (non-duplication final write, duplication per-turn write). A drop must never write a row, never `completed_task_ids.add()`, and never enter `quality_review_ids`
-- Queue logic → Task tuple structure + `enqueue_opening_tasks()`
-- DB export → `export_db_to_jsonl()`, `clear_database()`
-- Quality tab layout → `_rebuild_quality_roleplay_layout()` builds the summary labels + score-table columns from `quality.active_scoring_dimensions()` (the toggle is read at build time and re-checked each tick, so a change in the Config Editor mid-run re-lays-out the Quality tab automatically; `update_quality_tab()` fills rows in that column order)
-
-### `generation.py` [12]
-**Purpose:** Worker loop, LLM calls, conversation generation, output writing
-**Key:** `worker()`, `generate_answer_with_retries()`, `write_conversation()`, `call_slop_fixer_llm()`, `call_anti_slop_llm()`, `rewrite_regex_watch_text()`, `apply_regex_watch()`, `DEFAULT_NON_LATIN_FIX`, `_build_scene_cast_plan()`, `_advance_cast_state()`, `_cast_presence_note()`, `_cast_names_for_slot()`, `DEFAULT_SCENE_CONTINUITY_FIX`, `SCENE_CONTINUITY_MAX_ROUNDS`
-**Edit for:**
-- API call flow → `generate_answer_with_retries()` main loop
-- Slop fixing → `call_slop_fixer_llm()` (API slot 5, index 4) / `call_anti_slop_llm()` (API slot 6, index 5)
-- Regex Watch (v11.6) → `apply_regex_watch()` wraps `rewrite_regex_watch_text()`. A hit is rewritten by the SAME main API slot that produced the text (no fixer slot), up to `max_rounds` times, re-checking the whole reply after each round. A content rejection (empty, under half the original length, still matches its own pattern, unbalanced quotes) is FINAL for that attempt and returns `None`; only transport failures (network/timeout/non-200) are retried. It runs on answers (in `generate_answer_with_retries()`, AFTER every phrase-driven check has passed so it never races another fix), generated questions (`generate_question()`), user continuations (`generate_user_continuation()`) and opening-mode greetings/first lines (`_request_opening_message()`). `REGEX_WATCH_MAX_ROUNDS` is module scope because the `worker()` signature uses it as a default
-- Non-Latin script check (v11.10.0) → `DEFAULT_NON_LATIN_FIX` (module scope; the fallback instruction when `detection.non_latin.fixes` is empty) + the branch in `generate_answer_with_retries()` (runs FIRST among the retry checks, before refusal, because a half-foreign reply is wrong at the character level) + the re-roll in `generate_question()` / `generate_user_continuation()` / `_request_opening_message()`. The kwarg is `non_latin_enabled_local` (+ `non_latin_fixes_local` on the answer path) and is threaded through `worker()` and `_per_turn_logic_gate()`. On exhaustion the answer branch does NOT keep the turn: it breaks to a fresh attempt, so a permanently stray reply is never written. Guarded by `tests/test_non_latin.py`
-- Scene cast (v12.0) → the plan/state helpers (`_scene_cast_feasible()`, `_build_scene_cast_plan()`, `_cast_state_from_plan()`, `_cast_slot_transitions()`, `_cast_names_for_slot()`, `_advance_cast_state()`, `_cast_presence_note()`) are PURE module-scope functions (no Tk, no network, no `app_state` mutation) so they unit-test headlessly, mirroring the emotional-arc helpers. In `worker()` the plan is computed AFTER the profile loop (that is where `scene_character_names` completes) and BEFORE `base_scene_prompt`, then wired into `slot_notes()` LAST so the final thing the model reads is who may speak. **`_advance_cast_state()` ASYMMETRY IS DELIBERATE AND MUST NOT BE "SIMPLIFIED":** an un-narrated ARRIVAL is FORCED to `present` (being in the scene is the default and cannot corrupt the transcript), but an un-narrated EXIT is CANCELLED back to `present`. Forcing an exit would make that character's very next legitimate line a continuity violation the generator itself invented — it would flag text it had just made wrong. Cancelling is the only direction that cannot produce an incoherent dataset. Deferral counts live on the STATE (`state['_deferrals']`), never on the plan, because the plan is immutable and shared by every slot. **`_cast_presence_note()` carries NO per-reply counter** (`reply N of M`): the note goes in the system prompt on `placement: system`, so a slot number would make every reply differ and destroy the prefix cache; it must depend only on the present/absent SETS and this reply's transitions. In duplication mode the state advances from the PRIMARY answer only (`primary_api_answer_for_conv_flow`), or the duplicated rows diverge
-- Scene continuity retry branch (v12.0) → in `generate_answer_with_retries()` AFTER the OOC branch and BEFORE Regex Watch / the missing-quotation retry (it is a character-level wrongness like OOC, while those two are shape passes that must run on text about to be kept). Kwargs `scene_continuity_enabled_local` / `scene_continuity_fixes_local` / `scene_continuity_max_rounds` / `cast_blocked_names_local` / `cast_expected_names_local`. On exhaustion the best-effort answer is KEPT, never dropped
-- Output format → `write_conversation()` ShareGPT structure
-- Opening mode → `generate_greeting()`, `generate_first_line()`, `enqueue_opening_tasks()`
-- Quality scoring → `quality.score_conversation()` call (via `_score_and_store_quality()`) after conversation complete, passing `character_profile_text=character_injection` and `scene_characters=scene_character_names`
-- **Judge gatekeeper (v11.4)** → `_score_and_store_quality()` returns the judge verdict (never `None`) and `_quality_dropped(verdict)` tells the write paths to skip the row. `quality_dropped_this_task` (set per task) suppresses the non-duplication final write, the duplication per-turn write and `completed_task_ids.add()`; the row is dropped, not requeued and not flagged. `quality_dropped` is persisted in `save_generation_state()`
-- Turn completion check → `conversation_is_complete()`
-- Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
-- Character prompt injection → character profile block built in `worker()` (personality/traits are conditionally injected lines in the profile; `persona` = inner personality is deliberately EXCLUDED from the profile and re-injected later as an INNER PERSONA BREAKTHROUGH block once the scene reaches the configured slot). Setting resolution → a `settings_for_selected[]` array is computed per task before the profile loop: each selected character keeps its own non-empty `setting`, else samples from the `random_settings` pool (if enabled) or the `A standard indoor environment.` default; when >1 character is selected the ensemble is unified to one shared setting picked from the distinct candidate settings (order-preserving dedupe), which becomes both the injected `Setting:` line for every character and `meta_setting`
-- Persona/emotional-state split → `_split_emotional_arc_entry()`, `_expand_emotional_arc()`, `_emotional_state_injection()`, `_user_emotional_state_injection()` (v10.6.0, user-side twin of `_emotional_state_injection`), `_persona_block_for_characters()` (all above `worker()`). User-side states (optional) are selected once per task when `user_emotional_states_enabled_local`, expanded across the USER turns (`_user_emotional_slot_state(user_turn_no)`: turn 1 = opening question/first line, continuation after answer k = turn k+1), and appended via `user_turn_note=` to the ephemeral user prompt of `generate_question()`, `generate_first_line()` and `generate_user_continuation()` — never stored in history, never in the system prompt. Recorded on metadata as `user_emotional_state`. The worker builds `base_scene_prompt` (system + lore + persona-free profile) once per task. It is the system message of every greeting, answer and user-continuation request in the task (a retry still appends its jailbreak or fix instruction to it); the generated question gets it plus `QUESTION_USER_SIDE`, and the first-line and fixer requests have their own system prompts. The per-reply notes come from `slot_notes(slot_no)`, which returns `(system note, depth-0 note)`: the INNER PERSONA BREAKTHROUGH block from `persona_breakthrough_turn` onward, then the slot's emotional state, which is a flat name or an arc stage (`'neutral -> anxious'` expanded across the conversation's assistant turns), each in the part its placement names (`prompts.character.persona_breakthrough_placement`, `prompts.emotional_states.placement`; `depth0` or `system`, default `depth0`, parsed by `note_placement()`). The depth-0 note is appended to the slot's final user message, the answer prompt or the opening-mode greeting prompt, after the history and never stored in it; the system note is appended to that slot's answer or greeting system prompt, before any retry fix, and the user continuation after the answer gets the same system prompt (without the fix), as in v10: if the continuation used the plain scene prompt instead, answers and continuations would alternate between two system prompts and a server that keeps one cached prompt per slot (llama-server) would recompute the history on every request. The generated question gets neither. With both on `depth0`, from one answer request to the next the system prompt and the history are the same text, which lets a server's prefix cache reuse them; keep the default that way. `placement_cache_warning()` estimates the history share a `system` placement makes the server compute again; `start_processing` logs it and shows a toast, and the config editor shows it under the placement dropdowns. Opening-mode greeting = slot 1, so conversation turn N lives at slot N+1.
-- Generated first user message → when characters are profiled, its system prompt is the scene prompt plus `QUESTION_USER_SIDE`, which tells the model it writes only the user's side and that the user is not one of the characters
-- Output metadata → `_build_record_metadata()` (26 flat keys at `meta_version` 7, same shape on every record, gap-filled — never `None`; `_safe_float()` keeps numeric types stable; v3 added the three roleplay dimension columns, v5 added `quality_logic`, v6 (v11.7) added `quality_tic_density` (`-1.0` whenever `quality.tic_dimension` is off or unscored) plus, when `include_style_metrics=` is passed, the flat `style_*` block built by `_style_metrics_for_record()` from `style_metrics.response_metrics()`/`aggregate()`; **v7 (v12.0) added `cast_schedule` / `cast_events` (the schedule string and the applied transitions, `""` when the feature is off) and `quality_cast_continuity` (`-1.0` when off/unscored)**) + `_score_and_store_quality()` (quality scoring deduped by task_id; called BEFORE both write paths so metadata can carry scores; accepts `scene_characters=` for the voice-distinctiveness heuristic)
-- Dataset binding → `bind_task_datasets(queue, task, ...)` near the top of the `worker()` task loop freezes one row per enabled source into an immutable `task_dataset_values` mapping for the life of the task (every turn, fix and retry); `validate_task_templates()` pre-checks the question, continuation, greeting and first-line templates up front. The static authored inputs in `dataset_authored_inputs` (system prompts, answer prompt, jailbreaks and fixes, lore, character fields, emotional states, name/setting pools, first-line styles) are rendered once per task with `render_task_inputs()`. The question, continuation, greeting and first-line templates are rendered where they are formatted, with `render_with_native_placeholders()`: `generate_question()`, `generate_user_continuation()`, `fill_greeting_prompt()` (called by `generate_greeting()`) and `generate_first_line()` take a `dataset_values=None` kwarg, and `None` skips rendering entirely, so generation without datasets behaves byte-identically to the pre-dataset engine. **Questions-file lines (v11.9.0):** the `use_questions_file_local` branch does NOT use `initial_user_question = task[3]` directly; it calls `render_question_task(task, task_dataset_values, append_alias=questions_append_alias_local, separator=questions_append_separator_local)[3]`, and the binding block validates `task[3]` up front with `validate_task_templates` so an unmapped alias fails the task instead of reaching the model. Both kwargs are keyword-only (`questions_append_alias_local` / `questions_append_separator_local`) `docs/dataset-bindings.md` (Placeholder syntax) lists the fields
-
-### `logging_config.py` [13]
-**Purpose:** Shared logging utility
-**Key:** `log_message()`, `LOG_FILE_PATH`, `DEBUG_LOGGING_ENABLED`
-**Edit for:**
-- Log path → `LOG_FILE_PATH`
-- Enable debug → `DEBUG_LOGGING_ENABLED = True` or UI checkbox
-
-### `quality.py` [14]
-**Purpose:** Quality scoring (heuristic + LLM-based)
-**Key:** `score_conversation()`, `_score_diversity()`, `_score_technical()`, `_score_with_llm()`, `_call_logic_judge()`, `_call_logic_judge_once()`, `_extract_json_object()`, `_repair_json()`, `_repair_truncated_json()`, `_lenient_json()`, `_salvage_scores_from_text()`, `_coerce_score()`, `judge_json_repair_attempts()`, `judge_max_tokens()`, `judge_request_timeout()`, `judge_structured_output()`, `judge_priority_enabled()`, `judge_priority()`, `_judge_priority_field()`, `JUDGE_PRIORITY_MIN` / `JUDGE_PRIORITY_MAX`, `_judge_response_format()`, `_heuristic_fallback_for_llm_dim()`, `active_scoring_dimensions()`, `_score_voice_distinctiveness()`, `_score_grounding()`, `_score_persona_alignment()`, `CAST_SCORING_DIMENSIONS`, `CAST_LLM_DIMENSIONS`, `is_cast_scoring_enabled()`, `enqueue_quality_scoring()`, `_record_quality_result()`
-**Edit for:**
-- Scoring dimensions → `SCORING_DIMENSIONS` dict (weights) + `ROLEPLAY_SCORING_DIMENSIONS` (opt-in via `quality.roleplay_dimensions`; active set comes from `active_scoring_dimensions()`, which every score/stats/UI path must use instead of `SCORING_DIMENSIONS` directly)
-- **Judge retry/drop policy (v11.4)** → `_call_logic_judge()` is a retry wrapper around `_call_logic_judge_once()`. Transient failures (network, timeout, non-200, unreadable envelope) retry `quality.judge_max_attempts` times (default 3) with `quality.judge_retry_delay` linear back-off; **invalid JSON is final and never retried**. `_judge_drop_reason()` decides the verdict: `invalid_json` / `logic_zero` (a judge `logic` score of 0, also final) / `judge_failed` (every retry exhausted). A drop returns `{"dropped": True, "drop_reason": ..., "method": "dropped"}` — `score_conversation()` never falls back to heuristics for a failed judge. A judge that is not configured is a SKIP, not a drop (`JUDGE_SKIP_FLAGS`). Adding a final-failure flag means adding it to `JUDGE_FINAL_FAILURE_FLAGS`; adding a skip flag means adding it to `JUDGE_SKIP_FLAGS`
-- **Verdict delivery** → `enqueue_quality_scoring()` queues the job and waits on its `threading.Event` (the processor still runs one judge at a time) because the worker must know the verdict BEFORE it writes. `_record_quality_result()` stores scores in `app_state.quality_scores` and drops in `app_state.quality_dropped` / `app_state.dropped_task_ids`; a drop is never stored as a score and never flagged for review
-- **Regex Watch stats (v11.6)** → `apply_regex_watch()` bumps `regex_watch_count_total` / `regex_watch_counts_per_api`, fills `recent_regex_total` / `recent_regex_per_api` (same shape as the other recent lists) and appends to `app_state.regex_watch_log` (bounded `MAX_REGEX_WATCH_LOG`, guarded by `regex_watch_log_lock`), which the Regex Watch dashboard area reads. `save_generation_state()` persists both counters
-- **Judge reply parsing (v11.5)** → never call `json.loads` on a judge reply directly; go through `_extract_json_object(content, preferred_keys=dims)`, which returns `(dict|None, how)` and tries direct parse → balanced-object scan (`_json_objects_in`, survives thinking blocks/prose/fences, prefers a candidate carrying the score keys) → `_repair_json` → `_lenient_json` → `_repair_truncated_json` → `_salvage_scores_from_text` (all-or-nothing per dimension). `_coerce_score()` turns `"85"`, `"85/100"` and prose numbers into scores. `_call_logic_judge()` owns the policy: a token-limited reply (`finish_reason: length`) is TRANSIENT and retried with a doubled `max_tokens`; an unparsable reply gets `quality.judge_json_repair_attempts` format-repair rounds (the model's own text is echoed back via `repair_of=`) before it becomes the final `llm_invalid_json` drop. `llm_bad_envelope` / `llm_empty_reply` / `llm_truncated` are transient (never final, never skip). Raw replies, `finish_reason` and the recovery rung are appended to the per-slot debug log. `quality.judge_structured_output` (`auto` default) sends `response_format`; a server that rejects it is remembered in `_JUDGE_NO_RESPONSE_FORMAT` and the request repeated without it. Adding a new final-failure flag still means adding it to `JUDGE_FINAL_FAILURE_FLAGS`
-- **vLLM priority (v11.8.x)** → `_call_logic_judge_once()` merges `_judge_priority_field()` into `payload_dict` ONCE, before the request loop, so the transient retries, the format-repair rounds and the `response_format`-fallback request all carry the same `priority` (a retried judge request must not lose its place in the vLLM queue). `judge_priority_enabled()` returns `False` when the key is missing and accepts string forms (`'true'`/`'yes'`/`'1'`/`'on'`); `judge_priority()` clamps to -10..10 (`JUDGE_PRIORITY_MIN` = -10, `JUDGE_PRIORITY_MAX` = 10) and falls back to 0 on anything unparsable, because a bad config value must never break a run. **-10 is the HIGHEST priority** and **10 the lowest** (vLLM: lower is handled earlier), and the whole negative half must pass through unmodified — clamping it up to 0 would silently demote a judge the user deliberately put at the front of the queue. The narrow range is deliberate: a handful of steps either side of vLLM's default is all a judge needs, and a tight bound cannot be mistyped into a runaway value. When the toggle is off the field is absent entirely, so the payload is byte-identical to v11.7. `priority` is NOT part of the OpenAI schema: a backend that does not know it rejects the unknown field, and vLLM raises an error for any priority other than 0 when the served model is not priority-scheduled — that is why the default is off/0 rather than on/0. Guarded by the priority cases in `tests/test_quality_json_robustness.py`
-- **Cast continuity dimension (v12.0)** → `CAST_SCORING_DIMENSIONS = {"cast_continuity": 0.10}` + `is_cast_scoring_enabled()` (reads `quality.cast_continuity`), folded into the composite by `active_scoring_dimensions()`. Registered in **`CAST_LLM_DIMENSIONS` ONLY — never in `HEURISTIC_DIMENSIONS`**: it is a judgement call with no measurable proxy, and the `tic_density` comment establishes the rule that a dimension with no real heuristic must not be given a fabricated one. `_score_with_llm()` gains `cast_schedule=` / `cast_events=`, appends the cast block + `"cast_continuity": <0-100>` to the prompt ONLY when the toggle is on, and adds `CAST_LLM_DIMENSIONS` to `_judge_dims` so the extraction ladder treats it as a first-class dimension. **`enqueue_quality_scoring()`'s queue tuple grew from 9 to 11 items** (cast_schedule, cast_events before the job): the consumer unpacks `item[:10]` with `job = item[10]`, so adding a field means updating BOTH the producer and that unpack — this is the most error-prone step of the feature
-- Heuristic logic → `_score_diversity()`, `_score_technical()`, `_heuristic_fallback_for_llm_dim()`, plus the roleplay heuristics (voice = bigram overlap between characters' attributed spoken lines via `_spoken_lines_by_character()`; grounding = profile-keyword coverage via `_profile_keywords()`; persona = Persona-section keyword timing around `prompts.character.persona_breakthrough_turn` via `_persona_sections()`)
-- LLM scoring → `_score_with_llm()` (uses API slot from `quality.scoring_api` config); when the toggle is on it appends the three roleplay definitions + JSON fields to the judge prompt, raises the `max_tokens` default by 64/dim, and refines (replaces) the heuristic roleplay scores with the judge's; `_score_and_store_quality()` in `generation.py` forwards `scene_characters=scene_character_names`
-- Tests → `tests/test_quality_roleplay.py` (toggle on/off, all three heuristics, judge prompt/refinement via stubbed `requests.post`); `tests/test_quality_json_robustness.py` (extraction ladder, salvage, coercion, format-repair rounds, truncation retry, `response_format` fallback, envelope errors)
-- Persona-fidelity consistency → `score_conversation()` / `_score_with_llm()` accept `character_profile_text`; the actual character card (the `character_injection` block from `worker()`) is injected into the judge prompt so the `consistency` dimension measures persona/personality/traits fidelity, not just self-consistency. Capped by `quality.max_profile_chars_for_scoring` (default 4000). Without a profile the judge falls back to generic self-consistency language
-- Consistency heuristic fallback → `_heuristic_fallback_for_llm_dim('consistency')` no longer returns a flat `70`; it scores down on well-known OOC markers (helpful-bot narration, "as <name>, I would" breaks, fourth-wall drops)
-- Flags → Add to `flags` list in scoring functions
-
-### `tests/test_api_profiles.py` [15]
-**Purpose:** Unit tests for `api_profiles.py`
-**Edit for:** Add new profile tests in `main()`
-
-### `tests/test_opening_mode.py` [16]
-**Purpose:** Tests for opening mode functionality
-**Edit for:** Add new opening mode tests (greeting, first-line, worker integration). It also checks where the per-reply note goes, that the requests of a task share one system prompt, and the generated question's `QUESTION_USER_SIDE` line
-
-### `text_utils.py` [17]
-**Purpose:** Text processing utilities
-**Key:** `normalize_quotes()`, `repair_straight_quotes()`, `remove_markdown()`, `remove_reasoning_text()`
-**Edit for:**
-- Add text cleanup → New function + call in `write_conversation()` processing loop
-- Quote handling → `normalize_quotes()` (curly vs straight balance)
-
-### `ui_layout.py` [18]
-**Purpose:** Tkinter layout helpers
-**Key:** `ScrollableFrame`, `ResponsiveGrid`, `NotebookNavigator`, `wrap_label()`
-**Edit for:**
-- Custom layout → Use `ResponsiveGrid` for reflowing widgets
-- Scrollable area → Wrap in `ScrollableFrame`
-
-### `tests/test_user_emotional_states_ui.py`
-**Purpose:** Display-dependent regression test for the v10.6.0 user-side emotional-states save/load round trip in the REAL `ConfigEditor` (enable + type → save → `config.yml` holds states; reopen → states visible in the field; unmodified reopen+save → no clobber to `[]`). Catches the disabled-Text silent-drop bug class (edits dropped while the field is still `disabled`)
-**Run:** `python -B tests/test_user_emotional_states_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
-**Edit for:** Add editor round-trip cases; keep it free of source data, generation runs, network and model APIs
-
-### `tests/test_persona_arc.py` [19]
-**Purpose:** Unit tests for the persona/emotional-arc helpers in `generation.py`
-**Key:** `main()` covers `_split_emotional_arc_entry`, `_expand_emotional_arc`, `_emotional_state_injection`, `_persona_block_for_characters`
-**Edit for:** Add arc-parsing/expansion/injection cases (arrows, stage distribution, header text, single vs multi-char labels)
-
-### `tests/test_random_settings.py` [20]
-**Purpose:** Standalone validation of the setting resolution/unification algorithm added to `worker()`
-**Key:** `resolve_settings()` mirrors the per-task block; `run()` covers keep-own-setting, pool-sample-on-empty, multi-character unification, selection-off default, pool-disabled default, and ensemble-bounded unification across a seed range
-**Edit for:** Add settings-resolution edge cases (blank/whitespace own setting, pool with duplicates, 3+ char ensembles)
-
-### `tests/test_quality_roleplay.py`
-**Purpose:** Headless unit tests for the opt-in roleplay quality dimensions in `quality.py` (no model/network/display; the LLM-judge path is exercised through a stubbed `requests.post`)
-**Key:** covers the `quality.roleplay_dimensions` toggle (off by default; active dimension set + weight normalization), the three heuristics (`_score_voice_distinctiveness`, `_score_grounding`, `_score_persona_alignment` incl. the early-leak / never-surfaces / no-persona cases) and judge prompt construction + refinement when on
-**Edit for:** Add roleplay-dimension heuristic or judge-prompt cases
-
-### `tests/test_quality_judge_policy.py`
-**Purpose:** Headless tests for the v11.4 judge retry/drop policy in `quality.py` and the worker's drop gate (no model/network/display; the judge is exercised through a stubbed `requests.post`)
-**Key:** transient failures retry `quality.judge_max_attempts` times then drop; `judge_max_attempts` overrides the count; a good reply after a failed attempt is kept; invalid JSON and a `logic` score of 0 drop with no transient retry (v11.5 adds one format-repair round, and `judge_json_repair_attempts: 0` restores the immediate drop); a low non-zero logic score is kept; an unconfigured judge is a skip, not a drop; a drop is stored in `app_state.quality_dropped` and never in `quality_scores` / `quality_review_ids`; `generation._quality_dropped()` recognises a drop
-**Edit for:** Add retry/drop-policy cases (new final-failure or skip flags, timeout handling, state bookkeeping)
-
-### `tests/test_quality_json_robustness.py`
-**Purpose:** Headless tests for the v11.5 judge JSON-robustness layer in `quality.py` (no model/network/display; the judge is exercised through a stubbed `requests.post`)
-**Key:** `_extract_json_object()` recovers a reply from a thinking block, surrounding prose, ``` fences anywhere, trailing commas, smart quotes, Python literals and a cut-off tail; a candidate object carrying the score keys beats a decoy `{...}` in the prose; numeric salvage requires EVERY expected dimension; `_coerce_score()` handles `"85"` / `"85/100"` / prose; a format-repair round recovers the verdict and is bounded by `quality.judge_json_repair_attempts`; a token-limited reply is salvaged or retried with a doubled budget; `response_format` is sent and a rejecting endpoint is retried once without it and remembered; an unreadable envelope and an empty reply are transient; (v11.8.x) the vLLM `priority` field is absent when the toggle is off, defaults to 0, is forwarded as an int, is clamped to -10..10 (and falls back to 0 on garbage), passes every negative value through unmodified (-10 is the highest priority, 10 the lowest), accepts string toggle forms, and rides on the format-repair and `response_format`-fallback requests too
-**Edit for:** Add extraction/repair cases whenever a new malformed-reply shape shows up in the logs; keep it free of source data, generation runs, network and model APIs
-
-### `tests/test_regex_watch.py`
-**Purpose:** Headless tests for Regex Watch (v11.6) — the pattern engine in `detection.py` and the rewrite pass in `generation.py` (no model/network/display; `requests.post` is stubbed)
-**Key:** validation keeps order/drops blanks/duplicates/reports syntax errors and oversized patterns; every shipped default compiles; the positive sentences match and clean prose does not (v11.7: eight shipped defaults incl. the scotoma denial-correction and absolute-trailer tics; `test_scotoma_tic_patterns()` covers the two new shapes); the reported sentence is the one holding the match (neighbours excluded) and is capped; zero-width and invalid patterns never hit and never raise; matching is case-insensitive; the timestamp is appended once and `record_timestamp=False` does not; a clean rewrite replaces the text; a rewrite that still matches, is empty, is much shorter than the original or unbalances quotes is discarded and the original kept; a non-200 is retried then given up; an empty pattern list and an unconfigured API are no-ops; a second shape introduced by the first rewrite is caught in the same pass; the loop is bounded by `max_rounds` and a leftover hit is reported `unresolved`; the shipped `config.yml` block is off by default, has 1-5 rounds and compiles
-**Run:** `python -B tests/test_regex_watch.py`
-**Edit for:** Add pattern-engine or rewrite-policy cases
-
-### `tests/test_regex_watch_ui.py`
-**Purpose:** Display-dependent regression test for the v11.6 Regex Watch editor panel in the REAL `ConfigEditor` (skips cleanly without a display)
-**Key:** patterns with backslashes and quote classes survive save -> `config.yml` -> reopen byte for byte; a duplicate is refused; Remove deletes the selected pattern and the removal is saved; an invalid pattern is refused by Add and blocks the save; the toggle disables/enables the entry and Add button; Restore Defaults uses `detection.DEFAULT_REGEX_WATCH_PATTERNS`
-**Run:** `python -B tests/test_regex_watch_ui.py` (needs a display, e.g. under `xvfb-run`)
-**Edit for:** Add editor round-trip cases; keep it free of source data, generation runs, network and model APIs
-
-### `tests/test_regex_watch_tab_ui.py`
-**Purpose:** Display-dependent regression test for the `🔎 Regex Watch` dashboard tab layout (builds the REAL `generate.py` UI; skips cleanly without a display)
-**Key:** both tables use `REGEX_TREE_STYLE` (not the theme's default `Treeview`); the style's `rowheight` fits the body font's linespace plus `MIN_ROW_SLACK`; the rendered rows really are that tall; no column is narrower than its own heading text needs; both stacked tables share one row height
-**Run:** `python -B tests/test_regex_watch_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
-**Edit for:** Add tab-layout cases; keep it free of source data, generation runs, network and model APIs
-
-### `tests/test_editor_readability_ui.py`
-**Purpose:** Display-dependent regression test for the v11.6.2 Configuration Editor readability fixes (builds the REAL `ConfigEditor` under the production 'superhero' theme; skips cleanly without a display)
-**Key:** no mapped label in any tab is taller than twice its width (a "skyscraper"), checked at a normal size AND at the 760x520 minimum; the Regex Watch patterns caption has a real `wraplength`; the Bad Words description is not a skyscraper; both spinboxes keep >=4.5:1 field/text contrast and >=3:1 while disabled; the rounds spinbox accepts typed input once enabled; every `TSpinbox` in the editor carries `SPINBOX_FIELD_STYLE`
-**Run:** `python -B tests/test_editor_readability_ui.py` (needs a display, e.g. under `xvfb-run`)
-**Edit for:** Add editor layout/contrast cases; keep it free of source data, generation runs, network and model APIs
-
-### `tests/test_review_tab_ui.py`
-**Purpose:** Display-dependent regression test for the v11.4 Review tab (builds the REAL `generate.py` UI; skips cleanly without a display)
-**Key:** full-task-id Treeview items + single-click selection; transcript rendered from the output JSONL; the detail pane is read-only and scrollable; a refresh tick keeps the selection and the scroll position; Export Flagged → JSONL writes every row with `_quality_score`; the filter narrows and restores the list
-**Run:** `python -B tests/test_review_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
-**Edit for:** Add Review-tab behaviour cases; keep it free of source data, generation runs, network and model APIs
-
-### `tests/test_non_latin.py`
-**Purpose:** Headless tests for the v11.10.0 non-Latin script check -- the Unicode allow-list detector in `detection.py` and the retry/re-roll paths in `generation.py` (no model/network/display; `requests.post` is stubbed)
-**Key:** every reported script is flagged with its label (Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, emoji); accented Latin (`Café`, `naïve`, `straße`), curly quotes, guillemets, an em dash, a star and a heart all pass; one row per DISTINCT script (a CJK sentence reports one, two scripts report two); `find_non_latin_characters()` returns `(script, character, sentence)`; a hit records one timestamp and a clean reply none; the shipped config block is off with a `fixes` list; an assistant answer is regenerated with the built-in `DEFAULT_NON_LATIN_FIX` (or the configured fix), a permanently stray reply is never written, and the generated question / user continuation / greeting / first line are re-rolled (off keeps them as-is)
-**Run:** `python -B tests/test_non_latin.py`
-**Edit for:** Add detector or retry-policy cases
-
-### `tests/test_missing_quotations.py`
-**Purpose:** Headless tests for the v11.7.1 "Experiment: Retry missing quotations" pipeline (no model/network/display; `requests.post` is stubbed)
-**Key:** the detector flags a spoken line with NO quotation marks and an attribution verb (straight/curly-quoted replies, pure narration and short fragments are all non-hits); the retry pass — off → mark-less reply written as-is (exactly one main-API request); on → the answer is sent back to the SAME main API slot, nothing appended to the system prompt (prefix-cache friendly), the quoted re-reply is what gets written; a still-broken retry is kept (bounded to one retry per attempt, never dropped); a properly quoted reply needs no extra request
-**Run:** `python -B tests/test_missing_quotations.py`
-
-### `tests/test_missing_quotations_ui.py`
-**Purpose:** Display-dependent regression test for the v11.7.1 "Experiment: Retry missing quotations" checkbox in the REAL `ConfigEditor` (skips cleanly without a display)
-**Key:** save -> `config.yml` holds `retry_missing_quotations: true`; reopen -> checkbox ticked again; unmodified reopen+save -> flag survives (no clobber to the off default). Mirrors `tests/test_user_emotional_states_ui.py`
-**Run:** `python -B tests/test_missing_quotations_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
-
-### `tests/test_questions_dataset_ui.py`
-**Purpose:** Display-dependent regression test for the v11.9.0 "Questions File Dataset Variables" fields in the REAL `ConfigEditor` (skips cleanly without a display)
-**Key:** the escaped separator round-trips (`\n---\n` typed in the Entry is stored in `config.yml` as real characters and shown escaped again on reopen); an unmodified reopen+save does not clobber either value; the escape helpers only decode the four known escapes and keep an unknown escape / lone trailing backslash as typed; validation refuses an invalid alias and an alias while the questions file is off
-**Run:** `python -B tests/test_questions_dataset_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
-
-### `tests/test_worker_launch.py` [21]
-**Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
-**Key:** Rebuilds the `worker()` signature from its AST, extracts the actual `threading.Thread(target=worker, args=..., kwargs=...)` call from `start_processing()`, and binds them via `inspect.Signature.bind()`; then asserts the OOC kwargs (`current_ooc_phrases`/`current_ooc_fixes`/`current_ooc_enabled`) are supplied by keyword from same-named locals (never positionally) — no app config, GUI, or network code is evaluated
-**Run:** `python -B tests/test_worker_launch.py`
-**Edit for:** Extend per-kwarg source assertions when new params are moved into / added to the `kwargs=` dict at the launch site
-
-### `dataset_sources.py` [22]
-**Purpose:** Dataset readers for the optional dataset-binding foundation (CSV/TSV/JSON/JSONL stdlib; Parquet via optional `pyarrow`; Hugging Face Hub / saved-`DatasetDict` via optional `datasets` 4.x). No Tk/app/config imports; importing makes no network requests
-**Key:** `SourceSpec`, `DatasetSchema`, `DatasetRow`, `DatasetSource` (ABC), `LocalFileSource`, `HuggingFaceSource`, `SavedDatasetSource`, `open_source()`, `DatasetDependencyError`
-**Edit for:**
-- Add new source kind → New `DatasetSource` subclass + register in `open_source()` + `dataset_settings._SELECTOR_DEFAULTS` + `datasets_panel._KINDS`
-- Schema discovery → `schema()` returns column names + opaque fingerprint, never record values (JSON reads records internally to find keys, discards them)
-- Optional deps → Guarded by `_optional_module()` / `_datasets_backend()`; absent dependency → `DatasetDependencyError`
-
-### `dataset_settings.py` [23]
-**Purpose:** Names-only settings for the `datasets` config subtree (source selectors, cached column names, aliases, visibility). No GUI, file, or network I/O
-**Key:** `normalize_config()`, `validate_config()`, `source_selector()`, `source_spec()`, `apply_schema()`, `visible_column_names()`, `with_visible_columns()`, `DatasetSettingsError`
-**Edit for:**
-- Add new source selector field → `_SELECTOR_DEFAULTS` + `source_selector()` + `validate_config()`
-- Readiness rule → An *enabled* source with aliases must be complete; disabled/alias-free sources may stay drafts. Hiding a column is presentation-only, never changes alias mapping
-
-### `dataset_bindings.py` [24]
-**Purpose:** Freeze dataset values for one logical generation task, independently of workers (no GUI/worker/app-state imports). One `DatasetBindingManager` per run
-**Key:** `DatasetBindingManager` (`bind(task_id)`, `snapshot()`), `TaskBinding` (`to_dict()`/`from_dict()` JSON snapshots), `SourceBinding`, `SourceProvenance`, `cell_to_text()`, `DatasetExhaustedError`
-**Edit for:**
-- Row advancement → Each source advances sequentially once per newly bound task; rows stage until EVERY source succeeds — exhaustion or invalid data never cycles, skips, or partially publishes
-- Lock ordering → Allocation lock released before the caller renders prompts or calls model APIs
-- Snapshot format → Serializes actual values (foundation for later save/resume; does not restore cursors/pending jobs/conversation progress)
-
-### `dataset_templates.py` [25]
-**Purpose:** Dataset placeholders (`{{ds:alias}}`) and explicit boundaries for authored-prompt rendering. No app/GUI/network/RNG imports
-**Key:** `render_template()` (single-pass), `render_with_native_placeholders()` (preserves the generator's ordered native `str.replace` cascade), `render_question_line()` (v11.9.0: expands `{{ds:alias}}` in one `input/questions.txt` line and appends one alias value after a separator; `dataset_values=None` returns the line unchanged), `DEFAULT_QUESTION_SEPARATOR`, `validate_alias()`, `dataset_placeholders()`, `DatasetTemplateError`
-**Edit for:**
-- Add placeholder syntax → `_TOKEN_START` regex + `render_template()`; keep single-pass guarantee (inserted values are never re-interpreted)
-- Reserved namespace → Whitespace-tainted `{{ ds:... }}` variants raise instead of silently passing to the model; the compatibility renderer uses literal native replacements that can match `{context}` inside `{{context}}`
-
-### `dataset_tasks.py` [26]
-**Purpose:** Attach optional dataset values to the generator's existing task identities. One attachment service per existing queue; original task tuples/IDs/retry rules untouched; in-memory only
-**Key:** `configure_queue_datasets()`, `bind_task_datasets()`, `render_task_inputs()`, `validate_task_templates()`, `render_question_task()` (v11.9.0: expands a questions-file task's line, returning `(task_id, file_name, index, line) + task[4:]` so identity/retries/resume are untouched), `DatasetTaskAttachments`
-**Edit for:**
-- Queue wiring → `configure_queue_datasets()` called from `generate.py` at processing start; readers opened lazily by the first worker that needs a binding; `_OwnedReader` closes each reader once at queue lifetime end (an old worker finishing its queue is never cut off by a replacement run)
-- Task metadata entry → A *reference* to the immutable binding, not a mutable global "current row"
-
-### `datasets_panel.py` [27]
-**Purpose:** Names-only dataset configuration panel (the Configuration Editor **Datasets** tab), independent of generation workers
-**Key:** `DatasetsPanel`, `load_config()` / `get_config()` / `validate()`, `_metadata_worker()` (max 2 daemon threads)
-**Edit for:**
-- Add source kind UI → `_KINDS` tuple + kind/label maps; Hub sources expose config/split/revision, `hf_disk` exposes its split selector
-- Metadata inspection → Runs in background threads; Tk widgets touched only by the UI thread; column import calls the schema interface and never previews cell values
-
-### `dataset_column_menu.py` [28]
-**Purpose:** Bounded, searchable column-visibility picker for the Datasets panel — one Treeview shows all column names regardless of count
-**Key:** `ColumnVisibilityMenu` (`set_columns()`, `on_change(None | tuple_of_names)`) — `None` = all columns (incl. imported later); explicit empty = none
-**Edit for:** Selection semantics in the docstring: `set_columns` never fires `on_change`; canonicalization to `None` when every current column is selected; no application-wide event bindings
-
-### `tests/test_dataset_sources.py` [29]
-**Purpose:** Unit tests for `dataset_sources.py` (local CSV/TSV/JSON/JSONL readers, schema discovery, fingerprints, error paths)
-**Edit for:** Add reader/format cases with temporary fixture files
-
-### `tests/test_dataset_settings.py` [30]
-**Purpose:** Unit tests for `dataset_settings.py` normalization/validation (selectors, aliases, visibility, readiness rules)
-**Edit for:** Add setting-shape and validation-failure cases
-
-### `tests/test_dataset_bindings.py` [31]
-**Purpose:** Unit tests for `dataset_bindings.py` (sequential allocation, repeat-bind idempotency, exhaustion, snapshot round trip, thread safety)
-**Edit for:** Add binding-lifecycle cases (use `ThreadPoolExecutor` for concurrency)
-
-### `tests/test_dataset_templates.py` [32]
-**Purpose:** Unit tests for `dataset_templates.py` rendering (single-pass, native-placeholder compatibility, alias validation, reserved-namespace typos)
-**Edit for:** Add render/template edge cases
-
-### `tests/test_dataset_tasks.py` [33]
-**Purpose:** Unit tests for `dataset_tasks.py` (queue attachment lifecycle, lazy reader open/close, same-run reuse, GC behavior of weak references)
-**Edit for:** Add task-attachment lifecycle cases
-
-### `tests/test_dataset_backends.py` [34]
-**Purpose:** Backend-coverage tests for optional readers (Parquet via `pyarrow`, Hub / saved-`DatasetDict` via `datasets` 4.x) incl. resource lifecycle on rename/delete; never touches the network or a model API
-**Edit for:** Extend optional-backend cases; hard-dep backends (csv/json/jsonl) always run, optional ones skip when the package is missing
-
-### `tests/test_dataset_column_menu.py` [35]
-**Purpose:** Unit tests for `dataset_column_menu.py` (selection semantics, large-column boundedness, grab/focus handling); skips cleanly without a display
-**Edit for:** Add picker behavior cases (run on a display for zero skips)
-
-### `tests/test_datasets_panel.py` [36]
-**Purpose:** Unit tests for `datasets_panel.py` (add/edit/import/alias/save-load flows, background metadata workers); synthetic column names only, optional screenshots via `READYART_GUI_SCREENSHOTS`
-**Edit for:** Add panel-flow cases
-
-### `tests/test_dataset_pipeline.py` [37]
-**Purpose:** Pipeline-level simulation of dataset integration into worker-shaped request stages (question/answer/continuation/cleanup); all model replies are fixtures, expected request bodies assembled independently of the renderer
-**Edit for:** Add stage-level pipeline scenarios (scheduler/transport/retry/cache are small simulations, not production impls)
-
-### `tests/test_dataset_compatibility.py` [38]
-**Purpose:** Bounded equivalence check: the real worker/request builders/fixers/state saver/output writer run twice — baseline with explicitly populated authored inputs vs candidate fed the same values through real CSV/JSONL sources (fake HTTP, no cache hits/waits/display)
-**Edit for:** Extend side-by-side scenarios; this proves byte-level compatibility, not exhaustive equivalence
-
-### `docs/dataset-bindings.md` [39]
-**Purpose:** User/design doc for the Datasets tab (workflow, placeholders, what is/isn't persisted; notes lineage from upstream `5993702`)
-**Edit for:** Update when Datasets UX or persistence semantics change
-
-### `docs/input-folder.md` [42]
-**Purpose:** User guide to the `input/` folder: which files chunk mode picks up, encoding/BOM rules, the `sanitize_input()` character strip, the `len > context_size` minimum-size rule, how a chunk is cut (random character offsets, not sentence boundaries), `questions.txt` line format, dataset variables in a questions-file line (v11.9.0: `{{ds:alias}}` placeholders and the single appended alias, and why chunk-mode `.txt` is deliberately not rendered), original worked examples, a pre-flight check snippet and a troubleshooting table
-**Edit for:** Update when the `input/` discovery rule in `generate.py` (`os.listdir` + `.endswith('.txt')` + the `questions.txt` exclusion), `read_book()`/`read_txt()`, `sanitize_input()`, `render_question_line()` / `render_question_task()` or the `prompts.questions_dataset.*` settings, or the `generation.subject_size` / `context_size` / `num_random_chunks` / `sanitize_input_max_length` defaults change
-
-### `requirements-datasets.txt` [40]
-**Purpose:** Optional extras for Hugging Face Hub, local Parquet, and saved-HF dataset support (includes base `requirements.txt` + `datasets==4.4.2`; requires Python 3.9+). Base `requirements.txt` only pins `requests>=2.32.4,<3`
-**Edit for:** Bump optional backend pins here, never in `requirements.txt`
-
-### `tools/check_dataset_hub.py` [41]
-**Purpose:** Opt-in live Hub reader check — prints schema/provenance and verifies live-row binding, same-job reuse, snapshot round trip, and literal rendering; never prints dataset cells, calls a model, or mutates app config
-**Usage:** `python -B tools/check_dataset_hub.py --repository owner/dataset --split train --column text [--config X] [--revision Y] [--rows N]` (install `requirements-datasets.txt` first; unit tests never invoke this)
-
-### `tools/gemma4_thought_fix.py` [45]
-**Purpose:** **OUTSIDE THIS PROJECT — nothing here imports, reads or tests it.** **Written by Karki (a user on Discord), not by this repository** — we only applied robustness fixes (see below); credit the idea and the implementation to Karki. Standalone helper for people fine-tuning Gemma 4 26B/31B with axolotl: fixes the empty thought block (`<|channel>thought\n<channel|>`) that Gemma's chat template writes only for the reply being generated, never for the replies inside a conversation — so axolotl trains every reply straight after `<|turn>model\n` and teaches the model to skip thinking. Two steps: `cmd_check()` checks the data format, removes any thought block from reply TEXT (the template writes it outside the text, where axolotl masks it), finds the template the config trains with (entry `chat_template` → top-level → `tokenizer_default`), renders every sample through it, and if replies lack the block writes a patched `chat_template.train.jinja` beside the data plus the two config lines to use it; `cmd_verify()` then reads axolotl's own tokenized `dataset_prepared_path` and asserts every reply starts with the MASKED empty block, the reply after it is trained, and nothing switches thinking on. Key: `EMPTY`, `MODEL_TURN`, `THINK`, `check_sample()`, `DATA_ISSUES`, `effective_template()`, `pick_dataset()`, `template_from_config()`, `renderer()`, `survives()`, `survival_check()`, `THOUGHT_IF`, `patch_template()`, `MARK`
-**Usage:** `python3 tools/gemma4_thought_fix.py data.jsonl --config axolotl.yml` then `axolotl preprocess axolotl.yml && python3 tools/gemma4_thought_fix.py verify last_run_prepared --tokenizer /path/to/base_model` (run both inside the axolotl environment; no GPU). Flags: `--template`, `--out`, `--yes`. Exit 0 = PASS/FIXED, 1 = NOT READY/NOT FIXED/NOT CHECKED, 2 = no usable conversation
-**Edit for:** The template patch must stay limited to the one known Gemma 4 thought-rendering shape (`THOUGHT_IF`) and refuse to guess — never widen it into a generic rewrite. Every file write must stay non-destructive (a new path, never the input) and every failure path must end in a readable message, not a traceback. **The docstring's AUTHORSHIP block and the `--help` epilog credit Karki — keep them; this repository did not write the script.** Not covered by `tests/` and not part of the test loop; see `docs/gemma4-chat-template.md`
-
-### `style_metrics.py`
-**Purpose:** (v11.7) Pure-stdlib measurement layer ported from the scotoma analysis scripts (comma habits, tail-end positivity lift, narration/dialogue segmentation, interiority density, long-range grounding, coherence defects, narration-only negation density/runs, denial-then-correction couplets, comma-appended absolute trailers, question handback). Imports NOTHING project-local and nothing third-party — it is a leaf in the dependency graph (the `app_state.py` rule), so it unit-tests headless. `response_metrics()` = one flat dict of numbers per assistant turn; `aggregate()` = means across rows, excluding `UNMEASURED` (-1.0); `UNMEASURED` is the gap token. **`TRAILER_PATTERN` is the ONE definition of the comma-appended absolute-trailer construction** — `config/config.yml` and `detection.DEFAULT_REGEX_WATCH_PATTERNS` mirror that exact string and `tests/test_regex_watch.py` asserts all three are identical, so the metric and the rewrite pass cannot drift apart. The trailer rule (from `scotoma/trailer_rate.py`) is: a comma-appended segment that carries **no finite verb** and **no speech verb** and **does** carry a predicate signal (body noun / `-ing` participle / `-ly` adverb). A comma that directly follows a speech verb, or that closes a line of dialogue, never opens a trailer. Dropping the verbless test is what made ordinary clauses like `"...the man said"` and `"...the boat is leaving"` read as absolutes. Design decisions that fix scotoma defects and must not be "simplified" away: tail lift is clamped at 10.0 (an unbounded ratio destroys means); `question_handback` uses `min_words=1` (a 5-word floor silently drops "What do you think?"); `negation_profile` is narration-only via `segments()` (asterisks invert the dialogue convention — asserted in the tests); `denial_correction_hits` rejects a negated correction tail (a negation RUN is not a denial-correction). Consumed by `quality._score_tic_density()` (the `tic_density` dimension) and `generation._style_metrics_for_record()` (the per-record `style_*` metadata block)
-**Edit for:** New measurements go here first (keep it dependency-free and Python 3.9-clean — no `match`, no `X | Y`), then wire them into `_score_tic_density` / `response_metrics` / the metadata block; covered by `tests/test_style_metrics.py`
-
-### `docs/gemma4-chat-template.md` [46]
-**Purpose:** **OUTSIDE THIS PROJECT** — user guide to `tools/gemma4_thought_fix.py`, **a script written by Karki (a user on Discord)**, for people training Gemma 4 with axolotl: why the empty thought block matters, why the fix is split between the template (writes the block, masked) and the data (carries none), the five numbered sections of step 1 and what every finding means, the template-resolution order, the patch and its three refusals, the four `verify` checks, exit codes, all flags, a worked run, the "replace the template before you upload" warning, a troubleshooting table and a code map. Says explicitly and first that it is unrelated to this generator, and credits Karki for the script (this repository only applied robustness fixes)
-**Edit for:** Update when the tool's output, findings, flags, patch shape or `verify` checks change; keep the out-of-scope notice AND the Karki credit at the top
-
-### `docs/scene-cast.md` [43]
-**Purpose:** User/design guide for the v12.0 Scene Cast feature: what it is for, the one idea ("the generator owns the cast, the model only narrates it"), the five-state table, the deliberate exit-cancelled / arrival-forced asymmetry and WHY it is asymmetric, what the code-only continuity check catches and what it deliberately does not (`"Where is Melody?"`, `Cole nodded at Melody`, possessives), cache safety (no per-reply counter), how to turn it on, a per-character/`min_present` feasibility table, reading `cast_events` to measure whether the model writes its exits, worked examples, a troubleshooting table, and a code map
-**Edit for:** Update when the cast state machine, the note text, `min_present` feasibility, the metadata keys or the config keys change
-
-### `tests/test_scene_cast.py` [44]
-**Purpose:** Headless guard for the v12.0 Scene Cast feature — schedule invariants (no exit below `min_present`, every character exactly once, no character both joins and leaves, slots in range, exit after enter, minimal = at most one of each), the state machine (defer/force/cancel, the deliberate asymmetry asserted explicitly, no illegal state ever produced, deferrals live on the state not the plan), cast-note cache stability (two static slots are BYTE-IDENTICAL, no `None`, no per-reply counter), the detector (speaker prefix, name-adjacent quotes, `"Where is Melody?"` does not flag, narration actions, possessives, names ending in punctuation, accents, `expected_missing` is soft, timestamps only on hard hits), metadata v7 (`cast_schedule` / `cast_events` / `quality_cast_continuity`, identical key sets), the dimension gating (LLM-only, never heuristic, driven through the real `global_config` ConfigLoader) and the shipped config being inert
-**Edit for:** Add cases when the schedule, the state machine, the note or the detector changes
-
-### `tests/test_style_metrics.py`
-**Purpose:** Headless guard for `style_metrics.py` — 58 checks over every metric, including the clamped-lift, UNMEASURED-exclusion, min_words=1 handback, segments() convention inversion and negation-run-is-not-a-couplet cases
-
-### `tests/test_quality_tic_density.py`
-**Purpose:** Headless guard for the v11.7 opt-in `tic_density` dimension — the `quality.tic_dimension` toggle (off by default; `HEURISTIC_DIMENSIONS` yes / `LLM_DIMENSIONS` no), clean prose scoring high, each density band's flag (denial couplets, negation runs, comma stacking, stacked qualifiers, warm closers, shallow narration), empty input -> 0, clamping, composite normalisation and dashboard stats following the toggle
-
-## Common Tasks Quick Reference
-
-| Task | Files to Edit |
-|------|---------------|
-| Add new API slot | `config/config.yml` (`api.apis[]`), `config_editor.py` (UI), `app_state.py` (counters), `generation.py` (worker logic) |
-| Add detection type | `config/config.yml` (phrases/fixes/enabled), `detection.py` (`is_*()`), `app_state.py` (timestamps/counters), `generation.py` (worker kwargs + check call), `dashboard.py` (display), `config_editor.py` (Detection tab panel + save/load/validate) — see e.g. OOC Drift |
-| Add/modify the non-Latin script check (v11.10.0) | `detection.py` (`is_non_latin()` / `find_non_latin_characters()` / `LATIN_ALLOWED_PATTERN` — keep it an ALLOW-list, never a block-list of known scripts), `generation.py` (`DEFAULT_NON_LATIN_FIX` + the answer branch in `generate_answer_with_retries()` + the question/continuation/opening-mode re-roll), `generate.py` (read `detection.non_latin.*` at Start + `current_non_latin_enabled` / `current_non_latin_fixes` worker kwargs), `config/config.yml` (`detection.non_latin.*`, off by default), `config_editor.py` (Detection tab panel + `_toggle_non_latin_fields()` + save/load/validate), `dashboard.py` (metric label + panels + graph series), `app_state.py` (`non_latin_count_total` / `non_latin_counts_per_api` / `recent_non_latin_*` / the `non_latin` timestamp key), `tests/test_non_latin.py` — keep the check LLM-free (it is a character-class test, not a judge call) |
-| Add/modify scene cast (v12.0) | `generation.py` (`_scene_cast_feasible()` / `_build_scene_cast_plan()` / `_cast_state_from_plan()` / `_cast_slot_transitions()` / `_cast_names_for_slot()` / `_advance_cast_state()` / `_cast_presence_note()` — keep them PURE and keep the exit-cancelled / arrival-forced asymmetry), `detection.py` (`check_scene_continuity()` + the attribution helpers), `generation.py` (`generate_answer_with_retries()` branch after OOC, `slot_notes()`, `write_conversation()` cast args, `_build_record_metadata()` + `_METADATA_SCHEMA_VERSION`, `placement_cache_warning()`), `generate.py` (config read + the five worker kwargs + metric card + issue panel + color_map), `config/config.yml` (`prompts.scene_cast.*`, `detection.scene_continuity.*`, `quality.cast_continuity`), `config_editor.py` (three panels + save/load/toggle/validate), `quality.py` (`CAST_SCORING_DIMENSIONS` / `CAST_LLM_DIMENSIONS` / `is_cast_scoring_enabled()` + the judge block + the `item[:10]` queue unpack), `app_state.py` (counters, recent lists, `cast_events_log`, `record_cast_events()`, the `scene_continuity` timestamp key), `dashboard.py` (four dicts + signature + panels + clear), `tests/test_scene_cast.py`, `docs/scene-cast.md` — keep the feature OFF by default so the default run stays byte-identical to v11.10.0 |
-| Add config option | `config/config.yml` (default value), `config_editor.py` (UI + save/load), `config_loader.py` (if new structure), `generation.py` (pass to worker) |
-| Add quality dimension | `quality.py` (`SCORING_DIMENSIONS` + `HEURISTIC_DIMENSIONS`/`LLM_DIMENSIONS` sets, scoring logic; opt-in sets like `ROLEPLAY_SCORING_DIMENSIONS` / `TIC_SCORING_DIMENSIONS` go through `active_scoring_dimensions()` + their `is_*_scoring_enabled()` gate), `generation.py` (`_build_record_metadata()` schema, bump `_METADATA_SCHEMA_VERSION`), `generate.py` (Quality tab via `_rebuild_quality_roleplay_layout()`, already dynamic), `config_editor.py` (only if user-togglable), `config/config.yml` (default), `tests/test_opening_mode.py` (metadata contract) |
-| Modify output format | `generation.py` (`write_conversation()`) |
-| Add slop/anti-slop phrase | `config/config.yml` (`detection.*.phrases`) → `detection.py` phrase lists |
-| Add/modify a Regex Watch pattern | `config/config.yml` (`detection.regex_watch.patterns[]`) and `detection.py` (`DEFAULT_REGEX_WATCH_PATTERNS` — the Restore Defaults source; keep the two in sync), `config_editor.py` (Detection tab panel, `_restore_default_regex_patterns()`), `tests/test_regex_watch.py` |
-| Change how Regex Watch rewrites text | `generation.py` (`rewrite_regex_watch_text()` / `apply_regex_watch()`), `config/config.yml` (`detection.regex_watch.max_rounds`), `generate.py` (`current_regex_watch_max_rounds`), `tests/test_regex_watch.py` |
-| Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
-| Add/modify missing-quotations retry (v11.7.1, apostrophe guard v11.7.2) | `detection.py` (`is_missing_quotation()` + `has_dialogue_quote_marks()`; keep the word-internal-apostrophe strip BEFORE the quote-glyph test or the check goes blind on contractions again), `generation.py` (`generate_answer_with_retries()` check + `retry_missing_quotations_local` kwarg on worker/`_per_turn_logic_gate`/call sites), `generate.py` (read `generation.retry_missing_quotations` + worker kwargs), `config/config.yml` (default), `config_editor.py` (Generation tab checkbox + save/load), `tests/test_missing_quotations.py` |
-| Add UI metric | `app_state.py` (widget ref), `generate.py` (create widget), `dashboard.py` (update) |
-| Change rate limit | `config/config.yml` (`api.apis[].rate_limit_rpm`), `config_editor.py` (UI field), `api_handler.py` (`set_rate_limit()`) |
-| Modify retry logic | `generation.py` (`generate_answer_with_retries()`, `MAX_TASK_REQUEUES`) |
-| Change judge retry/drop policy (v11.4) | `quality.py` (`QUALITY_JUDGE_MAX_ATTEMPTS`, `_call_logic_judge()`, `_judge_drop_reason()`, `JUDGE_FINAL_FAILURE_FLAGS` / `JUDGE_SKIP_FLAGS`), `generation.py` (`_score_and_store_quality()`, `_quality_dropped()`, both write paths), `config/config.yml` (`quality.judge_max_attempts` / `judge_retry_delay` / `result_timeout`), `config_editor.py` (three fields), `tests/test_quality_judge_policy.py` |
-| Change/add the judge's vLLM priority (v11.8.x) | `quality.py` (`judge_priority_enabled()` / `judge_priority()` / `_judge_priority_field()` + the `payload_dict.update(...)` call in `_call_logic_judge_once()`, kept OUTSIDE the response_format retry loop so every attempt carries it), `config/config.yml` (`quality.judge_priority_enabled` / `judge_priority`), `config_editor.py` (checkbox + spinbox spanning -10..10 + `_toggle_judge_priority_field()` + save/load/validate), `tests/test_quality_json_robustness.py` / `tests/test_quality_judge_settings_ui.py` — keep the field opt-in and default 0, never send it unconditionally, and keep the negative half (including -10, the highest priority) reachable rather than clamping it up to 0 |
-| Change how the judge's JSON is parsed (v11.5) | `quality.py` (`_extract_json_object()` ladder plus `_repair_json()` / `_lenient_json()` / `_repair_truncated_json()` / `_salvage_scores_from_text()` / `_coerce_score()`), `config/config.yml` (`quality.judge_json_repair_attempts` / `judge_max_tokens` / `judge_request_timeout` / `judge_structured_output`), `config_editor.py` (four fields), `tests/test_quality_json_robustness.py` / `tests/test_quality_judge_settings_ui.py` — keep the rule that only a genuinely unparsable reply drops a row |
-| Change the Review tab | `generate.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_iter_review_records()`, the `elif tab_name == "🔍 Review"` layout block), `tests/test_review_tab_ui.py` |
-| Fix a cramped / clipped Treeview table | `generate.py` — give the table its own style with an explicit `font` + `rowheight` from `font.metrics('linespace')`, and size columns from the heading text. Regex Watch does this via `REGEX_TREE_STYLE`, `_configure_regex_tree_style()`, `_configure_regex_tree_columns()`; guarded by `tests/test_regex_watch_tab_ui.py` |
-| Fix a label rendering one character per line (a "skyscraper") | `config_editor.py` — every `wraplength=1` label needs a `wrap_label(label, container, ...)` call, and the container must NOT be sized by that label (never a `ttk.Frame` gridded `sticky="w"`, never a frame packed around it). `wrapped_checkbutton()` wraps against `parent` for this reason. Guarded by `tests/test_editor_readability_ui.py` |
-| Fix an unreadable / white-on-white spinbox | `config_editor.py` — `configure_spinbox_style()` + `SPINBOX_FIELD_STYLE`; pass `style=self.spinbox_style` to every `ttk.Spinbox`. The theme sets white text but no `fieldbackground`. Guarded by `tests/test_editor_readability_ui.py` |
-| Add API profile | `config/api_profiles.yml` (new profile definition), no code change needed |
-| Modify API profile params | `config/api_profiles.yml` (`allow`, `rename` lists), `api_profiles.py` (if transform logic changes) |
-| Add character profile | `config/config.yml` (`prompts.character.characters[]`), `config_editor.py` (UI fields) |
-| Add character field | `config/config.yml` (default value per character), `config_editor.py` (`_add_character_row()` long-field loop + `_get_current_editor_config_data()` gather + keep-list + `_sync_character_text_values()` + legacy fallback in `load` path), `generate.py` (legacy fallback), `generation.py` (prompt injection in profile block) |
-| Modify opening mode prompts | `config/config.yml` (`prompts.greeting`, `prompts.first_line`, `prompts.greeting_context`, `prompts.first_line_styles`) |
-| Add random names feature | `config/config.yml` (`prompts.random_names.enabled`, `prompts.random_names.names[]`), `config_editor.py` (UI toggle + text area), `generate.py` (load config + pass to worker), `generation.py` (use random names in character profile) |
-| Add random settings pool | `config/config.yml` (`prompts.random_settings.enabled`, `prompts.random_settings.settings[]`), `config_editor.py` (UI toggle + text area + save/load/toggle/validation), `generate.py` (load config + pass to worker), `generation.py` (sample empty character settings + unify multi-character ensembles; see setting resolution above) |
-| Add/modify persona breakthrough or emotional arc | `config/config.yml` (`prompts.character.persona_breakthrough_turn` and `persona_breakthrough_placement`, `prompts.emotional_states.states[]` — a state may be `'->'`-joined stages — and `placement`), `config_editor.py` (spinbox under Character Engine + states label + the two placement dropdowns and the cache-warning label), `generate.py` (load + pass to worker kwargs), `generation.py` (`_split_emotional_arc_entry`/`_expand_emotional_arc`/`_emotional_state_injection`/`_persona_block_for_characters` + `note_placement`/`placement_cache_warning` + `slot_notes()` in `worker()`), `tests/test_opening_mode.py` and `tests/test_persona_arc.py` |
-| Add/modify user-side emotional states/arcs (v10.6.0) | `config/config.yml` (`prompts.user_emotional_states.{enabled,states[]}`, off by default), `config_editor.py` ("Enable User Emotional States" checkbox + text area in the Character Engine tab + save/load/toggle/validation; **the field starts disabled — enable it before any `delete`/`insert`, or this Tk build drops the edits silently**), `generate.py` (load + pass `user_emotional_states_enabled_local`/`user_emotional_states_list_local` to worker kwargs), `generation.py` (`_user_emotional_state_injection`, the per-task user-turn plan in `worker()`, `user_turn_note=` on `generate_question`/`generate_first_line`/`generate_user_continuation`, `dataset_authored_inputs` entry, `user_emotional_state` metadata field + `_METADATA_SCHEMA_VERSION` bump), `tests/test_opening_mode.py` (`test_user_emotional_arc_requests` + wiring kwarg set + meta_version), `tests/test_persona_arc.py` (injection text) and `tests/test_user_emotional_states_ui.py` (editor save/load round trip) |
-| Toggle conversation history for fixers | `config/config.yml` (`generation.use_conversation_history_for_fixers`), `config_editor.py` (UI checkbox), `app_state.py` (flag), `generation.py` (conditional pass to fixers) |
-| Add/modify output metadata field | `generation.py` (`_build_record_metadata()` schema + `_safe_float()`), keep same-keys/same-types/gap-filled (-1.0/"") invariant, bump `_METADATA_SCHEMA_VERSION` and the meta_version check in `tests/test_opening_mode.py`; config flags `generation.include_metadata` / `generation.include_style_metrics` (the latter adds the flat `style_*` block via `_style_metrics_for_record()`) |
-| Add a style measurement / style metadata column | `style_metrics.py` (keep it dependency-free, Python 3.9-clean), then `quality._score_tic_density()` (if it feeds the dimension) and/or `generation._style_metrics_for_record()` (it flows into the `style_*` block automatically via `response_metrics()`/`aggregate()`); `tests/test_style_metrics.py` |
-| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list), `tests/test_dataset_sources.py` (or `tests/test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
-| Add dataset column→alias mapping | `config_editor.py` (Datasets tab) → `datasets_panel.py` (Apply/Copy placeholder) → `dataset_settings.py` (validation) — placeholders `{{ds:alias}}` are then usable in any authored prompt field |
-| Modify dataset placeholder rendering | `dataset_templates.py` (`render_template()` / `render_with_native_placeholders()` / `validate_alias()`); worker-side call sites in `generation.py` (`render_task_inputs()`) |
-| Add/modify dataset variables in `input/questions.txt` (v11.9.0) | `dataset_templates.py` (`render_question_line()`, `DEFAULT_QUESTION_SEPARATOR`), `dataset_tasks.py` (`render_question_task()`), `generation.py` (the `use_questions_file_local` branch + `validate_task_templates(task[3], ...)` in the binding block), `generate.py` (read `prompts.questions_dataset.*` at Start + the two worker kwargs), `config/config.yml` (defaults), `config_editor.py` (Prompts tab panel + module-level escape/value helpers + save/load/validate), `docs/input-folder.md`, `tests/test_dataset_templates.py` / `tests/test_dataset_tasks.py` / `tests/test_questions_dataset_ui.py` / `tests/test_dataset_compatibility.py` — keep chunk-mode source `.txt` unrendered (a chunk is cut at a random offset and could split a placeholder) |
-| Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |
-| Run dataset tests | `for t in tests/test_dataset_sources.py tests/test_dataset_settings.py tests/test_dataset_bindings.py tests/test_dataset_templates.py tests/test_dataset_tasks.py tests/test_dataset_backends.py tests/test_dataset_column_menu.py tests/test_datasets_panel.py tests/test_dataset_pipeline.py tests/test_dataset_compatibility.py tests/test_questions_dataset_ui.py; do python -B "$t"; done` (live Hub check: `tools/check_dataset_hub.py`, opt-in only) |
-| Run GUI layout tests | `tools/check_gui_layout.py --check --config-editor --screenshots` |
-| Fix Gemma 4 thinking in an axolotl fine-tune (**out of scope, not this app's code**) | `tools/gemma4_thought_fix.py` (**script by Karki, Discord** — keep the docstring AUTHORSHIP block and `--help` epilog crediting him; keep the patch limited to `THOUGHT_IF`'s one template shape, keep every write non-destructive, keep every failure a readable message), `docs/gemma4-chat-template.md` |
-| Change what a request contains (prompt text, message order or role) | `generation.py`, `tests/test_opening_mode.py` |
-
-## Key State Variables (`app_state.py`)
-
-**Counters:** `total_attempts_global`, `refusal_count_total`, `slop_count_total`, `error_count_total`, `anti_slop_count_total`, `ooc_count_total`, `logic_issue_count_total`, `regex_watch_count_total`, `non_latin_count_total`, `scene_continuity_count_total`, `total_input_tokens`, `total_output_tokens`
-
-**Per-API:** `*_per_api` dicts for indices 0-5
-
-**Recent issues:** `recent_*_total`, `recent_*_per_api` (MAX_RECENT = 10); includes `recent_ooc_total` / `recent_ooc_per_api`, `recent_logic_total` / `recent_logic_per_api`, `recent_regex_total` / `recent_regex_per_api` `recent_non_latin_total` / `recent_non_latin_per_api` and `recent_scene_continuity_total` / `recent_scene_continuity_per_api`
-
-**Regex Watch log (v11.6):** `regex_watch_log` — a bounded ring buffer (`MAX_REGEX_WATCH_LOG`) of `(pattern, matched_text, api_slot_idx, status)` entries, guarded by `regex_watch_log_lock`; the `🔎 Regex Watch` tab reads it. Status is `rewritten` or `unresolved`
-
-**Cast event log (v12.0):** `cast_events_log` — a bounded ring buffer (`MAX_CAST_EVENTS_LOG` = 500) of `(task_id, event, name, api_slot_idx)` entries, guarded by `cast_events_log_lock`, filled by `app_state.record_cast_events()` and cleared by `dashboard.clear_dashboard()`. `event` is `arrived` / `exited` / `arrival_deferred` / `exit_deferred` / `arrival_forced` / `exit_cancelled`. **`exit_cancelled` is the important one**: it means the model never narrated a scheduled departure, so the character legitimately stayed — count those to measure whether the steering lands
-
-**Issue timestamp keys:** `refusals`, `user_speaking`, `slop`, `errors`, `anti_slop`, `incomplete_quotes`, `out_of_character`, `logic_issues`, `regex_watch`, `non_latin`, `scene_continuity`
-
-**Locks:** `stats_lock`, `issue_timestamps_lock`, `quality_lock`, `task_queue_ui_lock`, `api_circuit_breaker_lock`
-
-**GUI handles:** `root`, `dashboard_notebook`, `slot_widgets`, `rate_limit_labels`, `quality_*_label`
-
-**Flags:** `stop_processing`, `pause_processing`, `processing_active`, `quality_enabled`, `quality_output_filter`, `use_conversation_history_for_fixers`
-
-**Judge drops (v11.4):** `quality_dropped` ({task_id: reason}) and `dropped_task_ids` (set), both guarded by `quality_lock`; populated by `quality._record_quality_result()`, cleared by `reset_all_stats_and_history()`, persisted as `quality_dropped` in `generation_state.json`.
-
 ## API Slots Index
 Indexes count from 0 in code (`api_slot_idx`, `*_per_api` keys). The GUI, the README and most log messages count from 1, so index 4 is "API Slot 5"; debug-log file names (`_api_slot_<index>`) use the index.
 - **0-3:** Main generation APIs (duplication mode) — API Slots 1-4
@@ -581,47 +117,39 @@ Indexes count from 0 in code (`api_slot_idx`, `*_per_api` keys). The GUI, the RE
 - **5:** Anti-Slop Fixer LLM (independent) — API Slot 6
 - **6:** Quality scoring LLM (if configured separately; `quality.scoring_api.slot_idx`) — API Slot 7
 
-## Thread Safety Pattern
-```python
-with app_state.some_lock:
-    app_state.counter += 1
-# OR for timeouts:
-lock_acquired = app_state.some_lock.acquire(timeout=0.50)
-if lock_acquired:
-    try:
-        # modify state
-    finally:
-        app_state.some_lock.release()
-```
+## Runtime state, locks and config paths
 
-## Config Paths (`config_loader.py`)
-- Main config: `config/config.yml`
-- API Profiles: `config/api_profiles.yml`
-- Profiles: `config/profiles/*.yml`
-- Environment: API keys via `os.getenv()` or inline in config
+The counter / recent-list / timestamp / lock / flag inventory of `app_state.py`, the
+thread-safety pattern and the `config_loader.py` paths are in
+[`docs/agents/core-modules.md`](docs/agents/core-modules.md) — read it before you add a
+counter, a lock or a timestamp key.
 
-## Tools
+## More rules that are easy to break
 
-### `tools/check_dataset_hub.py`
-**Purpose:** Opt-in live Hugging Face Hub reader verification (schema/provenance printout + binding invariants); no cells, no model, no config mutation
-**Usage:** `python -B tools/check_dataset_hub.py --repository owner/dataset --split train --column text --rows 2`
-**Flags:** `--config`, `--revision`, `--rows N` (≥1), repeatable distinct `--column`; exits 1 on any invariant failure
+- **Regex Watch patterns exist twice**: `config/config.yml` and
+  `detection.DEFAULT_REGEX_WATCH_PATTERNS` must stay identical, and
+  `style_metrics.TRAILER_PATTERN` is the one definition of the absolute-trailer
+  construction (see `docs/agents/detection.md`).
+- **A config-editor text field must be `normal` before you write into it** — this Tk
+  build drops `delete`/`insert` on a disabled Text widget silently
+  (see `docs/agents/config-editor.md`).
+- **Keep `tools/gemma4_thought_fix.py` out of the app** — it is a third-party helper
+  written by Karki (Discord), not this repository's code
+  (see `docs/agents/tools-and-docs.md`).
+- **Keep features opt-in by default** — a default run must stay byte-identical to the
+  previous release.
+- **All code is AGPLv3 (never MIT/dual); every text/code file carries the SPDX header.** New
+  file? `python -B tools/add_license_header.py` (`--check` to verify). The tool owns that
+  block and skips Karki's script. See [`docs/licensing.md`](docs/licensing.md).
 
-### `tools/check_gui_layout.py`
-**Purpose:** Isolated GUI layout testing without running generation or saving production state
-**Usage:** `python tools/check_gui_layout.py --check --config-editor --screenshots`
-**Flags:**
-- `--check`: Exit nonzero if any layout assertion fails
-- `--config-editor`: Include config editor tab and character profile tests
-- `--screenshots`: Capture PNG screenshots of each resize scenario
-- `--size WIDTHxHEIGHT`: Custom window size (repeatable, default: 900x600, 1024x700, 1366x700, 1916x1126)
-- `--scale FLOAT`: Tk pixels/point scale (diagnostic, not Windows DPI emulation)
-- `--character-count N`: Number of fixture character profiles (1-100, default: 10)
-- `--allow-below-minimum`: Override production window minima for diagnostics
-**Output:** `./layout-check/layout_measurements.json` with widget visibility, overlaps, scroll region, and check results
+## Adding or changing docs
 
-### `tools/gemma4_thought_fix.py`
-**Purpose:** **OUT OF SCOPE — unrelated to this project. Written by Karki (a user on Discord), not by this repository.** Standalone axolotl helper for Gemma 4 26B/31B no-thinking fine-tunes: makes the chat template write the empty thought block before every reply (outside the reply text, so axolotl masks it), strips any block from reply text, and then proves it on axolotl's own tokenized output. Not imported, read or tested by this application; see `docs/gemma4-chat-template.md`
-**Usage:** `python3 tools/gemma4_thought_fix.py data.jsonl --config axolotl.yml` (step 1), then `axolotl preprocess axolotl.yml && python3 tools/gemma4_thought_fix.py verify last_run_prepared --tokenizer /path/to/base_model` (step 2). Run both inside the axolotl environment; no GPU
-**Flags:** `--config PATH`, `--template PATH` (overrides `--config`), `--out PATH`, `--yes`; subcommand `verify <prepared> --tokenizer <model>`
-**Exit codes:** 0 = PASS / FIXED, 1 = NOT READY / NOT FIXED / NOT CHECKED, 2 = no usable conversation
+When a change touches a module, update the topic file that owns it (and only that
+file). Add a row to `docs/agents/task-index.md` when a new kind of task becomes
+possible.
+
+Size budget: keep this hub under ~10,000 characters (the mandatory license header is
+not counted) and every topic file under ~18,000. The largest topic files (`config.md`, `generation.md`, `quality.md`,
+`detection.md`) are near that ceiling; if one grows past it, split it along the
+module lines in its `## Contents` list rather than appending more prose. Do not
+re-merge the files — one big document is what this layout exists to avoid.

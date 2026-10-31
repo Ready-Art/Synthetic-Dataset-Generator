@@ -1,3 +1,19 @@
+================================================================================
+HISTORICAL NOTICE — THIS FILE DOES NOT DESCRIBE THE CURRENT CODEBASE
+================================================================================
+
+The MIT license text below covers only the very early versions of this project
+that Sleep Deprived and FrenzyBiscuit (WestFox35) published under MIT. It is kept
+here for provenance and for anyone who still holds a copy of that early code.
+
+All code in this repository is now AGPLv3, and has been for some time. The
+generator has changed so much that it is unlikely any of the original MIT code
+survives. Unless you have the original MIT-era code to compare against, treat
+everything here as AGPLv3-only. See LICENSE, LICENSE-AGPLv3 and docs/licensing.md.
+
+================================================================================
+Original MIT notice, retained verbatim:
+
 MIT License
 
 Copyright (c) 2026 Sleep Deprived & WestFox35 (FrenzyBiscuit)

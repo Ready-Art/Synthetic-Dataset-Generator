@@ -1,3 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+# it is unlikely any of that code survives. Unless you have the original MIT-era code to
+# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+
 """Tests for the persona/emotional-arc engine helpers -- run directly: `python tests/test_persona_arc.py`.
 
 Covers _split_emotional_arc_entry / _expand_emotional_arc / _emotional_state_injection /

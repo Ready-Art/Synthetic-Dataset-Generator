@@ -1,15 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+# it is unlikely any of that code survives. Unless you have the original MIT-era code to
+# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+
 # generate.py
 """
 DEVELOPER NOTE FOR LLMs:
-When modifying this file, always reference AGENTS.md first for:
-- File architecture and dependencies
-- Key functions and their purposes
-- Common tasks and which files to edit
-- Thread safety patterns and state variable conventions
-- API slot indices and their purposes
-- Config file locations (config/config.yml, config/api_profiles.yml)
+The developer docs are split into small files so a smaller model can follow them.
+Start at AGENTS.md (the hub: setup, tests, boundaries, architecture, API slots,
+thread safety). Then read ONLY the topic file under docs/agents/ that matches what
+you are editing:
 
-This ensures changes align with the project's established patterns and don't break existing functionality.
+- docs/agents/task-index.md      "how do I add X?" -> the files to edit
+- docs/agents/generate-ui.md     this file (tabs, worker launch, table styles)
+- docs/agents/config-editor.md   config_editor.py (editor fields and layout)
+- docs/agents/dashboard.md       dashboard.py (metric cards, panels, issue graph)
+- docs/agents/generation.md      generation.py (worker loop, retries, metadata)
+- docs/agents/detection.md       detection.py (issue checks)
+- docs/agents/quality.md         quality.py (scoring, judge)
+- docs/agents/config.md          config/config.yml, config/api_profiles.yml
+- docs/agents/core-modules.md    app_state, api_handler, config_loader, text_utils,
+                                 ui_layout, style_metrics + state/lock inventory
+- docs/agents/datasets.md        dataset_*.py, datasets_panel.py
+- docs/agents/tools-and-docs.md  tools/*.py, user docs
+
+A normal change needs the hub plus ONE topic file; open a second only when the
+change genuinely spans two areas. This keeps the guidance small enough for a
+model with a modest context window to hold at once.
 """
 import os
 import requests
@@ -2484,7 +2506,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.0",
+    text="v12.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

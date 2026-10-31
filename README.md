@@ -1,10 +1,24 @@
-# ReadyArt Synthetic Dataset Generator v12.0
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+ReadyArt Synthetic Dataset Generator
+Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+
+All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+it is unlikely any of that code survives. Unless you have the original MIT-era code to
+compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+-->
+
+# ReadyArt Synthetic Dataset Generator v12.1
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
 **NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v10.5.0-STABLE branch.
 
 **NOTE:** While the Slop and Anti-Slop functions do work these are very inefficient especially with a large slop/antislop list. You should look for alternatives such as https://github.com/Ready-Art/antislop-vllm-fork/tree/dev
+
+**LICENSE:** All code in this repository is **AGPLv3**, and has been for some time. Very early versions were MIT by Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that it is unlikely any of that code survived. Unless you have the original MIT-era code to compare against, treat every file here as AGPLv3-only. Every text and code file carries an SPDX header saying so. See [License](#-license).
 
 ---
 
@@ -44,6 +58,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [ShareGPT Format (default)](#sharegpt-format-default)
   - [Record Metadata Block (NEW in v9.9.0)](#record-metadata-block-new-in-v990)
 - [File Structure](#-file-structure)
+  - [Developer Documentation (for LLM agents and contributors)](#developer-documentation-for-llm-agents-and-contributors)
 - [How It Works](#-how-it-works)
   - [Generation Pipeline](#generation-pipeline)
   - [Quality Scoring Pipeline](#quality-scoring-pipeline)
@@ -1374,6 +1389,7 @@ When **quality scoring is enabled**, flagged conversations exported via the Revi
 
 ```
 readyart-dataset-generator/
+├── AGENTS.md                # Developer docs HUB for LLM agents (setup, tests, boundaries, architecture)
 ├── generate.py              # Main application (GUI, orchestration, worker threads)
 ├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
 ├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, quotes, non-Latin script)
@@ -1391,6 +1407,19 @@ readyart-dataset-generator/
 │   ├── test_opening_mode.py # Integration tests for opening mode
 │   ├── test_persona_arc.py  # Unit tests for the persona-breakthrough + emotional-arc helpers
 │   └── ...                  # Remaining suites: dataset_*, quality_roleplay, random_settings, worker_launch
+├── docs/
+│   └── agents/              # Developer docs TOPIC FILES (read the one for your area)
+│       ├── task-index.md    # "how do I add X?" -> files to edit
+│       ├── generate-ui.md   # generate.py (tabs, worker launch, table styles)
+│       ├── config-editor.md # config_editor.py (editor fields, layout, readability)
+│       ├── dashboard.md     # dashboard.py (metric cards, panels, issue graph)
+│       ├── generation.md    # generation.py (worker loop, retries, metadata)
+│       ├── detection.md     # detection.py (issue checks)
+│       ├── quality.md       # quality.py (scoring, judge)
+│       ├── config.md        # config/config.yml + api_profiles.yml reference
+│       ├── core-modules.md  # app_state, api_handler, config_loader, state/locks
+│       ├── datasets.md      # dataset_*.py, datasets_panel.py
+│       └── tools-and-docs.md # tools/*.py, user docs
 ├── tools/
 │   ├── check_gui_layout.py  # GUI layout testing utility for small displays
 │   ├── check_dataset_hub.py # Opt-in live Hugging Face Hub reader check
@@ -2027,11 +2056,49 @@ The application is organized into focused modules with one-way dependencies to p
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.
 
+### Developer Documentation (for LLM agents and contributors)
+
+The developer cheat sheet is split so a modest-context model can follow it in one pass:
+
+1. Read **[`AGENTS.md`](AGENTS.md)** — the hub. It holds only the rules that apply to every
+   change: the Python 3.9 target, how to run the tests, the boundaries, the architecture
+   diagram, the API slot indices and the thread-safety pattern.
+2. Open **one** file in [`docs/agents/`](docs/agents/) — the one that owns the code you are
+   editing. If you know the task but not the files, start at
+   [`docs/agents/task-index.md`](docs/agents/task-index.md).
+
+| Topic file | Covers |
+|------------|--------|
+| [`task-index.md`](docs/agents/task-index.md) | "how do I add X?" → the files to edit |
+| [`config.md`](docs/agents/config.md) | `config/config.yml`, `config/api_profiles.yml`, dependency pins |
+| [`core-modules.md`](docs/agents/core-modules.md) | `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py`, `style_metrics.py`, the state/lock inventory and the config paths |
+| [`generate-ui.md`](docs/agents/generate-ui.md) | `generate.py` — tabs, metric cards, issue panels, worker launch, table styles, Review tab, Regex Watch tab |
+| [`config-editor.md`](docs/agents/config-editor.md) | `config_editor.py` — editor fields, label wrapping, spinbox styling, panel pitfalls |
+| [`dashboard.md`](docs/agents/dashboard.md) | `dashboard.py` — metric cards, issue panels, issue-graph series |
+| [`generation.md`](docs/agents/generation.md) | `generation.py` — worker loop, retries, prompts, cast/arc helpers, metadata, output writing |
+| [`detection.md`](docs/agents/detection.md) | `detection.py` — refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity checks |
+| [`quality.md`](docs/agents/quality.md) | `quality.py` — scoring dimensions, the judge request/JSON ladder, the drop policy |
+| [`datasets.md`](docs/agents/datasets.md) | `dataset_*.py`, `datasets_panel.py`, the dataset docs |
+| [`tools-and-docs.md`](docs/agents/tools-and-docs.md) | `tools/*.py`, `docs/gemma4-chat-template.md`, `docs/scene-cast.md` |
+
+Each topic file is self-contained: the file reference, the "edit for" notes, the tests that
+guard those modules, and the task rows that touch them. A change that spans two areas is the
+only reason to open a second file.
+
 ---
 
 ## 📝 Version History
 
-### v12.0 (Current)
+### v12.1 (Current)
+- **Developer docs split so smaller models can follow them** — `AGENTS.md` had grown to ~116,000 characters in one file, which meant every agent (and every human) had to read the whole cheat sheet, or read it in sections and lose the thread, before touching anything. It is now a **hub of ~9,400 characters** holding only the rules that apply to every change (Python 3.9 target, test commands, boundaries, the architecture diagram, API slot indices, thread-safety notes), plus a table telling you which topic file to open for what you are editing
+- **Eleven topic files under `docs/agents/`, each self-contained** — `task-index.md` (3.8k, "how do I add X?" → files to edit), `config.md` (16k), `core-modules.md` (9k), `generate-ui.md` (10k), `config-editor.md` (12k), `dashboard.md` (1.5k), `generation.md` (17k), `detection.md` (14k), `quality.md` (15k), `datasets.md` (12k), `tools-and-docs.md` (9.5k). A normal change reads the hub plus **one** topic file instead of a 116k document, so the guidance fits in a small context window in one pass
+- **Each file is filed with the code it describes** — a module's file reference, its tests, and the task rows that touch it live in the SAME topic file. Changing `quality.py` no longer means cross-referencing a 48-row global task table in another part of the document; the rows that mention `quality.py` are at the bottom of `docs/agents/quality.md`. The remaining cross-cutting rows (a new detection type, a new quality dimension, scene cast) are listed in every topic file they touch
+- **Nothing was lost** — every paragraph of the old `AGENTS.md` is present verbatim in exactly one topic file (checked mechanically against the original). The old `## Tools` section, which was duplicated at the bottom of the file, is kept once in `tools-and-docs.md`. The `app_state.py` counter/lock/timestamp inventory and the thread-safety pattern moved to `core-modules.md` (the hub points at them)
+- **Stale in-file pointers repointed** — "see `generate.py` below", "see Tools" and "where the File Reference below names one" were references to sections that no longer sit below; they now name the topic file that holds the answer
+- **`generate.py`'s developer note updated** — the module docstring now lists the topic files and says to read the hub plus one file, instead of telling the agent to reference the monolithic `AGENTS.md`
+- **Docs policy** — `AGENTS.md` asks that a change update only the topic file that owns the module, and that any topic file growing past ~12,000 characters be split along module lines rather than appended to. `tools/_split_agents_docs.py` is the one-shot script that produced the split (not part of the test loop, not imported by the app)
+
+### v12.0
 - **Scene Cast — characters join and leave a multi-character scene** — the "the world doesn't revolve around the player" feature. The **generator owns the cast**: the schedule is computed before any request is sent, the model is told who is present on each reply, and the model only *narrates* the entrances and exits. It never decides whether a character has left
 - **A forgotten exit is cancelled, not assumed** — if the model never writes a scheduled departure, the exit is **cancelled** and the character stays legitimately present. Forcing the exit would make that character's very next legitimate line a continuity violation the generator itself invented. An un-narrated **arrival** is the opposite: it is forced to `present`, because being in the scene is the default and cannot corrupt the transcript. The asymmetry is deliberate
 - **Hard continuity check, no LLM** — `detection.check_scene_continuity()` flags a character who has left (or has not arrived yet) speaking or acting: attributed quoted lines (including `Name:` script-style prefixes) plus a curated narration action-verb list. Quoted dialogue is blanked before the action match, so a character merely *mentioned* in someone else's line ("Where is Melody?") never flags. A hit sends the reply back to the same main API slot with a fix; once the fixes are exhausted the best-effort answer is kept, never dropped
@@ -2131,6 +2198,40 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📜 License
 
-AGPLv3 License
+### AGPLv3 — all of it
 
-This project is licensed under AGPLv3. However, portions of this software were originally written by Sleep Deprived & WestFox35 (FrenzyBiscuit) and are licensed under the MIT license.
+**All code in this repository is AGPLv3, and has been for some time.**
+
+This project is licensed under the GNU Affero General Public License, version 3 or later. See [`LICENSE`](LICENSE) for the full text and [`LICENSE-AGPLv3`](LICENSE-AGPLv3) for the project notice.
+
+### About the early MIT code
+
+Very early versions of this project were released under the MIT license by **Sleep Deprived** and **FrenzyBiscuit (WestFox35)**. That is the only MIT-era code that has ever existed here.
+
+The generator has changed to such an extent since then that it is unlikely any of the original MIT code survived. The worker engine, detection layer, quality scoring, dashboard, dataset bindings, config editor and GUI were all written or rewritten after the relicense, and `generate.py` was split into `app_state.py`, `generation.py`, `dashboard.py` and the `dataset_*.py` modules.
+
+**Unless you hold a copy of the original MIT-era code to compare against, treat every file here as AGPLv3-only.** Do not assume MIT terms apply to any part of the current generator. The old MIT notice is retained in [`LICENSE-MIT`](LICENSE-MIT) for provenance only, and says as much at the top.
+
+### Headers on every file
+
+Every text and code file starts with an SPDX header stating the license, the copyright line and the credit line. The header is generated and checked by [`tools/add_license_header.py`](tools/add_license_header.py):
+
+```sh
+python -B tools/add_license_header.py           # write/refresh headers
+python -B tools/add_license_header.py --check   # exits 1 if any file lacks one
+```
+
+A file without the header is still AGPLv3 — the header is a convenience, not the license.
+
+### Credits
+
+- **Sleep Deprived** — original author, co-author of the early MIT code
+- **FrenzyBiscuit (WestFox35)** — original author and principal maintainer, co-author of the early MIT code
+- **andyoneal**, **serialhex (Justin Patera)**, **schonsense**, **strangedove** — contributors
+- **All other contributors, including those not named here.** This is a GitHub project, so there are likely more, and the early MIT-era uploads may contain work by people never recorded in the commit history. They are credited collectively on every file header rather than dropped. If you contributed and are not listed, please open an issue or a pull request and you will be added.
+
+See [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full list and [`docs/licensing.md`](docs/licensing.md) for the reasoning in detail.
+
+### Third-party code
+
+`gemma4_thought_fix.py` and `tools/gemma4_thought_fix.py` were written by **Karki** (a user on Discord), not by this repository. They are a standalone axolotl helper for Gemma 4 fine-tunes, are not part of this application, and are not covered by this project's copyright. They keep their own authorship notice and are deliberately excluded from the license headers above.
