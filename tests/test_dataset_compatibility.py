@@ -28,6 +28,8 @@ from queue import Queue
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+from dataset_templates import DEFAULT_QUESTION_SEPARATOR  # noqa: E402
+
 RAW_LITERAL = "{{ds:unmapped_source}}"
 MODEL_LITERAL = "{{ds:unmapped_model}} {last_assistant_message}"
 CELL_LITERAL = "Literal <tag> Unicode \u03a9 and \\path"
@@ -207,6 +209,12 @@ def _worker_inputs(harness, scenario):
         result.update(current_num_turns=1, current_max_attempts=1)
     elif scenario == "empty_continuation":
         result.update(current_user_continuation_prompt="{{ds:continuation}}")
+    elif scenario == "questions_file":
+        # v11.9.0: a questions-file line is authored input, so it may carry
+        # {{ds:alias}} placeholders and may have one alias value appended.
+        result.update(use_questions_file_local=True,
+                      questions_append_alias_local="literal",
+                      questions_append_separator_local=DEFAULT_QUESTION_SEPARATOR)
     return result
 
 
@@ -264,8 +272,23 @@ def _trace(candidate, scenario, destination):
     g.requests.post = server.post
     inputs = _worker_inputs(harness, scenario)
     rows = [_values(index, scenario) for index in range(2 if scenario in ("same_worker", "ooc") else 1)]
-    tasks = [("original-{}".format(index), "fixture.txt", index, "SUBJECT {context}",
+    if scenario == "questions_file":
+        # v11.9.0: a questions-file line is authored input, so it may carry
+        # {{ds:alias}} placeholders and may have one alias value appended. The
+        # reference side gets the same text already materialized, with no alias.
+        lines = ["QUESTION-LINE ROW={{ds:row}} NAME={{ds:name}} KEEP={context}"
+                 for _ in rows]
+        if not candidate:
+            lines = [
+                _materialize(lines[index], values)
+                + DEFAULT_QUESTION_SEPARATOR + values["literal"]
+                for index, values in enumerate(rows)
+            ]
+            inputs["questions_append_alias_local"] = ""
+    tasks = [("original-{}".format(index), "fixture.txt", index,
+              lines[index] if scenario == "questions_file" else "SUBJECT {context}",
               "CONTEXT_{} {}".format(index, RAW_LITERAL)) for index in range(len(rows))]
+
     q = Queue()
     q.processed_tasks_lock = threading.Lock()
     q.processed_tasks = 0
@@ -482,6 +505,17 @@ class DatasetCompatibilityTests(unittest.TestCase):
         self.assertEqual(phase["completed"], [])
         self.assertEqual(phase["queued"], ["original-0"])
         self.assertEqual(phase["retries"], {"original-0": 1})
+
+    def test_questions_file_lines_expand_and_append_like_typed_input(self):
+        result = self.compare("questions_file")
+        calls = result["trace"]["calls"]
+        self.assertEqual([call["kind"] for call in calls][:2], ["answer", "continuation"])
+        # The expanded line becomes the opening user turn of the conversation.
+        history = calls[0]["body"]["messages"]
+        question = next(m["content"] for m in history if m["content"].startswith("QUESTION-LINE"))
+        self.assertEqual(question, "QUESTION-LINE ROW=R0 NAME=Ada KEEP={context}"
+                                 + DEFAULT_QUESTION_SEPARATOR + CELL_LITERAL)
+        self.assertEqual(result["bindings"]["original-0"]["values"]["name"], "Ada")
 
     def test_empty_dataset_greeting_context_preserves_default(self):
         result = self.compare("opening_empty_context")

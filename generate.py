@@ -42,6 +42,7 @@ import api_handler
 import api_profiles
 import app_state
 from dataset_tasks import configure_queue_datasets
+from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
                         DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
@@ -1654,6 +1655,26 @@ def start_processing():
     # back to the SAME main API for one retry before keeping it. Off by default.
     current_retry_missing_quotations = bool(global_config.get('generation.retry_missing_quotations', False))
 
+    # v11.9.0 dataset aliases in input/questions.txt. A questions-file line is authored text, so
+    # it may contain {{ds:alias}} placeholders and may have ONE alias value appended to it
+    # (prompts.questions_dataset.append_alias). Both are expanded per task by the worker, which
+    # owns that task's frozen binding; nothing is expanded here at Start. An unset or empty
+    # append_alias appends nothing, so a dataset-free run is byte-identical to before.
+    current_questions_append_alias = str(global_config.get('prompts.questions_dataset.append_alias', '') or '').strip()
+    current_questions_append_separator = global_config.get(
+        'prompts.questions_dataset.append_separator', DEFAULT_QUESTION_SEPARATOR)
+    if not isinstance(current_questions_append_separator, str):
+        current_questions_append_separator = DEFAULT_QUESTION_SEPARATOR
+    if current_questions_append_alias:
+        try:
+            validate_alias(current_questions_append_alias)
+        except DatasetTemplateError as exc:
+            toast.show(f"Dataset append alias: {exc}", "error")
+            log_message(f"prompts.questions_dataset.append_alias: {exc}", "ERROR")
+            app_state.processing_active = False; start_button.config(state=tk.NORMAL); return
+        if not current_use_questions_file:
+            log_message("prompts.questions_dataset.append_alias is set but the questions file is off; it has no effect.", "WARNING")
+
     # --- Initialize Processing State ---
     app_state.stop_processing = False 
     app_state.pause_processing = False 
@@ -2017,6 +2038,8 @@ def start_processing():
             'current_regex_watch_max_rounds': current_regex_watch_max_rounds,
             'include_style_metrics_local': include_style_metrics,
             'retry_missing_quotations_local': current_retry_missing_quotations,
+            'questions_append_alias_local': current_questions_append_alias,
+            'questions_append_separator_local': current_questions_append_separator,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2401,7 +2424,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.8.1",
+    text="v11.9.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

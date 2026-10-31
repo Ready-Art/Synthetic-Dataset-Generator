@@ -181,6 +181,17 @@ prompts:
   user_continuation_prompt: Write the users next message. Write only as the user,
     not as any other character.
   use_questions_file: false
+  # v11.9.0: dataset aliases in input/questions.txt. A questions-file line is authored text, so it
+  # may contain {{ds:alias}} placeholders; both options below are ignored by chunk mode, whose source
+  # .txt files stay literal (a chunk is cut at a random character offset, which could split a
+  # placeholder in half).
+  #  - append_alias: ONE alias whose value is appended to every question line, as a separate block
+  #    after append_separator. Leave empty to only use placeholders written into the lines.
+  #  - append_separator: the text inserted between the question and the appended value. It is written
+  #    here with real characters (the Config Editor shows it escaped, e.g. \n\n for two newlines).
+  questions_dataset:
+    append_alias: ''
+    append_separator: "\n\n"
   opening_mode: false
   greeting: 'Write the opening message of this roleplay as {speaker}, the way the
     first message of a character card reads: a few paragraphs of narration and dialogue

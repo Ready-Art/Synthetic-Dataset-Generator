@@ -151,7 +151,66 @@ Format rules, from `read_txt()`:
 
 ---
 
-## 3. Examples
+## 3. Dataset variables in the questions file (v11.9.0)
+
+A questions-file line is **authored text**, not source material, so it can carry the same
+dataset placeholders the Datasets tab maps (see `docs/dataset-bindings.md`). Two independent
+forms are available, and either or both can be used:
+
+| Form | Where it is configured | What it does |
+|------|------------------------|--------------|
+| **Placeholder in the line** | the line itself | `{{ds:alias}}` is replaced with that task's value for the alias |
+| **Appended alias** | `prompts.questions_dataset.append_alias` | one alias value is appended to **every** line, after `append_separator` |
+
+```yaml
+prompts:
+  use_questions_file: true
+  questions_dataset:
+    append_alias: chapter_body      # '' = placeholders only, append nothing
+    append_separator: "\n\n"       # real characters: two newlines
+```
+
+```text
+input/questions.txt:
+
+Ask {{ds:name}} what she saw at the harbour.
+Where did {{ds:name}} go after the bell?
+```
+
+With `append_alias: chapter_body`, the first line becomes
+
+```text
+Ask Ada what she saw at the harbour.
+
+<that task's chapter_body value>
+```
+
+Rules worth knowing:
+
+- **Each task gets its own row.** The values come from the same frozen binding the run already
+  uses for the authored prompts, so the placeholder and the appended value always belong to the
+  same dataset row. The row advances once per new task, in worker-arrival order.
+- **Expansion is single-pass.** A dataset cell that happens to contain `{{ds:other}}` or
+  `{context}` is inserted literally and never scanned again. A `{context}` you write into a line is
+  also left alone, because questions-file lines carry no native placeholders.
+- **An unmapped alias is an error**, reported against the task instead of reaching the model as
+  literal text. `{{ ds:name }}` (with spaces) is a malformed placeholder and is also an error.
+- **An empty appended value appends nothing**, so a row with a blank cell never leaves a dangling
+  separator. An empty appended value on an empty line produces an empty question, which the
+  generator skips the way it skips any blank line.
+- **`append_alias` needs the questions file on.** The Configuration Editor refuses to save it while
+  `use_questions_file` is off, and Start logs a warning and ignores it if the file was hand-edited.
+- **Chunk-mode source `.txt` files are NOT rendered.** A chunk is cut at an arbitrary character
+  offset (see "How a chunk is cut" above), so a placeholder there could be sliced in half and reach
+  the model as literal garbage. Put dataset variables in the questions file or in an authored prompt.
+- **`sanitize_input()` still runs first**, as it does for every questions-file line, so `{` and `}`
+  survive but `"`, `'`, `<`, `>` and `\` do not. Write the placeholder without quotes.
+- **A dataset-free run is unchanged.** With no enabled sources the line is used exactly as read and
+  `append_alias` appends nothing.
+
+---
+
+## 4. Examples
 
 All sample text below is written for this guide. Use it freely, or replace it with your own.
 
@@ -282,7 +341,7 @@ a single chunk.
 
 ---
 
-## 4. Troubleshooting
+## 5. Troubleshooting
 
 | Symptom in the log | Cause | Fix |
 |---|---|---|
@@ -294,16 +353,21 @@ a single chunk.
 | `UnicodeDecodeError` on a source file | Not UTF-8 | Re-save as UTF-8 |
 | Dialogue and apostrophes are missing from generated text | `sanitize_input()` stripped `"` and `'` | Expected; use curly quotes if you need them to survive |
 | A run queues far fewer tasks than `num_random_chunks` | Small files, or repeated offsets already completed | Add larger files; check the file lengths |
+| `No dataset column is mapped to alias 'x'` in the log | A `{{ds:x}}` in a questions-file line has no alias on an enabled source | Map the column in the Datasets tab, or remove the placeholder |
+| The appended value never appears in the generated question | `append_alias` is empty, the questions file is off, or the row's cell is blank | Check the Config Editor's Questions File Dataset Variables panel |
+| A `{{ds:...}}` placeholder reached the model as literal text | The line came from a chunk-mode source `.txt`, which is never rendered | Put the placeholder in `input/questions.txt` instead |
 
 ---
 
-## 5. Configuration reference
+## 6. Configuration reference
 
 All of these live in `config/config.yml` and in the Configuration Editor.
 
 | Key | Default | Effect on `input/` |
 |-----|---------|--------------------|
 | `prompts.use_questions_file` | `false` | Read `input/questions.txt` instead of chunking |
+| `prompts.questions_dataset.append_alias` | `''` | One alias whose value is appended to every questions-file line (needs the questions file) |
+| `prompts.questions_dataset.append_separator` | `"\n\n"` | Text placed between the line and the appended value |
 | `generation.num_random_chunks` | `12000` | Target tasks per chunk-mode run |
 | `generation.subject_size` | `1000` | Characters in the subject passage |
 | `generation.context_size` | `3000` | Total characters in the context window; also the minimum usable file length |

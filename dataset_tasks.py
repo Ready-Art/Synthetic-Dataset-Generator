@@ -22,7 +22,10 @@ from dataset_bindings import (
 )
 from dataset_settings import normalize_config, source_spec, validate_config
 from dataset_sources import open_source
-from dataset_templates import DatasetTemplateError, dataset_placeholders, render_template
+from dataset_templates import (
+    DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, dataset_placeholders,
+    render_question_line, render_template,
+)
 
 
 def _task_id(value):
@@ -225,3 +228,28 @@ def validate_task_templates(templates, values):
     elif isinstance(templates, (tuple, list)):
         for value in templates:
             validate_task_templates(value, values)
+
+
+def render_question_task(task, values, append_alias="", separator=DEFAULT_QUESTION_SEPARATOR):
+    """Expand one questions-file task's line for the task that owns it.
+
+    ``task`` is an existing four-field questions-file task tuple
+    ``(task_id, file_name, index, line)``; its identity, file name and index are returned
+    untouched so task IDs, retries and recovery keep working as before. Only ``line`` is
+    expanded, through :func:`dataset_templates.render_question_line`, which handles the
+    ``{{ds:alias}}`` placeholders written into the line and the single appended alias value.
+
+    ``values`` is that task's frozen binding. ``None`` means the run has no dataset
+    attachments, and the line is then returned exactly as read.
+    """
+    if not isinstance(task, tuple) or len(task) not in (4, 5):
+        raise DatasetTemplateError(
+            "A questions-file task must be a four- or five-field tuple; got {!r}."
+            .format(type(task).__name__)
+        )
+    if not isinstance(task[3], str):
+        raise DatasetTemplateError(
+            "The question line of task {!r} must be a string.".format(task[0])
+        )
+    line = render_question_line(task[3], values, append_alias=append_alias, separator=separator)
+    return (task[0], task[1], task[2], line) + tuple(task[4:])

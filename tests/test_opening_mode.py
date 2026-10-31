@@ -873,7 +873,10 @@ def test_generate_wiring():
                      # v11.7: style-metrics metadata flag, plumbed config -> start_processing -> worker kwargs
                      "include_style_metrics_local",
                      # v11.7.1: Experiment: Retry missing quotations, plumbed config -> start_processing -> worker kwargs
-                     "retry_missing_quotations_local"})
+                     "retry_missing_quotations_local",
+                     # v11.9.0: dataset variables in input/questions.txt, plumbed
+                     # config -> start_processing -> worker kwargs
+                     "questions_append_alias_local", "questions_append_separator_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",

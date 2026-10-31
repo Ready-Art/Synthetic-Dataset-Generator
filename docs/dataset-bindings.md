@@ -83,6 +83,28 @@ reserved placeholders are errors. There is no escape syntax for a literal datase
 token in an authored template; such tokens inside inserted data remain literal.
 Indexed aliases such as `{{ds:name:2}}` are not supported.
 
+### Questions-file lines (v11.9.0)
+
+An `input/questions.txt` line is authored text, so it may carry `{{ds:alias}}` placeholders
+and it may have ONE alias value appended to it. The settings live in
+`prompts.questions_dataset`:
+
+```yaml
+prompts:
+  questions_dataset:
+    append_alias: chapter_body   # '' = placeholders only, append nothing
+    append_separator: "\n\n"    # real characters
+```
+
+The worker expands the line at the point where it already holds that task's frozen binding,
+through `dataset_tasks.render_question_task()` and `dataset_templates.render_question_line()`. The
+task's identity, file name and index are returned untouched, so task IDs, retries and resume keep
+working. Substitution is single-pass, an unmapped alias fails the task instead of reaching the model,
+and an empty appended value appends nothing. With no enabled sources the line is used exactly as read.
+
+Chunk-mode source `.txt` files are deliberately NOT rendered: a chunk is cut at a random character
+offset, so a placeholder there could be split in half. See `docs/input-folder.md`.
+
 Static authored inputs are copied and expanded for each task: system/answer
 instructions, lore, enabled character fields, emotional-state entries, enabled
 user-side emotional-state entries (v10.6.0), enabled

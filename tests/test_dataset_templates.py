@@ -9,8 +9,10 @@ import unittest
 import random
 
 from dataset_templates import (
+    DEFAULT_QUESTION_SEPARATOR,
     DatasetTemplateError,
     dataset_placeholders,
+    render_question_line,
     render_template,
     render_with_native_placeholders,
     validate_alias,
@@ -273,6 +275,86 @@ class LegacyNativeRenderingTests(unittest.TestCase):
         state = random.getstate()
         render_with_native_placeholders("{{ds:name}} {context}", {"name": "Ada"}, [("{context}", "text")])
         self.assertEqual(random.getstate(), state)
+
+
+class QuestionLineTests(unittest.TestCase):
+    """v11.9.0: input/questions.txt lines are authored text and may use dataset aliases."""
+
+    def test_no_dataset_values_returns_the_line_unchanged(self):
+        for line in ("Where does the ferry go?", "", "{{ds:name}}"):
+            with self.subTest(line=line):
+                self.assertEqual(render_question_line(line, None), line)
+
+    def test_placeholders_written_into_the_line_are_expanded(self):
+        self.assertEqual(
+            render_question_line("Ask {{ds:name}} about {{ds:topic}}.",
+                                 {"name": "Ada", "topic": "the tide"}),
+            "Ask Ada about the tide.")
+
+    def test_expansion_is_single_pass(self):
+        # A cell that itself looks like a placeholder is inserted literally.
+        self.assertEqual(
+            render_question_line("{{ds:a}}", {"a": "{{ds:b}}", "b": "leaked"}),
+            "{{ds:b}}")
+
+    def test_append_alias_adds_the_value_after_the_separator(self):
+        values = {"body": "Chapter one.", "name": "Ada"}
+        self.assertEqual(render_question_line("Who are you?", values, append_alias="body"),
+                         "Who are you?" + DEFAULT_QUESTION_SEPARATOR + "Chapter one.")
+        self.assertEqual(
+            render_question_line("Who are you?", values, append_alias="body", separator=" | "),
+            "Who are you? | Chapter one.")
+
+    def test_append_and_placeholder_can_be_combined(self):
+        values = {"name": "Ada", "body": "Chapter one."}
+        self.assertEqual(
+            render_question_line("Ask {{ds:name}}.", values, append_alias="body", separator="\n"),
+            "Ask Ada.\nChapter one.")
+
+    def test_appended_value_is_not_scanned_for_placeholders(self):
+        values = {"body": "Use {{ds:name}} here", "name": "Ada"}
+        self.assertEqual(render_question_line("Question?", values, append_alias="body"),
+                         "Question?" + DEFAULT_QUESTION_SEPARATOR + "Use {{ds:name}} here")
+
+    def test_empty_appended_value_adds_no_separator(self):
+        self.assertEqual(render_question_line("Question?", {"body": ""}, append_alias="body"),
+                         "Question?")
+
+    def test_empty_alias_or_none_appends_nothing(self):
+        values = {"body": "Chapter one."}
+        for append_alias in (None, ""):
+            with self.subTest(append_alias=append_alias):
+                self.assertEqual(
+                    render_question_line("Question?", values, append_alias=append_alias), "Question?")
+
+    def test_an_empty_line_becomes_the_appended_value_alone(self):
+        self.assertEqual(render_question_line("", {"body": "Chapter one."}, append_alias="body"),
+                         "Chapter one.")
+
+    def test_unusable_append_alias_raises(self):
+        with self.assertRaises(DatasetTemplateError):
+            render_question_line("Question?", {"other": "x"}, append_alias="missing")
+        with self.assertRaises(DatasetTemplateError):
+            render_question_line("Question?", None, append_alias="body")
+        with self.assertRaises(DatasetTemplateError):
+            render_question_line("Question?", {"ds:body": "x"}, append_alias="ds:body")
+        with self.assertRaises(DatasetTemplateError):
+            render_question_line("Question?", {"body": "x"}, append_alias="body", separator=None)
+
+    def test_unmapped_placeholder_in_the_line_raises(self):
+        with self.assertRaises(DatasetTemplateError):
+            render_question_line("Ask {{ds:missing}}.", {"name": "Ada"})
+        with self.assertRaises(DatasetTemplateError):
+            render_question_line("Ask {{ ds:name }}.", {"name": "Ada"})
+
+    def test_a_non_string_line_raises(self):
+        with self.assertRaises(TypeError):
+            render_question_line(None, {})
+
+    def test_rendering_does_not_mutate_the_supplied_values(self):
+        values = {"name": "Ada"}
+        render_question_line("Ask {{ds:name}}.", values)
+        self.assertEqual(values, {"name": "Ada"})
 
 
 if __name__ == "__main__":

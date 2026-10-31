@@ -24,7 +24,7 @@ from dataset_settings import DatasetSettingsError, apply_schema
 from dataset_sources import DatasetRow, DatasetSchema, SourceSpec, open_source
 from dataset_tasks import (
     DatasetTaskAttachments, bind_task_datasets, configure_queue_datasets,
-    render_task_inputs, validate_task_templates,
+    render_question_task, render_task_inputs, validate_task_templates,
 )
 from dataset_templates import DatasetTemplateError
 
@@ -383,6 +383,34 @@ class TaskAttachmentTests(unittest.TestCase):
             validate_task_templates(["{{ds:undefined}}"], values)
         with self.assertRaises(DatasetTemplateError):
             validate_task_templates("{{ ds:name }}", values)
+
+
+class QuestionTaskTests(unittest.TestCase):
+    """v11.9.0: a questions-file task keeps its identity while its line is expanded."""
+
+    TASK = ("q_7", "questions.txt", 7, "Ask {{ds:name}} about the tide.")
+
+    def test_identity_is_preserved_and_only_the_line_changes(self):
+        rendered = render_question_task(self.TASK, {"name": "Ada"})
+        self.assertEqual(rendered, ("q_7", "questions.txt", 7, "Ask Ada about the tide."))
+        self.assertEqual(self.TASK[3], "Ask {{ds:name}} about the tide.")
+
+    def test_no_binding_returns_the_task_unchanged(self):
+        self.assertEqual(render_question_task(self.TASK, None), self.TASK)
+        plain = ("q_1", "questions.txt", 1, "Where does the ferry go?")
+        self.assertEqual(render_question_task(plain, None), plain)
+
+    def test_append_alias_is_added_after_the_separator(self):
+        task = ("q_2", "questions.txt", 2, "Who are you?")
+        self.assertEqual(
+            render_question_task(task, {"body": "Chapter one."}, append_alias="body"),
+            ("q_2", "questions.txt", 2, "Who are you?\n\nChapter one."))
+
+    def test_an_invalid_task_shape_raises(self):
+        for task in (("q_0", "questions.txt", 0), None, "q_0"):
+            with self.subTest(task=task):
+                with self.assertRaises(DatasetTemplateError):
+                    render_question_task(task, {"name": "Ada"})
 
 
 if __name__ == "__main__":

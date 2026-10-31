@@ -19,8 +19,10 @@ import detection
 import text_utils
 import quality
 import style_metrics
-from dataset_tasks import bind_task_datasets, render_task_inputs, validate_task_templates
-from dataset_templates import render_with_native_placeholders
+from dataset_tasks import (
+    bind_task_datasets, render_question_task, render_task_inputs, validate_task_templates,
+)
+from dataset_templates import DEFAULT_QUESTION_SEPARATOR, render_with_native_placeholders
 from queue import Queue, Empty, Full
 from logging_config import log_message, LOG_FILE_PATH
 from api_handler import (
@@ -820,6 +822,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
            include_style_metrics_local=False,
            retry_missing_quotations_local=False,
+           questions_append_alias_local="",
+           questions_append_separator_local=DEFAULT_QUESTION_SEPARATOR,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -995,6 +999,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     dynamic_templates.append(current_user_continuation_prompt)
                     task_has_user_continuation = bool(render_task_inputs(
                         current_user_continuation_prompt, task_dataset_values))
+                # v11.9.0: a questions-file line is authored input too, so its {{ds:alias}}
+                # placeholders are checked up front, exactly like the prompt templates above. An
+                # unmapped alias fails the task here instead of reaching the model as literal text.
+                if use_questions_file_local and len(task) > 3:
+                    validate_task_templates(task[3], task_dataset_values)
                 validate_task_templates(dynamic_templates, task_dataset_values)
                 (current_system_prompts_for_worker, current_answer_prompt,
                  current_jailbreaks, current_speaking_fixes, current_ooc_fixes,
@@ -1432,8 +1441,14 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
             # --- Initial Question Generation ---
             elif use_questions_file_local:
-                question_as_segment = task[3] # The question text is part of the task tuple
-                initial_user_question = question_as_segment 
+                # A questions-file line is authored input, so it may carry {{ds:alias}} placeholders
+                # and may have one alias value appended to it (v11.9.0). The expansion is delegated
+                # to dataset_tasks so the task's identity, file name and index stay untouched; a run
+                # without dataset attachments (task_dataset_values None) keeps the line as read.
+                initial_user_question = render_question_task(
+                    task, task_dataset_values,
+                    append_alias=questions_append_alias_local,
+                    separator=questions_append_separator_local)[3]
             else: # Generate question from subject/context
                 if app_state.stop_processing: q.task_done(); continue
                 subject_content_for_task = task[3]

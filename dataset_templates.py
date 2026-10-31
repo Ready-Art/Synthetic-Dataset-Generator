@@ -4,6 +4,11 @@ Dataset aliases use ``{{ds:alias}}``. :func:`render_template` provides single-pa
 substitution: neither inserted dataset values nor inserted native values are
 interpreted again. Use it for authored fields without subsequent native formatting.
 
+:func:`render_question_line` is the input-file boundary: it expands aliases written
+into one ``input/questions.txt`` line and can append a second alias value to that line.
+Input files are read as plain text, so unlike authored prompts they carry no native
+placeholders and need no compatibility renderer.
+
 :func:`render_with_native_placeholders` preserves the generator's ordered native
 ``str.replace`` operations, including their cascading behavior. It temporarily
 protects authored dataset placeholders, performs those native operations, and only
@@ -32,6 +37,9 @@ _TOKEN_START = re.compile(
     r"(?P<dataset>\{\{\s*ds\s*:)|"
     r"(?P<native>(?<!\{)\{[A-Za-z_][A-Za-z0-9_]*\}(?!\}))"
 )
+
+
+DEFAULT_QUESTION_SEPARATOR = "\n\n"
 
 
 def validate_alias(alias: str) -> str:
@@ -148,6 +156,64 @@ def render_template(
         previous = end
     pieces.append(template[previous:])
     return "".join(pieces)
+
+
+def render_question_line(
+    line: str,
+    dataset_values: Optional[Mapping[str, str]],
+    append_alias: Optional[str] = None,
+    separator: str = DEFAULT_QUESTION_SEPARATOR,
+) -> str:
+    """Expand one ``input/questions.txt`` line for the task that will use it.
+
+    ``line`` is the sanitized question text read from the file, so it may contain
+    ``{{ds:alias}}`` placeholders but never native single-brace ones. Substitution is
+    single-pass: neither an expanded value nor an appended value is scanned again, so a
+    dataset cell that happens to contain ``{{ds:other}}`` stays literal.
+
+    ``dataset_values`` is the frozen mapping for one task, or ``None`` when the run has no
+    dataset attachments at all. ``None`` returns ``line`` unchanged and never appends, which
+    keeps a dataset-free run byte-identical to the pre-dataset engine.
+
+    ``append_alias`` names one alias whose value is appended to every line, as a separate
+    block after ``separator``. This is the "feed it a variable" form: the question text stays
+    a plain authored line while the per-task value rides along with it. An empty alias value
+    appends nothing (no dangling separator), and an empty line is never prefixed with one.
+
+    Raises :class:`DatasetTemplateError` for a malformed placeholder, an unmapped alias, a
+    non-string value, or an invalid ``append_alias``.
+    """
+    if not isinstance(line, str):
+        raise TypeError("A question line must be a string.")
+    rendered = line
+    if dataset_values is not None:
+        rendered = render_template(line, dataset_values)
+    if append_alias is None or append_alias == "":
+        return rendered
+    validate_alias(append_alias)
+    if dataset_values is None:
+        raise DatasetTemplateError(
+            "Cannot append dataset alias {!r} to a question line: this run has no dataset "
+            "attachments.".format(append_alias)
+        )
+    if append_alias not in dataset_values:
+        raise DatasetTemplateError(
+            "No dataset column is mapped to alias {!r} ({{{{ds:{}}}}}), so it cannot be "
+            "appended to a question line.".format(append_alias, append_alias)
+        )
+    if not isinstance(separator, str):
+        raise DatasetTemplateError("The question append separator must be a string.")
+    appended = dataset_values[append_alias]
+    if not isinstance(appended, str):
+        raise DatasetTemplateError(
+            "The value for appended dataset alias {!r} must already be a string."
+            .format(append_alias)
+        )
+    if not appended:
+        return rendered
+    if not rendered:
+        return appended
+    return rendered + separator + appended
 
 
 def render_with_native_placeholders(

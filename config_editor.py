@@ -23,6 +23,7 @@ from logging_config import log_message
 from api_handler import global_rate_limiter
 from datasets_panel import DatasetsPanel
 from dataset_settings import DatasetSettingsError
+from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
                        bind_scroll_wheel, fit_window, scroll_to_widget, wrap_label)
 
@@ -97,6 +98,69 @@ def validate_url(url):
         return all([result.scheme in ['http', 'https'], result.netloc])
     except:
         return False
+
+
+# --- Questions-file dataset variables (v11.9.0) ---------------------------------------
+# A Tk Entry cannot hold a real newline, so the append separator is shown escaped (\n, \t,
+# \\) and decoded on save. Module-level like the Regex Watch helpers above, so the
+# headless save-path tests can drive them on a stub editor.
+
+_ESCAPE_SHOW = (("\\", "\\\\"), ("\n", "\\n"), ("\t", "\\t"), ("\r", "\\r"))
+
+
+def encode_escape_sequence(text):
+    """Show control characters in *text* as their two-character escapes (Entry display)."""
+    if not isinstance(text, str):
+        return ""
+    result = text
+    for real, shown in _ESCAPE_SHOW:
+        result = result.replace(real, shown)
+    return result
+
+
+def decode_escape_sequence(text):
+    """Turn typed ``\\n`` / ``\\t`` / ``\\r`` / ``\\\\`` back into real characters.
+
+    Only those four escapes are recognised; anything else (including a lone trailing
+    backslash) is kept exactly as typed, so an unusual separator is never silently
+    mangled. An empty or unparsable value falls back to the default separator.
+    """
+    if not isinstance(text, str):
+        return DEFAULT_QUESTION_SEPARATOR
+    result = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text):
+            escape = text[index + 1]
+            replacement = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\"}.get(escape)
+            if replacement is not None:
+                result.append(replacement)
+                index += 2
+                continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def questions_append_alias_value(editor):
+    """The bare alias whose value is appended to every question line ('' = none)."""
+    var = getattr(editor, 'questions_append_alias_var_editor', None)
+    try:
+        return str(var.get()).strip()
+    except (AttributeError, TypeError, ValueError):
+        return ""
+
+
+def questions_append_separator_value(editor):
+    """The decoded append separator; an empty field restores the default separator."""
+    var = getattr(editor, 'questions_append_separator_var_editor', None)
+    try:
+        raw = var.get()
+    except (AttributeError, TypeError, ValueError):
+        return DEFAULT_QUESTION_SEPARATOR
+    decoded = decode_escape_sequence(raw)
+    return decoded if decoded else DEFAULT_QUESTION_SEPARATOR
 
 
 # --- Regex Watch helpers (v11.6) -----------------------------------------------------
@@ -696,6 +760,48 @@ class ConfigEditor(tk.Toplevel):
         add_prompt_text_area("Greeting Context (opening mode; fills the greeting prompt's {context} when there is a book chunk, use {chunk} for the chunk; saved exactly as typed):", 'greeting_context_text', height=8)
         add_prompt_text_area("First Line Prompt (opening mode; system prompt for the user's first line, use {style}; saved exactly as typed):", 'first_line_prompt_text', height=8)
         add_prompt_text_area("First Line Styles (opening mode; one per line, one is picked at random for {style}):", 'first_line_styles_text', height=6)
+
+        # --- Questions-file dataset variables (v11.9.0) ---
+        # The questions-file counterpart of the Datasets tab: instead of writing {{ds:alias}}
+        # into every line of input/questions.txt, one alias value can be appended to every line.
+        # The separator is stored escaped (\n, \t) because a Tk Entry cannot hold a newline;
+        # decode_escape_sequence() turns the typed text into the real characters on save.
+        questions_ds_lf = ttk.LabelFrame(
+            self.prompts_content_frame,
+            text="Questions File Dataset Variables (dataset aliases in input/questions.txt)")
+        questions_ds_lf._section_search_text = "Questions File Dataset Variables"
+        questions_ds_lf.grid(row=prompts_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")
+        prompts_row_idx += 1
+        questions_ds_lf.columnconfigure(0, weight=1)
+
+        questions_ds_help = ttk.Label(
+            questions_ds_lf, justify="left", wraplength=1,
+            text="A line in the questions file is authored text, so it may contain {{ds:alias}} "
+                 "placeholders. Leave Append Alias empty to only use placeholders you write "
+                 "yourself. Fill it with one alias to append that column's value to EVERY line "
+                 "(the value is added after the separator, never inside the question). "
+                 "Chunk-mode source .txt files are not rendered: chunks are cut at random "
+                 "character offsets, so a placeholder there could be split in half.")
+        questions_ds_help.grid(row=0, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(questions_ds_help, questions_ds_lf, padding=2 * SPACING)
+
+        append_row = ttk.Frame(questions_ds_lf)
+        append_row.grid(row=1, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        append_row.columnconfigure(1, weight=1)
+        append_caption = ttk.Label(append_row, text="Append Alias:", justify="left")
+        append_caption.grid(row=0, column=0, padx=(0, SPACING), sticky="w")
+        self.questions_append_alias_var_editor = tk.StringVar()
+        ttk.Entry(append_row, textvariable=self.questions_append_alias_var_editor).grid(
+            row=0, column=1, sticky="ew")
+
+        separator_row = ttk.Frame(questions_ds_lf)
+        separator_row.grid(row=2, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        separator_row.columnconfigure(1, weight=1)
+        separator_caption = ttk.Label(separator_row, text="Separator (\u21b5 = newline):", justify="left")
+        separator_caption.grid(row=0, column=0, padx=(0, SPACING), sticky="w")
+        self.questions_append_separator_var_editor = tk.StringVar()
+        ttk.Entry(separator_row, textvariable=self.questions_append_separator_var_editor).grid(
+            row=0, column=1, sticky="ew")
 
         # --- NEW: Lore Tab ---
         self.lore_tab = ttk.Frame(self.notebook)
@@ -1779,6 +1885,13 @@ class ConfigEditor(tk.Toplevel):
                 'greeting_context': self.greeting_context_text.get("1.0", "end-1c"),
                 'first_line': self.first_line_prompt_text.get("1.0", "end-1c"),
                 'first_line_styles': [line.strip() for line in self.first_line_styles_text.get("1.0", "end-1c").split('\n') if line.strip()],
+                # v11.9.0: the questions-file dataset variables. The alias is stored bare (no
+                # braces, no ds:); the separator is stored with real characters so the worker can
+                # join with it directly. An empty alias means "placeholders only, append nothing".
+                'questions_dataset': {
+                    'append_alias': questions_append_alias_value(self),
+                    'append_separator': questions_append_separator_value(self),
+                },
                 'lore': sanitize_input(self.lore_text.get("1.0", tk.END).strip()),
             'character': {
                 'enabled': self.enable_character_engine_var_editor.get(),
@@ -2455,6 +2568,13 @@ class ConfigEditor(tk.Toplevel):
             styles_conf = prompts_config.get('first_line_styles', list(DEFAULT_FIRST_LINE_STYLES))
             self.first_line_styles_text.delete(1.0, tk.END); self.first_line_styles_text.insert(tk.END, "\n".join(styles_conf if isinstance(styles_conf, list) else [str(styles_conf)]))
 
+            # v11.9.0: questions-file dataset variables. The separator is shown escaped so a
+            # newline separator is visible (and editable) in a single-line Entry.
+            questions_ds_conf = prompts_config.get('questions_dataset', {}) or {}
+            self.questions_append_alias_var_editor.set(str(questions_ds_conf.get('append_alias', '') or ''))
+            self.questions_append_separator_var_editor.set(
+                encode_escape_sequence(questions_ds_conf.get('append_separator', DEFAULT_QUESTION_SEPARATOR)))
+
             self.lore_text.delete(1.0, tk.END)
             self.lore_text.insert(tk.END, config.get('prompts', {}).get('lore', ''))
 
@@ -2758,6 +2878,18 @@ class ConfigEditor(tk.Toplevel):
                     "Regex Watch pattern is not a valid regular expression: %r (%s)"
                     % (first_pattern[:60], first_message))
             get_text_as_list(self.sampler_priority_text)
+            # v11.9.0: the questions-file append alias must be a usable alias, and appending one
+            # only makes sense while the questions file is the input source.
+            append_alias_val = questions_append_alias_value(self)
+            if append_alias_val:
+                try:
+                    validate_alias(append_alias_val)
+                except DatasetTemplateError as e_alias:
+                    raise ValueError("Append Alias: {}".format(e_alias))
+                if not self.use_questions_file_var_editor.get():
+                    raise ValueError(
+                        "Append Alias only applies when the questions file is enabled; "
+                        "turn on 'Use questions.txt for questions' or clear the field")
             # v11.1 bad_words: do NOT strip -- leading whitespace on each entry is intentional
             # (matches vLLM semantics where ` For Example` and `For Example` are different tokens).
             if self.use_bad_words_var_editor.get():

@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.8.1
+# ReadyArt Synthetic Dataset Generator v11.9.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -308,6 +308,26 @@ metadata schema. Task counts still use the generator's existing controls.
 **Dataset attachments are in-memory for the current queue/run.** They are not
 saved by the existing recovery mechanism; restarting or starting a new queue
 does not preserve the previous row assignments.
+
+**Dataset variables in the questions file (v11.9.0).** A line in `input/questions.txt` is
+authored text, so it may carry `{{ds:alias}}` placeholders, and one alias value can be
+appended to every line instead of being written into each one:
+
+```yaml
+prompts:
+  use_questions_file: true
+  questions_dataset:
+    append_alias: chapter_body   # '' = placeholders only, append nothing
+    append_separator: "\n\n"    # real characters; the editor shows it escaped
+```
+
+Configure both in the Configuration Editor's **Prompts** tab, under **Questions File Dataset
+Variables**. Each task is expanded with its own frozen row, so the placeholder and the appended
+value always come from the same dataset row, and the task's ID is untouched. An unmapped alias
+is an error rather than literal text, and an empty cell appends nothing. Chunk-mode source `.txt`
+files are deliberately **not** rendered — a chunk is cut at a random character offset, so a
+placeholder there could be split in half. See
+[The `input/` folder](docs/input-folder.md).
 
 CSV/TSV/JSON/JSONL need no additional dependencies. For Hub, saved-HF, and Parquet
 sources, install `requirements-datasets.txt`.
@@ -1886,7 +1906,14 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.8.1 (Current)
+### v11.9.0 (Current)
+- **Dataset variables in `input/questions.txt`** — a questions-file line is authored text, so it now accepts the same `{{ds:alias}}` placeholders the Datasets tab maps, and **one alias value can be appended to every line** instead of being written into each one. Two new settings: `prompts.questions_dataset.append_alias` (a single bare alias; empty means "placeholders only, append nothing") and `append_separator` (the text placed between the line and the appended value, default two newlines). The Config Editor gains a **Questions File Dataset Variables** panel on the Prompts tab, where the separator is shown escaped (`\n`) because a single-line field cannot hold a real newline
+- **Same row, same task, same identity** — the value is expanded by the worker at the point where it already holds that task's frozen binding, through `dataset_tasks.render_question_task()` / `dataset_templates.render_question_line()`. The placeholder and the appended value therefore always come from the same dataset row, the task's ID, file name and index are untouched (so retries and resume keep working), and substitution is single-pass — a cell containing `{{ds:other}}` or `{context}` is inserted literally
+- **Failures are loud, not silent** — an unmapped alias fails the task instead of reaching the model as literal text, `{{ ds:name }}` with spaces is a malformed placeholder, and an empty appended value appends nothing rather than leaving a dangling separator. `append_alias` needs the questions file on: the editor refuses to save it otherwise, and Start logs a warning and ignores a hand-edited value
+- **Chunk-mode source `.txt` files are deliberately excluded** — a chunk is cut at a random character offset, so a placeholder there could be sliced in half and reach the model as literal garbage. Dataset variables belong in the questions file or in an authored prompt
+- **A dataset-free run is byte-identical to before** — with no enabled sources the line is used exactly as read and nothing is appended. `tests/test_dataset_compatibility.py` runs the real worker twice per scenario and requires identical requests, now including a questions-file scenario that compares placeholder-plus-append against the same text typed in by hand
+
+### v11.8.1
 - **Judge priority range is now -10 to 10** — v11.8.0 shipped the field as 0-99, which made the most useful half of vLLM's range unreachable: lower means earlier handling, so the values that actually push the judge to the front of the queue are the negative ones. The range is now **-10 to 10** — **-10 is the highest priority**, `0` is vLLM's default, **10 is the lowest** — and every negative value passes through unmodified instead of being clamped up to `0` (v11.8.0's `max(0, ...)` silently demoted a judge the user had deliberately put first). The narrow window is deliberate: a handful of steps either side of the default is all a judge needs, and a tight bound cannot be mistyped into a runaway value. The spinbox, the save clamp and the validation assert all moved together, and the tests now walk both ends of the range (`-10` and `10` sent as-is, the negative half `-10/-7/-3/-1`, and `-99→-10` / `11→10` clamping) so a 0-floor cannot creep back in
 
 ### v11.8.0
