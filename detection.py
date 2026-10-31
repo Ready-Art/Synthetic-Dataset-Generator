@@ -626,3 +626,224 @@ def is_missing_quotation(text):
     snippet = text.strip()[:150]
     label = "Missing quotation (spoken line with no quotation marks)"
     return True, [(label, snippet + ("..." if len(text.strip()) > 150 else ""))]
+
+# --- Scene Continuity (v12.0) --------------------------------------------------------------
+# The Scene Cast feature lets characters join and leave a multi-character scene. The GENERATOR
+# owns that schedule (generation._build_scene_cast_plan / _advance_cast_state); this section is
+# the hard, LLM-free half of enforcing it: a character who has LEFT the scene (state 'exited')
+# or has not ARRIVED yet (state 'absent') may not speak or act.
+#
+# Why code and not a prompt: an exited character with an attributed spoken line is an objective,
+# mechanically detectable fact. Asking a model to notice it costs a request per turn and can be
+# argued with; a regex cannot. This mirrors the OOC drift check, and like it the matching runs on
+# NARRATION (quoted dialogue blanked) for the action half, so a character merely being *named* in
+# someone else's line ("Where is Melody?") never flags.
+#
+# Attribution deliberately re-implements the closest-name heuristic from
+# quality._spoken_lines_by_character() instead of importing it: quality.py imports app_state and
+# the judge machinery, while detection.py is a leaf. Importing quality here would invert the
+# dependency graph for ~30 lines of regex. Do not "deduplicate" this into quality.py.
+
+# Dialogue spans, positions needed. Unlike _QUOTED_DIALOGUE_RE this variant refuses to treat a
+# word-internal apostrophe as a quote, so "Melody's and Cole's hands" cannot produce a phantom
+# span. Double quotes (straight + curly) and non-word-internal single quotes only.
+_SCENE_DIALOGUE_SPAN_RE = re.compile(
+    r'"[^"]*"'
+    r'|\u201c[^\u201d]*\u201d'
+    r"|(?<!\w)'[^']{1,400}'(?!\w)"
+)
+
+# Speech-attribution verbs: a quoted span near one of these is spoken, not just mentioned.
+_SCENE_SPEECH_VERBS = (
+    'say', 'says', 'said', 'saying', 'asks', 'asked', 'asking', 'replies', 'replied',
+    'answers', 'answered', 'whispers', 'whispered', 'murmurs', 'murmured', 'mutters',
+    'muttered', 'calls', 'called', 'cries', 'cried', 'shouts', 'shouted', 'snaps', 'snapped',
+    'hisses', 'hissed', 'growls', 'growled', 'breathes', 'breathed', 'tells', 'told',
+    'exclaims', 'exclaimed', 'gasps', 'gasped', 'sighs', 'sighed', 'laughs', 'laughed',
+    'adds', 'added', 'begins', 'began', 'continues', 'continued', 'offers', 'offered',
+    'warns', 'warned', 'insists', 'insisted', 'admits', 'admitted', 'retorts', 'retorted',
+)
+_SCENE_SPEECH_RE = re.compile(
+    r'\b(?:' + '|'.join(_SCENE_SPEECH_VERBS) + r')\b', re.IGNORECASE)
+
+# Narration action verbs: a blocked name immediately BEFORE one of these is doing something in
+# the scene. Only used on the narration view (dialogue blanked).
+_SCENE_ACTION_VERBS = (
+    'nods', 'nodded', 'smiles', 'smiled', 'grins', 'grinned', 'laughs', 'laughed',
+    'frowns', 'frowned', 'shrugs', 'shrugged', 'sighs', 'sighed', 'turns', 'turned',
+    'steps', 'stepped', 'walks', 'walked', 'strides', 'strode', 'leans', 'leaned',
+    'stands', 'stood', 'sits', 'sat', 'reaches', 'reached', 'grabs', 'grabbed',
+    'takes', 'took', 'picks', 'picked', 'sets', 'set', 'places', 'placed',
+    'looks', 'looked', 'stares', 'stared', 'glances', 'glanced', 'watches', 'watched',
+    'crosses', 'crossed', 'opens', 'opened', 'closes', 'closed', 'lifts', 'lifted',
+    'pours', 'poured', 'drinks', 'drank', 'eats', 'ate', 'touches', 'touched',
+    'holds', 'held', 'pulls', 'pulled', 'pushes', 'pushed', 'kneels', 'knelt',
+    'rises', 'rose', 'waves', 'waved', 'blinks', 'blinked', 'breathes', 'exhales',
+)
+_SCENE_ACTION_RE = re.compile(
+    r'\b(?:' + '|'.join(_SCENE_ACTION_VERBS) + r')\b', re.IGNORECASE)
+
+# How close narration has to be to a quote for the name in it to claim the line.
+_ATTRIBUTION_BEFORE_CHARS = 60
+_ATTRIBUTION_AFTER_CHARS = 40
+
+# A bare speaker prefix: `Melody:` / `Melody -` immediately before the quote, with no verb at
+# all. Script-style roleplay uses this constantly, so it must count as attribution on its own --
+# requiring a speech verb here would let an exited character talk freely in that format.
+_SPEAKER_PREFIX_RE = re.compile(r'[:\u2014\u2013-]\s*$')
+
+
+def _scene_name_pattern(name):
+    """Compile a whole-name matcher that survives names ending in punctuation.
+
+    ``\b`` is wrong for a name like ``A.B.`` or ``Dr. Vance``: the trailing boundary needs a
+    word character after a dot, so ``A.B. said`` would never match. Word-char lookarounds give
+    the intended "whole name, not part of a longer word" semantics instead.
+    """
+    return re.compile(r'(?<!\w)' + re.escape(name) + r'(?!\w)', re.IGNORECASE)
+
+# Violation kinds. Only the first two are HARD (they regenerate the reply); 'expected_missing'
+# is reported but never rewrites, because a beat the model forgot is handled deterministically
+# by the cast state machine (it defers, then cancels the exit / forces the arrival).
+SCENE_CONTINUITY_HARD_KINDS = ('exited_speaks', 'exited_acts')
+SCENE_CONTINUITY_SOFT_KINDS = ('expected_missing',)
+
+
+def _scene_sentence_bounds(text, start, end):
+    """(start, end) of the sentence in *text* containing the span [start, end)."""
+    left = max(text.rfind('.', 0, start), text.rfind('!', 0, start),
+               text.rfind('?', 0, start), text.rfind('\n', 0, start))
+    right_candidates = [i for i in (text.find('.', end), text.find('!', end),
+                                    text.find('?', end), text.find('\n', end)) if i != -1]
+    right = min(right_candidates) + 1 if right_candidates else len(text)
+    return left + 1, right
+
+
+def _scene_snippet(text, start, end, limit=300):
+    """The sentence containing [start, end), capped so a runaway reply cannot flood the log."""
+    s, e = _scene_sentence_bounds(text, start, end)
+    sentence = text[s:e].strip()
+    if len(sentence) > limit:
+        sentence = sentence[:limit] + '...'
+    return sentence
+
+
+def _closest_name(haystack, names, anchor):
+    """The name whose occurrence in *haystack* sits closest to *anchor* (a position in the
+    full text), or None. *haystack* is a (window_text, window_offset) pair."""
+    window_text, window_offset = haystack
+    if not window_text:
+        return None
+    best_name, best_distance = None, None
+    for name in names:
+        pattern = _scene_name_pattern(name)
+        for match in pattern.finditer(window_text):
+            distance = abs((window_offset + match.start()) - anchor)
+            if best_distance is None or distance < best_distance:
+                best_distance, best_name = distance, name
+    return best_name
+
+
+def find_attributed_speakers(text, names):
+    """[(name, sentence), ...] for each quoted span attributable to one of *names*.
+
+    A quoted span is attributed when the narration immediately around it (60 chars before,
+    40 after) names the character AND carries a speech verb, with the CLOSEST name winning a
+    tie. The span's own text is never searched, so a character merely being discussed
+    ("Where is Melody?") is not attributed as the speaker.
+
+    *names* are the scene's character names; a name is matched whole-word and
+    case-insensitively, so accented and metacharacter-bearing names are safe.
+    """
+    if not text or not names:
+        return []
+    names = [str(n).strip() for n in names if str(n).strip()]
+    if not names:
+        return []
+    text = str(text)
+    out = []
+    for span in _SCENE_DIALOGUE_SPAN_RE.finditer(text):
+        before_start = max(0, span.start() - _ATTRIBUTION_BEFORE_CHARS)
+        after_end = min(len(text), span.end() + _ATTRIBUTION_AFTER_CHARS)
+        before = (text[before_start:span.start()], before_start)
+        after = (text[span.end():after_end], span.end())
+        narration = before[0] + ' ' + after[0]
+        # Attribution needs EITHER a speech verb near the span OR a bare `Name:` speaker prefix
+        # right before it (script-style dialogue, which carries no verb at all).
+        if not (_SCENE_SPEECH_RE.search(narration)
+                or _SPEAKER_PREFIX_RE.search(before[0])):
+            continue
+        name = _closest_name(before, names, span.start())
+        if name is None:
+            name = _closest_name(after, names, span.end())
+        if name is not None:
+            out.append((name, _scene_snippet(text, span.start(), span.end())))
+    return out
+
+
+def find_character_actions(text, names):
+    """[(name, sentence), ...] for a name in NARRATION performing an action.
+
+    Quoted dialogue is blanked FIRST, so a character speaking about someone else, or being
+    spoken to, is never mistaken for acting. Within a sentence the name must PRECEDE the
+    action verb, which keeps "Cole shrugged at Melody" from blaming Melody for the shrug.
+    """
+    if not text or not names:
+        return []
+    names = [str(n).strip() for n in names if str(n).strip()]
+    if not names:
+        return []
+    text = str(text)
+    narration = _strip_quoted_dialogue(text)
+    out = []
+    for name in names:
+        name_re = _scene_name_pattern(name)
+        for name_match in name_re.finditer(narration):
+            tail = narration[name_match.end():]
+            verb_match = _SCENE_ACTION_RE.search(tail)
+            if not verb_match:
+                continue
+            # Reject a verb that belongs to a DIFFERENT sentence.
+            between = tail[:verb_match.start()]
+            if re.search(r'[.!?\n]', between):
+                continue
+            out.append((name, _scene_snippet(narration, name_match.start(), name_match.end())))
+            break  # one report per character is enough to trigger a rewrite
+    return out
+
+
+def check_scene_continuity(text, blocked_names, expected_names=()):
+    """Detect a cast continuity violation in one assistant reply.
+
+    *blocked_names* are the characters who may NOT appear (cast states 'absent' / 'exited').
+    *expected_names* are the characters whose entrance/exit this reply was supposed to
+    narrate; a missing one is reported as a SOFT finding and never regenerates the turn.
+
+    Returns ``(violation, [(kind, name, sentence), ...])`` where ``kind`` is one of
+    ``exited_speaks`` / ``exited_acts`` (hard: the caller regenerates) or
+    ``expected_missing`` (soft: the cast state machine handles it for free). On a hard hit a
+    timestamp is appended to ``issue_timestamps['scene_continuity']`` (1-hour rolling window)
+    so the dashboard picks it up like every other issue type.
+    """
+    findings = []
+    blocked = [str(n).strip() for n in (blocked_names or []) if str(n).strip()]
+    if text and blocked:
+        for name, sentence in find_attributed_speakers(text, blocked):
+            findings.append(('exited_speaks', name, sentence))
+        for name, sentence in find_character_actions(text, blocked):
+            findings.append(('exited_acts', name, sentence))
+    for name in (expected_names or []):
+        name = str(name).strip()
+        if not name:
+            continue
+        if not _scene_name_pattern(name).search(str(text or '')):
+            findings.append(('expected_missing', name, ''))
+
+    hard = [f for f in findings if f[0] in SCENE_CONTINUITY_HARD_KINDS]
+    if hard and issue_timestamps is not None and issue_timestamps_lock is not None:
+        with issue_timestamps_lock:
+            issue_timestamps['scene_continuity'].append(time.time())
+            cutoff = time.time() - 3600
+            issue_timestamps['scene_continuity'] = [
+                t for t in issue_timestamps['scene_continuity'] if t > cutoff]
+    return bool(hard), findings

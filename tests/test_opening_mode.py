@@ -879,7 +879,12 @@ def test_generate_wiring():
                      "questions_append_alias_local", "questions_append_separator_local",
                      # v11.10.0: non-Latin script check, plumbed
                      # config -> start_processing -> worker kwargs
-                     "current_non_latin_enabled", "current_non_latin_fixes"})
+                     "current_non_latin_enabled", "current_non_latin_fixes",
+                     # v12.0: scene cast (join/leave) + its continuity check, plumbed
+                     # config -> start_processing -> worker kwargs
+                     "scene_cast_enabled_local", "scene_cast_config_local",
+                     "scene_continuity_enabled_local", "scene_continuity_fixes_local",
+                     "scene_continuity_max_rounds"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
@@ -1237,7 +1242,7 @@ def test_record_metadata():
     # v5 adds quality_logic (the internal-logic dimension); -1.0 when unscored.
     # v6 adds quality_tic_density (v11.7 opt-in tic dimension; -1.0 gap when off/unscored)
     # and, when generation.include_style_metrics is on, the flat style_* block (checked below).
-    check("meta_version is 6", empty["meta_version"] == full["meta_version"] == 6)
+    check("meta_version is 7", empty["meta_version"] == full["meta_version"] == 7)
     check("user-side emotional state/arc recorded when set, empty when off",
           full["user_emotional_state"] == "curious -> defensive"
           and empty["user_emotional_state"] == "")

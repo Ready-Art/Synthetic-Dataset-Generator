@@ -1670,6 +1670,41 @@ def start_processing():
         current_non_latin_fixes = []
     current_non_latin_fixes = [str(fix).strip() for fix in current_non_latin_fixes if str(fix).strip()]
 
+    # v12.0 scene cast: characters join and leave a multi-character scene. The GENERATOR owns
+    # the schedule (generation._build_scene_cast_plan); the model only narrates the transitions.
+    # Only acts with 2+ selected characters, and even then a scene can be too short or the cast too
+    # small (min_present) to hold a change -- the worker logs a WARNING and runs a static cast
+    # rather than appearing broken.
+    current_scene_cast_config = global_config.get('prompts.scene_cast', {}) or {}
+    if not isinstance(current_scene_cast_config, dict):
+        current_scene_cast_config = {}
+    current_scene_cast_enabled = bool(current_scene_cast_config.get('enabled', False))
+    # v12.0 scene continuity: a character who LEFT the scene (or has not arrived yet) may not
+    # speak or act. Code-only (detection.check_scene_continuity): attributed quoted lines plus a
+    # curated narration action-verb list, so there is no phrase list to sanitize -- only a toggle
+    # and an optional fix list. An empty fix list falls back to DEFAULT_SCENE_CONTINUITY_FIX.
+    current_scene_continuity_enabled = bool(
+        global_config.get('detection.scene_continuity.enabled', True))
+    current_scene_continuity_fixes = global_config.get(
+        'detection.scene_continuity.fixes', []) or []
+    if not isinstance(current_scene_continuity_fixes, list):
+        current_scene_continuity_fixes = []
+    current_scene_continuity_fixes = [str(fix).strip() for fix in current_scene_continuity_fixes
+                                     if str(fix).strip()]
+    try:
+        current_scene_continuity_max_rounds = max(
+            1, min(5, int(global_config.get('detection.scene_continuity.max_rounds', 2))))
+    except (TypeError, ValueError):
+        current_scene_continuity_max_rounds = 2
+    log_message(f"Scene cast: enabled={current_scene_cast_enabled}, "
+                f"shape={current_scene_cast_config.get('shape', 'minimal')}, "
+                f"min_present={current_scene_cast_config.get('min_present', 2)}", "INFO")
+    log_message(f"Scene continuity check: enabled={current_scene_continuity_enabled}, "
+                f"max_rounds={current_scene_continuity_max_rounds}", "INFO")
+    if current_scene_cast_enabled and num_characters_local < 2:
+        log_message("Scene cast is enabled but fewer than 2 characters are configured; "
+                    "it will not do anything until num_characters is 2 or more.", "WARNING")
+
     # v11.9.0 dataset aliases in input/questions.txt. A questions-file line is authored text, so
     # it may contain {{ds:alias}} placeholders and may have ONE alias value appended to it
     # (prompts.questions_dataset.append_alias). Both are expanded per task by the worker, which
@@ -1725,7 +1760,9 @@ def start_processing():
     cache_loss, cache_warning = placement_cache_warning(
         current_num_turns, current_opening_mode, persona_breakthrough_turn,
         enable_character_engine_local and any(str(c.get('persona') or '').strip() for c in character_list),
-        enable_emotional_states, emotional_states_list, persona_placement, emotion_placement)
+        enable_emotional_states, emotional_states_list, persona_placement, emotion_placement,
+        cast_active=current_scene_cast_enabled and num_characters_local >= 2,
+        cast_placement=current_scene_cast_config.get('placement', DEFAULT_NOTE_PLACEMENT))
     if cache_warning:
         toast.show(f"System-prompt placement: ~{cache_loss:.0%} of history recomputed. See log.", "warning", 8000)
         log_message(cache_warning, "WARNING")
@@ -2057,6 +2094,12 @@ def start_processing():
             'current_non_latin_fixes': current_non_latin_fixes,
             'questions_append_alias_local': current_questions_append_alias,
             'questions_append_separator_local': current_questions_append_separator,
+            # v12.0 scene cast (join/leave) + the code-only continuity check
+            'scene_cast_enabled_local': current_scene_cast_enabled,
+            'scene_cast_config_local': current_scene_cast_config,
+            'scene_continuity_enabled_local': current_scene_continuity_enabled,
+            'scene_continuity_fixes_local': current_scene_continuity_fixes,
+            'scene_continuity_max_rounds': current_scene_continuity_max_rounds,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2441,7 +2484,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.10.0",
+    text="v12.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -2489,6 +2532,7 @@ app_state.logic_label = _create_ttkbs_metric(metrics_frame, "Logic", "🧠")
 app_state.slop_label = _create_ttkbs_metric(metrics_frame, "Slop", "🧹")
 app_state.regex_watch_label = _create_ttkbs_metric(metrics_frame, "Regex Watch", "🔎")
 app_state.non_latin_label = _create_ttkbs_metric(metrics_frame, "Non-Latin", "🔤")
+app_state.scene_continuity_label = _create_ttkbs_metric(metrics_frame, "Cast Drift", "🎭")
 app_state.error_percent_label = _create_ttkbs_metric(metrics_frame, "Errors", "⚠️")
 
 # Secondary metrics row
@@ -2933,8 +2977,8 @@ highlight_colors = {
 }
 
 tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review", "🔎 Regex Watch"]
-issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors", "Non-Latin"]
-issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors", "non_latin"] # Keys for accessing data and widgets
+issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors", "Non-Latin", "Cast Drift"]
+issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors", "non_latin", "scene_continuity"] # Keys for accessing data and widgets
 
 # --- Rich Prompt Viewer Tab Setup ---
 preview_tab = ttk.Frame(app_state.dashboard_notebook)
@@ -3199,7 +3243,7 @@ for tab_name in tab_names:
             columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
             color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
                          "anti_slop": "#ffd43b", "out_of_character": "#ff922b", "errors": "#fc8181",
-                         "non_latin": "#20c997"}
+                         "non_latin": "#20c997", "scene_continuity": "#e599f7"}
 
             panel = ttk.LabelFrame(panels_frame, text=f"Recent {issue_type_title}")
             panels.append(panel)

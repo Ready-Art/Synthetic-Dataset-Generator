@@ -29,7 +29,8 @@ issue_timestamps = {
     'out_of_character': [],
     'logic_issues': [],
     'regex_watch': [],
-    'non_latin': []
+    'non_latin': [],
+    'scene_continuity': []
 }
 issue_timestamps_lock = Lock()
 loaded_api_processed_tasks_snapshot = None # Snapshot of per-API progress loaded from state file
@@ -58,6 +59,8 @@ recent_regex_per_api = {i: [] for i in range(6)}
 recent_regex_total = []
 recent_non_latin_per_api = {i: [] for i in range(6)}
 recent_non_latin_total = []
+recent_scene_continuity_per_api = {i: [] for i in range(6)}
+recent_scene_continuity_total = []
 refusal_count_total = 0
 refusal_counts_per_api = {i: 0 for i in range(6)}
 slop_count_total = 0
@@ -87,12 +90,44 @@ regex_watch_counts_per_api = {i: 0 for i in range(6)}
 # script. Purely character-class based: no LLM call, no phrase list, no network request.
 non_latin_count_total = 0
 non_latin_counts_per_api = {i: 0 for i in range(6)}
+# --- Scene cast continuity (v12.0) ---
+# A character who has LEFT the scene (or has not arrived yet) may not speak or act. The check
+# is code-only (detection.check_scene_continuity): attributed quoted lines plus a curated
+# narration action-verb list, so no LLM is involved in the DETECTION itself. These counters
+# track hard violations that triggered a regeneration.
+scene_continuity_count_total = 0
+scene_continuity_counts_per_api = {i: 0 for i in range(6)}
 # --- Regex Watch (v11.6) ---
 # Every pattern hit that led to a rewrite, kept for the Regex Watch dashboard area so the user
 # can see WHICH pattern fires and what it matched. Bounded ring buffer, guarded by
 # regex_watch_lock. Entries are (pattern, matched_text, api_slot_idx, rewrite_status).
 regex_watch_log = []
 regex_watch_log_lock = Lock()
+# --- Scene cast event log (v12.0) ---
+# Every cast transition the state machine applied, kept so a run can be audited after the fact:
+# entries are (task_id, event, name, api_slot_idx) where event is one of 'arrived', 'exited',
+# 'arrival_deferred', 'exit_deferred', 'arrival_forced', 'exit_cancelled'. 'exit_cancelled' is
+# the important one: it means the model never narrated a scheduled departure, so the character
+# legitimately stayed. Bounded ring buffer, guarded by cast_events_log_lock.
+MAX_CAST_EVENTS_LOG = 500
+cast_events_log = []
+cast_events_log_lock = Lock()
+
+
+def record_cast_events(task_id, events, api_slot_idx=0):
+    """Append this task's cast transitions to the bounded ring buffer (thread-safe).
+
+    ``events`` is the (event, name) list returned by generation._advance_cast_state.
+    A no-op for an empty list so the feature costs nothing when it is off.
+    """
+    if not events:
+        return
+    with cast_events_log_lock:
+        for event, name in events:
+            cast_events_log.append((task_id, event, name, api_slot_idx))
+        overflow = len(cast_events_log) - MAX_CAST_EVENTS_LOG
+        if overflow > 0:
+            del cast_events_log[:overflow]
 MAX_REGEX_WATCH_LOG = 200
 character_counter = 0  # Round-robin counter for character selection
 character_counter_lock = Lock()  # Thread-safe access

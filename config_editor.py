@@ -540,6 +540,12 @@ class ConfigEditor(tk.Toplevel):
 
         self.quality_roleplay_dims_var_editor = tk.BooleanVar(value=False)
         wrapped_checkbutton(gen_settings_frame, text="Roleplay dimensions: voice_distinctiveness, grounding, persona_alignment (adds weighted scoring + metadata columns; heuristic base, LLM-judge refined)", variable=self.quality_roleplay_dims_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
+        # v12.0 cast-continuity dimension. LLM-ONLY (no heuristic fallback): there is no
+        # measurable proxy for "was that exit earned?", and the objective half of the question
+        # (an exited character speaking at all) is already caught for free by
+        # detection.check_scene_continuity().
+        self.quality_cast_continuity_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(gen_settings_frame, text="Cast continuity dimension: cast_continuity (judges whether entrances/exits read naturally; LLM only, no heuristic)", variable=self.quality_cast_continuity_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
 
         self.quality_tic_dim_var_editor = tk.BooleanVar(value=False)
         wrapped_checkbutton(gen_settings_frame, text="Tic density (v11.7): scores the assistant turns for scotoma style tics -- denial-corrections, negation runs, comma clause-stacking, formulaic warm closers, shallow narration. Heuristic-only, no extra API calls. Off by default so existing composite scores stay comparable",
@@ -957,6 +963,129 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(per_char_emotion_help, self.character_engine_content_frame, padding=2 * SPACING)
         character_engine_row_idx += 1
 
+        # --- Scene Cast (v12.0): characters join and leave a multi-character scene ---
+        # A LabelFrame, not a bare checkbox, because this is the feature's visible home and it
+        # owns a real allocated width -- which is what makes wrap_label() safe against it. Never
+        # wrap against a frame that is itself sized by the label (see AGENTS.md: "skyscraper").
+        scene_cast_lf = ttk.LabelFrame(
+            self.character_engine_content_frame,
+            text="Scene Cast — Characters Join and Leave")
+        scene_cast_lf.grid(row=character_engine_row_idx, column=0, padx=SPACING,
+                           pady=SPACING, sticky="ew")
+        setattr(self, 'scene_cast_lf', scene_cast_lf)
+        character_engine_row_idx += 1
+
+        self.enable_scene_cast_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(
+            scene_cast_lf,
+            text="Enable Scene Cast (multi-character scenes: characters may leave and join)",
+            variable=self.enable_scene_cast_var_editor,
+            command=self._toggle_scene_cast_fields
+        ).grid(row=0, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        cast_help = ttk.Label(
+            scene_cast_lf, wraplength=1,
+            text="(Applies only when 2 or more characters are selected. Off by default: the "
+                 "cast stays fixed for the whole conversation. The generator decides who is in "
+                 "the scene; the model only narrates the entrances and exits.)")
+        cast_help.grid(row=1, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(cast_help, scene_cast_lf, padding=2 * SPACING)
+
+        ttk.Label(scene_cast_lf, text="Cast Shape:").grid(
+            row=2, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_shape_var_editor = tk.StringVar(value="minimal")
+        ttk.Combobox(
+            scene_cast_lf, textvariable=self.scene_cast_shape_var_editor,
+            values=["minimal", "churn", "none"], state="readonly", width=10
+        ).grid(row=3, column=0, padx=SPACING, pady=(0, SPACING), sticky="w")
+
+        # Every spinbox takes style=self.spinbox_style: the 'superhero' theme sets spinbox text
+        # white but leaves fieldbackground unset, so a bare spinbox renders white-on-white.
+        ttk.Label(scene_cast_lf, text="Minimum Characters Present:").grid(
+            row=4, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_min_present_var_editor = tk.StringVar(value="2")
+        self.scene_cast_min_present_spinbox = ttk.Spinbox(
+            scene_cast_lf, from_=1, to=10, width=6,
+            textvariable=self.scene_cast_min_present_var_editor, style=self.spinbox_style)
+        self.scene_cast_min_present_spinbox.grid(
+            row=5, column=0, padx=SPACING, pady=0, sticky="w")
+
+        ttk.Label(scene_cast_lf, text="Max Joins and Leaves (churn shape only):").grid(
+            row=6, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_max_churn_var_editor = tk.StringVar(value="2")
+        self.scene_cast_max_churn_spinbox = ttk.Spinbox(
+            scene_cast_lf, from_=0, to=10, width=6,
+            textvariable=self.scene_cast_max_churn_var_editor, style=self.spinbox_style)
+        self.scene_cast_max_churn_spinbox.grid(
+            row=7, column=0, padx=SPACING, pady=0, sticky="w")
+
+        ttk.Label(scene_cast_lf, text="Max Deferrals (replies an un-narrated exit may slip):").grid(
+            row=8, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_max_deferrals_var_editor = tk.StringVar(value="1")
+        self.scene_cast_max_deferrals_spinbox = ttk.Spinbox(
+            scene_cast_lf, from_=0, to=5, width=6,
+            textvariable=self.scene_cast_max_deferrals_var_editor, style=self.spinbox_style)
+        self.scene_cast_max_deferrals_spinbox.grid(
+            row=9, column=0, padx=SPACING, pady=0, sticky="w")
+
+        cast_placement_row = 10
+        ttk.Label(scene_cast_lf, text="Cast Note Placement:").grid(
+            row=cast_placement_row, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        cast_placement_row += 1
+        self.scene_cast_placement_var_editor = tk.StringVar(value=DEFAULT_NOTE_PLACEMENT)
+        cast_placement_combo = ttk.Combobox(
+            scene_cast_lf, textvariable=self.scene_cast_placement_var_editor,
+            values=list(NOTE_PLACEMENTS), state="readonly", width=10)
+        cast_placement_combo.grid(row=cast_placement_row, column=0, padx=SPACING, pady=0, sticky="w")
+        cast_placement_combo.bind("<<ComboboxSelected>>",
+                                lambda _event: self._refresh_placement_cache_warning())
+        cast_placement_row += 1
+        cast_placement_help = ttk.Label(
+            scene_cast_lf, wraplength=1,
+            text="(depth0 = end of the last user message, after the history: the server reuses its "
+                 "prefix cache; system = end of the system prompt)")
+        cast_placement_help.grid(row=cast_placement_row, column=0, padx=SPACING,
+                                pady=(0, SPACING), sticky="ew")
+        wrap_label(cast_placement_help, scene_cast_lf, padding=2 * SPACING)
+        cast_placement_row += 1
+
+        self.scene_cast_allow_cutaway_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(
+            scene_cast_lf,
+            text="Allow Cut-Away (a short moment elsewhere, rejoining the main thread)",
+            variable=self.scene_cast_allow_cutaway_var_editor
+        ).grid(row=cast_placement_row, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        cast_placement_row += 1
+
+        ttk.Label(scene_cast_lf, text="Exit Guidance (one per line; empty = built-in):").grid(
+            row=cast_placement_row, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        cast_placement_row += 1
+        scene_cast_exit_guidance_text = scrolledtext.ScrolledText(
+            scene_cast_lf, wrap=tk.WORD, height=4, width=1, undo=True)
+        scene_cast_exit_guidance_text.grid(row=cast_placement_row, column=0, padx=SPACING,
+                                          pady=SPACING, sticky="ew")
+        setattr(self, 'scene_cast_exit_guidance_text', scene_cast_exit_guidance_text)
+        cast_placement_row += 1
+
+        ttk.Label(scene_cast_lf, text="Arrival Guidance (one per line; empty = built-in):").grid(
+            row=cast_placement_row, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        cast_placement_row += 1
+        scene_cast_arrival_guidance_text = scrolledtext.ScrolledText(
+            scene_cast_lf, wrap=tk.WORD, height=4, width=1, undo=True)
+        scene_cast_arrival_guidance_text.grid(row=cast_placement_row, column=0, padx=SPACING,
+                                              pady=SPACING, sticky="ew")
+        setattr(self, 'scene_cast_arrival_guidance_text', scene_cast_arrival_guidance_text)
+        cast_placement_row += 1
+
+        ttk.Label(scene_cast_lf, text="Cut-Away Note (empty = built-in):").grid(
+            row=cast_placement_row, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        cast_placement_row += 1
+        scene_cast_cutaway_note_text = scrolledtext.ScrolledText(
+            scene_cast_lf, wrap=tk.WORD, height=3, width=1, undo=True)
+        scene_cast_cutaway_note_text.grid(row=cast_placement_row, column=0, padx=SPACING,
+                                          pady=SPACING, sticky="ew")
+        setattr(self, 'scene_cast_cutaway_note_text', scene_cast_cutaway_note_text)
+        cast_placement_row += 1
+
         # --- NEW (v10.6.0): User-side emotional states/arcs. Optional; steered onto the simulated
         # user's messages (opening question/first line + each continuation) rather than the character.
         self.enable_user_emotional_states_var_editor = tk.BooleanVar()
@@ -1271,6 +1400,41 @@ class ConfigEditor(tk.Toplevel):
         wrap_label(non_latin_fixes_label, non_latin_lf)
         self.non_latin_fixes_text = scrolledtext.ScrolledText(non_latin_lf, wrap=tk.WORD, height=6, width=1, undo=True)
         self.non_latin_fixes_text.pack(fill="both", expand=True)
+
+        # --- Scene Continuity (v12.0): a character who LEFT the scene (or has not arrived
+        # yet) may not speak or act. Code-only, like the non-Latin check: attributed quoted
+        # lines plus a curated narration action-verb list, so there is no pattern list here --
+        # just a toggle, an optional fix list and a round cap. The field is created ENABLED
+        # and only disabled by the toggle, so the load path can write into it before the
+        # state is applied (this Tk build drops writes to a disabled Text widget silently).
+        scene_continuity_lf = ttk.LabelFrame(col2_frame, text="Scene Continuity Check")
+        scene_continuity_lf._section_search_text = "Scene Continuity Check"
+        scene_continuity_lf.pack(padx=SPACING, pady=SPACING, fill="both", expand=True)
+        self.scene_continuity_enabled_var_editor = tk.BooleanVar(value=True)
+        wrapped_checkbutton(
+            scene_continuity_lf,
+            text="Enable Scene Continuity Check (a character who has left the scene, or has not "
+                 "arrived yet, may not speak or act -- caught by code, no LLM call)",
+            variable=self.scene_continuity_enabled_var_editor,
+            command=self._toggle_scene_continuity_fields).pack(fill="x", pady=(0, 5))
+        scene_continuity_rounds_row = ttk.Frame(scene_continuity_lf)
+        scene_continuity_rounds_row.pack(fill="x", pady=(0, 5))
+        ttk.Label(scene_continuity_rounds_row, text="Rewrite rounds per reply (1-5):").pack(side="left")
+        self.scene_continuity_max_rounds_var_editor = tk.StringVar(value="2")
+        self.scene_continuity_max_rounds_spinbox = ttk.Spinbox(
+            scene_continuity_rounds_row, from_=1, to=5, width=6,
+            textvariable=self.scene_continuity_max_rounds_var_editor,
+            style=self.spinbox_style)
+        self.scene_continuity_max_rounds_spinbox.pack(side="left", padx=(SPACING, 0))
+        scene_continuity_fixes_label = ttk.Label(
+            scene_continuity_lf,
+            text="Fixes (one per line; appended to the system prompt on a retry, empty = built-in default):",
+            wraplength=1)
+        scene_continuity_fixes_label.pack(fill="x")
+        wrap_label(scene_continuity_fixes_label, scene_continuity_lf)
+        self.scene_continuity_fixes_text = scrolledtext.ScrolledText(
+            scene_continuity_lf, wrap=tk.WORD, height=6, width=1, undo=True)
+        self.scene_continuity_fixes_text.pack(fill="both", expand=True)
 
         anti_slop_note_frame = ttk.Frame(col2_frame)
         anti_slop_note_frame.pack(padx=SPACING, pady=(0, SPACING), fill="x")
@@ -1869,6 +2033,7 @@ class ConfigEditor(tk.Toplevel):
                 'use_llm_scoring': self.quality_use_llm_var_editor.get(),
                 'output_filter': self.quality_output_filter_var_editor.get(),
                 'roleplay_dimensions': self.quality_roleplay_dims_var_editor.get(),
+                'cast_continuity': self.quality_cast_continuity_var_editor.get(),
                 'tic_dimension': self.quality_tic_dim_var_editor.get(),
                 'per_turn_logic_check': self.quality_logic_check_var_editor.get(),
                 'logic_threshold': int(self.quality_logic_threshold_var.get() or 70),
@@ -1948,7 +2113,26 @@ class ConfigEditor(tk.Toplevel):
                     }
                         for data in self.character_entries
                         if any(data[k].get().strip() for k in ['name', 'race', 'job', 'eye_color', 'hair', 'hair_color', 'clothing', 'jewelry', 'appearance', 'backstory', 'persona', 'personality', 'traits', 'setting', 'class', 'age', 'gender', 'greeting'])
-                    ]
+                    ],
+                },
+                # v12.0 scene cast (join/leave). Guidance lists are saved VERBATIM like the
+                # opening-mode prompts and regex patterns: sanitize_input() strips backslashes
+                # and quotes and would corrupt authored text.
+                'scene_cast': {
+                    'enabled': self.enable_scene_cast_var_editor.get(),
+                    'shape': self.scene_cast_shape_var_editor.get(),
+                    'min_present': int(self.scene_cast_min_present_var_editor.get()),
+                    'max_churn': int(self.scene_cast_max_churn_var_editor.get()),
+                    'max_deferrals': int(self.scene_cast_max_deferrals_var_editor.get()),
+                    'placement': self.scene_cast_placement_var_editor.get(),
+                    'allow_cutaway': self.scene_cast_allow_cutaway_var_editor.get(),
+                    'exit_guidance': [line.strip() for line in
+                                      self.scene_cast_exit_guidance_text.get("1.0", tk.END).split('\n')
+                                      if line.strip()],
+                    'arrival_guidance': [line.strip() for line in
+                                         self.scene_cast_arrival_guidance_text.get("1.0", tk.END).split('\n')
+                                         if line.strip()],
+                    'cutaway_note': self.scene_cast_cutaway_note_text.get("1.0", "end-1c"),
                 },
                 'emotional_states': {
                     'enabled': self.enable_emotional_states_var_editor.get(),
@@ -1983,6 +2167,16 @@ class ConfigEditor(tk.Toplevel):
                 'non_latin': {
                     'enabled': bool(self.non_latin_enabled_var_editor.get()),
                     'fixes': [line.strip() for line in self.non_latin_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
+                },
+                # v12.0 scene continuity: a character who LEFT the scene (or has not arrived
+                # yet) may not speak or act. Saved verbatim (no sanitize_input) like the
+                # regex patterns and the non-Latin fixes.
+                'scene_continuity': {
+                    'enabled': bool(self.scene_continuity_enabled_var_editor.get()),
+                    'max_rounds': int(self.scene_continuity_max_rounds_var_editor.get()),
+                    'fixes': [line.strip() for line in
+                              self.scene_continuity_fixes_text.get("1.0", tk.END).split('\n')
+                              if line.strip()],
                 },
                 'refusal': {
                     'phrases': [sanitize_input(line.strip()) for line in self.refusal_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
@@ -2288,7 +2482,9 @@ class ConfigEditor(tk.Toplevel):
                 and any(data['persona'].get().strip() for data in self.character_entries),
                 self.enable_emotional_states_var_editor.get(),
                 [line.strip() for line in self.emotional_states_text.get("1.0", tk.END).split('\n') if line.strip()],
-                self.persona_placement_var_editor.get(), self.emotion_placement_var_editor.get())
+                self.persona_placement_var_editor.get(), self.emotion_placement_var_editor.get(),
+                cast_active=self.enable_scene_cast_var_editor.get(),
+                cast_placement=self.scene_cast_placement_var_editor.get())
         except (ValueError, tk.TclError):
             warning = ""
         self.placement_cache_warning_label.config(text=warning)
@@ -2568,6 +2764,7 @@ class ConfigEditor(tk.Toplevel):
             self.quality_use_llm_var_editor.set(quality_conf.get('use_llm_scoring', False))
             self.quality_output_filter_var_editor.set(quality_conf.get('output_filter', False))
             self.quality_roleplay_dims_var_editor.set(quality_conf.get('roleplay_dimensions', False))
+            self.quality_cast_continuity_var_editor.set(bool(quality_conf.get('cast_continuity', False)))
             self.quality_tic_dim_var_editor.set(quality_conf.get('tic_dimension', False))
             self.quality_logic_check_var_editor.set(quality_conf.get('per_turn_logic_check', False))
             self.quality_logic_threshold_var.set(str(quality_conf.get('logic_threshold', 70)))
@@ -2733,6 +2930,39 @@ class ConfigEditor(tk.Toplevel):
             self.per_char_random_emotions_var_editor.set(bool(emotional_states_conf.get('per_character', False)))
             self._toggle_emotional_states_fields()
 
+            # v12.0 scene cast (join/leave). The guidance Text widgets are created ENABLED and
+            # only disabled by the toggle, so writing here is safe; the toggle is applied LAST so a
+            # config saved with the feature on reopens editable.
+            scene_cast_conf = prompts_config.get('scene_cast', {}) or {}
+            self.enable_scene_cast_var_editor.set(bool(scene_cast_conf.get('enabled', False)))
+            sc_shape = str(scene_cast_conf.get('shape', 'minimal') or 'minimal').strip().lower()
+            self.scene_cast_shape_var_editor.set(
+                sc_shape if sc_shape in ('minimal', 'churn', 'none') else 'minimal')
+            for var, key, default, lo, hi in (
+                    (self.scene_cast_min_present_var_editor, 'min_present', 2, 1, 10),
+                    (self.scene_cast_max_churn_var_editor, 'max_churn', 2, 0, 10),
+                    (self.scene_cast_max_deferrals_var_editor, 'max_deferrals', 1, 0, 5)):
+                try:
+                    value = int(scene_cast_conf.get(key, default))
+                except (TypeError, ValueError):
+                    value = default
+                var.set(str(max(lo, min(hi, value))))
+            self.scene_cast_placement_var_editor.set(
+                note_placement(scene_cast_conf.get('placement')) or DEFAULT_NOTE_PLACEMENT)
+            self.scene_cast_allow_cutaway_var_editor.set(
+                bool(scene_cast_conf.get('allow_cutaway', False)))
+            for widget, key in (
+                    (self.scene_cast_exit_guidance_text, 'exit_guidance'),
+                    (self.scene_cast_arrival_guidance_text, 'arrival_guidance')):
+                widget.config(state='normal')
+                widget.delete("1.0", tk.END)
+                widget.insert(tk.END, "\n".join(scene_cast_conf.get(key, []) or []))
+            self.scene_cast_cutaway_note_text.config(state='normal')
+            self.scene_cast_cutaway_note_text.delete("1.0", tk.END)
+            self.scene_cast_cutaway_note_text.insert(
+                tk.END, str(scene_cast_conf.get('cutaway_note', '') or ''))
+            self._toggle_scene_cast_fields()
+
             # NEW (v10.6.0): Load user-side emotional states/arcs. The widget starts 'disabled'
             # (optional feature, off by default), and this Tk build silently drops text edits on a
             # disabled widget, so the enabled var must be applied and the field re-enabled BEFORE
@@ -2777,6 +3007,22 @@ class ConfigEditor(tk.Toplevel):
             # Text widget silently.
             non_latin_conf = detection_conf.get('non_latin', {})
             self.non_latin_enabled_var_editor.set(bool(non_latin_conf.get('enabled', False)))
+            # v12.0 scene continuity. The Text widget is created ENABLED (the toggle only
+            # disables it), so this load path can write into it safely -- this Tk build drops
+            # writes to a disabled Text widget silently.
+            scene_continuity_conf = detection_conf.get('scene_continuity', {}) or {}
+            self.scene_continuity_enabled_var_editor.set(
+                bool(scene_continuity_conf.get('enabled', True)))
+            try:
+                sc_rounds = max(1, min(5, int(scene_continuity_conf.get('max_rounds', 2))))
+            except (TypeError, ValueError):
+                sc_rounds = 2
+            self.scene_continuity_max_rounds_var_editor.set(str(sc_rounds))
+            self.scene_continuity_fixes_text.config(state='normal')
+            self.scene_continuity_fixes_text.delete("1.0", tk.END)
+            self.scene_continuity_fixes_text.insert(
+                tk.END, "\n".join(scene_continuity_conf.get('fixes', []) or []))
+            self._toggle_scene_continuity_fields()
             self.non_latin_fixes_text.configure(state='normal')
             self.non_latin_fixes_text.delete(1.0, tk.END)
             self.non_latin_fixes_text.insert(tk.END, "\n".join(non_latin_conf.get('fixes', []) or []))
@@ -2898,6 +3144,19 @@ class ConfigEditor(tk.Toplevel):
             assert 1 <= num_chars_val <= 10, "Number of characters must be between 1 and 10"
             pb_val = int(self.persona_breakthrough_turn_var_editor.get())
             assert 1 <= pb_val <= 99, "Persona Breakthrough Turn must be between 1 and 99"
+            # v12.0 scene cast: the numbers must be usable, and the shape must be one the
+            # worker understands (an unknown shape silently falls back to 'minimal', which would
+            # surprise a user who mistyped it).
+            sc_min_present = int(self.scene_cast_min_present_var_editor.get())
+            assert 1 <= sc_min_present <= 10, "Scene Cast Minimum Characters Present must be between 1 and 10"
+            sc_max_churn = int(self.scene_cast_max_churn_var_editor.get())
+            assert 0 <= sc_max_churn <= 10, "Scene Cast Max Joins and Leaves must be between 0 and 10"
+            sc_max_deferrals = int(self.scene_cast_max_deferrals_var_editor.get())
+            assert 0 <= sc_max_deferrals <= 5, "Scene Cast Max Deferrals must be between 0 and 5"
+            assert self.scene_cast_shape_var_editor.get() in ('minimal', 'churn', 'none'), \
+                "Scene Cast Shape must be minimal, churn or none"
+            sc_rounds = int(self.scene_continuity_max_rounds_var_editor.get())
+            assert 1 <= sc_rounds <= 5, "Scene Continuity Rewrite rounds must be between 1 and 5"
             if self.slop_fixer_temp_var.get(): float(self.slop_fixer_temp_var.get())
             if self.slop_fixer_top_p_var.get(): float(self.slop_fixer_top_p_var.get())
             if self.slop_fixer_min_p_var.get(): float(self.slop_fixer_min_p_var.get())
@@ -2919,6 +3178,11 @@ class ConfigEditor(tk.Toplevel):
             get_text_as_list(self.slop_phrases_text); get_text_as_list(self.slop_fixes_text)
             get_text_as_list(self.ooc_phrases_text); get_text_as_list(self.ooc_fixes_text)
             get_text_as_list(self.non_latin_fixes_text)
+            # v12.0: touch the authored Text widgets so an empty-but-present widget is
+            # still validated, like the fix lists above.
+            get_text_as_list(self.scene_continuity_fixes_text)
+            get_text_as_list(self.scene_cast_exit_guidance_text)
+            get_text_as_list(self.scene_cast_arrival_guidance_text)
 
             # Regex Watch (v11.6): a pattern that does not compile would be skipped silently at
             # run time, so it is rejected here while the user can still see the error.
@@ -3229,6 +3493,38 @@ class ConfigEditor(tk.Toplevel):
         """Updates the text on each character card frame to match its index."""
         for i, data in enumerate(self.character_entries):
             data['frame'].config(text=f"Character {i + 1}")
+
+    def _toggle_scene_cast_fields(self):
+        """Enable/disable the Scene Cast fields from the toggle's state.
+
+        Mirrors _toggle_bad_words_fields(). Every widget is set back to 'normal' before the
+        state is applied, because this Tk build drops writes to a disabled widget SILENTLY --
+        the same trap the user-emotional-states field documents.
+        """
+        is_enabled = self.enable_scene_cast_var_editor.get()
+        state = 'normal' if is_enabled else 'disabled'
+        for name in ('scene_cast_min_present_spinbox', 'scene_cast_max_churn_spinbox',
+                     'scene_cast_max_deferrals_spinbox'):
+            widget = getattr(self, name, None)
+            if widget is not None and widget.winfo_exists():
+                widget.config(state=state)
+        for name in ('scene_cast_exit_guidance_text', 'scene_cast_arrival_guidance_text',
+                     'scene_cast_cutaway_note_text'):
+            widget = getattr(self, name, None)
+            if widget is not None and widget.winfo_exists():
+                widget.config(state=state)
+
+    def _toggle_scene_continuity_fields(self):
+        """Enable/disable the Scene Continuity fields from the toggle's state."""
+        is_enabled = self.scene_continuity_enabled_var_editor.get()
+        state = 'normal' if is_enabled else 'disabled'
+        widget = getattr(self, 'scene_continuity_fixes_text', None)
+        if widget is not None and widget.winfo_exists():
+            widget.config(state=state)
+        widget = getattr(self, 'scene_continuity_max_rounds_spinbox', None)
+        if widget is not None and widget.winfo_exists():
+            widget.config(state=state)
+
 
     def _toggle_character_engine_fields(self):
         """Enables/disables character engine fields based on checkbox state."""

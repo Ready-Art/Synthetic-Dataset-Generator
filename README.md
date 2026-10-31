@@ -1,4 +1,4 @@
-# ReadyArt Synthetic Dataset Generator v11.10.0
+# ReadyArt Synthetic Dataset Generator v12.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -57,6 +57,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Budget Enforcement](#budget-enforcement)
   - [Malformed Response Detection](#malformed-response-detection)
   - [Non-Latin Script Check (v11.10.0)](#non-latin-script-check-v11100)
+  - [Scene Cast: Characters Join and Leave (v12.0)](#scene-cast-characters-join-and-leave-v120)
 - [Troubleshooting](#-troubleshooting)
 - [Performance Tips](#-performance-tips)
 - [License](#-license)
@@ -104,6 +105,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ### Character & Persona Engine
 - **Multi-Character Conversations** — Inject multiple character profiles into a single conversation for rich, multi-party dialogues (1–10 characters per conversation)
+- **Scene Cast (v12.0)** — Characters can leave and join a multi-character scene. The *generator* owns the schedule (who is present at each reply) and the model only narrates the transitions, so the cast never drifts: a scheduled exit the model never writes is **cancelled** (the character stays legitimately present) rather than assumed, and a character who has left **cannot speak again** (a code-only continuity check regenerates the reply). Off by default, and only active with 2+ characters
 - **Character Profiles** — Randomly inject character names, ages (validated 18–60), races, jobs, clothing, jewelry, appearance, backstories, personalities, traits, and settings into system prompts
 - **Card-Based Character Editor** — Visual card layout in the Configuration Editor with individual add/remove per character
 - **Name Validation** — Characters with empty or whitespace-only names are automatically skipped with a warning
@@ -703,6 +705,55 @@ Patterns are curated in the Configuration Editor's **Detection** tab (add, edit,
 
 When it runs: after every phrase-driven check has passed on a reply (so a rewrite never races another fix), on assistant answers, generated questions, user continuations and opening-mode greetings/first lines.
 
+### Scene Cast: Characters Join and Leave (v12.0)
+
+The world does not revolve around the player. In a multi-character scene the other people have their own business: someone leaves to catch a shift, someone else arrives because they heard raised voices. **Scene Cast** makes the generator produce those beats — and, more importantly, makes sure the cast never drifts out of sync with the transcript.
+
+**The generator owns the cast. The model only narrates it.** The schedule (who is in the scene at each reply) is computed *before* any request is sent. The model is then told the state and asked to write the transition naturally. It never gets to decide whether a character has left.
+
+That inversion is the whole design. If the model chose, a forgotten exit would leave the character silently present (making every later note a lie) or silently gone (corrupting the transcript). Here:
+
+| Model wrote… | Generator does | Why |
+|---|---|---|
+| the scheduled exit | character becomes `exited` | the beat landed |
+| **nothing** on a scheduled exit | **exit CANCELLED**, character stays `present` | assuming the exit would make that character's next legitimate line a continuity violation the generator itself invented |
+| the scheduled arrival | character becomes `present` | the beat landed |
+| **nothing** on a scheduled arrival | **arrival FORCED** to `present` | being in the scene is the default and cannot corrupt the transcript |
+
+The asymmetry is deliberate and must not be "simplified" into forcing exits. Cancelling is the only direction that cannot produce an incoherent dataset. Every transition is logged, and `exit_cancelled` in the metadata is how you measure whether the model actually wrote its exits.
+
+**The hard check, with no LLM.** A character who has left (or has not arrived yet) may not speak or act. `detection.check_scene_continuity()` finds attributed quoted lines (including script-style `Name:` prefixes, and names ending in punctuation like `Dr. Vance`) plus a curated narration action-verb list. Quoted dialogue is blanked before the action match, so a character merely *mentioned* in someone else's line — `"Where is Melody?"` — never flags. A hit sends the reply back to the same main API slot with a fix appended to the system prompt, exactly like OOC drift; once the fixes are exhausted the best-effort answer is **kept**, never dropped. A missing entrance/exit is reported but never regenerates the reply — the state machine handles it for free.
+
+**Cache-safe by construction.** The cast note rides in the per-turn `depth0` note beside the persona and emotion blocks, so the system prompt never changes mid-conversation and a server's prefix cache stays warm. The note carries **no per-reply counter**, so two static replies produce byte-identical text. Only the present/absent *sets* and this reply's transitions appear in it.
+
+**The Judge reviews what code cannot.** The opt-in `cast_continuity` dimension asks whether the entrances and exits read as *motivated and natural*, and whether an exited character was brought back. It is **LLM-only with no heuristic**: there is no measurable proxy for "was that exit earned?", and paying a judge to re-derive what the regex already decided would only add latency and a new drop reason. The judge is given the schedule and the events so it can see what was supposed to happen.
+
+```yaml
+prompts:
+  scene_cast:
+    enabled: false            # off by default; needs 2+ characters
+    shape: minimal            # minimal (one join + one leave) | churn | none
+    min_present: 2            # never fewer than this many characters present
+    max_churn: 2              # only used by shape: churn
+    max_deferrals: 1          # replies an un-narrated exit may slip before it is cancelled
+    placement: depth0          # depth0 (cache-friendly) | system
+    exit_guidance: []         # one per line; empty = built-in defaults
+    arrival_guidance: []
+    allow_cutaway: false      # a short moment elsewhere, rejoining the main thread
+    cutaway_note: ''
+detection:
+  scene_continuity:
+    enabled: true             # inert unless prompts.scene_cast.enabled is also on
+    fixes: []                 # empty = built-in default instruction
+    max_rounds: 2             # regeneration rounds per reply (1-5)
+quality:
+  cast_continuity: false      # opt-in LLM-only judge dimension
+```
+
+> **A join and a leave each cost one present character**, so a 2-character scene with the default `min_present: 2` can never change cast. The worker logs a `WARNING` and runs a static cast rather than appearing broken. Use 3+ characters, or lower `min_present`.
+
+See **[docs/scene-cast.md](docs/scene-cast.md)** for a full walkthrough with worked examples, the state machine, and how to tell from the metadata whether the model is actually writing its exits.
+
 ### Non-Latin Script Check (v11.10.0)
 
 A model trained on more than one language occasionally drops a stray glyph into an otherwise English reply — a Chinese character, a Cyrillic word, a Greek letter used as decoration, an emoji. Those strays poison a Latin-script dataset, and a phrase list cannot catch them because there is no fixed phrase to list.
@@ -764,6 +815,7 @@ quality:
   output_filter: false             # Flag conversations below threshold (for post-filtering)
   roleplay_dimensions: false       # Opt-in: score voice_distinctiveness, grounding, persona_alignment too
   tic_dimension: false             # v11.7 opt-in: heuristic tic_density dimension (scotoma style tics)
+  cast_continuity: false            # v12.0 opt-in: LLM-only cast_continuity dimension (entrances/exits read naturally)
   min_score_threshold: 50          # Conversations below this composite score are flagged for review
   max_chars_for_scoring: 8000      # Truncate conversation before sending to scoring LLM
   judge_max_attempts: 3            # Transient judge failures are retried this many times, then the row is dropped
@@ -1938,7 +1990,17 @@ The application is organized into focused modules with one-way dependencies to p
 
 ## 📝 Version History
 
-### v11.10.0 (Current)
+### v12.0 (Current)
+- **Scene Cast — characters join and leave a multi-character scene** — the "the world doesn't revolve around the player" feature. The **generator owns the cast**: the schedule is computed before any request is sent, the model is told who is present on each reply, and the model only *narrates* the entrances and exits. It never decides whether a character has left
+- **A forgotten exit is cancelled, not assumed** — if the model never writes a scheduled departure, the exit is **cancelled** and the character stays legitimately present. Forcing the exit would make that character's very next legitimate line a continuity violation the generator itself invented. An un-narrated **arrival** is the opposite: it is forced to `present`, because being in the scene is the default and cannot corrupt the transcript. The asymmetry is deliberate
+- **Hard continuity check, no LLM** — `detection.check_scene_continuity()` flags a character who has left (or has not arrived yet) speaking or acting: attributed quoted lines (including `Name:` script-style prefixes) plus a curated narration action-verb list. Quoted dialogue is blanked before the action match, so a character merely *mentioned* in someone else's line ("Where is Melody?") never flags. A hit sends the reply back to the same main API slot with a fix; once the fixes are exhausted the best-effort answer is kept, never dropped
+- **Cache-safe by construction** — the cast note rides in the per-turn `depth0` note beside the persona/emotion blocks, so the system prompt never changes mid-conversation and a server's prefix cache stays warm. The note itself carries **no per-reply counter**, so two static replies produce byte-identical text
+- **Opt-in Judge dimension `cast_continuity`** — the Judge reviews what code cannot: did the entrances and exits read as motivated and natural, and was an exited character brought back? **LLM-only, no heuristic** — there is no measurable proxy for "was that exit earned?", and the objective half of the question is already answered for free by the code check. Off by default
+- **Metadata schema v7** — three new flat, type-stable keys on every record: `cast_schedule`, `cast_events` (including `exit_cancelled`, which is how you measure whether the model actually wrote its exits) and `quality_cast_continuity` (`-1.0` when off/unscored)
+- **Configuration** — `prompts.scene_cast.{enabled,shape,min_present,max_churn,max_deferrals,placement,allow_cutaway,exit_guidance,arrival_guidance,cutaway_note}` (off by default), `detection.scene_continuity.{enabled,fixes,max_rounds}` and `quality.cast_continuity`. The Config Editor gains a **Scene Cast** panel in the Character Engine tab, a **Scene Continuity Check** panel in the Detection tab and a cast-continuity toggle in Quality Scoring; the main window gains a **Cast Drift** metric card, issue panel and graph series
+- **Wiring** — `detection.py` (`check_scene_continuity()`, `find_attributed_speakers()`, `find_character_actions()`), `generation.py` (plan/state helpers, `_cast_presence_note()`, the retry branch, metadata v7, `DEFAULT_SCENE_CONTINUITY_FIX`), `generate.py` (config read + worker kwargs + metric card + issue panel), `config/config.yml`, `config_editor.py`, `app_state.py`, `dashboard.py`, `quality.py`, `docs/scene-cast.md`. Guarded by `tests/test_scene_cast.py`
+
+### v11.10.0
 - **Non-Latin script check** — a model trained on more than one language occasionally drops a stray glyph into an otherwise English reply: a Chinese character, a Cyrillic word, a Greek letter used as decoration, an emoji. A phrase list cannot catch those (there is no fixed phrase to list), and an LLM round trip per reply would be expensive. The new check is **purely character-class based**: a Unicode range **allow-list**, so it costs nothing, needs no model and no network, and cannot miss a script nobody thought to list
 - **Allow-list, not block-list** — a character is accepted when it is Latin script (any accent or extension, including the ligatures), a digit, whitespace, or one of the punctuation/symbol blocks a roleplay reply legitimately uses (curly quotes, dashes, ellipses, bullets, arrows, mathematical operators, box drawing, a star or a heart). Everything else is flagged — Chinese, Japanese, Korean, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, the emoji planes — because anything outside Latin is, by definition, not Latin. Accented Latin (`Café`, `naïve`, `straße`), curly quotes and guillemets all pass, so the check does not fight ordinary English prose
 - **One row per script, not per character** — a reply that is a whole sentence in another script reports one entry per distinct script (with the sentence that holds the first offending character), so the dashboard is readable and the fix instruction is not repeated hundreds of times. `text.isascii()` is the fast path, so a pure-ASCII reply costs a single method call

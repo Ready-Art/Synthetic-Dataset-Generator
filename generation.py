@@ -49,6 +49,65 @@ DEFAULT_NON_LATIN_FIX = (
     "Hebrew or Devanagari characters, and no emoji)."
 )
 
+# --- Scene Cast (v12.0) -------------------------------------------------------------------
+# Characters join and leave a multi-character scene. THE GENERATOR OWNS THE CAST: the schedule
+# is computed before any request is sent, the model is told who is present each reply, and the
+# model only NARRATES the transitions. It never decides whether a character has left.
+#
+# The design reason is the failure mode this replaces. If the model chose, a forgotten exit
+# would leave the character silently present (making every later note a lie) or silently gone
+# (corrupting the transcript). Here a forgotten exit is CANCELLED and the character stays
+# legitimately present, so the transcript is coherent in every branch and only the schedule
+# degrades -- which the cast_events metadata makes measurable.
+#
+# The cast note rides in the per-turn depth-0 note (slot_notes) rather than the character
+# profile block, so the system prompt never changes mid-conversation and a server's prefix
+# cache stays warm. Same reasoning as persona/emotion placement: keep the default that way.
+SCENE_CAST_SHAPES = ("minimal", "churn", "none")
+
+# Cast states. 'absent' and 'exited' are the two that may NOT speak or act (detection.
+# check_scene_continuity enforces that); 'arriving' and 'exiting' MAY speak, because narrating
+# the entrance/exit IS the beat.
+CAST_STATE_ABSENT = "absent"
+CAST_STATE_ARRIVING = "arriving"
+CAST_STATE_PRESENT = "present"
+CAST_STATE_EXITING = "exiting"
+CAST_STATE_EXITED = "exited"
+CAST_BLOCKED_STATES = (CAST_STATE_ABSENT, CAST_STATE_EXITED)
+
+DEFAULT_EXIT_GUIDANCE = (
+    "give them a concrete reason to go, somewhere to be or someone waiting, and let them "
+    "actually leave the room",
+    "have them excuse themselves in their own voice and be gone by the end of the reply",
+    "let the conversation reach a natural parting and show them heading out",
+)
+
+DEFAULT_ARRIVAL_GUIDANCE = (
+    "bring them in from outside the scene with a reason to be there that is already part of "
+    "this world",
+    "have them arrive mid-moment, so the room has to adjust to them",
+    "introduce them through something concrete: a sound, a door, a voice from the hall",
+)
+
+DEFAULT_CUTAWAY_NOTE = (
+    "You may open on a brief moment elsewhere in this world, while the user is not present. "
+    "Keep it short, keep it to the characters who are actually there, and rejoin the main "
+    "thread before the reply ends."
+)
+
+# The instruction appended to the system prompt when an EXITED or ABSENT character still speaks
+# or acts. Used when `detection.scene_continuity.fixes` is empty, so switching the check on
+# needs no fix list (the same contract as DEFAULT_NON_LATIN_FIX).
+DEFAULT_SCENE_CONTINUITY_FIX = (
+    "A character who has left the scene cannot speak, act, be seen or be described as present "
+    "again. Remove every line, action and reaction belonging to a character who is no longer in "
+    "the scene, and do not bring them back unless someone explicitly summons them."
+)
+
+# Scene continuity (v12.0): default regeneration rounds per reply. Module scope because the
+# worker signature uses it as a default value.
+SCENE_CONTINUITY_MAX_ROUNDS = 2
+
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
@@ -537,6 +596,349 @@ def _persona_block_for_characters(numbered_personas, char_count_label=True):
     )
 
 
+# --- Scene Cast helpers (v12.0) ------------------------------------------------------------
+# Pure functions: no Tk, no network, no app_state mutation, so they unit-test headlessly. They
+# mirror the emotional-arc helpers above (_split_emotional_arc_entry / _expand_emotional_arc).
+
+
+def _scene_cast_feasible(cast_size, total_slots, min_present, shape, max_churn):
+    """(can_join, can_leave) for this scene.
+
+    BOTH need at least one character to spare: a joiner starts ABSENT and a leaver ENDS absent, so
+    either transition momentarily costs a present character. Dropping below ``min_present`` would
+    leave the scene with fewer speaking characters than the user asked to guarantee -- which is why
+    a 2-character scene with the default ``min_present: 2`` can never change cast at all.
+
+    Slot minimums keep a transition from landing on a reply that has nothing left to use it.
+    """
+    if shape not in SCENE_CAST_SHAPES or shape == "none":
+        return False, False
+    cast_size = int(cast_size or 0)
+    total_slots = int(total_slots or 0)
+    min_present = max(1, int(min_present or 1))
+    spare = cast_size - min_present
+    if spare < 1:
+        return False, False
+    can_leave = total_slots >= 2
+    can_join = total_slots >= 3
+    return can_join, can_leave
+
+
+def _build_scene_cast_plan(names, total_slots, config):
+    """The immutable cast schedule for one task.
+
+    ``names`` is the scene's character names IN SCENE ORDER (the order the profile blocks are
+    injected in), so ``members[i]['number'] == i + 1`` matches the ``CHARACTER N`` headers.
+
+    Returns ``{"members": [...], "min_present": n, "allow_cutaway": bool}`` where each member is
+    ``{"number", "name", "enter_slot", "exit_slot"}``. Slot numbers are 1-based assistant
+    slots (the same numbering ``slot_notes()`` uses); ``enter_slot == 0`` means present from the
+    opening and ``exit_slot is None`` means never leaves.
+
+    An EMPTY plan (``{"members": [], ...}``) means the feature is a no-op for this task. It is
+    returned when the feature is off, the scene has fewer than 2 characters, the shape is 'none',
+    or the schedule is infeasible -- so a 2-character scene with ``min_present: 2`` can never
+    change cast. The worker logs the reason; a silently-inactive feature reads as a bug.
+
+    ORDER OF DECISIONS MATTERS. Joiners are chosen FIRST (the LAST characters in scene order start
+    outside the scene, keeping the opening cast as the core group), then leavers are drawn only from
+    the characters present from the opening. That way a joiner and a leaver are never the same
+    character, and a mid-scene arrival stays to the end instead of being scheduled to leave.
+    """
+    config = config or {}
+    empty = {"members": [], "min_present": 0, "allow_cutaway": False}
+    if not config.get("enabled", False):
+        return empty
+    names = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if len(names) < 2:
+        return empty
+    shape = str(config.get("shape", "minimal") or "minimal").strip().lower()
+    if shape not in SCENE_CAST_SHAPES:
+        shape = "minimal"
+    if shape == "none":
+        return empty
+    try:
+        min_present = max(1, int(config.get("min_present", 2)))
+    except (TypeError, ValueError):
+        min_present = 2
+    min_present = min(min_present, len(names))
+    try:
+        max_churn = max(0, int(config.get("max_churn", 2)))
+    except (TypeError, ValueError):
+        max_churn = 2
+    total_slots = max(1, int(total_slots or 1))
+
+    can_join, can_leave = _scene_cast_feasible(
+        len(names), total_slots, min_present, shape, max_churn)
+    if not can_join and not can_leave:
+        return empty
+
+    spare = len(names) - min_present
+    members = [{"number": i + 1, "name": name, "enter_slot": 0, "exit_slot": None}
+               for i, name in enumerate(names)]
+
+    if shape == "minimal":
+        max_joins, max_leaves = 1, 1
+    else:  # churn
+        max_joins = max_leaves = max(max_churn, 1)
+
+    # --- JOINS FIRST ----------------------------------------------------------------
+    # The LAST characters start outside the scene, so the opening cast stays the core group.
+    # Arrivals are spread over the early-middle of the conversation, leaving at least one reply
+    # for the newcomer to be present in.
+    join_count = min(max_joins, spare) if can_join else 0
+    join_count = min(join_count, max(0, total_slots - 1))
+    joiners = members[len(members) - join_count:] if join_count else []
+    if joiners:
+        latest_ok = total_slots - 1  # an arrival on the last reply has nothing left to do
+        step = max(1, latest_ok // len(joiners))
+        slot = step
+        for member in joiners:
+            if slot > latest_ok:
+                slot = latest_ok
+            while any(m["enter_slot"] == slot for m in members if m is not member):
+                slot += 1
+            if slot > latest_ok:
+                break
+            member["enter_slot"] = slot
+            slot += step
+
+    # --- LEAVES ---------------------------------------------------------------------
+    # Only characters present from the opening may leave (a joiner stays for its cameo), and the
+    # LAST of those leaves first, so the opening cast erodes from the back instead of the front.
+    if can_leave and max_leaves > 0:
+        leavable = [m for m in members if m["enter_slot"] == 0]
+        leave_count = min(max_leaves, spare, max(0, len(leavable) - 1))
+        leavers = list(reversed(leavable))[:leave_count]
+        if leavers:
+            first_exit_slot = max(2, (total_slots * 3) // 4)
+            step = max(1, total_slots // max(2, len(leavers) + 1))
+            slot = first_exit_slot
+            for member in leavers:
+                if slot > total_slots:
+                    slot = total_slots
+                while any(m["exit_slot"] == slot for m in members if m is not member):
+                    slot += 1
+                if slot > total_slots:
+                    break
+                member["exit_slot"] = slot
+                slot += step
+
+    # A member cannot leave on or before the reply they arrive in.
+    for member in members:
+        if member["exit_slot"] is not None and member["exit_slot"] <= member["enter_slot"]:
+            member["exit_slot"] = None
+
+    if not any(m["enter_slot"] > 0 for m in members) and not any(
+            m["exit_slot"] is not None for m in members):
+        return empty
+
+    return {
+        "members": members,
+        "min_present": min_present,
+        "allow_cutaway": bool(config.get("allow_cutaway", False)),
+    }
+def _cast_state_from_plan(plan):
+    """Initial per-character state, keyed by profile number.
+
+    A character scheduled to arrive later starts 'absent'; everyone else is 'present' from the
+    opening, because that is what the greeting and first reply already show.
+    """
+    state = {}
+    for member in (plan or {}).get("members", []):
+        number = member.get("number")
+        if number is None:
+            continue
+        state[number] = (CAST_STATE_ABSENT if member.get("enter_slot", 0) > 0
+                         else CAST_STATE_PRESENT)
+    return state
+
+
+def _cast_slot_transitions(plan, state, slot_no):
+    """(arriving, exiting) member lists for this slot. Mutates nothing.
+
+    A member already in 'arriving'/'exiting' is reported again, because the directive has to be
+    re-issued until the beat lands (see _advance_cast_state).
+    """
+    arriving, exiting = [], []
+    for member in (plan or {}).get("members", []):
+        number = member.get("number")
+        current = state.get(number, CAST_STATE_PRESENT)
+        if current == CAST_STATE_EXITING:
+            exiting.append(member)
+            continue
+        if current == CAST_STATE_ARRIVING:
+            arriving.append(member)
+            continue
+        if current != CAST_STATE_PRESENT:
+            continue  # absent/exited: nothing to narrate this slot
+        if member.get("exit_slot") == slot_no:
+            exiting.append(member)
+        elif member.get("enter_slot") == slot_no:
+            arriving.append(member)
+    return arriving, exiting
+
+
+def _cast_names_for_slot(plan, state, slot_no):
+    """(blocked_names, expected_names, present_names) for one assistant slot.
+
+    ``blocked_names`` may NOT speak or act (states 'absent'/'exited') and drives
+    ``detection.check_scene_continuity``. ``expected_names`` are the characters whose entrance
+    or exit this reply should narrate -- reported, never used to force a rewrite.
+    ``present_names`` is who the greeting/narration may show.
+    """
+    arriving, exiting = _cast_slot_transitions(plan, state, slot_no)
+    expected = [m["name"] for m in arriving] + [m["name"] for m in exiting]
+    blocked, present = [], []
+    for member in (plan or {}).get("members", []):
+        current = state.get(member.get("number"), CAST_STATE_PRESENT)
+        if current in CAST_BLOCKED_STATES:
+            blocked.append(member["name"])
+        else:
+            present.append(member["name"])
+    return tuple(blocked), tuple(expected), tuple(present)
+
+
+def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
+    """Apply one accepted reply to the cast state machine. Returns (new_state, events).
+
+    ``events`` is a list of ``(event, name)`` with event one of 'arrived', 'exited',
+    'arrival_deferred', 'exit_deferred', 'arrival_forced', 'exit_cancelled'.
+
+    THE ASYMMETRY IS DELIBERATE AND MUST NOT BE "SIMPLIFIED":
+      * an un-narrated ARRIVAL is FORCED to 'present' after max_deferrals. Being in the scene
+        is the default and cannot corrupt the transcript, so the character simply is there.
+      * an un-narrated EXIT is CANCELLED back to 'present'. Forcing it would make that
+        character's very next legitimate line a continuity violation that the generator itself
+        invented -- it would flag text it had just made wrong. Cancelling is the only direction
+        that cannot produce an incoherent dataset.
+
+    ``answer_text`` is matched for the character's name; a name anywhere in the reply counts as
+    the beat landing (narration or dialogue), because the point is that the reader saw it happen.
+    """
+    import re as _re
+    plan = plan or {}
+    state = dict(state or {})
+    # Deferral counts live on the STATE, not the plan: the plan is immutable and shared by every
+    # slot, so counting there would leak across tasks and never accumulate per character.
+    deferrals = dict(state.get("_deferrals") or {})
+    events = []
+    if not plan.get("members"):
+        return state, events
+    text = str(answer_text or "")
+
+    def _seen(name):
+        if not name:
+            return False
+        return bool(_re.search(r'(?<!\w)' + _re.escape(str(name)) + r'(?!\w)', text,
+                               _re.IGNORECASE))
+
+    for member in plan.get("members", []):
+        number = member.get("number")
+        name = member.get("name")
+        current = state.get(number, CAST_STATE_PRESENT)
+
+        # A scheduled transition becomes active on its slot. An 'absent' character begins
+        # ARRIVING on its enter_slot (not only a 'present' one), which is what makes the
+        # deferral/force ladder below reachable at all.
+        if current == CAST_STATE_PRESENT:
+            if member.get("exit_slot") == slot_no:
+                current = CAST_STATE_EXITING
+        elif current == CAST_STATE_ABSENT:
+            if member.get("enter_slot") == slot_no:
+                current = CAST_STATE_ARRIVING
+
+        if current == CAST_STATE_ARRIVING:
+            if _seen(name):
+                current = CAST_STATE_PRESENT
+                events.append(("arrived", name))
+            else:
+                deferrals[number] = deferrals.get(number, 0) + 1
+                if deferrals[number] > max_deferrals:
+                    current = CAST_STATE_PRESENT
+                    events.append(("arrival_forced", name))
+                else:
+                    events.append(("arrival_deferred", name))
+        elif current == CAST_STATE_EXITING:
+            if _seen(name):
+                current = CAST_STATE_EXITED
+                events.append(("exited", name))
+            else:
+                deferrals[number] = deferrals.get(number, 0) + 1
+                if deferrals[number] > max_deferrals:
+                    current = CAST_STATE_PRESENT
+                    events.append(("exit_cancelled", name))
+                else:
+                    events.append(("exit_deferred", name))
+
+        state[number] = current
+
+    state["_deferrals"] = deferrals
+    return state, events
+
+
+def _cast_presence_note(plan, state, slot_no, config=None):
+    """The per-reply cast note: who is in the scene and what changes this reply.
+
+    Stability matters. A slot with no transition produces a note that depends only on the SET of
+    present/absent names, so two consecutive static slots produce BYTE-IDENTICAL text and a
+    'system' placement does not invalidate the prefix cache. A transition slot adds one
+    directive; a cut-away slot adds one more.
+    """
+    config = config or {}
+    members = (plan or {}).get("members") or []
+    if not members:
+        return ""
+    total_slots = int(config.get("total_slots") or 0)
+    arriving, exiting = _cast_slot_transitions(plan, state, slot_no)
+
+    present = []
+    absent = []
+    for member in members:
+        current = state.get(member.get("number"), CAST_STATE_PRESENT)
+        if current in CAST_BLOCKED_STATES:
+            absent.append(member["name"])
+        else:
+            present.append(member["name"])
+
+    # NOTE: no "reply N of M" counter here. The note is appended to the system prompt when
+    # placement is 'system', so any per-slot number would make every reply's system prompt differ
+    # and destroy the server's prefix cache. The note must depend only on the cast SET (and on the
+    # transitions of THIS slot), never on the slot index.
+    lines = ["SCENE CAST:"]
+    if present:
+        lines.append("PRESENT: " + ", ".join(present) + ".")
+    if absent:
+        lines.append("NOT IN THE SCENE: " + ", ".join(absent) + ".")
+        lines.append(
+            "Do not give the absent characters dialogue, actions, thoughts or feelings. "
+            "They are not here.")
+
+    exit_guidance = [str(g).strip() for g in (config.get("exit_guidance") or []) if str(g).strip()]
+    arrival_guidance = [str(g).strip() for g in (config.get("arrival_guidance") or []) if str(g).strip()]
+
+    for member in exiting:
+        guidance = (exit_guidance[(slot_no - 1) % len(exit_guidance)] if exit_guidance
+                    else DEFAULT_EXIT_GUIDANCE[(slot_no - 1) % len(DEFAULT_EXIT_GUIDANCE)])
+        lines.append(
+            "%s LEAVES the scene in this reply. Have %s exit naturally -- %s. After this "
+            "reply %s is gone: do not write %s again."
+            % (member["name"], member["name"], guidance, member["name"], member["name"]))
+
+    for member in arriving:
+        guidance = (arrival_guidance[(slot_no - 1) % len(arrival_guidance)] if arrival_guidance
+                    else DEFAULT_ARRIVAL_GUIDANCE[(slot_no - 1) % len(DEFAULT_ARRIVAL_GUIDANCE)])
+        lines.append(
+            "%s ARRIVES in this reply. Bring %s into the scene with a natural entrance -- %s."
+            % (member["name"], member["name"], guidance))
+
+    if plan.get("allow_cutaway") and (arriving or exiting):
+        cutaway = str(config.get("cutaway_note") or "").strip() or DEFAULT_CUTAWAY_NOTE
+        lines.append("CUT-AWAY: " + cutaway)
+
+    return "\n\n" + "\n".join(lines) + "\n"
+
+
 # Where a per-reply block (persona breakthrough, emotional state) is sent: "depth0" appends it to the
 # reply's final user message, after the history; "system" appends it to that reply's system prompt.
 NOTE_PLACEMENTS = ("depth0", "system")
@@ -550,7 +952,8 @@ def note_placement(value):
 
 
 def placement_cache_warning(num_turns, opening_mode, persona_turn, persona_active,
-                            emotional_states_enabled, emotional_states, persona_placement, emotion_placement):
+                            emotional_states_enabled, emotional_states, persona_placement, emotion_placement,
+                            cast_active=False, cast_placement=None):
     """(share, warning) when a 'system' placement makes the system prompt change between replies,
     else (0.0, ""). `share` is the estimated fraction of reusable history computed again.
 
@@ -570,6 +973,11 @@ def placement_cache_warning(num_turns, opening_mode, persona_turn, persona_activ
     if reusable <= 0:
         return 0.0, ""
     persona_in_system = bool(persona_active) and note_placement(persona_placement) == "system"
+    # v12.0: the scene cast note is a third per-reply block. It is stable between replies
+    # (the present/absent sets do not change) and differs only on a transition slot, so it
+    # costs at most two cache misses per conversation in the 'minimal' shape.
+    cast_in_system = bool(cast_active) and note_placement(cast_placement) == "system"
+    cast_change_slots = min(2, max(0, slots - 1)) if cast_in_system else 0
     entries = [None]
     if emotional_states_enabled and note_placement(emotion_placement) == "system":
         entries = [s for s in (_split_emotional_arc_entry(str(e).strip()) for e in emotional_states or ()) if s] or [None]
@@ -585,11 +993,19 @@ def placement_cache_warning(num_turns, opening_mode, persona_turn, persona_activ
         lost_shares.append(sum(k - 1 for k in changed) / reusable)
         change_counts.append(len(changed))
     share = sum(lost_shares) / len(lost_shares)
+    changes = sum(change_counts) / len(change_counts)
+    if cast_change_slots:
+        # The cast note adds its own misses on the late slots where a transition lands.
+        # Folded in BEFORE the early return below: the cast note alone can put the
+        # system prompt in play, so returning early would under-report it entirely.
+        cast_share = sum(max(0, k - 1) for k in range(slots - cast_change_slots + 1, slots + 1)) / reusable
+        share = min(1.0, share + cast_share)
+        changes += cast_change_slots
     if share <= 0:
         return 0.0, ""
-    changes = sum(change_counts) / len(change_counts)
     what = " and ".join(name for name, on in (("the persona breakthrough", persona_changes),
-                                              ("emotional arcs", arc_changes)) if on)
+                                              ("emotional arcs", arc_changes),
+                                              ("the scene cast", bool(cast_change_slots))) if on)
     times = f"{changes:g}" if changes == int(changes) else f"{changes:.1f}"
     averaged = " on average over the configured states" if len(entries) > 1 else ""
     return share, (
@@ -842,6 +1258,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            current_non_latin_fixes=(),
            questions_append_alias_local="",
            questions_append_separator_local=DEFAULT_QUESTION_SEPARATOR,
+           scene_cast_enabled_local=False,
+           scene_cast_config_local=None,
+           scene_continuity_enabled_local=False,
+           scene_continuity_fixes_local=(),
+           scene_continuity_max_rounds=SCENE_CONTINUITY_MAX_ROUNDS,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -1227,9 +1648,69 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     log_message(f"Thread {thread_id}: Character engine enabled but character_list is empty or num_characters is 0.", "WARNING")
 
             # Scene prompt: the system prompt of every request in the task (persona excluded). The
-            # blocks that change per slot (persona breakthrough + emotional state/arc) come from
-            # slot_notes below; on depth0 placement this prefix stays the same and the server can reuse its cache.
+            # blocks that change per slot (persona breakthrough + emotional state/arc + scene cast) come
+            # from slot_notes below; on depth0 placement this prefix stays the same and the server can
+            # reuse its cache.
             base_scene_prompt = current_system_prompt_for_task + character_injection
+
+            # --- Scene Cast (v12.0): who is in the scene at each assistant slot ---
+            # Computed AFTER the profile loop (scene_character_names is only complete at its end) and
+            # BEFORE any request is sent, because the generator -- not the model -- owns the schedule.
+            # The character profile block above stays static for the whole task: cast information rides
+            # in the per-turn depth-0 note, so the system prompt (and the prefix cache) is untouched.
+            scene_cast_plan = {"members": [], "min_present": 0, "allow_cutaway": False}
+            scene_cast_state = {}
+            scene_cast_config_local = scene_cast_config_local or {}
+            if scene_cast_enabled_local:
+                if len(scene_character_names) >= 2:
+                    scene_cast_total_slots = current_num_turns + (1 if opening_mode_local else 0)
+                    scene_cast_plan = _build_scene_cast_plan(
+                        scene_character_names, scene_cast_total_slots, scene_cast_config_local)
+                    scene_cast_state = _cast_state_from_plan(scene_cast_plan)
+                    if scene_cast_plan["members"]:
+                        log_message(
+                            f"Thread {thread_id}: Scene cast plan for task {task_id} over "
+                            f"{scene_cast_total_slots} slot(s): "
+                            + ", ".join("%s enter=%d exit=%s" % (m['name'], m['enter_slot'], m['exit_slot'])
+                                        for m in scene_cast_plan["members"]), "DEBUG")
+                    else:
+                        log_message(
+                            f"Thread {thread_id}: Scene cast enabled but inactive for task {task_id} "
+                            f"({len(scene_character_names)} character(s), min_present="
+                            f"{scene_cast_config_local.get('min_present', 2)}, shape="
+                            f"{scene_cast_config_local.get('shape', 'minimal')}, {scene_cast_total_slots} slot(s)) "
+                            f"-- no join or leave is possible in this scene.", "WARNING")
+                else:
+                    log_message(
+                        f"Thread {thread_id}: Scene cast enabled but only "
+                        f"{len(scene_character_names)} character(s) selected; it needs 2 or more. "
+                        f"Task {task_id} runs as a static cast.", "WARNING")
+            # The cast note's placement obeys the same depth0/system contract as the persona and
+            # emotion blocks (note_placement() clamps anything unrecognised to the default).
+            scene_cast_placement = note_placement(
+                scene_cast_config_local.get("placement")) or DEFAULT_NOTE_PLACEMENT
+            scene_cast_total_slots_for_note = (
+                current_num_turns + (1 if opening_mode_local else 0)) if scene_cast_plan["members"] else 0
+            scene_cast_note_config = dict(scene_cast_config_local)
+            scene_cast_note_config["total_slots"] = scene_cast_total_slots_for_note
+            # Every cast transition applied across this task, recorded on the output metadata so a
+            # run can be audited after the fact ("exit_cancelled" means the model never narrated
+            # a scheduled departure, so the character legitimately stayed).
+            cast_events_this_task = []
+            try:
+                scene_cast_max_deferrals_local = max(
+                    0, int(scene_cast_config_local.get("max_deferrals", 1)))
+            except (TypeError, ValueError):
+                scene_cast_max_deferrals_local = 1
+            # A compact, flat description of the schedule for the output metadata and the judge
+            # ("Melody:enter 0 exit 4; Cole:enter 2 exit -"). "" when the feature is off.
+            if scene_cast_plan["members"]:
+                cast_schedule_label = "; ".join(
+                    "%s:enter %d exit %s" % (m["name"], m["enter_slot"],
+                                              m["exit_slot"] if m["exit_slot"] is not None else "-")
+                    for m in scene_cast_plan["members"])
+            else:
+                cast_schedule_label = ""
 
             # Handle emotional states: a configured entry is either a flat state or an arc
             # ('neutral -> anxious'); arcs expand across the task's assistant turns.
@@ -1350,9 +1831,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             def slot_notes(slot_no):
                 """(system note, depth-0 note) for one assistant-generation slot (1-based): the persona
                 breakthrough once it is visible, then the slot's emotional state, each in the part its
-                placement names. The system note is appended to the slot's system prompt; the depth-0
-                note to its final user message (the greeting or answer prompt), after the history, so
-                with both on depth0 the system prompt never changes and the server can reuse its cache.
+                placement names. The scene cast note comes LAST, so the final thing the model reads is who
+                may speak. The system note is appended to the slot's system prompt; the depth-0 note to its
+                final user message (the greeting or answer prompt), after the history, so with every block on
+                depth0 the system prompt never changes and the server can reuse its cache.
                 Early slots are outward-only: no persona line, and the arc's start state.
                 """
                 notes = {"system": "", "depth0": ""}
@@ -1363,6 +1845,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 for who, slot_state, plan_stages in _emotional_slot_states(slot_no):
                     if slot_state:
                         notes[emotion_placement] += _emotional_state_injection(slot_state, plan_stages, who=who)
+                # v12.0: who is in the scene for THIS reply. Appended last on purpose.
+                if scene_cast_plan["members"]:
+                    notes[scene_cast_placement] += _cast_presence_note(
+                        scene_cast_plan, scene_cast_state, slot_no, scene_cast_note_config)
                 return notes["system"], notes["depth0"]
 
             current_system_prompt_for_task = base_scene_prompt
@@ -1411,7 +1897,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     greeting_system_note, greeting_turn_note = slot_notes(1)
                     greeting_text = generate_greeting(
                         current_system_prompt_for_task + greeting_system_note, greeting_prompt_local,
-                        opening_speaker(scene_character_names, include_names), task[4] if len(task) > 4 else "",
+                        opening_speaker(_cast_names_for_slot(scene_cast_plan, scene_cast_state, 1)[2]
+                                        if scene_cast_plan["members"] else scene_character_names,
+                                        include_names), task[4] if len(task) > 4 else "",
                         thread_id, api_config_for_this_task.get('sampler_settings', {}),
                         api_config_for_this_task.get('url'), api_config_for_this_task.get('model'),
                         api_config_for_this_task.get('key'), api_slot_idx_for_this_task,
@@ -1533,6 +2021,13 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 current_system_prompt_for_turn = current_system_prompt_for_task + turn_system_note
                 current_answer_prompt_for_turn = current_answer_prompt + turn_note
 
+                # v12.0: who may NOT appear this reply (absent/exited) and whose entrance/exit
+                # this reply should narrate. Computed from the state BEFORE the request, because an
+                # 'arriving'/'exiting' character is allowed to speak -- narrating the beat IS the
+                # point -- so only 'absent'/'exited' are blocked.
+                cast_blocked_names, cast_expected_names, _cast_present_names = _cast_names_for_slot(
+                    scene_cast_plan, scene_cast_state, turn_num + 1 + greeting_offset)
+
                 # --- Assistant Answer Generation ---
                 if master_duplication_enabled_local:
                     primary_api_answer_for_conv_flow = None # Answer from primary/first successful API to drive conversation flow
@@ -1581,6 +2076,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 retry_missing_quotations_local=retry_missing_quotations_local,
                                 non_latin_enabled_local=current_non_latin_enabled,
                                 non_latin_fixes_local=current_non_latin_fixes,
+                                scene_continuity_enabled_local=scene_continuity_enabled_local,
+                                scene_continuity_fixes_local=scene_continuity_fixes_local,
+                                scene_continuity_max_rounds=scene_continuity_max_rounds,
+                                cast_blocked_names_local=cast_blocked_names,
+                                cast_expected_names_local=cast_expected_names,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
                                 # Per-turn logic gate on the primary (slot 1) answer only; the
@@ -1675,7 +2175,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name,
                             character_profile_text=character_injection,
                             scene_characters=scene_character_names,
-                            logic_findings=logic_findings_this_task
+                            logic_findings=logic_findings_this_task,
+                            cast_schedule=cast_schedule_label,
+                            cast_events=list(cast_events_this_task)
                         )
                         # v11.4: a judge drop stops the whole duplicated task -- the
                         # per-API turn rows below must not reach the dataset either.
@@ -1718,7 +2220,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                                     num_characters=len(opening_chars),
                                                     quality_result=primary_turn_quality_result,
                                                     include_metadata=include_metadata_local,
-                                                    include_style_metrics=include_style_metrics_local)                
+                                                    include_style_metrics=include_style_metrics_local,
+                                                    cast_schedule=cast_schedule_label,
+                                                    cast_events=list(cast_events_this_task))                
                 else: # --- Non-Duplication Mode: Single API call for answer ---
                     if app_state.stop_processing or app_state.pause_processing: break
                     start_time_api_task = time.time()
@@ -1758,6 +2262,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         retry_missing_quotations_local=retry_missing_quotations_local,
                         non_latin_enabled_local=current_non_latin_enabled,
                         non_latin_fixes_local=current_non_latin_fixes,
+                        scene_continuity_enabled_local=scene_continuity_enabled_local,
+                        scene_continuity_fixes_local=scene_continuity_fixes_local,
+                        scene_continuity_max_rounds=scene_continuity_max_rounds,
+                        cast_blocked_names_local=cast_blocked_names,
+                        cast_expected_names_local=cast_expected_names,
                     )
                     if per_turn_logic_check_local and answer_result and answer_result[0]:
                         # Per-turn logic gate BEFORE the answer enters the output history, so a
@@ -1841,6 +2350,24 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                 current_llm_conversation_context.append({"role": "assistant", "content": assistant_answer})
                 # conversation_history_for_output is handled above based on duplication mode for this turn's assistant answer.
+
+                # v12.0: advance the cast state from the accepted answer. In duplication mode this
+                # must read the PRIMARY answer only (the one driving conversation flow), or the
+                # duplicated rows would advance the cast differently from each other.
+                if scene_cast_plan["members"] and assistant_answer:
+                    scene_cast_state, cast_events = _advance_cast_state(
+                        scene_cast_plan, scene_cast_state, turn_num + 1 + greeting_offset,
+                        assistant_answer,
+                        max_deferrals=scene_cast_max_deferrals_local)
+                    if cast_events:
+                        app_state.record_cast_events(task_id, cast_events,
+                                                    api_slot_idx_for_this_task
+                                                    if not master_duplication_enabled_local else 0)
+                        log_message(
+                            f"Thread {thread_id}: Task {task_id} cast events at slot "
+                            f"{turn_num + 1 + greeting_offset}: "
+                            + ", ".join("%s=%s" % (e, n) for e, n in cast_events), "DEBUG")
+                    cast_events_this_task.extend(cast_events)
 
                 if turn_num == current_num_turns - 1: # If this was the last turn
                     break 
@@ -1946,7 +2473,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     file_name=file_name,
                                     character_profile_text=character_injection,
                                     scene_characters=scene_character_names,
-                                    logic_findings=logic_findings_this_task
+                                    logic_findings=logic_findings_this_task,
+                                    cast_schedule=cast_schedule_label,
+                                    cast_events=list(cast_events_this_task)
                                 )
                                 # v11.4: the quality judge is a gatekeeper. A dropped
                                 # conversation (invalid JSON, a logic score 0, or every retry
@@ -1994,7 +2523,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                             num_characters=len(opening_chars),
                                             quality_result=final_quality_result,
                                             include_metadata=include_metadata_local,
-                                            include_style_metrics=include_style_metrics_local)
+                                            include_style_metrics=include_style_metrics_local,
+                                            cast_schedule=cast_schedule_label,
+                                            cast_events=list(cast_events_this_task))
                                         app_state.completed_task_ids.add(task_id)
                                         log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
                                     else:
@@ -3750,7 +4281,12 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
                                  retry_missing_quotations_local=False,
                                  non_latin_enabled_local=False,
-                                 non_latin_fixes_local=()):
+                                 non_latin_fixes_local=(),
+                                 scene_continuity_enabled_local=False,
+                                 scene_continuity_fixes_local=(),
+                                 scene_continuity_max_rounds=SCENE_CONTINUITY_MAX_ROUNDS,
+                                 cast_blocked_names_local=(),
+                                 cast_expected_names_local=()):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
     out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
@@ -3799,7 +4335,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
-                                 'missing_quotation': 0, 'non_latin': 0}
+                                 'missing_quotation': 0, 'non_latin': 0, 'scene_continuity': 0}
         issue_detected_this_main_api_call = False
 
         while True:
@@ -4212,6 +4748,61 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 else:
                     log_message(f"Thread {thread_id}: OOC detected (API Slot {api_slot_idx+1}). Snippet: {answer[:80]}...", "WARNING")
 
+            # --- Scene continuity (v12.0) -------------------------------------------------
+            # A character who LEFT the scene (or has not arrived yet) may not speak or act. The
+            # check is code-only (detection.check_scene_continuity): attributed quoted lines plus a
+            # curated narration action-verb list, so it needs no LLM call. It runs AFTER the
+            # phrase-driven branches (the text is in-character, it just belongs to a character who is
+            # not here -- the OOC check's sibling) and BEFORE Regex Watch and the quotation retry,
+            # which are shape passes that must run on text about to be kept. Same argument the
+            # non-Latin check makes for running first among its peers.
+            #
+            # A hit is regenerated by the SAME main API slot with one fix appended to the system
+            # prompt, exactly like refusal/slop/OOC. Once the fixes are exhausted the best-effort
+            # answer is KEPT (never dropped): a continuity miss is a scheduling miss, not a reason to
+            # lose the row.
+            if scene_continuity_enabled_local and cast_blocked_names_local:
+                cast_violation, cast_findings = detection.check_scene_continuity(
+                    answer, list(cast_blocked_names_local), list(cast_expected_names_local))
+                if cast_violation:
+                    issue_detected_this_main_api_call = True
+                    issue_ever_detected_this_task = True
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    if lock_acquired:
+                        try:
+                            app_state.scene_continuity_count_total += 1
+                            if api_slot_idx < len(app_state.scene_continuity_counts_per_api):
+                                app_state.scene_continuity_counts_per_api[api_slot_idx] += 1
+                            hard_findings = [f for f in cast_findings
+                                             if f[0] in detection.SCENE_CONTINUITY_HARD_KINDS]
+                            if hard_findings:
+                                detected_kind, detected_name, detected_sentence = hard_findings[0]
+                                label = "%s (%s)" % (detected_kind, detected_name)
+                                if len(app_state.recent_scene_continuity_total) >= MAX_RECENT:
+                                    app_state.recent_scene_continuity_total.pop(0)
+                                app_state.recent_scene_continuity_total.append(
+                                    (label, detected_sentence, api_slot_idx))
+                                if api_slot_idx < len(app_state.recent_scene_continuity_per_api):
+                                    if len(app_state.recent_scene_continuity_per_api[api_slot_idx]) >= MAX_RECENT:
+                                        app_state.recent_scene_continuity_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_scene_continuity_per_api[api_slot_idx].append(
+                                        (label, detected_sentence))
+                        finally:
+                            app_state.system_prompt_lock.release()
+                    cast_fix_list = (tuple(scene_continuity_fixes_local)
+                                     or (DEFAULT_SCENE_CONTINUITY_FIX,))
+                    if fix_attempts_specific['scene_continuity'] < min(
+                            len(cast_fix_list), max(1, int(scene_continuity_max_rounds))):
+                        current_system_prompt_iter += " " + cast_fix_list[
+                            fix_attempts_specific['scene_continuity'] % len(cast_fix_list)]
+                        fix_attempts_specific['scene_continuity'] += 1
+                        log_message(f"Thread {thread_id}: Scene continuity violation (API Slot {api_slot_idx+1}). "
+                                    f"Applying fix {fix_attempts_specific['scene_continuity']}. Retrying API call.", "DEBUG")
+                        continue
+                    else:
+                        log_message(f"Thread {thread_id}: Scene continuity violation (API Slot {api_slot_idx+1}), "
+                                    f"fixes exhausted for attempt {attempt+1}. Keeping the best-effort answer.", "WARNING")
+
             # Initialize slop fix tracking BEFORE slop detection so fallback logic can reference them
             slop_fully_resolved_by_sentence_fixer = False
             current_answer_being_fixed = answer
@@ -4608,7 +5199,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 #     is on, the flat style_* block (style_metrics.aggregate over the record's assistant turns,
 #     flattened with a 'style_' prefix so the metadata contract stays a dict of scalars;
 #     n is emitted as style_turns; UNMEASURED cells keep the -1.0 gap convention).
-_METADATA_SCHEMA_VERSION = 6
+_METADATA_SCHEMA_VERSION = 7
 
 
 def _safe_float(value, default=None):
@@ -4624,7 +5215,8 @@ def _safe_float(value, default=None):
 
 def _build_record_metadata(character_names, emotional_state, setting, opening_mode, has_greeting,
                            num_characters, quality_result, duplication_turn, generated_at,
-                           user_emotional_state=None, include_style_metrics=False):
+                           user_emotional_state=None, include_style_metrics=False,
+                           cast_schedule="", cast_events=None):
     """Builds the flat, schema-stable metadata block for one output record.
     Always returns every key with the same type, never None, so all rows match.
     duplication_turn is the turn number (1-based) for per-turn duplication rows,
@@ -4678,6 +5270,13 @@ def _build_record_metadata(character_names, emotional_state, setting, opening_mo
         # Opt-in tic_density dimension (v11.7, quality.tic_dimension); -1.0 when off/unscored,
         # keeping the same keys/types on every record for Axolotl/HF column inference.
         "quality_tic_density": score(dims.get("tic_density")),
+        # Opt-in cast-continuity dimension (v12.0, quality.cast_continuity); -1.0 when off/unscored.
+        "quality_cast_continuity": score(dims.get("cast_continuity")),
+        # Scene cast provenance (v12.0): the schedule this task ran and what actually happened.
+        # "" when the feature was off, so the schema stays flat and type-stable.
+        "cast_schedule": str(cast_schedule) if cast_schedule else "",
+        "cast_events": "; ".join("%s %s" % (name, event)
+                                 for event, name in (cast_events or [])) if cast_events else "",
         "generated_at": str(generated_at) if generated_at else "",
     }
 
@@ -4706,7 +5305,7 @@ def _style_metrics_for_record(turns):
 
 def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
                              character_profile_text="", scene_characters=None,
-                             logic_findings=None):
+                             logic_findings=None, cast_schedule="", cast_events=None):
     """Scores a conversation and stores the result in app_state.quality_scores (deduped by task).
     Mirrors the pre-existing quality bookkeeping (threshold review flags included).
 
@@ -4735,7 +5334,8 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     try:
         return quality.enqueue_quality_scoring(
             conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
-            character_profile_text, scene_characters, logic_findings
+            character_profile_text, scene_characters, logic_findings,
+            cast_schedule=cast_schedule, cast_events=cast_events
         )
     except Exception as e_quality:
         log_message(f"Thread {thread_id}: Quality scoring queue error for {task_id}: {e_quality}", "ERROR")
@@ -4779,6 +5379,8 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
                        quality_result=None,
                        include_metadata=True,
                        include_style_metrics=False,
+                       cast_schedule="",
+                       cast_events=None,
                        ):
     """
     Writes a completed conversation (or a single turn in duplication mode) to the output JSONL file.
@@ -4840,6 +5442,8 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
             time.strftime('%Y-%m-%d %H:%M:%S'),
             user_emotional_state=user_emotional_state,
             include_style_metrics=include_style_metrics,
+            cast_schedule=cast_schedule,
+            cast_events=cast_events,
         )
         if include_style_metrics:
             # Measure the turns exactly as they leave the writer (post-cleaning), so the

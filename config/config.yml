@@ -105,6 +105,12 @@ quality:
   # existing composite scores stay comparable. When on it joins the composite, the Quality
   # tab and the per-record metadata (quality_tic_density).
   tic_dimension: false
+  # v12.0 opt-in cast-continuity dimension: scores whether entrances and exits READ
+  # naturally (motivated, not abrupt) and whether an exited character was brought back.
+  # LLM-ONLY (no heuristic): there is no measurable proxy for "was that exit earned?",
+  # and the OBJECTIVE half of the question is already answered for free by
+  # detection.check_scene_continuity(). Off by default.
+  cast_continuity: false
   # Per-turn internal-logic gate: after every assistant reply, the quality LLM checks
   # for objective contradictions (sexed anatomy vs. stated gender, profile-contradicting
   # body parts/clothing/injuries, impossible timelines or quantities). A failing turn is
@@ -317,6 +323,40 @@ prompts:
   user_emotional_states:
     enabled: false
     states: []
+  # v12.0 Scene Cast: characters join and leave a multi-character scene.
+  # THE GENERATOR OWNS THE CAST -- the schedule is computed before any request is sent,
+  # the model is told who is present each reply, and the model only NARRATES the
+  # transitions. A scheduled exit the model never narrates is CANCELLED (the character
+  # stays legitimately present); a scheduled arrival it never narrates is FORCED to present.
+  # That asymmetry is deliberate: assuming a departure happened would make the character's
+  # next legitimate line a continuity violation the generator invented itself.
+  # Off by default. Acts only when 2 or more characters are selected AND the scene has
+  # enough replies and enough spare cast to hold a change (see min_present).
+  scene_cast:
+    enabled: false
+    # minimal = at most one join + one leave per conversation; churn = up to max_churn
+    # of each; none = never schedule (the feature stays configured but does nothing).
+    shape: minimal
+    # Never fewer than this many characters present at any moment. A join or a leave each
+    # cost one present character, so a 2-character scene with min_present: 2 can never
+    # change cast at all (the worker logs a warning and runs a static cast).
+    min_present: 2
+    # Only used by shape: churn.
+    max_churn: 2
+    # Assistant slots a scheduled exit/arrival may slip before the generator gives up
+    # and reverts the character's state.
+    max_deferrals: 1
+    # Where the per-reply cast note goes: depth0 (default, cache-friendly) or system.
+    placement: depth0
+    # One instruction per line; the worker rotates through them so consecutive exits do
+    # not read the same. Empty means a built-in default is used.
+    exit_guidance: []
+    arrival_guidance: []
+    # Optional cut-away: allow a short moment elsewhere while the user is not present,
+    # as long as the reply rejoins the main thread before it ends.
+    allow_cutaway: false
+    # Instruction appended on a cut-away turn. Empty means a built-in default.
+    cutaway_note: ''
   random_names:
     enabled: false
     names: []
@@ -356,6 +396,16 @@ detection:
     # Appended to the system prompt, one per retry round. Empty means a built-in default
     # instruction is used, so switching the check on works without editing the config.
     fixes: []
+  # v12.0 Scene Continuity: a character who has LEFT the scene (or has not arrived yet)
+  # may not speak or act. Purely code-based (detection.check_scene_continuity): attributed
+  # quoted lines plus a curated narration action-verb list, so no LLM is involved in the
+  # CHECK itself. Inert unless prompts.scene_cast.enabled is also on.
+  scene_continuity:
+    enabled: true
+    # Appended to the system prompt, one per retry round. Empty means a built-in default.
+    fixes: []
+    # Regeneration rounds per reply before the best-effort answer is kept (1-5).
+    max_rounds: 2
   out_of_character:
     enabled: true
     phrases:

@@ -73,6 +73,18 @@ ROLEPLAY_SCORING_DIMENSIONS = {
     "persona_alignment": 0.10,
 }
 
+# --- Cast-continuity dimension (v12.0, opt-in via quality.cast_continuity; off by default).
+# The Judge reviews what CODE CANNOT: did the entrances and exits read as motivated and natural,
+# and was an exited character brought back anyway? The OBJECTIVE half of that question (an exited
+# character speaking at all) is already answered for free by detection.check_scene_continuity(), so
+# this dimension deliberately scores NATURALNESS and motivation instead of re-listing violations --
+# paying a judge to re-derive a regex result would only add latency and a new drop reason.
+#
+# Registered in LLM_DIMENSIONS only, never in HEURISTIC_DIMENSIONS: it is a judgement call with
+# no measurable proxy, and the tic_density comment below establishes the rule that a dimension with
+# no real heuristic must not be given a fabricated one.
+CAST_SCORING_DIMENSIONS = {"cast_continuity": 0.10}
+
 # --- Tic-density dimension (v11.7, opt-in via quality.tic_dimension; off by default so
 # existing composite scores stay comparable, exactly like the roleplay dimensions). It has a
 # REAL heuristic (style_metrics measurements over the assistant turns), so it is registered in
@@ -89,6 +101,11 @@ HEURISTIC_DIMENSIONS = {"diversity", "technical", "tic_density"}
 
 # --- LLM-based dimensions (require an API call) ---
 LLM_DIMENSIONS = {"coherence", "naturalness", "engagement", "consistency", "logic"}
+
+# --- LLM-based cast dimension (v12.0). No heuristic fallback on purpose: there is no
+# measurable proxy for "was that exit earned?", so when the judge is unavailable the dimension
+# is simply absent rather than filled with an invented number.
+CAST_LLM_DIMENSIONS = set(CAST_SCORING_DIMENSIONS)
 
 # --- LLM-based roleplay dimensions (also have a heuristic fallback so they stay
 # meaningful when LLM scoring is off or the judge call fails) ---
@@ -204,6 +221,16 @@ def is_roleplay_scoring_enabled(config=None):
     return bool(cfg.get('quality.roleplay_dimensions', False))
 
 
+def is_cast_scoring_enabled(config=None):
+    """Whether the cast-continuity dimension is included in this run's scoring.
+
+    Driven by ``quality.cast_continuity`` in config.yml (GUI toggle in the
+    Configuration Editor's Quality Scoring section), default off.
+    """
+    cfg = global_config if config is None else config
+    return bool(cfg.get('quality.cast_continuity', False))
+
+
 def active_scoring_dimensions(config=None):
     """The ordered dimension names + weights that apply right now.
 
@@ -216,11 +243,14 @@ def active_scoring_dimensions(config=None):
         dims.update(TIC_SCORING_DIMENSIONS)
     if is_roleplay_scoring_enabled(config):
         dims.update(ROLEPLAY_SCORING_DIMENSIONS)
+    if is_cast_scoring_enabled(config):
+        dims.update(CAST_SCORING_DIMENSIONS)
     return dims
 
 
 def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=None, file_name="",
-                       character_profile_text="", scene_characters=None, logic_findings=None):
+                       character_profile_text="", scene_characters=None, logic_findings=None,
+                       cast_schedule="", cast_events=None):
     """
     Scores a completed conversation over the active dimensions (see
     ``active_scoring_dimensions()``). Returns a dict:
@@ -305,7 +335,9 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
         llm_scores, llm_flags, llm_success, _llm_extras = _score_with_llm(
             conversation_history, task_id, thread_id, api_slot_idx, file_name,
             character_profile_text=character_profile_text,
-            logic_findings=logic_findings
+            logic_findings=logic_findings,
+            cast_schedule=cast_schedule,
+            cast_events=cast_events,
         )
         drop_reason = _judge_drop_reason(llm_scores, llm_flags, llm_success)
         if drop_reason:
@@ -912,7 +944,8 @@ def _score_persona_alignment(conversation_history, character_profile_text, scene
 
 
 def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file_name="",
-                    character_profile_text="", logic_findings=None):
+                    character_profile_text="", logic_findings=None,
+                    cast_schedule="", cast_events=None):
     """
     Calls a dedicated LLM to score the conversation on LLM-based dimensions.
     Uses API Slot 7 (index 6) if configured, otherwise the primary API.
@@ -1033,12 +1066,32 @@ def _score_with_llm(conversation_history, task_id, thread_id, api_slot_idx, file
             '"voice_distinctiveness": <0-100>, "grounding": <0-100>, "persona_alignment": <0-100>, \n'
         )
 
+    if is_cast_scoring_enabled():
+        # v12.0: the cast dimension judges NATURALNESS, not legality -- legality is already
+        # settled for free by detection.check_scene_continuity().
+        cast_block = (
+            "- cast_continuity: The scene's cast changes over the conversation. The schedule "
+            "below lists who was in the scene at each reply and when they arrived or left. "
+            "Judge how NATURALLY those changes read: was an exit motivated and earned, or did "
+            "the character simply vanish mid-sentence? Did an arrival have a reason to be there, "
+            "or appear out of nowhere? Penalise a character who left and was then brought back, "
+            "and penalise a character who was absent and spoke anyway. Do NOT penalise an exit "
+            "or arrival you find abrupt-but-plausible; score only what a reader would call a "
+            "continuity error.\n"
+        )
+        if cast_schedule:
+            cast_block += "  CAST SCHEDULE: " + str(cast_schedule) + "\n"
+        if cast_events:
+            cast_block += "  CAST EVENTS: " + str(cast_events) + "\n"
+        scoring_prompt += cast_block + '"cast_continuity": <0-100>, \n'
+
     scoring_prompt += (
         '"notes": "<one sentence summary>"}\n\n'
         f"CONVERSATION:\n{conversation_text}"
     )
     _judge_dims = list(LLM_DIMENSIONS) + (
-        list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else [])
+        list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else []) + (
+        list(CAST_LLM_DIMENSIONS) if is_cast_scoring_enabled() else [])
     scores, flags, success, extras = _call_logic_judge(
         api_url, model_name, api_key, scoring_api_slot, thread_id, task_id, file_name,
         sampler_settings, scoring_prompt, expected_dims=_judge_dims,
@@ -2154,7 +2207,8 @@ def shutdown_quality_queue():
 
 def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_idx,
                             file_name, character_profile_text, scene_characters,
-                            logic_findings, timeout=None):
+                            logic_findings, timeout=None,
+                            cast_schedule="", cast_events=None):
     """Scores one conversation and returns the verdict (never ``None``).
 
     The judge is a gatekeeper for the dataset: the worker needs the verdict BEFORE it writes
@@ -2179,7 +2233,9 @@ def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_i
                 file_name=file_name,
                 character_profile_text=character_profile_text,
                 scene_characters=scene_characters,
-                logic_findings=logic_findings
+                logic_findings=logic_findings,
+                cast_schedule=cast_schedule,
+                cast_events=cast_events
             )
         except Exception as e:
             log_message(f"Thread {thread_id}: Quality scoring error for {task_id}: {e}", "ERROR")
@@ -2197,6 +2253,8 @@ def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_i
             character_profile_text,
             scene_characters,
             logic_findings,
+            cast_schedule,
+            cast_events,
             job,
         ), block=False)
         log_message(f"Thread {thread_id}: Quality scoring queued for {task_id} (queue size: {_quality_scoring_queue.qsize()}).", "DEBUG")
@@ -2284,8 +2342,9 @@ def _quality_queue_processor():
             continue
         
         (conversation_history, task_id, thread_id, api_slot_idx, file_name,
-         character_profile_text, scene_characters, logic_findings) = item[:8]
-        job = item[8] if len(item) > 8 else None
+         character_profile_text, scene_characters, logic_findings,
+         cast_schedule, cast_events) = item[:10]
+        job = item[10] if len(item) > 10 else None
         
         log_message(f"Quality processor: Starting score for {task_id} (from thread {thread_id}).", "DEBUG")
         
@@ -2299,7 +2358,9 @@ def _quality_queue_processor():
                 file_name=file_name,
                 character_profile_text=character_profile_text,
                 scene_characters=scene_characters,
-                logic_findings=logic_findings
+                logic_findings=logic_findings,
+                cast_schedule=cast_schedule,
+                cast_events=cast_events
             )
             # The waiting worker gave up (stop/timeout) and already recorded the drop; storing
             # the late score too would resurrect a row that was dropped.
