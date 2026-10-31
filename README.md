@@ -58,6 +58,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
   - [Malformed Response Detection](#malformed-response-detection)
   - [Non-Latin Script Check (v11.10.0)](#non-latin-script-check-v11100)
   - [Scene Cast: Characters Join and Leave (v12.0)](#scene-cast-characters-join-and-leave-v120)
+  - [Gemma 4 Chat Template Fix for axolotl (outside this project)](#gemma-4-chat-template-fix-for-axolotl-outside-this-project)
 - [Troubleshooting](#-troubleshooting)
 - [Performance Tips](#-performance-tips)
 - [License](#-license)
@@ -1391,7 +1392,9 @@ readyart-dataset-generator/
 │   ├── test_persona_arc.py  # Unit tests for the persona-breakthrough + emotional-arc helpers
 │   └── ...                  # Remaining suites: dataset_*, quality_roleplay, random_settings, worker_launch
 ├── tools/
-│   └── check_gui_layout.py  # GUI layout testing utility for small displays
+│   ├── check_gui_layout.py  # GUI layout testing utility for small displays
+│   ├── check_dataset_hub.py # Opt-in live Hugging Face Hub reader check
+│   └── gemma4_thought_fix.py # OUT OF SCOPE: axolotl helper for Gemma 4 fine-tunes by Karki (Discord); see docs/gemma4-chat-template.md
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   └── api_profiles.yml     # API compatibility profile definitions (OpenAI, Mistral, xAI, Gemini, Anthropic, custom)
@@ -1691,6 +1694,7 @@ This catches cases where the LLM generates excessively long or poorly formatted 
 | **Quality scores seem too low** | Heuristic-only scoring (no LLM) gives conservative estimates for coherence/naturalness/engagement; enable `use_llm_scoring` for more accurate scores |
 | **Review tab empty but scores exist** | The Review tab only shows conversations below `min_score_threshold`; check the Quality tab for all scores |
 | **Quality scoring slow** | LLM scoring adds an API call per conversation; disable `use_llm_scoring` for heuristic-only (instant) scoring, or use a fast/cheap model for the scoring API |
+| **A fine-tuned Gemma 4 stopped thinking** | This is an axolotl/template problem, not a generator problem — see [Gemma 4 Chat Template Fix for axolotl](#gemma-4-chat-template-fix-for-axolotl-outside-this-project). Gemma's template writes the empty thought block only for the reply being generated, so axolotl trains every reply without it |
 
 ### GUI Layout Testing
 
@@ -1774,6 +1778,42 @@ Windows display scaling. Validate on Windows at the affected display scaling,
 including moving the application between monitors, before claiming native DPI
 coverage. On Linux, the same check can run under `xvfb-run -a` when Xvfb is
 installed.
+
+### Gemma 4 Chat Template Fix for axolotl (outside this project)
+
+> **Out of scope.** `tools/gemma4_thought_fix.py` is **unrelated to this application** — nothing here
+> imports, reads or tests it, and no generated output depends on it. It is included only to help people
+> who fine-tune **Gemma 4 26B / 31B** with axolotl on a dataset produced by this tool.
+
+**The script was written by Karki, a user on Discord — not by us.** We only applied a few robustness
+fixes; the design and the implementation are his. Thank Karki if you find it useful.
+
+Gemma 4 expects every reply to open with a thought channel, which is empty when thinking is off:
+`<|channel>thought\n<channel|>`. Gemma's chat template writes that block only for the reply **being
+generated**, never for the replies **inside** a conversation, so axolotl trains every reply straight
+after `<|turn>model\n` — and the model learns to skip its thought.
+
+The tool fixes both halves of that: it patches a training copy of your chat template to write the empty
+block before every reply (outside the reply text, where axolotl masks it), and it strips any block from
+the reply text itself, where axolotl would train on it. It then renders every sample through the
+patched template, and a second `verify` step reads axolotl's own tokenized `dataset_prepared_path` to
+prove the block is present and masked.
+
+```bash
+# Step 1 — check and fix the data and the template
+python3 tools/gemma4_thought_fix.py data.jsonl --config your_axolotl_config.yml
+
+# Step 2 — the proof, on the tokens axolotl actually produced
+axolotl preprocess your_axolotl_config.yml
+python3 tools/gemma4_thought_fix.py verify last_run_prepared --tokenizer /path/to/base_model
+```
+
+Run both inside your axolotl environment, from the folder you run axolotl from. No GPU is needed.
+`RESULT: PASS` (step 1) and `RESULT: FIXED` (step 2) mean the data is ready.
+
+See **[docs/gemma4-chat-template.md](docs/gemma4-chat-template.md)** for what every finding means, the
+template-resolution order, the patch and its refusals, all flags, a worked run and a troubleshooting
+table.
 
 ### Environment Variables
 
@@ -1983,6 +2023,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `tests/test_persona_arc.py` | Unit tests for the persona-breakthrough + emotional-arc helpers (parsing, expansion, injection) | `generation` |
 | `tests/test_non_latin.py` | Headless tests for the non-Latin script check (Unicode allow-list detector + the answer/question/continuation/opening-mode retry paths) | `detection`, `generation`, `app_state` |
 | `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
+| `tools/gemma4_thought_fix.py` | **OUT OF SCOPE — unrelated to this application.** Standalone axolotl helper that fixes the empty Gemma 4 thought block during fine-tuning. **Written by Karki (a user on Discord), not by this repository.** Not imported or tested by anything here; see [Gemma 4 chat template](docs/gemma4-chat-template.md) | `yaml`, `jinja2` (+ `datasets`, `tokenizers` for `verify`) |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.
 
@@ -1999,6 +2040,7 @@ The application is organized into focused modules with one-way dependencies to p
 - **Metadata schema v7** — three new flat, type-stable keys on every record: `cast_schedule`, `cast_events` (including `exit_cancelled`, which is how you measure whether the model actually wrote its exits) and `quality_cast_continuity` (`-1.0` when off/unscored)
 - **Configuration** — `prompts.scene_cast.{enabled,shape,min_present,max_churn,max_deferrals,placement,allow_cutaway,exit_guidance,arrival_guidance,cutaway_note}` (off by default), `detection.scene_continuity.{enabled,fixes,max_rounds}` and `quality.cast_continuity`. The Config Editor gains a **Scene Cast** panel in the Character Engine tab, a **Scene Continuity Check** panel in the Detection tab and a cast-continuity toggle in Quality Scoring; the main window gains a **Cast Drift** metric card, issue panel and graph series
 - **Wiring** — `detection.py` (`check_scene_continuity()`, `find_attributed_speakers()`, `find_character_actions()`), `generation.py` (plan/state helpers, `_cast_presence_note()`, the retry branch, metadata v7, `DEFAULT_SCENE_CONTINUITY_FIX`), `generate.py` (config read + worker kwargs + metric card + issue panel), `config/config.yml`, `config_editor.py`, `app_state.py`, `dashboard.py`, `quality.py`, `docs/scene-cast.md`. Guarded by `tests/test_scene_cast.py`
+- **Added `tools/gemma4_thought_fix.py` (NOT application code, and not written by us)** — a standalone axolotl helper for people fine-tuning Gemma 4 26B/31B, **contributed by Karki (a user on Discord)** and redistributed here with a few robustness fixes. Nothing in this application imports, reads or tests it, and no generated output depends on it; it is here only because this tool's datasets are often used to train Gemma 4. See [Gemma 4 Chat Template Fix for axolotl](#gemma-4-chat-template-fix-for-axolotl-outside-this-project) and `docs/gemma4-chat-template.md`
 
 ### v11.10.0
 - **Non-Latin script check** — a model trained on more than one language occasionally drops a stray glyph into an otherwise English reply: a Chinese character, a Cyrillic word, a Greek letter used as decoration, an emoji. A phrase list cannot catch those (there is no fixed phrase to list), and an LLM round trip per reply would be expensive. The new check is **purely character-class based**: a Unicode range **allow-list**, so it costs nothing, needs no model and no network, and cannot miss a script nobody thought to list
