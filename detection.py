@@ -435,7 +435,7 @@ def is_incomplete_quote(text):
 
     return False, []
 
-# --- Missing quotations (v11.7.1) -----------------------------------------------------------
+# --- Missing quotations (v11.7.2) -----------------------------------------------------------
 # Complements is_incomplete_quote(): that check catches a reply whose quote marks are
 # UNBALANCED (one missing), while is_missing_quotation() catches a reply whose spoken
 # line is missing its quote marks ENTIRELY -- "Its funny she says" instead of
@@ -449,17 +449,42 @@ _MISSING_QUOTATION_ATTRIBUTION_RE = re.compile(
     r'replied|answered|retorted|exclaimed|gasped|laughed|sighs?|groaned|yawned|hissed|' 
     r'snarled|growled|told|telling|asks?|speaks?|spoke|replies?)\b', re.IGNORECASE)
 
+# A word-internal apostrophe is a contraction or a possessive (don't, Melody's), never a
+# quotation mark. Stripping those BEFORE looking for quote glyphs is what keeps a reply like
+# "It's not funny she says" detectable: the previous guard bailed out on ANY apostrophe, so
+# ordinary prose -- which is full of contractions -- silently disabled the whole check and let
+# mark-less spoken lines through to the dataset. Only apostrophes BETWEEN word characters are
+# removed, so genuine single-quoted dialogue ('Its funny,' she says) still counts as quoted.
+# A plural possessive (dogs') is left alone on purpose: treating it as a quotation mark only
+# suppresses the check, which is the safe direction (no pointless retry).
+_APOSTROPHE_IN_WORD_RE = re.compile(r"(?<=\w)['\u2019](?=\w)")
+_DIALOGUE_QUOTE_MARKS = ('"', "'", '\u2018', '\u2019', '\u201c', '\u201d')
+
+
+def has_dialogue_quote_marks(text):
+    """True when ``text`` carries a real quotation mark (contractions do not count).
+
+    ``is_missing_quotation()`` uses this to answer "did the model mark its speech at all?".
+    Apostrophes inside a word are contractions/possessives, so they are stripped first;
+    what survives is checked for any straight or curly single/double quote glyph.
+    """
+    if not text:
+        return False
+    return any(mark in _APOSTROPHE_IN_WORD_RE.sub("", str(text))
+               for mark in _DIALOGUE_QUOTE_MARKS)
+
 
 def is_missing_quotation(text):
     """Detect a spoken line that is missing its quotation marks entirely.
 
     Returns ``(True, [(label, snippet), ...])`` only when ALL of the following hold:
-    the text has words to check, it contains NO quotation mark of any kind (straight
-    double/single or curly open/close), it narrates (more than a handful of words), and
-    it carries a speech-attribution verb (\"...she says\", \"he said\", ...).
+    the text has words to check, it contains NO quotation mark of any kind once
+    contractions/possessives are discounted (see ``has_dialogue_quote_marks()``), it
+    narrates (more than a handful of words), and it carries a speech-attribution verb
+    (\"...she says\", \"he said\", ...).
 
-    Deliberate non-hits: any reply containing at least one quote glyph (the balanced case
-    is handled by ``normalize_quotes`` and unbalanced ones by ``is_incomplete_quote``),
+    Deliberate non-hits: any reply containing at least one real quote glyph (the balanced
+    case is handled by ``normalize_quotes`` and unbalanced ones by ``is_incomplete_quote``),
     pure narration with no speech attribution, single-word fragments, and empty input.
     Mirrors the other ``is_*()`` shape; it records no timestamp because it is an
     experimental, opt-in retry trigger rather than a dashboard-tracked issue type.
@@ -467,7 +492,7 @@ def is_missing_quotation(text):
     if not text or not str(text).strip():
         return False, []
     text = str(text)
-    if any(mark in text for mark in ('"', "'", '\u2018', '\u2019', '\u201c', '\u201d')):
+    if has_dialogue_quote_marks(text):
         return False, []
     words = text.split()
     if len(words) < 4:

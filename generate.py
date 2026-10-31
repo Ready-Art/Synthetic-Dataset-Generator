@@ -1647,7 +1647,9 @@ def start_processing():
     current_slop_fixes_for_rotation = global_config.get('detection.slop.fixes', [])
     current_slop_to_anti_slop_fallback = global_config.get('generation.slop_to_anti_slop_fallback', False)
 
-    # v11.7.1 "Experiment: Retry missing quotations": when a generated reply comes back with a
+    # v11.7.1 "Experiment: Retry missing quotations" (contraction-safe since v11.7.2 -- the
+    # detector discounts word-internal apostrophes, so "It's not funny she says" is caught):
+    # when a generated reply comes back with a
     # spoken line but NO quotation marks at all ("Its funny she says"), send that same answer
     # back to the SAME main API for one retry before keeping it. Off by default.
     current_retry_missing_quotations = bool(global_config.get('generation.retry_missing_quotations', False))
@@ -2399,7 +2401,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v11.7.1",
+    text="v11.7.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

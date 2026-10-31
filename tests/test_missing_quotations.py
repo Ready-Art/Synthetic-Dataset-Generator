@@ -51,11 +51,30 @@ def test_detector():
         check("labels the hit: %r" % text,
               found and info[0][0].startswith("Missing quotation"))
 
-    # Anything carrying a quote glyph is NOT missing quotations: the balanced case belongs to
-    # normalize_quotes, the unbalanced case to is_incomplete_quote.
+    # v11.7.2 regression: a CONTRACTION or POSSESSIVE must not switch the detector off. The
+    # old guard bailed out on any apostrophe, so ordinary prose -- which is full of "don't" and
+    # "Melody's" -- never got checked and mark-less spoken lines reached the dataset. These are
+    # the same defect shapes as above with an apostrophe added; each must still flag.
+    apostrophe_positives = [
+        "It's not funny she says",                 # contraction, straight apostrophe
+        'She doesn\u2019t care, he said',              # contraction, curly apostrophe
+        "Don't do that, she whispered",            # contraction at the start of the reply
+        "Melody's hand trembles as she speaks",    # possessive
+        "It's the shop's only clock, she says",    # contraction + possessive in one reply
+    ]
+    for text in apostrophe_positives:
+        found, info = detection.is_missing_quotation(text)
+        check("apostrophe does not mask the defect: %r" % text,
+              found and len(info) == 1)
+
+    # Anything carrying a real quote glyph is NOT missing quotations: the balanced case belongs
+    # to normalize_quotes, the unbalanced case to is_incomplete_quote. Single-quoted dialogue
+    # counts as quoted -- only apostrophes BETWEEN word characters are discounted.
     negatives = [
         '"Its funny," she says.',          # proper straight-quote dialogue
         '\u201cIts funny,\u201d she says.',  # proper curly dialogue
+        "'Its funny,' she says.",          # single-quoted dialogue (straight)
+        '\u2018Its funny,\u2019 she says.',    # single-quoted dialogue (curly)
         'She whispered "no" into the dark.',  # embedded quoted word
         "The ship sailed at dawn.",            # narration, no speech attribution
         "It was quiet.",                       # too short
@@ -64,6 +83,30 @@ def test_detector():
     for text in negatives:
         found, info = detection.is_missing_quotation(text)
         check("does not flag: %r" % text, not found and info == [])
+
+
+def test_has_dialogue_quote_marks():
+    """The contraction-discounting helper behind the detector (v11.7.2)."""
+    # Apostrophes inside a word are contractions/possessives, not quotation marks.
+    for text in ["don't", "Melody's watch", "it\u2019s late",
+                 "doesn't", "the shop's only clock"]:
+        check("apostrophe is not a quote mark: %r" % text,
+              not detection.has_dialogue_quote_marks(text))
+    # A plural possessive (apostrophe AFTER the final word character) is genuinely
+    # ambiguous with a closing single quote, so it is deliberately left alone: treating it
+    # as a quote mark only suppresses the check, which is the safe direction (no retry).
+    for text in ["the clocks' hands", "dogs'"]:
+        check("plural possessive is left ambiguous (suppresses, safe): %r" % text,
+              detection.has_dialogue_quote_marks(text))
+    # Real quote glyphs are.
+    for text in ['"hi"', "'hi'", '\u201chi\u201d', '\u2018hi\u2019',
+                 "she said 'go' and left", 'a lone " opener']:
+        check("quote glyph detected: %r" % text,
+              detection.has_dialogue_quote_marks(text))
+    check("empty text carries no quote mark",
+          not detection.has_dialogue_quote_marks(""))
+    check("None carries no quote mark",
+          not detection.has_dialogue_quote_marks(None))
 
 
 # --- Retry pipeline ------------------------------------------------------------------------
@@ -186,6 +229,7 @@ def test_retry_pipeline():
 
 def main():
     test_detector()
+    test_has_dialogue_quote_marks()
     test_retry_pipeline()
     if FAILURES:
         print("\n%d FAILED check(s):" % len(FAILURES))
