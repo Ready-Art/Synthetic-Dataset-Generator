@@ -431,6 +431,10 @@ generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API 
 **Purpose:** User/design doc for the Datasets tab (workflow, placeholders, what is/isn't persisted; notes lineage from upstream `5993702`)
 **Edit for:** Update when Datasets UX or persistence semantics change
 
+### `docs/input-folder.md` [42]
+**Purpose:** User guide to the `input/` folder: which files chunk mode picks up, encoding/BOM rules, the `sanitize_input()` character strip, the `len > context_size` minimum-size rule, how a chunk is cut (random character offsets, not sentence boundaries), `questions.txt` line format, original worked examples, a pre-flight check snippet and a troubleshooting table
+**Edit for:** Update when the `input/` discovery rule in `generate.py` (`os.listdir` + `.endswith('.txt')` + the `questions.txt` exclusion), `read_book()`/`read_txt()`, `sanitize_input()`, or the `generation.subject_size` / `context_size` / `num_random_chunks` / `sanitize_input_max_length` defaults change
+
 ### `requirements-datasets.txt` [40]
 **Purpose:** Optional extras for Hugging Face Hub, local Parquet, and saved-HF dataset support (includes base `requirements.txt` + `datasets==4.4.2`; requires Python 3.9+). Base `requirements.txt` only pins `requests>=2.32.4,<3`
 **Edit for:** Bump optional backend pins here, never in `requirements.txt`

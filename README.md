@@ -280,7 +280,7 @@ psycopg2-binary
    The application automatically creates `input/` and `output/` directories on first run.
 
 6. **Prepare input files:**
-   Place `.txt` files in the `input/` directory. These will be used as source material for generating questions and context.
+   Place `.txt` files in the `input/` directory. These will be used as source material for generating questions and context. See [The `input/` folder](docs/input-folder.md) for the accepted format, the minimum file size, and what the loader strips out.
 
 7. **Configure the application:**
    Launch the app and click **Edit Config**, or manually edit `config/config.yml`.
