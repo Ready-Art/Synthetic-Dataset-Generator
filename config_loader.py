@@ -17,12 +17,31 @@ from logging_config import log_message
 ##
 #input length limit. Modify if you run into input length issues.
 ##
+# Characters that must never reach a config value. This used to also strip double quotes,
+# apostrophes and backslashes, which silently corrupted every authored prompt that contained
+# real prose: "don't is right" was saved as "dont is right", so the saved prompt modelled the
+# exact contraction error it was written to forbid, and any roleplay prompt that quoted
+# dialogue lost its quotation marks on save. Those characters are legitimate in authored text
+# (and yaml.dump quotes/escapes them correctly on the way out), so only the two characters
+# with a real injection story are removed here.
+#
+# NOT a security boundary: this is a typo/shape guard for config values, not an HTML escaper.
+# If a value is ever rendered into markup, escape it at that sink with html.escape().
+_SANITIZE_FORBIDDEN = re.compile(r'[<>]')
+
+# An arrow is authored prose, not markup: emotional arcs are written "A -> B -> C" and prompts
+# quote that notation. It is held aside so stripping the bracket characters cannot break it into
+# "A - B - C", which the generator's arc parser would no longer read as a progression.
+_SANITIZE_ARROW_TOKEN = '\x00arrow\x00'
+
+
 def sanitize_input(text, max_length=100000000):
     if not text:
         return text  # Allow empty strings
     if len(text) > max_length:
         raise ValueError(f"Invalid input length: {len(text)} exceeds {max_length}")
-    return re.sub(r'[<>\"\'\\]', '', text)
+    protected = text.replace('->', _SANITIZE_ARROW_TOKEN)
+    return _SANITIZE_FORBIDDEN.sub('', protected).replace(_SANITIZE_ARROW_TOKEN, '->')
 
 # --- ConfigLoader Class ---
 # Manages loading, accessing, and saving application configurations,
