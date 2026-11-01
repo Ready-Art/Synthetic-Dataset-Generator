@@ -857,3 +857,103 @@ def check_scene_continuity(text, blocked_names, expected_names=()):
             issue_timestamps['scene_continuity'] = [
                 t for t in issue_timestamps['scene_continuity'] if t > cutoff]
     return bool(hard), findings
+
+
+# --- Repeated opener (v12.5) ---------------------------------------------------------------
+# The failure this catches: a model that opens EVERY reply in a conversation the same way
+# ("She lets out a breath.", "She lets out a laugh.", ...). It is not a banned phrase and not a
+# wrong word -- each reply is individually fine -- so no phrase list can express it. What makes
+# it a defect is the REPETITION across the conversation's assistant turns, which is why this
+# check takes the earlier replies and not just the new one.
+#
+# Only the OPENING of a reply is compared, and only its first few words, because the opener is
+# the position where the collapse is audible and where the model has the most freedom. A model
+# that repeats a phrase mid-sentence is doing something else (a verbal tic), which the
+# regex_watch / tic_density machinery already measures.
+REPEATED_OPENER_WORDS = 4
+
+# Opener tokens that carry no information: they open half the sentences in English, so two
+# replies agreeing on them is not evidence of repetition. Comparing the CONTENT words is what
+# makes "She lets out a breath" collide with "She lets out a laugh" while "She sets the cup
+# down" does not collide with "She lets out a breath".
+_OPENER_STOPWORDS = frozenset("""
+a an the and but or so then now as if of to in on at for with from by
+she he they it her his their its them him you i we
+is was are were be been being has have had do does did
+this that these those there here
+""".split())
+
+_OPENER_TOKEN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+
+def opener_tokens(text, limit=REPEATED_OPENER_WORDS):
+    """Return the first *limit* informative words of *text*, lowercased.
+
+    Stopwords and one-character words are dropped so the comparison is over content words:
+    the opener of "She lets out a breath and turns away" is ``['lets', 'out', 'breath',
+    'turns']``. Returns a tuple, so it can be compared and hashed directly.
+    """
+    if not text:
+        return ()
+    tokens = []
+    for word in _OPENER_TOKEN_RE.findall(str(text)):
+        lowered = word.lower()
+        if len(lowered) < 2 or lowered in _OPENER_STOPWORDS:
+            continue
+        tokens.append(lowered)
+        if len(tokens) >= limit:
+            break
+    return tuple(tokens)
+
+
+def is_repeated_opener(text, previous_texts, min_shared_words=3):
+    """Detect a reply whose opener repeats an earlier reply's opener.
+
+    Returns ``(True, [(label, snippet), ...])`` in the same shape as the other ``is_*()``
+    checks. *previous_texts* are the conversation's EARLIER assistant replies; the check is
+    inherently a comparison, so an empty list can never hit and a first reply is always clean.
+
+    The comparison is a PREFIX of the opening content words, not a set overlap, and it hits on
+    either of two shapes:
+
+    * the first *min_shared_words* words are identical, or
+    * the first ``min_shared_words - 1`` are identical and the two openers then diverge.
+
+    The second shape is not a loosening for its own sake -- it is the dominant real-world form.
+    The reported tic is a fixed frame with a swapped object: "She lets out a breath", "She lets
+    out a laugh", "She lets out a sigh" share only ``lets out`` yet are the same sentence, and a
+    strict three-word match would miss every one of them while catching almost nothing else.
+    A set overlap would instead fire on two replies that merely happen to reuse a common word
+    later in the opener, which is not repetition of a frame.
+
+    Openers shorter than *min_shared_words* content words never hit: too little text to call
+    repetition, and staying quiet only suppresses a retry, which is the safe direction.
+
+    Deliberately records NO timestamp: like ``is_missing_quotation()`` this is an opt-in
+    retry trigger, not a dashboard-tracked issue type. The operator's own sample shows the tic
+    compounding down a conversation (28.6% of first replies, 69.9% of fourth replies), so
+    counting it as a per-conversation defect would swamp the issue graph with the normal case.
+    """
+    if not text or not previous_texts:
+        return False, []
+    try:
+        wanted = max(2, int(min_shared_words))
+    except (TypeError, ValueError):
+        wanted = 3
+    current = opener_tokens(text)
+    if len(current) < wanted:
+        return False, []
+    for previous in previous_texts:
+        earlier = opener_tokens(previous)
+        if len(earlier) < wanted:
+            continue
+        shared = 0
+        for left, right in zip(current, earlier):
+            if left != right:
+                break
+            shared += 1
+        if shared >= wanted - 1:
+            label = "Repeated opener (matches an earlier reply)"
+            snippet = " ".join(current[:REPEATED_OPENER_WORDS])
+            return True, [(label, snippet)]
+    return False, []

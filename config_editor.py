@@ -697,6 +697,24 @@ class ConfigEditor(tk.Toplevel):
         self.retry_missing_quotations_var_editor = tk.BooleanVar()
         wrapped_checkbutton(gen_settings_frame, text="Experiment: Retry missing quotations (If a generated reply's spoken line has no quotation marks at all -- e.g. \"Its funny she says\" instead of \"\"Its funny,\" she says\" -- send that same answer back to the SAME main API for one retry before keeping the turn. Off by default)", variable=self.retry_missing_quotations_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
 
+        self.repeat_opener_guard_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(gen_settings_frame, text="Experiment: Break a repeated opener (If a generated reply opens with the same words, or the same sentence frame with only its object swapped, as an EARLIER reply in the same conversation -- e.g. \"She lets out a breath\" then \"She lets out a laugh\" -- send that same answer back to the SAME main API for a fresh opener. The instruction goes on the answer prompt, not the system prompt, so the prefix cache survives. The first reply can never trigger it. Off by default)", variable=self.repeat_opener_guard_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
+
+        add_gen_setting("Repeated Opener Max Retries:", 'repeat_opener_max_retries_var', "(Retries per reply for a fresh opener before the best-effort reply is kept; 0 keeps the detection but never retries)")
+        # Created ENABLED and left that way: this Tk build silently drops delete/insert on a disabled
+        # Text widget, so the load path below can always write into it.
+        _repeat_opener_fixes_label = ttk.Label(
+            gen_settings_frame,
+            text="Repeated Opener Fixes (one per line; appended to the ANSWER PROMPT, cycled; empty = built-in default)",
+            justify="left", wraplength=1,
+        )
+        _repeat_opener_fixes_label.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 0), sticky="ew")
+        wrap_label(_repeat_opener_fixes_label, gen_settings_frame)
+        row_idx += 1
+        self.repeat_opener_fixes_text = scrolledtext.ScrolledText(
+            gen_settings_frame, wrap=tk.WORD, height=4, width=1, undo=True)
+        self.repeat_opener_fixes_text.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="ew"); row_idx += 1
+
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
 
         self.slop_to_anti_slop_fallback_var_editor = tk.BooleanVar()
@@ -2027,6 +2045,9 @@ class ConfigEditor(tk.Toplevel):
                 'ensure_space_after_line_break': self.ensure_space_after_line_break_var_editor.get(),
                 'remove_markdown': self.remove_markdown_var_editor.get(),
                 'retry_missing_quotations': self.retry_missing_quotations_var_editor.get(),
+                'repeat_opener_guard': self.repeat_opener_guard_var_editor.get(),
+                'repeat_opener_fixes': [line for line in self.repeat_opener_fixes_text.get("1.0", tk.END).split('\n') if line.strip()],
+                'repeat_opener_max_retries': int(self.repeat_opener_max_retries_var.get()),
                 'max_slop_sentence_fix_iterations': int(self.max_slop_sentence_fix_iterations_var.get()),
                 'output_format': self.output_format_var.get(),
                 'api_request_timeout': int(self.api_request_timeout_var.get()),
@@ -2762,6 +2783,12 @@ class ConfigEditor(tk.Toplevel):
             self.remove_markdown_var_editor.set(gen_config.get('remove_markdown', False))
             self.ensure_space_after_line_break_var_editor.set(gen_config.get('ensure_space_after_line_break', False))
             self.retry_missing_quotations_var_editor.set(gen_config.get('retry_missing_quotations', False))
+            self.repeat_opener_guard_var_editor.set(gen_config.get('repeat_opener_guard', False))
+            self.repeat_opener_max_retries_var.set(str(gen_config.get('repeat_opener_max_retries', 1)))
+            # Stays ENABLED (no toggle owns it) so the user can edit it and the next load can write
+            # into it; a disabled Text widget silently drops delete/insert on this Tk build.
+            self.repeat_opener_fixes_text.delete("1.0", tk.END)
+            self.repeat_opener_fixes_text.insert("1.0", '\n'.join(gen_config.get('repeat_opener_fixes', []) or []))
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
             self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
             self.discard_refused_conversations_var_editor.set(gen_config.get('discard_refused_conversations', False))
@@ -3137,6 +3164,8 @@ class ConfigEditor(tk.Toplevel):
             num_turns_val = int(self.num_turns_var.get()); assert num_turns_val > 0, "Number of turns must be > 0"
             placeholder_share_val = float(self.placeholder_share_var.get() or 0); assert 0 <= placeholder_share_val <= 1, "Placeholder share must be between 0 and 1"
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())
+            repeat_opener_retries_val = int(self.repeat_opener_max_retries_var.get() or 0)
+            assert repeat_opener_retries_val >= 0, "Repeated opener max retries must be 0 or more"
             float(self.temperature_var.get()); float(self.top_p_var.get()); float(self.min_p_var.get()); int(self.top_k_var.get())
             float(self.repetition_penalty_var.get());
             int(self.max_tokens_question_var.get()); int(self.max_tokens_answer_var.get()); int(self.max_tokens_user_reply_var.get())

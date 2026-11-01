@@ -33,7 +33,8 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 | [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, table styles, the Review tab or the Regex Watch tab. |
 | [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the editor, or fixing editor layout/readability. |
 | [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
-| [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, retries, prompts, cast/arc helpers, metadata or output writing. |
+| [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, prompts, cast/arc helpers, metadata or output writing. |
+| [`docs/agents/generation-retries.md`](docs/agents/generation-retries.md) | you are adding or moving a check that can resend an answer (it records the retry ORDER). |
 | [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check. |
 | [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
 | [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. |

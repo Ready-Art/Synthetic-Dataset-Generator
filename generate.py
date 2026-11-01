@@ -1688,6 +1688,21 @@ def start_processing():
     # back to the SAME main API for one retry before keeping it. Off by default.
     current_retry_missing_quotations = bool(global_config.get('generation.retry_missing_quotations', False))
 
+    # v12.5 repeated-opener guard: a reply that opens with the same words (or the same frame with a
+    # swapped object) as an earlier reply in the same conversation is sent back to the SAME main API
+    # for a fresh opener. Nothing to validate -- the comparison is over the conversation's own text and
+    # an empty fix list falls back to generation.DEFAULT_REPEAT_OPENER_FIX.
+    current_repeat_opener_guard = bool(global_config.get('generation.repeat_opener_guard', False))
+    current_repeat_opener_fixes = global_config.get('generation.repeat_opener_fixes', []) or []
+    if not isinstance(current_repeat_opener_fixes, list):
+        current_repeat_opener_fixes = []
+    current_repeat_opener_fixes = [str(fix).strip() for fix in current_repeat_opener_fixes if str(fix).strip()]
+    try:
+        current_repeat_opener_max_retries = int(global_config.get('generation.repeat_opener_max_retries', 1))
+    except (TypeError, ValueError):
+        current_repeat_opener_max_retries = 1
+    current_repeat_opener_max_retries = max(0, current_repeat_opener_max_retries)
+
     # v11.10.0 non-Latin script check: a Unicode range allow-list in detection.is_non_latin(), so
     # there is nothing to validate here (no pattern to compile, no phrase list to sanitize) -- just
     # a toggle and an optional fix list. An empty fix list falls back to generation.DEFAULT_NON_LATIN_FIX.
@@ -2127,6 +2142,10 @@ def start_processing():
             'scene_continuity_enabled_local': current_scene_continuity_enabled,
             'scene_continuity_fixes_local': current_scene_continuity_fixes,
             'scene_continuity_max_rounds': current_scene_continuity_max_rounds,
+            # v12.5 repeated-opener guard
+            'repeat_opener_enabled_local': current_repeat_opener_guard,
+            'repeat_opener_fixes_local': current_repeat_opener_fixes,
+            'repeat_opener_max_retries': current_repeat_opener_max_retries,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2511,7 +2530,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.4",
+    text="v12.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

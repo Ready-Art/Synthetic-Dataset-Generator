@@ -118,6 +118,67 @@ DEFAULT_SCENE_CONTINUITY_FIX = (
 # worker signature uses it as a default value.
 SCENE_CONTINUITY_MAX_ROUNDS = 2
 
+# --- Answer-prompt native variables (v12.5) --------------------------------------------------
+# The answer prompt is the last user message of every answer request, and until v12.5 it was the ONE
+# authored prompt whose native template variables were never filled: `{subject}` written into it reached the
+# model as the literal five characters "{subject}". The question, continuation, greeting and first-line
+# prompts all substitute their variables at their formatting boundary; the answer prompt had no such boundary.
+#
+# The two variables are the ones the answer request can actually answer for, and they keep the documented
+# meaning they have everywhere else (the passage the task was cut from), so a prompt written for one of the
+# other prompts behaves the same here. `{context}` is filled as well because it is the sibling variable of
+# the same passage and a prompt that names one usually names the other.
+#
+# The character's NAME is deliberately NOT one of these variables: it already reaches the model in the
+# CHARACTER PROFILE block (`Name: ...`), which is why the block's fields are what an answer prompt should
+# refer to. A prompt that needs to say who she is can read the profile; it does not need a token.
+ANSWER_PROMPT_NATIVE_VARIABLES = ("{subject}", "{context}")
+
+
+def fill_answer_prompt(answer_prompt_template, subject, context, dataset_values=None):
+    """Fill the native template variables of the answer prompt for one task.
+
+    Mirrors ``generate_question()``: with dataset values attached the substitution goes through
+    ``render_with_native_placeholders()`` so an authored ``{{ds:alias}}`` keeps its single-pass
+    guarantee, and without them it is the same ordered ``str.replace`` the question path uses. An
+    empty variable is filled with ``N/A`` rather than left blank, so a prompt that reads "... of the
+    woman, {subject}" cannot end on a dangling comma.
+
+    A prompt that names none of the variables comes back byte-identical, which is what keeps a
+    default run unchanged (the shipped answer prompt has no variables at all).
+    """
+    if not answer_prompt_template:
+        return answer_prompt_template
+    replacements = (("{subject}", subject if subject else "N/A"),
+                    ("{context}", context if context else "N/A"))
+    if dataset_values is None:
+        filled = answer_prompt_template
+        for token, value in replacements:
+            filled = filled.replace(token, value)
+        return filled
+    return render_with_native_placeholders(answer_prompt_template, dataset_values, replacements)
+
+
+# Repeated-opener guard (v12.5): how many times one answer may be sent back to the SAME main API
+# for a fresh opener before the best-effort reply is kept. Module scope because the worker signature
+# uses it as a default value.
+REPEAT_OPENER_MAX_RETRIES = 1
+
+# The instruction appended to the answer prompt (NOT the system prompt) when a reply reuses an
+# earlier reply's opener. Used when `generation.repeat_opener_fixes` is empty, so switching the guard
+# on needs no fix list -- the same contract as DEFAULT_NON_LATIN_FIX.
+#
+# It rides on the answer prompt rather than the system prompt on purpose. The answer prompt is the
+# final user message, so changing it leaves the system prompt and the whole history byte-identical and a
+# server's prefix cache still serves them; appending to the system prompt would invalidate the cache for
+# this slot on every retry, which is the cost the depth0 placements exist to avoid.
+DEFAULT_REPEAT_OPENER_FIX = (
+    "Open this reply differently from your earlier replies in this conversation. Do not begin with the "
+    "same words, the same sentence frame or the same reaction beat you have already used, and do not "
+    "restate an opener with only its object swapped. Start on a different image, action or line of "
+    "speech."
+)
+
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
@@ -1044,7 +1105,11 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          current_regex_watch_max_rounds=REGEX_WATCH_MAX_ROUNDS,
                          current_retry_missing_quotations=False,
                          current_non_latin_enabled=False,
-                         current_non_latin_fixes=()):
+                         current_non_latin_fixes=(),
+                         repeat_opener_enabled_local=False,
+                         repeat_opener_fixes_local=(),
+                         repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
+                         previous_assistant_replies_local=()):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
     ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
@@ -1167,6 +1232,10 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             retry_missing_quotations_local=current_retry_missing_quotations,
             non_latin_enabled_local=current_non_latin_enabled,
             non_latin_fixes_local=current_non_latin_fixes,
+            repeat_opener_enabled_local=repeat_opener_enabled_local,
+            repeat_opener_fixes_local=repeat_opener_fixes_local,
+            repeat_opener_max_retries=repeat_opener_max_retries,
+            previous_assistant_replies_local=previous_assistant_replies_local,
         )
         if not retry_result or not retry_result[0]:
             log_message(
@@ -1273,6 +1342,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            scene_continuity_enabled_local=False,
            scene_continuity_fixes_local=(),
            scene_continuity_max_rounds=SCENE_CONTINUITY_MAX_ROUNDS,
+           repeat_opener_enabled_local=False,
+           repeat_opener_fixes_local=(),
+           repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -2029,7 +2101,21 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # emotional-state notes, each where its placement says; slot 1 = first assistant reply.
                 turn_system_note, turn_note = slot_notes(turn_num + 1 + greeting_offset)
                 current_system_prompt_for_turn = current_system_prompt_for_task + turn_system_note
-                current_answer_prompt_for_turn = current_answer_prompt + turn_note
+                # v12.5: the answer prompt's native variables ({subject}/{context}) are filled here, once
+                # per turn, so both the answer request and the per-turn logic gate's rewrite use the same
+                # text. `current_answer_prompt` is the per-task template (already dataset-rendered when
+                # sources are attached); the subject/context chunks are this task's, exactly as the
+                # question path gets them. A prompt naming neither variable comes back unchanged.
+                current_answer_prompt_for_turn = fill_answer_prompt(
+                    current_answer_prompt,
+                    task[3] if len(task) > 3 else "",
+                    task[4] if len(task) > 4 else "",
+                    task_dataset_values) + turn_note
+                # v12.5: the conversation's own earlier assistant replies, for the repeated-opener
+                # guard. Read straight from the history the request is about to send, so it can never
+                # drift from it; a first assistant turn yields an empty list and the guard never fires.
+                previous_assistant_replies = [m.get("content", "") for m in current_llm_conversation_context
+                                             if m.get("role") == "assistant"]
 
                 # v12.0: who may NOT appear this reply (absent/exited) and whose entrance/exit
                 # this reply should narrate. Computed from the state BEFORE the request, because an
@@ -2091,6 +2177,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 scene_continuity_max_rounds=scene_continuity_max_rounds,
                                 cast_blocked_names_local=cast_blocked_names,
                                 cast_expected_names_local=cast_expected_names,
+                                repeat_opener_enabled_local=repeat_opener_enabled_local,
+                                repeat_opener_fixes_local=repeat_opener_fixes_local,
+                                repeat_opener_max_retries=repeat_opener_max_retries,
+                                previous_assistant_replies_local=previous_assistant_replies,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
                                 # Per-turn logic gate on the primary (slot 1) answer only; the
@@ -2301,6 +2391,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             current_regex_patterns, current_regex_watch_enabled,
                             current_regex_watch_max_rounds,
                             current_retry_missing_quotations=retry_missing_quotations_local,
+                            repeat_opener_enabled_local=repeat_opener_enabled_local,
+                            repeat_opener_fixes_local=repeat_opener_fixes_local,
+                            repeat_opener_max_retries=repeat_opener_max_retries,
+                            previous_assistant_replies_local=previous_assistant_replies,
                         )
 
                     if answer_result and answer_result[0]:  # Check if answer is not None
@@ -4296,7 +4390,11 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  scene_continuity_fixes_local=(),
                                  scene_continuity_max_rounds=SCENE_CONTINUITY_MAX_ROUNDS,
                                  cast_blocked_names_local=(),
-                                 cast_expected_names_local=()):
+                                 cast_expected_names_local=(),
+                                 repeat_opener_enabled_local=False,
+                                 repeat_opener_fixes_local=(),
+                                 repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
+                                 previous_assistant_replies_local=()):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
     out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
@@ -4328,6 +4426,16 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     is half in another script is wrong at the character level: every later check (quotes, slop,
     regex) would be inspecting text that is about to be thrown away. Once the fixes are exhausted
     the attempt fails and a fresh one starts, so a permanently stray reply is never written.
+
+    ``repeat_opener_enabled_local`` (v12.5) runs ``detection.is_repeated_opener()`` against
+    ``previous_assistant_replies_local`` -- this conversation's earlier assistant turns, passed in by
+    the worker. It is the only check here that compares the reply to the conversation instead of to
+    a rule, which is what makes a model that opens every reply the same way detectable at all. A hit
+    is retried against the SAME main API slot with one fix from ``repeat_opener_fixes_local`` (or
+    ``DEFAULT_REPEAT_OPENER_FIX``) appended to the ANSWER PROMPT -- not the system prompt, so the
+    system prompt and history stay byte-identical for a prefix-caching server. Runs LAST, after Regex
+    Watch, so it judges the text about to be written. Bounded by ``repeat_opener_max_retries`` and
+    the best-effort answer is KEPT on exhaustion; a first assistant turn can never hit.
     """
 
     refusal_detected_this_main_api_call = False
@@ -4345,7 +4453,13 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
-                                 'missing_quotation': 0, 'non_latin': 0, 'scene_continuity': 0}
+                                 'missing_quotation': 0, 'non_latin': 0, 'scene_continuity': 0,
+                                 'repeat_opener': 0}
+        # v12.5: the per-attempt fix suffix for the answer PROMPT (not the system prompt). It is
+        # rebuilt from the ORIGINAL template on every request so two retries never stack two copies
+        # of the same instruction, and it starts empty so the first request of an attempt is exactly
+        # the prompt the caller built.
+        answer_prompt_iter = answer_prompt_template
         issue_detected_this_main_api_call = False
 
         while True:
@@ -4374,7 +4488,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 messages = [{"role": "system", "content": current_system_prompt_iter}] + \
                            conversation_history_for_llm + \
-                           [{"role": "user", "content": answer_prompt_template}]
+                           [{"role": "user", "content": answer_prompt_iter}]
 
                 # --- LIVE PREVIEW HOOK ---
                 update_live_prompt_preview(messages, {
@@ -5166,6 +5280,40 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         answer = rewritten_answer
                         issue_ever_detected_this_task = True
 
+            # --- Repeated-opener guard (v12.5) ---
+            # Runs LAST, after Regex Watch, so it judges the text that is actually about to be
+            # written. Every earlier check compares the reply against a phrase list or a rule; this
+            # one compares it against the conversation's own earlier replies, which is the only way
+            # to see a collapse that no single reply exhibits. A hit is sent back to the SAME main
+            # API slot with the instruction on the ANSWER PROMPT, never the system prompt: the system
+            # prompt and the whole history stay byte-identical, so a prefix-caching server still
+            # serves them (the same reason the depth0 placements exist).
+            #
+            # Once the retries are exhausted the best-effort answer is KEPT, never dropped: a repeated
+            # opener is a style miss, not a reason to lose the row. A reply with no earlier replies
+            # (the first assistant turn) can never hit, so short conversations are untouched.
+            if (not issue_detected_this_main_api_call and repeat_opener_enabled_local
+                    and previous_assistant_replies_local):
+                repeated_opener, repeated_opener_info = detection.is_repeated_opener(
+                    answer, list(previous_assistant_replies_local))
+                if repeated_opener:
+                    issue_ever_detected_this_task = True
+                    fix_list = repeat_opener_fixes_local or (DEFAULT_REPEAT_OPENER_FIX,)
+                    if fix_attempts_specific['repeat_opener'] < max(0, int(repeat_opener_max_retries or 0)):
+                        fix_text = fix_list[fix_attempts_specific['repeat_opener'] % len(fix_list)]
+                        answer_prompt_iter = answer_prompt_template + "\n\n" + fix_text
+                        fix_attempts_specific['repeat_opener'] += 1
+                        snippet = repeated_opener_info[0][1] if repeated_opener_info else ""
+                        log_message(
+                            f"Thread {thread_id}: Repeated opener detected (API Slot {api_slot_idx+1}, "
+                            f"opener: '{snippet}'). Retrying the same main API with a different-opener "
+                            f"instruction on the answer prompt.", "DEBUG")
+                        continue
+                    log_message(
+                        f"Thread {thread_id}: Repeated opener persists after "
+                        f"{fix_attempts_specific['repeat_opener']} retr{'y' if fix_attempts_specific['repeat_opener'] == 1 else 'ies'}; "
+                        f"keeping the best-effort answer (API Slot {api_slot_idx+1}).", "WARNING")
+
             if not issue_detected_this_main_api_call:
                 log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")
                 return answer, issue_ever_detected_this_task, refusal_ever_detected_this_task
@@ -5175,6 +5323,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
             break
 
         current_system_prompt_iter = base_system_prompt
+        answer_prompt_iter = answer_prompt_template
         log_message(f"Thread {thread_id}: Main attempt {attempt + 1} failed for API {api_url_local} (Slot {api_slot_idx+1}). Resetting system prompt for next attempt if any.", "WARNING")
         if attempt < max_attempts_local - 1 :
             time.sleep(random.uniform(0.5, 1.5))
