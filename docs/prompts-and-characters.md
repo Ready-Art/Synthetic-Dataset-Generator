@@ -15,9 +15,9 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 ```yaml
 prompts:
   use_questions_file: false       # Use input/questions.txt instead of LLM-generated questions
-  question: "Write the user's first message in a roleplay drawn from the passage below. Write only the message itself, as the user, not as any other character.\n\n{context}"
-  answer: "Write your next message in the roleplay. Write only the message itself."
-  user_continuation_prompt: "Write the user's next message. Write only as the user, not as any other character."
+  question: "Write the user's first message in a roleplay drawn from the passage below. ... Recent openings to avoid repeating: {recent_questions}\n\n{context}"
+  answer: "Write your next message in the roleplay. Write only the message itself. ... CHARACTER INFORMATION: ... EMOTIONAL STATE: ... SCENE CAST: ..."
+  user_continuation_prompt: "Write the user's next message. Write only as the user, not as any other character. ... USER EMOTIONAL STATE: ... SCENE CAST: ..."
   opening_mode: false             # Start each sample with the character's greeting (see Opening Mode below)
   greeting: "Write the opening message of this roleplay as {speaker}, ...\n{context}"  # Opening mode's greeting prompt
   greeting_context: "Source material for the setting. Take from it only the kind of place, the objects, the weather and the mood.\n---\n{chunk}\n---\nNone of the source's people, names, ships, places or events exist in this scene: ..."  # Opening mode: the greeting's {context} when there is a book chunk
@@ -28,9 +28,8 @@ prompts:
     - "an action with a line of dialogue"
     - "a short reply"
     - "a question to the character"
-  question: "Generate a question based on the provided text. Recent questions to avoid: {recent_questions}\n\nSubject: {subject}\n\nContext: {context}"
-  answer: "Provide an answer to the last question."
-  user_continuation_prompt: "Continue the conversation naturally based on the assistant's last response: {last_assistant_message}"
+  # The three prompts above are the ones shipped in config/config.yml. Each names the blocks
+  # the worker actually attaches (see "What the shipped prompts refer to" below).
 
   system:
     top_level_system_prompt: ""   # Prepended to ALL system prompts
@@ -145,18 +144,28 @@ prompts:
 - **`random_names`:** Optional feature that overrides character names with randomly selected names from a configured list. When `prompts.random_names.enabled` is true, each character's name in the prompt is replaced with a random name from `prompts.random_names.names[]`. Names are selected independently for each character (not in order), allowing for varied name assignments across conversations. This is useful for generating diverse datasets without manually creating many character profiles.
 - **`random_settings`:** Optional feature (analogous to `random_names`) that adds location diversity to roleplay data. It only applies when `character.setting_enabled` is `true`. For each selected character whose own `setting` field is empty, a setting is sampled from `prompts.random_settings.settings[]` (when `enabled`) instead of falling back to the default `"A standard indoor environment."`. A character with its own non-empty `setting` always keeps it. Additionally, when multiple characters are selected for one scene, their settings are **unified to a single shared setting** drawn from the ensemble (the distinct settings they would otherwise carry) so every character inhabits the same location — this feeds the consistency dimension and prevents cross-talk between characters set in different places.
 
-**Template Variables** (each is optional; the shipped question prompt uses only `{context}`, and the shipped answer prompt uses none):
-- `{recent_questions}` — Recent question history to avoid repetition (question prompt only)
+**Template Variables** (each is optional; an unused variable is left alone, so a prompt that names none of them is sent byte-identically. The shipped question prompt uses `{recent_questions}` and `{context}`, the shipped answer prompt uses none, and the shipped continuation prompt uses none):
+- `{recent_questions}` — Recent opening questions, as a bulleted list, to avoid repeating them (question prompt only). It is pruned to `generation.history_size` entries and is the only list of recent questions; it never holds assistant replies
 - `{subject}` — The subject text chunk. Available in the question prompt and the answer prompt (v12.5); before v12.5 the answer prompt sent a literal `{subject}` to the model
 - `{context}` — The broader context surrounding the subject, also available in the answer prompt (v12.5). In the greeting prompt it is `greeting_context` with the book chunk in its `{chunk}`, or empty when the task has no book; the shipped `greeting_context` tells the model to take only the kind of place, objects, weather and mood from the chunk and none of its people, names or events
-
-An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the same as in the question prompt, so a prompt reading "... of the woman, {subject}" never ends on a dangling comma.
-
-> **Note:** the character's name is NOT a template variable. It reaches the model in the `CHARACTER PROFILE` block as its `Name:` line (unless `include_names_in_prompt` is off), so an answer prompt that needs to refer to her by name should point at the profile rather than invent a token. Writing `{subject}` to mean "her name" is what produced replies that only ever said "the archivist" or "the captain" before v12.5: the token was never substituted, so the name was never in the prompt at all.
 - `{last_assistant_message}` — The assistant's previous response (for continuations)
 - `{speaker}` — Greeting prompt: who the greeting is written as (see below)
 - `{chunk}` — Greeting context: the book chunk
 - `{style}` — First-line prompt: one of `first_line_styles`, picked at random
+
+An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the same as in the question prompt, so a prompt reading "... of the woman, {subject}" never ends on a dangling comma. In the question prompt, `{subject}` and `{context}` are the task's two chunks from the source file; both are also available in the answer prompt since v12.5.
+
+> **Note:** the character's name is NOT a template variable. It reaches the model in the `CHARACTER PROFILE` block as its `Name:` line (unless `include_names_in_prompt` is off), so an answer prompt that needs to refer to her by name should point at the profile rather than invent a token. Writing `{subject}` to mean "her name" is what produced replies that only ever said "the archivist" or "the captain" before v12.5: the token was never substituted, so the name was never in the prompt at all.
+
+**What the shipped prompts refer to.** The three shipped prompts name the blocks the worker actually attaches, so the injected material is used rather than half-ignored:
+
+| Prompt | Blocks it names |
+|--------|-----------------|
+| `question` | the passage in `{context}`; `USER EMOTIONAL STATE` (when `prompts.user_emotional_states` is on, appended to that request only); the user's seat (the user is someone who meets her in her world, not one of the characters — the worker also appends its own `QUESTION_USER_SIDE` line to the question's system prompt); `{recent_questions}` |
+| `answer` | `CHARACTER PROFILE` (every field, with `Gender` called out as authoritative, and distinct voices in a multi-character scene); `EMOTIONAL STATE` including the `A -> B -> C` progression and the per-character scope of a per-character run; `INNER PERSONA BREAKTHROUGH`; `SCENE CAST` (`PRESENT` / `NOT IN THE SCENE`, and narrating a scheduled entrance or exit) |
+| `user_continuation_prompt` | the character profile so the user replies to who she is; `USER EMOTIONAL STATE`; `SCENE CAST` so the user does not address a character who is not in the scene |
+
+`SCENE CAST` only appears when `prompts.scene_cast.enabled` is on and the scene has 2+ characters, and the `EMOTIONAL STATE` / `INNER PERSONA BREAKTHROUGH` blocks only when their features are on, so a default run sees none of them. The prompts say "if a ... block is present" rather than assuming it, which keeps one shipped prompt valid for every feature combination.
 
 **Opening Mode:** With `opening_mode: true`, each sample opens the way a SillyTavern chat does, with the character's greeting:
 
@@ -166,4 +175,4 @@ An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the sam
 
 Neither new request uses the Valkey response cache, so a retry gets a new reply. A sample costs one request more than in chunk mode. Without input files, a run queues `num_random_chunks` opening tasks (12000 by default); with input files, opening tasks are book chunks, with IDs starting `opening_` so finished chunk-mode tasks do not suppress them. A greeting or first line that fails every attempt, or a conversation that ends short, is requeued, and marked failed once `MAX_TASK_REQUEUES` is reached. Quality scoring scores the conversation from the first user line. Opening mode cannot run with `use_questions_file` or `master_duplication_mode` on.
 
-The editor saves the `greeting`, `greeting_context` and `first_line` prompts, the first-line styles, every character profile field and the emotional states with their quotes, apostrophes, angle brackets and backslashes, which dialogue, markup and the `->` in an emotional arc need. The system, question, answer, continuation and lore prompts still have those characters removed when saved.
+The editor saves the `greeting`, `greeting_context` and `first_line` prompts, the first-line styles, every character profile field, the emotional states, the fixes lists and the question, answer and continuation prompts with their quotes, apostrophes and backslashes intact. Since v12.4 `sanitize_input()` removes only `<` and `>` (a shape guard, not an HTML escaper), and it holds an authored `->` aside so an emotional arc written `A -> B -> C` survives a save instead of collapsing to `A - B - C`.
