@@ -204,38 +204,62 @@ prompts:
     variable: false
     variations: []
     top_level_system_prompt: ''
+  # Template variables, filled where each prompt is formatted (an unused variable is
+  # left alone, so a prompt that names none of them is sent unchanged):
+  #   question            {recent_questions}, {subject}, {context}
+  #   answer              {subject}, {context}   (v12.5 -- before that the tokens
+  #                        reached the model literally)
+  #   user_continuation   {last_assistant_message}
+  # The character's NAME is not a variable: it reaches the model in the CHARACTER
+  # PROFILE block's "Name:" line (unless include_names_in_prompt is off).
   question: 'Write the users first message in a roleplay drawn from the passage below.
-    Write only the message itself, as the user, not as any other character.
+    Write only the message itself, as the user, not as any other character, and leave
+    her words, actions, thoughts and feelings to her.
 
     Draw on the character information provided for her: her gender, age, appearance,
-    clothing, traits and backstory should show in how the user addresses her. If a
-    USER EMOTIONAL STATE block is present, let it shape the tone and word choice of
-    this message rather than stating the feeling outright.
+    clothing, traits and backstory should show in how the user addresses her. The user is
+    someone who meets her in her world, not one of the characters in it. If a USER
+    EMOTIONAL STATE block is present, let it shape the tone and word choice of this
+    message rather than stating the feeling outright. Open this conversation differently
+    from the recent openings listed below, so two conversations never begin the same way.
+
+    Recent openings to avoid repeating: {recent_questions}
 
     {context}'
-  answer: 'Write your next message in the roleplay. Write only the message itself.
+  answer: 'Write your next message in the roleplay. Write only the message itself, as
+    the character or characters in the scene, and never the words, actions, thoughts or
+    feelings of the user.
 
-    CHARACTER INFORMATION: the CHARACTER PROFILE block gives her Gender, Age, Job,
-    Appearance, Clothing, Jewelry, Personality, Traits and Backstory. Keep every one
-    of those true, her appearance, her clothes, her job, her manner of speaking and
-    her history must all match what the profile says, and must not drift between
-    turns. Her Gender field is authoritative.
+    CHARACTER INFORMATION: each CHARACTER PROFILE block gives one character''s Gender,
+    Age, Job, Appearance, Clothing, Jewelry, Personality, Traits and Backstory. Keep
+    every one of those true for every character, their appearance, their clothes, their
+    job, their manner of speaking and their history must all match what the profile says,
+    and must not drift between turns. A Gender field is authoritative. When more than one
+    profile is present, keep each voice distinct.
 
-    EMOTIONAL STATE: if an EMOTIONAL STATE block is present, that is her emotional
-    state for THIS reply and it overrides her default mood. If it is given as a
-    progression (A -> B -> C), she is in the stage named for this reply while earlier
-    replies showed the earlier stages and later replies will show the later ones, so
-    let the shift play out through tone and word choice instead of announcing it. If
-    an INNER PERSONA BREAKTHROUGH block is present, let that private self surface
-    underneath her outward manner.'
+    EMOTIONAL STATE: if an EMOTIONAL STATE block is present, that is the emotional
+    state for THIS reply and it overrides the default mood. If it is given as a
+    progression (A -> B -> C), the character named in the block is in the stage named
+    for this reply while earlier replies showed the earlier stages and later replies will
+    show the later ones, so let the shift play out through tone and word choice instead
+    of announcing it. If an INNER PERSONA BREAKTHROUGH block is present, let that private
+    self surface underneath the outward manner.
+
+    SCENE CAST: if a SCENE CAST block is present it says who is in the scene for this
+    reply. Only the characters listed under PRESENT may speak, act or be seen; a character
+    listed under NOT IN THE SCENE is elsewhere, so do not give them dialogue, actions,
+    thoughts or feelings. When the block says a character leaves or arrives in this reply,
+    write that entrance or exit as part of the scene.'
   user_continuation_prompt: 'Write the users next message. Write only as the user,
-    not as any other character.
+    not as any other character, and do not write her words, actions, thoughts or
+    feelings.
 
     Draw on the character information provided for her, her gender, age, appearance,
     clothing, traits and backstory, so the user responds to who she actually is. If a
     USER EMOTIONAL STATE block is present, that is the user''s emotional state for
     this message, so let it shape their tone and word choice rather than stating it
-    outright.'
+    outright. If a SCENE CAST block is present, the user speaks only to the characters
+    listed under PRESENT and does not address a character who is not in the scene.'
   use_questions_file: false
   # v11.9.0: dataset aliases in input/questions.txt. A questions-file line is authored text, so it
   # may contain {{ds:alias}} placeholders; both options below are ignored by chunk mode, whose source
