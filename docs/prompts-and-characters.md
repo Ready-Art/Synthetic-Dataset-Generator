@@ -145,10 +145,14 @@ prompts:
 - **`random_names`:** Optional feature that overrides character names with randomly selected names from a configured list. When `prompts.random_names.enabled` is true, each character's name in the prompt is replaced with a random name from `prompts.random_names.names[]`. Names are selected independently for each character (not in order), allowing for varied name assignments across conversations. This is useful for generating diverse datasets without manually creating many character profiles.
 - **`random_settings`:** Optional feature (analogous to `random_names`) that adds location diversity to roleplay data. It only applies when `character.setting_enabled` is `true`. For each selected character whose own `setting` field is empty, a setting is sampled from `prompts.random_settings.settings[]` (when `enabled`) instead of falling back to the default `"A standard indoor environment."`. A character with its own non-empty `setting` always keeps it. Additionally, when multiple characters are selected for one scene, their settings are **unified to a single shared setting** drawn from the ensemble (the distinct settings they would otherwise carry) so every character inhabits the same location — this feeds the consistency dimension and prevents cross-talk between characters set in different places.
 
-**Template Variables** (each is optional; the shipped question prompt uses only `{context}`):
-- `{recent_questions}` — Recent question history to avoid repetition
-- `{subject}` — The subject text chunk
-- `{context}` — The broader context surrounding the subject (in the greeting prompt: `greeting_context` with the book chunk in its `{chunk}`, or empty when the task has no book; the shipped `greeting_context` tells the model to take only the kind of place, objects, weather and mood from the chunk and none of its people, names or events)
+**Template Variables** (each is optional; the shipped question prompt uses only `{context}`, and the shipped answer prompt uses none):
+- `{recent_questions}` — Recent question history to avoid repetition (question prompt only)
+- `{subject}` — The subject text chunk. Available in the question prompt and the answer prompt (v12.5); before v12.5 the answer prompt sent a literal `{subject}` to the model
+- `{context}` — The broader context surrounding the subject, also available in the answer prompt (v12.5). In the greeting prompt it is `greeting_context` with the book chunk in its `{chunk}`, or empty when the task has no book; the shipped `greeting_context` tells the model to take only the kind of place, objects, weather and mood from the chunk and none of its people, names or events
+
+An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the same as in the question prompt, so a prompt reading "... of the woman, {subject}" never ends on a dangling comma.
+
+> **Note:** the character's name is NOT a template variable. It reaches the model in the `CHARACTER PROFILE` block as its `Name:` line (unless `include_names_in_prompt` is off), so an answer prompt that needs to refer to her by name should point at the profile rather than invent a token. Writing `{subject}` to mean "her name" is what produced replies that only ever said "the archivist" or "the captain" before v12.5: the token was never substituted, so the name was never in the prompt at all.
 - `{last_assistant_message}` — The assistant's previous response (for continuations)
 - `{speaker}` — Greeting prompt: who the greeting is written as (see below)
 - `{chunk}` — Greeting context: the book chunk

@@ -25,6 +25,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `tests/test_regex_watch_ui.py`
 - `tests/test_editor_readability_ui.py`
 - `tests/test_missing_quotations_ui.py`
+- `tests/test_repeat_opener_ui.py`
 - `tests/test_questions_dataset_ui.py`
 - Tasks that touch these files
 
@@ -75,6 +76,13 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 **Purpose:** Display-dependent regression test for the v11.7.1 "Experiment: Retry missing quotations" checkbox in the REAL `ConfigEditor` (skips cleanly without a display)
 **Key:** save -> `config.yml` holds `retry_missing_quotations: true`; reopen -> checkbox ticked again; unmodified reopen+save -> flag survives (no clobber to the off default). Mirrors `tests/test_user_emotional_states_ui.py`
 **Run:** `python -B tests/test_missing_quotations_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
+
+---
+
+### `tests/test_repeat_opener_ui.py`
+**Purpose:** Display-dependent regression test for the v12.5 repeated-opener controls (`repeat_opener_guard` checkbox, `repeat_opener_max_retries` Spinbox, `repeat_opener_fixes` Text) in the REAL `ConfigEditor` (skips cleanly without a display)
+**Key:** save -> all three land in `config.yml`; reopen -> every control shows the stored value; unmodified reopen+save -> nothing clobbers to the default; **the fix list is stored VERBATIM** (quotes, apostrophes and `->` survive, which `sanitize_input()` used to eat); a negative retry count is rejected by validation. **The fixes Text is created ENABLED and never disabled** — this Tk build drops `delete`/`insert` on a disabled Text widget silently
+**Run:** `python -B tests/test_repeat_opener_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
 
 ---
 

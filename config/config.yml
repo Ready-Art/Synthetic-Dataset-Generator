@@ -91,6 +91,22 @@ generation:
   # "\"Its funny,\" she says") is sent back to the SAME main API for one retry before the turn
   # is kept. Off by default so existing output is unchanged.
   retry_missing_quotations: false
+  # v12.5 "Experiment: Break a repeated opener": when on, a generated reply that opens with the
+  # same words (or the same sentence frame with only its object swapped) as an EARLIER reply in
+  # the same conversation is sent back to the SAME main API for a fresh opener before the turn is
+  # kept. This is the shape that no phrase list can catch -- every reply is individually fine and
+  # only the repetition across turns is the defect -- and it is what turns one reply in ten into
+  # every reply by the fourth turn. The instruction rides on the ANSWER PROMPT, never the system
+  # prompt, so the system prompt and history stay byte-identical for a prefix-caching server. The
+  # first assistant turn can never hit (there is nothing to repeat yet). Off by default so
+  # existing output is unchanged.
+  repeat_opener_guard: false
+  # Appended to the answer prompt, one per retry round (cycled). Empty means a built-in default
+  # instruction is used, so switching the guard on works without editing the config.
+  repeat_opener_fixes: []
+  # How many times one answer may be retried for a fresh opener before the best-effort reply is
+  # kept. 0 disables the retry while leaving the detection in place.
+  repeat_opener_max_retries: 1
   max_slop_sentence_fix_iterations: 5
   output_format: sharegpt
   api_request_timeout: 300

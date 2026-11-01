@@ -178,7 +178,7 @@ generation:
   context_size: 3000              # Total characters (subject + surrounding context)
   max_attempts: 5                 # Retries per Q/A turn
   num_turns: 1                    # Q/A pairs per conversation
-  history_size: 10               # Recent questions to avoid repetition
+  history_size: 10               # Recent OPENING QUESTIONS to avoid repetition (does not touch the assistant turns)
   api_request_timeout: 300       # Seconds for API connect/read timeout
   max_newlines_malformed: 32      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
@@ -202,4 +202,7 @@ generation:
   ensure_space_after_line_break: false
   remove_markdown: false
   retry_missing_quotations: false     # v11.7.1 Experiment: send a quote-less spoken line back to the same main API for one retry
+  repeat_opener_guard: false          # v12.5 Experiment: send a reply that reuses an earlier reply's opener back to the same main API
+  repeat_opener_fixes: []             # Instructions appended to the ANSWER PROMPT on a retry (cycled; empty = built-in default)
+  repeat_opener_max_retries: 1         # Retries per reply for a fresh opener; 0 detects but never retries
 ```
