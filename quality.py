@@ -324,6 +324,9 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
     # --- Roleplay dimensions (always heuristic-scored when the toggle is on; the LLM
     # judge refines them below when available) ---
     roleplay_active = is_roleplay_scoring_enabled()
+    # Cast continuity (v12.0, opt-in via quality.cast_continuity): LLM-ONLY, so it has no
+    # heuristic block here. Its score is merged from the judge below.
+    cast_active = is_cast_scoring_enabled()
     if roleplay_active:
         characters = scene_characters or []
         voice_score, voice_flags = _score_voice_distinctiveness(conversation_history, characters)
@@ -380,6 +383,15 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
                 for dim in ROLEPLAY_LLM_DIMENSIONS:
                     if dim in llm_scores:
                         dimension_scores[dim] = llm_scores[dim]
+            # The cast dimension is LLM-ONLY (no heuristic base, see CAST_SCORING_DIMENSIONS),
+            # so the judge's number is the ONLY thing that can fill it. Without this merge the
+            # dimension was scored by the judge, then thrown away and emitted as 0 -- which
+            # silently dragged every composite down. It stays absent (composite treats a
+            # missing dimension as 0 only when it is active) when the judge omits it.
+            if cast_active:
+                for dim in CAST_LLM_DIMENSIONS:
+                    if dim in llm_scores:
+                        dimension_scores[dim] = llm_scores[dim]
             flags.extend(llm_flags)
         else:
             # No judge ran (not configured): keep the heuristic estimates.
@@ -404,13 +416,20 @@ def score_conversation(conversation_history, task_id, thread_id, api_slot_idx=No
         default_weights.update(TIC_SCORING_DIMENSIONS)
     if roleplay_active:
         default_weights.update(ROLEPLAY_SCORING_DIMENSIONS)
+    if cast_active:
+        default_weights.update(CAST_SCORING_DIMENSIONS)
     custom_weights = global_config.get('quality.weights', {}) or {}
 
     def _weight(dim):
+        # ``default_weights`` must cover EVERY active dimension. It is built from the same
+        # toggles as ``active_scoring_dimensions()``; ``.get`` keeps a future opt-in
+        # dimension from crashing the whole scoring path (and dropping every row) if its
+        # weight is forgotten here.
+        fallback = default_weights.get(dim, 0.0)
         try:
-            return max(0.0, float(custom_weights.get(dim, default_weights[dim])))
+            return max(0.0, float(custom_weights.get(dim, fallback)))
         except (TypeError, ValueError):
-            return default_weights[dim]
+            return fallback
 
     total_weight = sum(_weight(d) for d in active_dims)
     if total_weight == 0:
@@ -1600,6 +1619,23 @@ def _repair_json(content):
     return repaired
 
 
+def _default_judge_dims():
+    """Every dimension a judge request should return, for the toggles that are on.
+
+    Used as the fallback ``expected_dims`` by ``_call_logic_judge()`` and
+    ``_call_logic_judge_once()``. It must match the dimensions ``_score_with_llm()`` asks
+    for in its prompt, because ``expected_dims`` becomes the extraction ladder's
+    ``preferred_keys`` and the set of keys coerced into scores -- a dimension that is asked
+    for in the prompt but missing here is parsed out and then silently discarded.
+    """
+    dims = list(LLM_DIMENSIONS)
+    if is_roleplay_scoring_enabled():
+        dims += list(ROLEPLAY_LLM_DIMENSIONS)
+    if is_cast_scoring_enabled():
+        dims += list(CAST_LLM_DIMENSIONS)
+    return dims
+
+
 def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
                       file_name, sampler_settings, prompt, expected_dims=None, max_attempts=None):
     """Sends ``prompt`` to the quality-scoring LLM and parses the JSON reply.
@@ -1627,8 +1663,7 @@ def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id,
     attempts = judge_max_attempts() if max_attempts is None else max(1, int(max_attempts))
     delay = judge_retry_delay()
     repair_rounds = judge_json_repair_attempts()
-    dims = list(expected_dims) if expected_dims is not None else (
-        list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else []))
+    dims = list(expected_dims) if expected_dims is not None else _default_judge_dims()
     max_tokens = judge_max_tokens(dims, sampler_settings)
 
     last = ({}, ["llm_exception"], False, {})
@@ -1700,8 +1735,7 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
     ``repair_of`` is the model's own previous, unparsable reply: when set, the request asks
     for the SAME evaluation again as a bare JSON object.
     """
-    dims = list(expected_dims) if expected_dims is not None else (
-        list(LLM_DIMENSIONS) + (list(ROLEPLAY_LLM_DIMENSIONS) if is_roleplay_scoring_enabled() else []))
+    dims = list(expected_dims) if expected_dims is not None else _default_judge_dims()
     if max_tokens is None:
         max_tokens = judge_max_tokens(dims, sampler_settings)
 

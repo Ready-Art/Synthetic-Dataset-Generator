@@ -964,21 +964,26 @@ def update_quality_display():
 
 def _rebuild_quality_roleplay_layout(force=False):
     """Rebuilds the Quality tab's summary labels and score-table columns to match the
-    current ``quality.roleplay_dimensions`` toggle (Configuration Editor).
+    current opt-in quality toggles (Configuration Editor).
 
-    Runs once at tab creation (``force=True``) and again, at most, whenever the toggle
-    changes at runtime (tracked by ``quality_roleplay_active`` in the tab's widget
-    registry). The generic six dimensions are always shown; the three roleplay
-    dimensions are appended when the toggle is on.
+    Runs once at tab creation (``force=True``) and again whenever the ACTIVE DIMENSION SET
+    changes at runtime. The generic dimensions are always shown; the opt-in sets
+    (``quality.roleplay_dimensions``, ``quality.tic_dimension``, ``quality.cast_continuity``)
+    are appended when their toggle is on.
+
+    The rebuild is keyed on the whole active-dimension tuple rather than on a single
+    toggle: watching only ``quality.roleplay_dimensions`` meant turning on ``cast_continuity``
+    (or ``tic_dimension``) left the tab showing the old columns, so the new dimension was
+    scored and stored but never displayed.
     """
     widgets = app_state.dashboard_notebook.tabs_widgets.get("Quality", {})
     parent_frame = widgets.get("scrollable_frame")
-    active = bool(global_config.get('quality.roleplay_dimensions', False))
-    if not force and "quality_roleplay_active" in widgets \
-            and widgets["quality_roleplay_active"] == active:
+    signature = tuple(quality.active_scoring_dimensions())
+    if not force and "quality_dims_signature" in widgets \
+            and widgets["quality_dims_signature"] == signature:
         return
-    widgets["quality_roleplay_active"] = active
-    dims = list(quality.active_scoring_dimensions())
+    widgets["quality_dims_signature"] = signature
+    dims = list(signature)
 
     for key in ("dimension_labels",):
         widgets.pop(key, None)
@@ -2506,7 +2511,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.2",
+    text="v12.3",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
