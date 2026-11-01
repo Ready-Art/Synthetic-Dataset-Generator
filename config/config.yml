@@ -191,11 +191,35 @@ prompts:
   question: 'Write the users first message in a roleplay drawn from the passage below.
     Write only the message itself, as the user, not as any other character.
 
+    Draw on the character information provided for her: her gender, age, appearance,
+    clothing, traits and backstory should show in how the user addresses her. If a
+    USER EMOTIONAL STATE block is present, let it shape the tone and word choice of
+    this message rather than stating the feeling outright.
 
     {context}'
-  answer: Write your next message in the roleplay. Write only the message itself.
-  user_continuation_prompt: Write the users next message. Write only as the user,
+  answer: 'Write your next message in the roleplay. Write only the message itself.
+
+    CHARACTER INFORMATION: the CHARACTER PROFILE block gives her Gender, Age, Job,
+    Appearance, Clothing, Jewelry, Personality, Traits and Backstory. Keep every one
+    of those true, her appearance, her clothes, her job, her manner of speaking and
+    her history must all match what the profile says, and must not drift between
+    turns. Her Gender field is authoritative.
+
+    EMOTIONAL STATE: if an EMOTIONAL STATE block is present, that is her emotional
+    state for THIS reply and it overrides her default mood. If it is given as a
+    progression (A -> B -> C), she is in the stage named for this reply while earlier
+    replies showed the earlier stages and later replies will show the later ones, so
+    let the shift play out through tone and word choice instead of announcing it. If
+    an INNER PERSONA BREAKTHROUGH block is present, let that private self surface
+    underneath her outward manner.'
+  user_continuation_prompt: 'Write the users next message. Write only as the user,
     not as any other character.
+
+    Draw on the character information provided for her, her gender, age, appearance,
+    clothing, traits and backstory, so the user responds to who she actually is. If a
+    USER EMOTIONAL STATE block is present, that is the user''s emotional state for
+    this message, so let it shape their tone and word choice rather than stating it
+    outright.'
   use_questions_file: false
   # v11.9.0: dataset aliases in input/questions.txt. A questions-file line is authored text, so it
   # may contain {{ds:alias}} placeholders; both options below are ignored by chunk mode, whose source
