@@ -894,7 +894,11 @@ def test_generate_wiring():
                      # config -> start_processing -> worker kwargs
                      "scene_cast_enabled_local", "scene_cast_config_local",
                      "scene_continuity_enabled_local", "scene_continuity_fixes_local",
-                     "scene_continuity_max_rounds"})
+                     "scene_continuity_max_rounds",
+                     # v12.5: repeated-opener guard, plumbed
+                     # config -> start_processing -> worker kwargs
+                     "repeat_opener_enabled_local", "repeat_opener_fixes_local",
+                     "repeat_opener_max_retries"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
