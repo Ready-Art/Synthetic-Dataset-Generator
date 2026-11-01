@@ -407,6 +407,115 @@ def test_quality_dimension():
 
 
 # --------------------------------------------------------------------------------------
+# 7b. Cast dimension is actually SCORED (v12.3 regression guard)
+# --------------------------------------------------------------------------------------
+
+class _StubResponse:
+    """Minimal stand-in for a judge HTTP response (no network)."""
+
+    status_code = 200
+    text = ""
+
+    def __init__(self, content):
+        self._content = content
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content},
+                             "finish_reason": "stop"}]}
+
+
+def test_cast_dimension_is_scored():
+    """v12.3: turning the toggle on must SCORE the dimension, not drop every row.
+
+    Two shipped defects are covered here, both of which only appeared with
+    ``quality.cast_continuity: true``:
+      * ``score_conversation()`` raised ``KeyError: 'cast_continuity'`` while weighting the
+        composite (its ``default_weights`` dict was never updated for the cast set), so every
+        reply died in the scoring path and was dropped;
+      * once that was fixed, the judge's cast number was parsed and then discarded, so the
+        dimension always reported 0 and silently dragged the composite down.
+    """
+    print("\nCast dimension is scored end to end (v12.3)")
+    import json as _json
+    import quality
+    from app_state import global_config
+
+    reply = _json.dumps({
+        "coherence": 85, "naturalness": 80, "engagement": 78, "consistency": 82,
+        "logic": 90, "ooc_evidence": [], "logic_evidence": [],
+        "voice_distinctiveness": 70, "grounding": 75, "persona_alignment": 65,
+        "cast_continuity": 88, "notes": "fine",
+    })
+
+    original_post = quality.requests.post
+    original_config = global_config.config
+    try:
+        quality.requests.post = lambda *a, **k: _StubResponse(reply)
+        global_config.config = {
+            "quality": {"enabled": True, "use_llm_scoring": True,
+                        "roleplay_dimensions": True, "cast_continuity": True,
+                        "tic_dimension": True,
+                        "scoring_api": {"url": "http://stub", "model": "stub", "key": ""}},
+            "api": {"apis": [{"url": "http://stub", "model": "stub", "key": ""}]},
+        }
+        conv = [{"role": "user", "content": "Hi there."},
+                {"role": "assistant", "content": "Hello, friend. Good to see you."}]
+
+        # The crash: this raised KeyError: 'cast_continuity' before v12.3.
+        try:
+            result = quality.score_conversation(conv, "cast_regress", 0)
+            crashed = None
+        except Exception as exc:  # noqa: BLE001 - the point is to report ANY crash
+            result, crashed = None, exc
+        check("score_conversation() does not crash with cast_continuity on",
+              crashed is None, crashed)
+
+        if result is not None:
+            check("the conversation is not dropped",
+                  not result.get("dropped"), result.get("drop_reason"))
+            check("the judge's cast score is kept (not 0)",
+                  result["dimensions"].get("cast_continuity") == 88,
+                  result["dimensions"].get("cast_continuity"))
+            check("the cast dimension carries weight in the composite",
+                  result["composite"] > 0, result["composite"])
+
+        # The judge request itself must ASK for the cast dimension, otherwise the model
+        # never returns it and the extraction ladder stops preferring it.
+        dims = quality._default_judge_dims()
+        check("the default judge dims include cast_continuity when the toggle is on",
+              "cast_continuity" in dims, dims)
+        check("the default judge dims still include every base LLM dimension",
+              all(d in dims for d in quality.LLM_DIMENSIONS), dims)
+
+        # Every ACTIVE dimension must have a weight, or the composite weighting crashes.
+        active = quality.active_scoring_dimensions()
+        base = dict(quality.SCORING_DIMENSIONS)
+        base.update(quality.TIC_SCORING_DIMENSIONS)
+        base.update(quality.ROLEPLAY_SCORING_DIMENSIONS)
+        base.update(quality.CAST_SCORING_DIMENSIONS)
+        check("every active dimension has a default weight",
+              all(d in base for d in active),
+              [d for d in active if d not in base])
+
+        # With the toggle OFF the cast key must stay out of the judge request and the result.
+        global_config.config = {
+            "quality": {"enabled": True, "use_llm_scoring": True,
+                        "scoring_api": {"url": "http://stub", "model": "stub", "key": ""}},
+            "api": {"apis": [{"url": "http://stub", "model": "stub", "key": ""}]},
+        }
+        check("cast_continuity is not requested while the toggle is off",
+              "cast_continuity" not in quality._default_judge_dims(),
+              quality._default_judge_dims())
+        off_result = quality.score_conversation(conv, "cast_regress_off", 0)
+        check("the cast key is absent from the scored dimensions while off",
+              "cast_continuity" not in off_result["dimensions"],
+              off_result["dimensions"])
+    finally:
+        quality.requests.post = original_post
+        global_config.config = original_config
+
+
+# --------------------------------------------------------------------------------------
 # 8. Default config is inert
 # --------------------------------------------------------------------------------------
 
@@ -466,6 +575,7 @@ def main():
     test_detector()
     test_metadata()
     test_quality_dimension()
+    test_cast_dimension_is_scored()
     test_default_config_inert()
     test_cache_warning()
     if FAILURES:

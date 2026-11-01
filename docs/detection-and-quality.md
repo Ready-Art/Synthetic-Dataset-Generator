@@ -97,7 +97,7 @@ The asymmetry is deliberate and must not be "simplified" into forcing exits. Can
 
 **Cache-safe by construction.** The cast note rides in the per-turn `depth0` note beside the persona and emotion blocks, so the system prompt never changes mid-conversation and a server's prefix cache stays warm. The note carries **no per-reply counter**, so two static replies produce byte-identical text. Only the present/absent *sets* and this reply's transitions appear in it.
 
-**The Judge reviews what code cannot.** The opt-in `cast_continuity` dimension asks whether the entrances and exits read as *motivated and natural*, and whether an exited character was brought back. It is **LLM-only with no heuristic**: there is no measurable proxy for "was that exit earned?", and paying a judge to re-derive what the regex already decided would only add latency and a new drop reason. The judge is given the schedule and the events so it can see what was supposed to happen.
+**The Judge reviews what code cannot.** The opt-in `cast_continuity` dimension asks whether the entrances and exits read as *motivated and natural*, and whether an exited character was brought back. It is **LLM-only with no heuristic**: there is no measurable proxy for "was that exit earned?", and paying a judge to re-derive what the regex already decided would only add latency and a new drop reason. The judge is given the schedule and the events so it can see what was supposed to happen. The dimension carries a weight of 0.10 in the composite when it is on, and reports `-1.0` in the record metadata when it is off or unscored. Turning it on does not change any other dimension's score.
 
 ```yaml
 prompts:
