@@ -1,0 +1,20 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+ReadyArt Synthetic Dataset Generator
+Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+
+All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+it is unlikely any of that code survives. Unless you have the original MIT-era code to
+compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+-->
+
+# 📝 Version History
+
+The changelog is split by major series so the current release notes stay short.
+
+| Series | Covers |
+|--------|--------|
+| [v12.x](changelog-v12.md) | The README split into per-topic pages, Scene Cast and scene continuity, the `cast_continuity` judge dimension, metadata schema v7 |
+| [v11.x and earlier](changelog-v11.md) | Non-Latin script check, questions-file datasets, roleplay and tic-density dimensions, judge robustness, dataset bindings, the v11 GUI work |

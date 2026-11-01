@@ -44,7 +44,7 @@ listed in every topic file they touch.
 
 ## Setup and Tests
 
-The application targets Python 3.9 (`README.md`, Requirements), so code and tests must not use anything newer, such
+The application targets Python 3.9 (see `docs/installation.md`), so code and tests must not use anything newer, such
 as `match` or `X | Y` type unions (both 3.10).
 All test scripts live in `tests/` (run them from the repository root, e.g. `python -B tests/test_api_profiles.py`).
 Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_persona_arc.py`,
@@ -147,6 +147,19 @@ counter, a lock or a timestamp key.
 When a change touches a module, update the topic file that owns it (and only that
 file). Add a row to `docs/agents/task-index.md` when a new kind of task becomes
 possible.
+
+**User docs are split too.** `README.md` is the master index for end users (pitch,
+quick start, documentation map) and holds no reference material of its own. The
+reference pages live in `docs/` — `configuration.md`, `prompts-and-characters.md`,
+`detection-and-quality.md`, `samplers-and-infrastructure.md`, `usage.md`,
+`output-formats.md`, `how-it-works.md`, `troubleshooting.md`, `performance.md`,
+`key-configuration-details.md`, `features.md`, `architecture.md`, `installation.md`,
+`file-structure.md`, `license-and-credits.md`, plus `version-history.md` over
+`changelog-v12.md` / `changelog-v11.md`. A feature change updates the ONE user page
+that owns it (and the matching `docs/agents/` topic file); a new user-visible feature
+also needs a changelog entry. Keep `README.md` an index: if a page grows past ~25,000
+characters, split it along its own headings and add the new page to the README map
+and to `docs/file-structure.md`.
 
 Size budget: keep this hub under ~10,000 characters (the mandatory license header is
 not counted) and every topic file under ~18,000. The largest topic files (`config.md`, `generation.md`, `quality.md`,
