@@ -86,6 +86,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `tests/test_non_latin.py` | Headless tests for the non-Latin script check (Unicode allow-list detector + the answer/question/continuation/opening-mode retry paths) | `detection`, `generation`, `app_state` |
 | `tools/check_gui_layout.py` | GUI layout testing utility for small displays | `tkinter`, `ttkbootstrap`, `tempfile` |
 | `tools/gemma4_thought_fix.py` | **OUT OF SCOPE — unrelated to this application.** Standalone axolotl helper that fixes the empty Gemma 4 thought block during fine-tuning. **Written by Karki (a user on Discord), not by this repository.** Not imported or tested by anything here; see [Gemma 4 chat template](gemma4-chat-template.md) | `yaml`, `jinja2` (+ `datasets`, `tokenizers` for `verify`) |
+| `tools/cleaner_pipeline/` | **OPTIONAL, STANDALONE — not part of this application.** Nine-stage JSONL post-processor run by hand on a finished `output/*.jsonl`; not imported, not configured, not tested by anything here. Standard library only. See [Cleaner Pipeline](cleaner-pipeline.md) | none (stdlib only; `bash` for `run_all.sh`) |
 
 **Dependency rule:** No module imports `generate.py`. The dependency graph is a tree with `generate.py` at the root, ensuring clean separation of concerns and testability. All modules import only from `logging_config` for logging, never from each other for logging functionality.
 
@@ -112,7 +113,7 @@ The developer cheat sheet is split so a modest-context model can follow it in on
 | [`detection.md`](agents/detection.md) | `detection.py` — refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity checks |
 | [`quality.md`](agents/quality.md) | `quality.py` — scoring dimensions, the judge request/JSON ladder, the drop policy |
 | [`datasets.md`](agents/datasets.md) | `dataset_*.py`, `datasets_panel.py`, the dataset docs |
-| [`tools-and-docs.md`](agents/tools-and-docs.md) | `tools/*.py`, `docs/gemma4-chat-template.md`, `docs/scene-cast.md` |
+| [`tools-and-docs.md`](agents/tools-and-docs.md) | `tools/*.py`, `tools/cleaner_pipeline/`, `docs/gemma4-chat-template.md`, `docs/cleaner-pipeline.md`, `docs/scene-cast.md` |
 
 Each topic file is self-contained: the file reference, the "edit for" notes, the tests that
 guard those modules, and the task rows that touch them. A change that spans two areas is the

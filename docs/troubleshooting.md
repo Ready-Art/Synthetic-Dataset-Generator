@@ -16,6 +16,8 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 |-------|----------|
 | **Slop/Anti-Slop not running at all** | Expected since v12.7.6 — `detection.slop.enabled` and `detection.anti_slop.enabled` ship `false`. Turn them on deliberately, or better, use https://github.com/Ready-Art/antislop-vllm-fork/tree/dev (dev branch) — see [Slop & Anti-Slop](slop-and-antislop.md) |
 | **"No APIs enabled"** error | Ensure at least one API slot (1-4) has a valid URL and is enabled |
+| **Cleaner pipeline dropped every record** | Almost certainly step 01 (your data has no quoted dialogue) or step 06 (emoji, non-Latin text, or a missing `/usr/share/dict/american-english`). Read the report in `build/`, then set `--min-quotes 0` or rewrite step 06 — see [Cleaner Pipeline](cleaner-pipeline.md#troubleshooting) |
+| **`tools/cleaner_pipeline/run_all.sh`: Permission denied** | It is not executable in the checkout | `bash run_all.sh` from inside `tools/cleaner_pipeline/`, or `chmod +x` it once |
 | **High refusal rate** | Add more jailbreak fixes in Detection → Refusal → Fixes |
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL and model (and key, if the endpoint needs one) |
 | **Anti-slop not being fixed** | Ensure API Slot 6 (Anti-Slop Fixer) is configured with URL and model (and key, if the endpoint needs one) |

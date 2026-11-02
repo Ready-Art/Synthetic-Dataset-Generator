@@ -57,6 +57,7 @@ readyart-dataset-generator/
 │   ├── scene-cast.md        # Scene Cast design notes
 │   ├── postgresql.md        # PostgreSQL backend
 │   ├── licensing.md         # Licensing reasoning
+│   ├── cleaner-pipeline.md  # The optional tools/cleaner_pipeline/ JSONL post-processor
 │   ├── gemma4-chat-template.md  # Out-of-scope axolotl helper
 │   └── agents/              # Developer docs TOPIC FILES (read the one for your area)
 │       ├── task-index.md    # "how do I add X?" -> files to edit
@@ -73,7 +74,13 @@ readyart-dataset-generator/
 ├── tools/
 │   ├── check_gui_layout.py  # GUI layout testing utility for small displays
 │   ├── check_dataset_hub.py # Opt-in live Hugging Face Hub reader check
-│   └── gemma4_thought_fix.py # OUT OF SCOPE: axolotl helper for Gemma 4 fine-tunes by Karki (Discord); see docs/gemma4-chat-template.md
+│   ├── gemma4_thought_fix.py # OUT OF SCOPE: axolotl helper for Gemma 4 fine-tunes by Karki (Discord); see docs/gemma4-chat-template.md
+│   └── cleaner_pipeline/    # OPTIONAL standalone JSONL post-processor (not imported, not tested); see docs/cleaner-pipeline.md
+│       ├── run_all.sh       # Runs the nine stages in order (--from N, $SOURCE)
+│       ├── common.py        # The shared rules: tokens, control chars, whitespace, quote tests
+│       ├── 01_quote_guard.py ... 09_drop_unbalanced_quotes.py  # The nine stages
+│       ├── README.md        # The tool's own full reference and warnings
+│       └── build/           # Scratch output, gitignored
 ├── config/
 │   ├── config.yml           # Main configuration file
 │   └── api_profiles.yml     # API compatibility profile definitions (OpenAI, Mistral, xAI, Gemini, Anthropic, custom)

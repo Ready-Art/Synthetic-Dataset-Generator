@@ -83,6 +83,11 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - Normalize and balance quotation marks (handles both straight `"` and curly `""` quotes, with special handling to avoid breaking inch marks and intentional unquoted dialogue)
 - **Structural Quote Repair** — `repair_straight_quotes()` applies heuristic-based fixes for unbalanced straight quotes (prepends opener or appends closer based on text structure) before the final normalization pass
 
+## Optional Cleaner Pipeline (NEW in v12.8.0)
+- **A separate, standalone post-processor** — `tools/cleaner_pipeline/` is a nine-stage JSONL cleaner you run by hand on a *finished* `output/*.jsonl`: quote guard, strip chat-template sentinels, strip control/invisible characters, strip double-encoded text and markup, normalise whitespace, drop foreign-script records, an independent verifier, repair truncated turns, and drop records with unbalanced quotes. It writes `build/09_final.jsonl` plus a report for every record it changed or dropped
+- **Not part of the application** — nothing imports it, no config key controls it, no test runs it, and it adds no dependency. The per-turn cleanup above and the detection layer are unchanged and independent of it
+- **It is a starting point, not a product** — its rules were reverse-engineered from one corpus's defects and step 01 assumes every turn contains quoted dialogue, so it can drop an entire prose dataset. Read [Cleaner Pipeline](cleaner-pipeline.md) before you run it
+
 ## Output Metadata (NEW in v9.9.0)
 - **Provenance per Record** — Every output row can carry a flat, schema-stable `metadata` block recording which character(s), emotional state, and setting produced it, plus its quality score, so datasets are self-describing and filterable after generation
 - **Trainer-Safe by Design** — The block lives at the record level (a sibling of `id` and `conversations`), never inside `conversations[]`, and uses only flat scalars (`str`/`int`/`float`/`bool`, never `null`) with identical keys and types on every row, so Hugging Face `load_dataset` and Axolotl's template mapping are unaffected
