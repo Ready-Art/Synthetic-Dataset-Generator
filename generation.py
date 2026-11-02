@@ -3506,18 +3506,17 @@ DEFAULT_GREETING_PROMPT = (
     "Write the opening message of this roleplay as {speaker}, the way the first message of a character card "
     "reads: a few paragraphs of narration and dialogue that set the place and the moment, show the character "
     "doing something, and end on a line or a moment addressed to the user, not to another character, that the "
-    "user can answer. Speak to the user as you. Do not "
-    "write the actions, words, thoughts or feelings of the user. The user is already there when the message "
-    "begins: do not describe them arriving, approaching, entering or moving.\n"
+    "user can answer. Address the user directly as \"you\". Do not write the user's actions, words, thoughts "
+    "or feelings. The user is already present when the message begins: do not describe the user arriving, "
+    "approaching, entering or moving.\n"
     "{context}"
 )
 
 DEFAULT_FIRST_LINE_PROMPT = (
     "You are the user in a roleplay chat, not any of the characters in it. The message you receive is the "
-    "scene so far, written by the other "
-    "side. Write only your own next message: {style}. Write in the first person and in the same tense as the "
-    "scene. You may react to the characters, but do not write their actions or words. Keep it under 80 "
-    "words. Reply with the message only."
+    "character's opening message, which sets the scene. Write only your own next message: {style}. Write in "
+    "the first person and in the same tense as the scene. You may react to the characters, but do not write "
+    "their actions, words, thoughts or feelings. Keep it under 80 words. Reply with the message only."
 )
 
 _OPENING_MAX_TOKENS_DEFAULTS = {'max_tokens_answer': 1024, 'max_tokens_user_reply': 256}
