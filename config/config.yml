@@ -80,6 +80,9 @@ generation:
   repeat_opener_guard: false
   repeat_opener_fixes: []
   repeat_opener_max_retries: 1
+  repeat_reply_guard: false
+  repeat_reply_fixes: []
+  repeat_reply_max_retries: 1
   max_slop_sentence_fix_iterations: 5
   output_format: sharegpt
   api_request_timeout: 300

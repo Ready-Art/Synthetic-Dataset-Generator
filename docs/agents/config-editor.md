@@ -26,6 +26,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `tests/test_editor_readability_ui.py`
 - `tests/test_missing_quotations_ui.py`
 - `tests/test_repeat_opener_ui.py`
+- `tests/test_repeat_reply_ui.py`
 - `tests/test_questions_dataset_ui.py`
 - Tasks that touch these files
 
@@ -83,6 +84,12 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 **Purpose:** Display-dependent regression test for the v12.5 repeated-opener controls (`repeat_opener_guard` checkbox, `repeat_opener_max_retries` Spinbox, `repeat_opener_fixes` Text) in the REAL `ConfigEditor` (skips cleanly without a display)
 **Key:** save -> all three land in `config.yml`; reopen -> every control shows the stored value; unmodified reopen+save -> nothing clobbers to the default; **the fix list is stored VERBATIM** (quotes, apostrophes and `->` survive, which `sanitize_input()` used to eat); a negative retry count is rejected by validation. **The fixes Text is created ENABLED and never disabled** — this Tk build drops `delete`/`insert` on a disabled Text widget silently
 **Run:** `python -B tests/test_repeat_opener_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
+---
+
+### `tests/test_repeat_reply_ui.py`
+**Purpose:** Display-dependent regression test for the v12.7 repeated-REPLY controls (`repeat_reply_guard` checkbox, `repeat_reply_max_retries` Spinbox, `repeat_reply_fixes` Text) in the REAL `ConfigEditor` (skips cleanly without a display)
+**Key:** the three keys ship off/empty/1; save -> all three land in `config.yml`; reopen -> every control shows the stored value; unmodified reopen+save -> nothing clobbers to the default; **the fix list is stored VERBATIM**; a negative retry count is rejected by validation; **the two guards are INDEPENDENT** (ticking one must not tick the other, because they catch different defects). **The fixes Text is created ENABLED and never disabled** — this Tk build drops `delete`/`insert` on a disabled Text widget silently
+**Run:** `python -B tests/test_repeat_reply_ui.py` (needs a display, e.g. under `xvfb-run`; skips cleanly without one)
 
 ---
 
