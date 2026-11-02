@@ -142,6 +142,10 @@ JUDGE_SKIP_FLAGS = frozenset({"llm_not_configured"})
 DROP_REASON_INVALID_JSON = "invalid_json"
 DROP_REASON_LOGIC_ZERO = "logic_zero"
 DROP_REASON_JUDGE_FAILED = "judge_failed"
+# v12.8.2: the operator dropped this conversation from the Review tab. It is recorded with
+# the judge's drop reasons so the dashboard, the log and a resumed run agree that the row is
+# gone on purpose, but nothing in the scoring path ever produces it.
+DROP_REASON_MANUAL = "manual"
 
 
 def judge_max_attempts(config=None):

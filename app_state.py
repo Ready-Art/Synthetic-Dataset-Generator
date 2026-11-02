@@ -198,6 +198,11 @@ quality_review_lock = Lock()
 # dashboard can report them. Guarded by quality_lock.
 quality_dropped = {}  # {task_id: reason}
 dropped_task_ids = set()
+# The lock the worker holds while it appends a finished conversation to the dataset (file or
+# database). It lives here, not in start_processing(), so the Review tab's "drop this
+# conversation" rewrite takes the SAME lock as a write and cannot interleave with one
+# (v12.8.2). A per-run Lock local to start_processing() would have been invisible to it.
+output_data_lock = Lock()
 master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
 live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
 

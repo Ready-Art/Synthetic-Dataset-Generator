@@ -772,9 +772,17 @@ def _update_review_table(force=False):
     _show_review_detail(review_tree)
 
     if count_label and hasattr(count_label, 'winfo_exists') and count_label.winfo_exists():
+        # Manual drops are reported apart from judge drops: one is the operator's decision,
+        # the other the judge's, and mixing them made the line read as if the judge had
+        # rejected a row the user removed by hand (v12.8.2).
+        manual_drops = sum(1 for reason in dropped.values()
+                           if reason == quality.DROP_REASON_MANUAL)
+        judge_drops = len(dropped) - manual_drops
         text = f"{shown} flagged"
-        if dropped:
-            text += f"  ·  {len(dropped)} dropped by the judge (not in the dataset)"
+        if judge_drops:
+            text += f"  ·  {judge_drops} dropped by the judge (not in the dataset)"
+        if manual_drops:
+            text += f"  ·  {manual_drops} dropped by you"
         count_label.config(text=text)
 
 
@@ -912,6 +920,178 @@ def _export_flagged_review():
         f"Quality review export: {exported} items → {export_path}"
         + (f" ({len(missing)} flagged task(s) had no output row)" if missing else ""),
         "INFO")
+
+
+def _drop_task_output_rows(task_id):
+    """Removes this task's rows from every output JSONL file. Returns (rows, files).
+
+    Only rows whose ``id`` is the task id or one of its ``<task_id>_api...`` duplication rows
+    are removed -- the rest of the file is copied through byte for byte, and a line that is
+    not valid JSON is never discarded (it is data loss we cannot attribute to this task).
+    Each file is rewritten to a temporary neighbour and moved into place, so an interrupted
+    drop cannot leave a half-written dataset behind.
+    """
+    rows_removed = 0
+    files_changed = 0
+    for path in _review_output_files():
+        try:
+            with open(path, 'r', encoding='utf-8') as src:
+                lines = src.readlines()
+        except OSError as e:
+            log_message(f"Review: could not read {path} to drop {task_id}: {e}", "WARNING")
+            continue
+
+        kept = []
+        removed_here = 0
+        for line in lines:
+            stripped = line.strip()
+            if stripped:
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    entry = None
+                if isinstance(entry, dict) and _record_belongs_to_task(entry.get('id', ''), task_id):
+                    removed_here += 1
+                    continue
+            kept.append(line)
+
+        if not removed_here:
+            continue
+
+        tmp_path = path + '.droptmp'
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as dst:
+                dst.writelines(kept)
+            os.replace(tmp_path, path)
+        except OSError as e:
+            log_message(f"Review: could not rewrite {path} to drop {task_id}: {e}", "ERROR")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            continue
+
+        rows_removed += removed_here
+        files_changed += 1
+        log_message(f"Review: dropped {removed_here} row(s) for {task_id} from {path}", "INFO")
+    return rows_removed, files_changed
+
+
+def _drop_task_db_rows(task_id):
+    """Removes this task's rows from the database. Returns the number of rows deleted.
+
+    Uses the same id matching as the file path (exact id plus the ``<task_id>_api...``
+    duplication rows) and nothing else, so a drop never truncates the table.
+    """
+    if not global_config.get('database.enabled', False) or not app_state.db_pool:
+        return 0
+    conn = None
+    deleted = 0
+    try:
+        conn = app_state.db_pool.getconn()
+        with conn.cursor() as cur:
+            # Deliberately NO LIKE: a task id is derived from a source file name, so ``%``
+            # and ``_`` in an unescaped pattern could match another task's rows. An exact
+            # id plus an exact ``<task_id>_api`` prefix is the same test
+            # ``_record_belongs_to_task()`` applies to the file path.
+            cur.execute(
+                "DELETE FROM generated_conversations "
+                "WHERE task_id = %s OR substring(task_id from 1 for %s) = %s",
+                (task_id, len(task_id) + 4, task_id + '_api'))
+            deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            conn.commit()
+        log_message(f"Review: dropped {deleted} database row(s) for {task_id}", "INFO")
+    except Exception as e:
+        log_message(f"Review: database drop failed for {task_id}: {e}", "ERROR")
+        deleted = 0
+    finally:
+        if conn is not None:
+            try:
+                app_state.db_pool.putconn(conn)
+            except Exception:
+                pass
+    return deleted
+
+
+def _drop_review_conversation():
+    """Drops the SELECTED flagged conversation from the dataset (v12.8.2).
+
+    Dismiss removes the flag and Export copies the row elsewhere; neither changes the
+    dataset. A flagged conversation that is simply bad data has to leave the dataset, so this
+    removes that ONE task's rows -- its main output row, its per-API duplication rows and its
+    database row -- and nothing else. The scope is the Treeview selection (whose item id is
+    the FULL task id), so a filtered list, a stale tick or a shared id prefix can never widen
+    it into a dataset-wide delete.
+
+    The rewrite runs under ``app_state.output_data_lock``, the same lock a worker holds while
+    it appends a finished conversation, so a drop cannot interleave with a write. The task is
+    then recorded in ``app_state.quality_dropped`` (reason ``manual``) and removed from
+    ``quality_scores`` / ``quality_review_ids``, so the dashboard, the Quality tab, a resumed
+    run and the Review list all agree that the row is gone on purpose.
+    """
+    review_tab = "🔍 Review"
+    widgets = app_state.dashboard_notebook.tabs_widgets.get(review_tab, {})
+    review_tree = widgets.get('review_tree')
+    if not review_tree or not hasattr(review_tree, 'winfo_exists') or not review_tree.winfo_exists():
+        toast.show("The Review table is not available.", "warning")
+        return
+
+    selected = review_tree.selection()
+    if not selected:
+        toast.show("Select a flagged conversation first, then drop it.", "info")
+        return
+    task_id = selected[0]
+    if not task_id:
+        toast.show("Could not resolve the selected conversation.", "warning")
+        return
+
+    if not messagebox.askyesno(
+            "Drop Conversation",
+            "Permanently remove this ONE conversation from the dataset?\n\n"
+            f"Task: {task_id}\n\n"
+            "Its output row (and its duplication rows) will be deleted from the output "
+            "file or the database. Every other conversation is left untouched. "
+            "This cannot be undone -- export first if you want a copy."):
+        return
+
+    # Hold the worker's write lock: a conversation completing right now must not be appended
+    # in the middle of the rewrite.
+    with app_state.output_data_lock:
+        rows_removed, files_changed = _drop_task_output_rows(task_id)
+        db_rows_removed = _drop_task_db_rows(task_id)
+    total_removed = rows_removed + db_rows_removed
+
+    # Bookkeeping: the row is gone on purpose, so it must not count as scored, must not be
+    # listed as flagged, and must stay dropped across a resume.
+    with app_state.quality_lock:
+        app_state.quality_scores.pop(task_id, None)
+        app_state.quality_dropped[task_id] = quality.DROP_REASON_MANUAL
+        app_state.dropped_task_ids.add(task_id)
+    with app_state.quality_review_lock:
+        app_state.quality_review_ids.discard(task_id)
+
+    try:
+        save_generation_state()
+    except Exception as e:
+        log_message(f"Review: could not save state after dropping {task_id}: {e}", "WARNING")
+
+    if total_removed:
+        log_message(
+            f"Review: user dropped {task_id} from the dataset "
+            f"({rows_removed} row(s) in {files_changed} file(s), {db_rows_removed} database row(s)).",
+            "WARNING")
+        toast.show(f"Dropped {task_id} ({total_removed} row(s) removed).", "success")
+    else:
+        log_message(
+            f"Review: user dropped {task_id}, but no output row was found for it "
+            "(it may never have been written). The flag was cleared.", "WARNING")
+        toast.show(
+            "No output row found for that task (it may never have been written); "
+            "the flag was cleared anyway.", "warning")
+
+    _update_review_table(force=True)
+    _show_review_detail(review_tree, force=True)
 
 
 def _dismiss_all_review():
@@ -2096,7 +2276,10 @@ def start_processing():
 
     # --- Start Worker Threads ---
     app_state.threads = []
-    output_data_lock = Lock()
+    # The write lock is shared state (app_state), not a per-run local, so the Review tab's
+    # "drop this conversation" rewrite takes the SAME lock as a worker's append and can never
+    # interleave with one (v12.8.2).
+    output_data_lock = app_state.output_data_lock
     
     # Determine total number of threads based on API configurations
     total_threads = 0
@@ -2593,7 +2776,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.8.1",
+    text="v12.8.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -3414,13 +3597,17 @@ for tab_name in tab_names:
 
         review_actions = ttk.Frame(review_toolbar)
         review_actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        # Dismiss and Export both leave the dataset alone; DROP is the only action that
+        # removes a row, so it acts on the SELECTED conversation only (never the whole set)
+        # and asks for confirmation first. See _drop_review_conversation().
         review_action_buttons = [
             ttk.Button(review_actions, text="📤 Export Flagged → JSONL", command=_export_flagged_review),
+            ttk.Button(review_actions, text="🗑 Drop Selected", command=_drop_review_conversation),
             ttk.Button(review_actions, text="✅ Dismiss All", command=_dismiss_all_review),
             ttk.Button(review_actions, text="🔄 Refresh", command=lambda: _update_review_table(force=True)),
         ]
         app_state.dashboard_notebook.tabs_widgets[tab_name]['action_layout'] = ResponsiveGrid(
-            review_actions, review_action_buttons, min_width=190, max_columns=3)
+            review_actions, review_action_buttons, min_width=190, max_columns=4)
         review_count_label = ttk.Label(review_toolbar, text="", foreground="#ff6b6b",
                                        font=('Segoe UI', 10, 'bold'))
         review_count_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
