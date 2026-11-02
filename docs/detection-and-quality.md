@@ -31,11 +31,13 @@ detection:
       phrases: ["they said", "they replied"]
       fixes: ["Do not speak as the user."]
 
-  slop:
+  slop:                           # v12.7.6 (off by default)
+    enabled: false
     phrases: ["test phrase", "another phrase"]
     fixes: ["Rewrite without using that phrase."]
 
-  anti_slop:
+  anti_slop:                      # v12.7.6 (off by default)
+    enabled: false
     phrases: ["additional phrase"]
     fixes: ["Rephrase to avoid this pattern."]
 
@@ -49,7 +51,21 @@ The **gender** setting (`config.yml` top level) determines which user speaking p
 gender: "female"  # "male", "female", or "neutral"
 ```
 
-> **Note:** Anti-Slop is a fully independent detection layer. It uses its own API (Slot 6), its own sampler settings, and its own phrase/fix lists. It is separate from Slop Detection (Slot 5) and can be configured independently.
+> **Note:** Anti-Slop is a fully independent detection layer. It uses its own API (Slot 6), its own sampler settings, and its own phrase/fix lists. It is separate from Slop Detection (Slot 5) and can be configured independently. Like Slop, it is **off by default** since v12.7.6 — see [Slop & Anti-Slop](slop-and-antislop.md) for why the recommended home for this work is AntiSlop-vLLM's `dev` branch.
+
+> **⚠️ Slop and Anti-Slop are disabled by default since v12.7.6**
+>
+> Both layers now ship with **`detection.slop.enabled: false`** and **`detection.anti_slop.enabled: false`**.
+> Nothing in the Slop or Anti-Slop sections below runs until you set one of them to `true` deliberately —
+> a default run performs no slop detection and no fixer calls at all.
+>
+> **The recommended tool for anti-slop is
+> [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) — the `dev` branch, not `main`.**
+> It bans the offending token before it is emitted, instead of paying a second LLM call to rewrite the text
+> afterwards. `main` is 12 commits behind `dev`, and every one of those commits is a fix.
+>
+> The twelve reasons, the `dev`-vs-`main` commit list, and the cases where the built-in path is still the
+> right call are all in **[Slop & Anti-Slop — Use the Fork](slop-and-antislop.md)**.
 
 ## Regex Watch (v11.6)
 

@@ -83,6 +83,8 @@ Characters with empty or whitespace-only names are automatically skipped. Ages o
 
 ## Slop Fixing Flow
 
+> **Note (v12.7.6):** everything in this section and the two that follow — Slop Fixing, Anti-Slop Fixing and the Slop → Anti-Slop Fallback — only runs when **`detection.slop.enabled`** / **`detection.anti_slop.enabled`** are `true`. Both ship **`false`** since v12.7.6, so a default run never enters these flows and never pays the fixer round trips. The recommended approach is [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) (**`dev` branch, not `main`**), which backtracks at the token level during generation instead of rewriting the text afterwards. See [Slop & Anti-Slop](slop-and-antislop.md).
+
 ```
 Slop Detected
     │

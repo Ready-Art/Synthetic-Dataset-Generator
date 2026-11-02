@@ -44,6 +44,9 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **Sentence-Level Slop Fixing** — Dedicated LLM (API Slot 5) rewrites problematic sentences while preserving paragraph context and balanced quotes
 - **Anti-Slop Fixing** — Dedicated LLM (API Slot 6) for anti-slop phrase rewriting with paragraph-level context awareness and rotating fix instructions
 - **Slop → Anti-Slop Fallback** — When the Slop Fixer fails to fully resolve slop, the Anti-Slop Fixer LLM is used as a final attempt before accepting the output
+
+> **Note (v12.7.6):** Slop Detection, Anti-Slop Detection, Sentence-Level Slop Fixing, Anti-Slop Fixing and the Slop → Anti-Slop Fallback are all **opt-in and disabled by default** (`detection.slop.enabled` / `detection.anti_slop.enabled` ship `false`). They still work when you turn them on, but the recommended tool for slop/anti-slop work is [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) — the `dev` branch, not `main` — which bans the token before it is emitted instead of rewriting afterwards. See [Slop & Anti-Slop](slop-and-antislop.md).
+
 - **Conversation History for Fixers** — Slop and anti-slop fixer LLMs can optionally receive the full conversation context (last 6 messages) for more coherent rephrasing (configurable via `generation.use_conversation_history_for_fixers`)
 - **Rotating Fix Instructions** — Cycle through multiple fix strategies for stubborn issues
 - **Malformed Response Detection** — Automatically rejects responses with excessive newlines or length beyond configurable thresholds (`max_newlines_malformed`, `max_text_length_malformed`)

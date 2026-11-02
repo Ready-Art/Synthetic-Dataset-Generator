@@ -40,6 +40,7 @@ readyart-dataset-generator/
 │   ├── configuration.md     # config.yml reference: datasets, API slots, generation settings
 │   ├── prompts-and-characters.md  # Prompts, character engine, opening mode, samplers note
 │   ├── detection-and-quality.md   # Detection, Regex Watch, scene cast, quality scoring
+│   ├── slop-and-antislop.md       # Why slop/anti-slop ship off (v12.7.6) + use the fork's dev branch
 │   ├── samplers-and-infrastructure.md  # Sampler params, DB/cache, budget, circuit breaker, rate limits
 │   ├── usage.md             # Running a job, dashboards, queue, recovery
 │   ├── output-formats.md    # ShareGPT rows + the record metadata block

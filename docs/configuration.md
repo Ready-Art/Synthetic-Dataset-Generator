@@ -182,12 +182,21 @@ generation:
   api_request_timeout: 300       # Seconds for API connect/read timeout
   max_newlines_malformed: 32      # Max newlines before considering response malformed
   max_text_length_malformed: 5000 # Max text length before considering response malformed
-  max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing
-  max_anti_slop_fix_iterations: 10     # Iterations for sentence-level anti-slop fixing
+  max_slop_sentence_fix_iterations: 4  # Iterations for sentence-level slop fixing (only runs when detection.slop.enabled: true)
+  # max_anti_slop_fix_iterations: 10   # NOT a shipped key -- the worker defaults to 10 in generation.py;
+                                       # set it here to override, and it only runs when
+                                       # detection.anti_slop.enabled: true
   max_character_cards: 10        # Maximum character profile cards in the editor
   output_format: "sharegpt"       # Output format for JSONL files
   sanitize_input_max_length: 100000000  # Max input text length for sanitization
-  slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails
+  slop_to_anti_slop_fallback: false  # Use Anti-Slop API as final attempt if Slop Fixer fails (requires both enabled flags)
+
+  # v12.7.6: Slop and Anti-Slop are OFF BY DEFAULT. Nothing above runs unless you opt in:
+  # detection:
+  #   slop:
+  #     enabled: false            # default false since v12.7.6
+  #   anti_slop:
+  #     enabled: false            # default false since v12.7.6
   discard_refused_conversations: false  # Don't save a conversation if any reply needed a jailbreak
   use_conversation_history_for_fixers: true  # Pass conversation context to slop/anti-slop fixer LLMs for coherent rephrasing
   include_metadata: true           # Append a flat, schema-stable provenance+quality "metadata" block to each output record (see Output Formats)
@@ -206,3 +215,11 @@ generation:
   repeat_opener_fixes: []             # Instructions appended to the ANSWER PROMPT on a retry (cycled; empty = built-in default)
   repeat_opener_max_retries: 1         # Retries per reply for a fresh opener; 0 detects but never retries
 ```
+
+> **Note (v12.7.6):** the slop/anti-slop fixer settings above are inert by default. `detection.slop.enabled`
+> and `detection.anti_slop.enabled` both ship `false`, so `max_slop_sentence_fix_iterations`,
+> `max_anti_slop_fix_iterations`, `slop_to_anti_slop_fallback` and `use_conversation_history_for_fixers`
+> only matter once you deliberately turn a layer on. If you want anti-slop on your dataset, the recommended
+> path is [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) — the **`dev` branch,
+> not `main`** — which filters at the token level during generation and removes the fixer round trips
+> entirely. Full reasoning in [Slop & Anti-Slop](slop-and-antislop.md).

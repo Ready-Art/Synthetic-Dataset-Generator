@@ -27,6 +27,14 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **Monitor circuit breaker** — if an API slot's circuit opens frequently, the endpoint may be experiencing issues
 - **Use Force Recovery** if you need to resume with intentionally changed settings, but be aware of potential incompatibilities
 - **Configure anti-slop** — Set up API Slot 6 and populate `anti_slop.phrases` for secondary quality filtering
+
+> **⚠️ Read this first:** the built-in slop/anti-slop path is the *expensive* option — every detected phrase
+> costs an extra full LLM round trip through the fixers, and it is **off by default since v12.7.6**
+> (`detection.slop.enabled` / `detection.anti_slop.enabled` ship `false`). Moving anti-slop to
+> [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) — the **`dev` branch, not
+> `main`** — removes the fixer round trips entirely, because it bans the token during generation instead of
+> rewriting the text afterwards. See [Slop & Anti-Slop](slop-and-antislop.md).
+
 - **Use multi-character mode** — Set `num_characters` > 1 for richer, multi-party dialogues
 - **Use emotional states** — Enable `emotional_states` to add tonal variety to conversations
 - **Use emotional arcs** — Replace flat states with progressions (`calm -> wary -> tense`) so the emotional register shifts across the conversation instead of being one static mood; pair with `generation.num_turns` ≥ the number of stages so every stage has a turn

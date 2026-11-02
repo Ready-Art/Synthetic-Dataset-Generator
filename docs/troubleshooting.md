@@ -14,6 +14,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 | Issue | Solution |
 |-------|----------|
+| **Slop/Anti-Slop not running at all** | Expected since v12.7.6 — `detection.slop.enabled` and `detection.anti_slop.enabled` ship `false`. Turn them on deliberately, or better, use https://github.com/Ready-Art/antislop-vllm-fork/tree/dev (dev branch) — see [Slop & Anti-Slop](slop-and-antislop.md) |
 | **"No APIs enabled"** error | Ensure at least one API slot (1-4) has a valid URL and is enabled |
 | **High refusal rate** | Add more jailbreak fixes in Detection → Refusal → Fixes |
 | **Slop not being fixed** | Ensure API Slot 5 (Slop Fixer) is configured with URL and model (and key, if the endpoint needs one) |
@@ -43,7 +44,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **Characters not getting personalities** | Add the `personality` field to character entries in the config |
 | **Characters not getting traits** | Add the `traits` field to character entries in the config (e.g., `"quick-witted, detail-oriented"`) |
 | **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
-| **Anti-slop not triggering** | Verify `anti_slop.phrases` list is populated and API Slot 6 is configured |
+| **Anti-slop not triggering** | Verify `detection.anti_slop.enabled: true` (it ships `false` since v12.7.6), that `anti_slop.phrases` is populated, and that API Slot 6 is configured — or skip the fixer entirely and use the fork's [dev branch](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) (see [Slop & Anti-Slop](slop-and-antislop.md)) |
 | **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
 | **Progress bars not animating** | Ensure ttkbootstrap is installed; progress bars use color-coded styles that change with completion percentage |
 | **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
