@@ -1404,8 +1404,29 @@ class ConfigEditor(tk.Toplevel):
                                                   justify="left", wraplength=1)
         self.regex_watch_status_label.pack(fill="x")
         wrap_label(self.regex_watch_status_label, regex_lf)
+        # --- Slop / Anti-Slop (v12.7.6: OFF BY DEFAULT) ---
+        # Both layers ship disabled because the fixers cost an extra LLM call per detected phrase and
+        # detection cost scales with phrases x sentences x turns. The checkboxes exist so the choice is
+        # explicit rather than implied by whether a phrase list happens to be empty, and so a saved
+        # list survives a layer being switched off and on again. See docs/slop-and-antislop.md.
         add_detection_list_pair(col2_frame, "Slop Detection", 'slop_phrases_text', 'slop_fixes_text')
         add_detection_list_pair(col2_frame, "Anti-Slop Detection", 'anti_slop_phrases_text', 'anti_slop_fixes_text')
+
+        slop_enable_frame = ttk.Frame(col2_frame)
+        slop_enable_frame.pack(padx=SPACING, pady=(0, SPACING), fill="x")
+        self.slop_enabled_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(
+            slop_enable_frame,
+            text="Enable Slop Detection (off by default since v12.7.6; every detected phrase costs an "
+                 "extra LLM call on API Slot 5 — see docs/slop-and-antislop.md)",
+            variable=self.slop_enabled_var_editor).pack(fill="x")
+
+        self.anti_slop_enabled_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(
+            slop_enable_frame,
+            text="Enable Anti-Slop Detection (off by default since v12.7.6; every detected phrase costs "
+                 "an extra LLM call on API Slot 6 — see docs/slop-and-antislop.md)",
+            variable=self.anti_slop_enabled_var_editor).pack(fill="x")
 
         # --- OOC Drift Detection (phrase-driven, no dedicated API slot) ---
         ooc_lf = ttk.LabelFrame(col2_frame, text="Out-of-Character (OOC) Detection")
@@ -2236,6 +2257,7 @@ class ConfigEditor(tk.Toplevel):
                     'fixes': [line.strip() for line in self.refusal_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
             'anti_slop': {
+                'enabled': bool(self.anti_slop_enabled_var_editor.get()),
                 'phrases': [sanitize_input(line.strip()) for line in self.anti_slop_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
                 'fixes': [sanitize_input(line.strip()) for line in self.anti_slop_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
@@ -2245,6 +2267,7 @@ class ConfigEditor(tk.Toplevel):
                     'neutral': {'phrases': [sanitize_input(line) for line in self.user_speaking_phrases_data.get('neutral', [])], 'fixes': [sanitize_input(line) for line in self.user_speaking_fixes_data.get('neutral', [])]}
                 },
                 'slop': {
+                    'enabled': bool(self.slop_enabled_var_editor.get()),
                     'phrases': [sanitize_input(line.strip()) for line in self.slop_phrases_text.get("1.0", tk.END).split('\n') if line.strip()],
                     'fixes': [sanitize_input(line.strip()) for line in self.slop_fixes_text.get("1.0", tk.END).split('\n') if line.strip()]
                 },
@@ -3102,7 +3125,10 @@ class ConfigEditor(tk.Toplevel):
             self.gender_var_editor.set(loaded_gender_from_config) # Set radio button
             self._load_gender_specific_texts_into_ui(loaded_gender_from_config) # Load selected gender's data into UI
 
-            slop_conf = detection_conf.get('slop', {})
+            # v12.7.6: slop and anti-slop are opt-in. The phrase/fix lists are still loaded even when
+            # the layer is off, so switching it back on restores the saved list instead of losing it.
+            slop_conf = detection_conf.get('slop', {}) or {}
+            self.slop_enabled_var_editor.set(bool(slop_conf.get('enabled', False)))
             self.slop_phrases_text.delete(1.0, tk.END); self.slop_phrases_text.insert(tk.END, "\n".join(slop_conf.get('phrases', [])))
             self.slop_fixes_text.delete(1.0, tk.END); self.slop_fixes_text.insert(tk.END, "\n".join(slop_conf.get('fixes', [])))
 
@@ -3124,8 +3150,9 @@ class ConfigEditor(tk.Toplevel):
             self._toggle_regex_watch_fields()
             self._set_regex_status("")
 
-            # Anti-slop configuration loading
-            anti_slop_conf = detection_conf.get('anti_slop', {})
+            # Anti-slop configuration loading (v12.7.6: opt-in, list preserved while off)
+            anti_slop_conf = detection_conf.get('anti_slop', {}) or {}
+            self.anti_slop_enabled_var_editor.set(bool(anti_slop_conf.get('enabled', False)))
             self.anti_slop_phrases_text.delete(1.0, tk.END)
             self.anti_slop_phrases_text.insert(tk.END, "\n".join(anti_slop_conf.get('phrases', [])))
             self.anti_slop_fixes_text.delete(1.0, tk.END)

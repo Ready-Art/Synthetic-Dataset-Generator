@@ -10,13 +10,24 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v12.7.5
+# ReadyArt Synthetic Dataset Generator v12.7.6
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
 **NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v10.5.0-STABLE branch.
 
-**NOTE:** While the Slop and Anti-Slop functions do work these are very inefficient especially with a large slop/antislop list. You should look for alternatives such as https://github.com/Ready-Art/antislop-vllm-fork/tree/dev
+> ### ⚠️ Slop and Anti-Slop are DISABLED BY DEFAULT as of v12.7.6
+>
+> The built-in Slop and Anti-Slop functions still work, but `detection.slop.enabled` and
+> `detection.anti_slop.enabled` now ship as `false`, because the fixers cost a whole extra LLM
+> call per detected phrase and detection cost scales with phrases × sentences × turns.
+>
+> **If you want anti-slop, run it in [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev)
+> — and clone the `dev` branch, not `main`.** `main` is 12 commits behind `dev`, and every one of
+> those commits is a fix (concurrency, hangs, end-of-turn recovery, the banlist builder).
+>
+> Full reasoning, all twelve of them: **[Slop & Anti-Slop — Use the Fork](docs/slop-and-antislop.md)**.
+> Still want the built-in path? See [If you still want the built-in functions](docs/slop-and-antislop.md#if-you-still-want-the-built-in-functions).
 
 **LICENSE:** All code in this repository is **AGPLv3**, and has been for some time. Very early versions were MIT by Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that it is unlikely any of that code survived. Unless you have the original MIT-era code to compare against, treat every file here as AGPLv3-only. Every text and code file carries an SPDX header saying so. See [License & Credits](docs/license-and-credits.md).
 
@@ -57,6 +68,7 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 |------|----------------|
 | [Prompts & Character Engine](docs/prompts-and-characters.md) | Question/answer/continuation prompts, opening mode, character profiles, emotional states and arcs, persona breakthrough, lore, variable system prompts |
 | [Detection & Quality Control](docs/detection-and-quality.md) | Refusal and user-speaking detection, slop and anti-slop, Regex Watch, Scene Cast, the non-Latin script check, quality scoring and its opt-in dimensions |
+| [Slop & Anti-Slop — Use the Fork](docs/slop-and-antislop.md) | Why the built-in slop/anti-slop functions are off by default, twelve reasons to use AntiSlop-vLLM's dev branch instead, and when the built-in path is still the right call |
 | [Samplers & Infrastructure](docs/samplers-and-infrastructure.md) | Sampler parameters, database and Valkey caching, budget and cost control, the circuit breaker, rate limiting |
 | [Key Configuration Details](docs/key-configuration-details.md) | How character/persona/emotion/lore blocks are injected, the question cache, per-API debug logs, quality score storage |
 
@@ -92,6 +104,7 @@ Deeper, task-specific pages also live in `docs/`:
 - [`scene-cast.md`](docs/scene-cast.md) — the Scene Cast design notes
 - [`postgresql.md`](docs/postgresql.md) — the optional database backend
 - [`licensing.md`](docs/licensing.md) — the licensing reasoning in detail
+- [`slop-and-antislop.md`](docs/slop-and-antislop.md) — why slop/anti-slop are off by default and where to run them instead, carrying the dev-branch warning
 - [`gemma4-chat-template.md`](docs/gemma4-chat-template.md) — the out-of-scope axolotl helper
 
 ---

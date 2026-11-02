@@ -35,7 +35,7 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 | [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
 | [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, prompts, cast/arc helpers, metadata or output writing. |
 | [`docs/agents/generation-retries.md`](docs/agents/generation-retries.md) | you are adding or moving a check that can resend an answer (it records the retry ORDER). |
-| [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check. |
+| [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check, or the v12.7.6 slop/anti-slop default-off gate ([`slop-antislop-default-off.md`](docs/agents/slop-antislop-default-off.md)). |
 | [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
 | [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. |
 | [`docs/agents/tools-and-docs.md`](docs/agents/tools-and-docs.md) | you are touching `tools/*.py`, `docs/gemma4-chat-template.md` or `docs/scene-cast.md`. |
@@ -139,6 +139,9 @@ counter, a lock or a timestamp key.
   (see `docs/agents/tools-and-docs.md`).
 - **Keep features opt-in by default** — a default run must stay byte-identical to the
   previous release.
+- **Slop/Anti-Slop are OFF by default (v12.7.6)** — `detection.{slop,anti_slop}.enabled` ship `false`
+  and `generate.py` gates the phrase lists on them. Never make a phrase list its own enable condition (a
+  saved list must survive a toggle). Slop docs point at the fork's **`dev`** branch, never `main`.
 - **All code is AGPLv3 (never MIT/dual); every text/code file carries the SPDX header.** New
   file? `python -B tools/add_license_header.py` (`--check` to verify). The tool owns that
   block and skips Karki's script. See [`docs/licensing.md`](docs/licensing.md).

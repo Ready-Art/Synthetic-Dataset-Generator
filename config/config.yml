@@ -370,6 +370,7 @@ detection:
     phrases: []
     fixes: []
   anti_slop:
+    enabled: false
     phrases: []
     fixes: []
   user_speaking:
@@ -383,6 +384,7 @@ detection:
       phrases: []
       fixes: []
   slop:
+    enabled: false
     phrases: []
     fixes: []
   regex_watch:

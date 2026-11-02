@@ -1669,8 +1669,26 @@ def start_processing():
     current_user_speaking_phrases = user_speaking_gender_config.get('phrases', [])
     current_speaking_fixes = user_speaking_gender_config.get('fixes', [])
 
-    current_anti_slop_phrases = global_config.get('detection.anti_slop.phrases', [])
-    current_anti_slop_fixes = global_config.get('detection.anti_slop.fixes', [])
+    # v12.7.6: Slop and Anti-Slop are OFF BY DEFAULT. The phrase lists shipped empty, so an
+    # untouched config was already inert, but a user who pasted phrases in switched on the whole
+    # detector-plus-fixer machinery without being asked. These two flags make the choice explicit.
+    # An EMPTY phrase list is forced here as well as skipped in the worker, so a disabled layer
+    # cannot be re-enabled by accident through a stale list, and so the dashboard counters stay
+    # at zero instead of counting detections nothing acts on. Turn a layer back on in
+    # config.yml (detection.<layer>.enabled: true) or with the Config Editor checkboxes.
+    current_slop_enabled = bool(global_config.get('detection.slop.enabled', False))
+    current_anti_slop_enabled = bool(global_config.get('detection.anti_slop.enabled', False))
+    if not current_slop_enabled:
+        log_message("Slop Detection is disabled (detection.slop.enabled: false). "
+                    "See docs/slop-and-antislop.md for the recommended alternative.", "INFO")
+    if not current_anti_slop_enabled:
+        log_message("Anti-Slop Detection is disabled (detection.anti_slop.enabled: false). "
+                    "See docs/slop-and-antislop.md for the recommended alternative.", "INFO")
+
+    current_anti_slop_phrases = (global_config.get('detection.anti_slop.phrases', [])
+                                 if current_anti_slop_enabled else [])
+    current_anti_slop_fixes = (global_config.get('detection.anti_slop.fixes', [])
+                               if current_anti_slop_enabled else [])
 
     current_ooc_phrases = global_config.get('detection.out_of_character.phrases', [])
     current_ooc_fixes = global_config.get('detection.out_of_character.fixes', [])
@@ -1689,11 +1707,19 @@ def start_processing():
         current_regex_watch_max_rounds = 3
     current_regex_watch_max_rounds = max(1, min(5, current_regex_watch_max_rounds))
 
-    current_slop_phrases = global_config.get('detection.slop.phrases', [])
+    # See the v12.7.6 note above: a disabled layer contributes an empty phrase/fix list, so the
+    # worker's existing "no phrases = no detection" path does the rest. slop_to_anti_slop_fallback
+    # additionally requires BOTH layers, since it needs an anti-slop fixer to fall back to.
+    current_slop_phrases = (global_config.get('detection.slop.phrases', [])
+                            if current_slop_enabled else [])
     current_jailbreaks = global_config.get('detection.refusal.fixes', []) 
-    current_slop_fixes_fallback = global_config.get('detection.slop.fixes', []) 
-    current_slop_fixes_for_rotation = global_config.get('detection.slop.fixes', [])
-    current_slop_to_anti_slop_fallback = global_config.get('generation.slop_to_anti_slop_fallback', False)
+    current_slop_fixes_fallback = (global_config.get('detection.slop.fixes', [])
+                                   if current_slop_enabled else [])
+    current_slop_fixes_for_rotation = (global_config.get('detection.slop.fixes', [])
+                                       if current_slop_enabled else [])
+    current_slop_to_anti_slop_fallback = (
+        global_config.get('generation.slop_to_anti_slop_fallback', False)
+        and current_slop_enabled and current_anti_slop_enabled)
 
     # v11.7.1 "Experiment: Retry missing quotations" (contraction-safe since v11.7.2 -- the
     # detector discounts word-internal apostrophes, so "It's not funny she says" is caught):
@@ -2563,7 +2589,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.7.5",
+    text="v12.7.6",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
