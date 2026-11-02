@@ -14,7 +14,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
-**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v10.5.0-STABLE branch.
+**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v12.8.2-STABLE branch.
 
 > ### ⚠️ Slop and Anti-Slop are DISABLED BY DEFAULT as of v12.7.6
 >
