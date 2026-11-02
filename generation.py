@@ -1720,13 +1720,30 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                     character_profiles = []
 
+                    # Random names are drawn ONCE for the whole scene, as a distinct set, so two
+                    # characters in the same conversation can never be handed the same name. The
+                    # draw is per conversation and never written back to the cards: `avoid` holds
+                    # the cards' own names so a "random" name is never just the card's name again.
+                    if enable_random_names_local and random_names_list_local:
+                        scene_random_names = deal_random_names(
+                            random_names_list_local,
+                            len(selected_chars),
+                            avoid=[str(c.get('name', '') or '').strip() for c in selected_chars],
+                        )
+                        log_message(
+                            f"Thread {thread_id}: Dealt {len(scene_random_names)} random name(s) "
+                            f"for task {task_id}: {', '.join(scene_random_names) or '(none)'}", "DEBUG")
+                    else:
+                        scene_random_names = []
+
                     for idx, selected_char in enumerate(selected_chars):
                         # EXPLICIT NAME VALIDATION: Get name, strip whitespace, check if empty
                         character_name = selected_char.get('name', '').strip()
 
-                        # If random names is enabled, override with a random name from the list
+                        # If random names is enabled, override with this scene's dealt name
                         if enable_random_names_local and random_names_list_local:
-                            random_name = random.choice(random_names_list_local)
+                            random_name = (scene_random_names[idx]
+                                           if idx < len(scene_random_names) else "")
                             log_message(f"Thread {thread_id}: Using random name '{random_name}' for character {idx+1}", "DEBUG")
                         else:
                             random_name = character_name
@@ -2814,6 +2831,97 @@ def get_next_system_prompt(prompts_list_local):
         selected = prompts_list_local[idx]
 
     return selected
+
+
+def _random_names_pool_key(names):
+    """Identify a configured random-name pool so a stale deck is never dealt from a replaced list.
+
+    The key covers the list identity and length plus a cheap content fingerprint, so reordering,
+    editing a name, adding names or swapping the feature off all start a fresh deck.
+    """
+    return (id(names), len(names), hash(tuple(names)))
+
+
+def _shuffled_name_deck(names):
+    """One freshly shuffled pass over the pool (a plain list of names)."""
+    deck = list(names)
+    random.shuffle(deck)
+    return deck
+
+
+def deal_random_names(names, count, avoid=()):
+    """Deal `count` distinct random names from the pool for ONE conversation.
+
+    Random names exist to keep a dataset from repeating itself, so this deals WITHOUT replacement
+    across the run: the pool is shuffled into a deck and consumed in order, and a new pass is
+    shuffled only once the deck runs out. That is what lets a 1,000-name pool reach ~1,000 distinct
+    names over a long run, instead of the ~740 that independent `random.choice` draws would produce
+    over 1,410 scenes (where each name then repeats 2-6 times and ~260 names never appear at all).
+
+    Guarantees for the scene being built:
+      * the returned names are distinct from each other, so two characters in one conversation are
+        never handed the same name;
+      * none is in `avoid` (the names the character cards themselves carry), because the point of
+        the feature is a name that is NOT the card's own;
+      * when the pool cannot satisfy those constraints, the remaining entries of the current pass are
+        used before any name is repeated -- a name already used in this run is better than one
+        already used in this scene, and a repeat is better than a blank name. A pool smaller than
+        the scene therefore yields as many distinct names as the pool can supply, never duplicates.
+
+    The draw is per conversation and the names are local to it: they are never written back to the
+    character cards, so the next task starts from the card's own name again.
+    """
+    pool = [name for name in (names or []) if name]
+    if not pool or count <= 0:
+        return []
+
+    avoid = set(avoid or ())
+    key = _random_names_pool_key(names)
+    chosen = []
+
+    with app_state.random_name_lock:
+        if app_state.random_names_pool_key != key:
+            app_state.random_names_pool_key = key
+            app_state.random_name_deck = _shuffled_name_deck(pool)
+
+        # A scene can never contain more distinct names than the pool holds. Bounding the loop this
+        # way is what makes a pool smaller than the scene stop instead of spinning: the scene gets
+        # every name the pool can supply, and no character is ever handed a duplicate.
+        wanted = min(count, len(set(pool)))
+
+        while len(chosen) < wanted:
+            taken = set(chosen)
+            if not app_state.random_name_deck:
+                # This pass is used up: shuffle a fresh one and keep dealing.
+                app_state.random_name_deck = _shuffled_name_deck(pool)
+
+            # Preferred: still on this pass, not a card's own name, not already in this scene.
+            preferred = [name for name in app_state.random_name_deck
+                         if name not in avoid and name not in taken]
+            if preferred:
+                name = preferred[0]
+            else:
+                # Nothing satisfies every constraint. If the pool still holds a name that is not a
+                # card's own, the pass has simply run down to a tail of `avoid` names -- reshuffle
+                # rather than fall back, so the card's own name is never handed back as "random".
+                if any(name not in avoid for name in pool):
+                    app_state.random_name_deck = []
+                    continue
+                # The whole pool is card names (or the scene already holds every name the pool
+                # has), so a repeat is unavoidable. Take the first entry not already in this scene;
+                # this is what makes a too-small pool degrade to a repeat instead of a blank name.
+                spare = [name for name in app_state.random_name_deck if name not in taken]
+                if not spare:
+                    # Every entry left on this pass is already in this scene. Drop the pass and
+                    # reshuffle; `wanted` guarantees this terminates.
+                    app_state.random_name_deck = []
+                    continue
+                name = spare[0]
+
+            app_state.random_name_deck.remove(name)
+            chosen.append(name)
+
+    return chosen
 
 
 def generate_question(system_prompt, question_prompt_template, subject, context, thread_id,

@@ -92,9 +92,15 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 ## Boundaries
 
 - `.gitignore` covers local output: `output/` (generated rows, `log.txt`, run state), `__pycache__/`,
-  `.pytest_cache/` and `layout-check/` (once the layout tool has run). Stage files by name; never `git add -A`
+  `.pytest_cache/`, `layout-check/` (once the layout tool has run), and local config copies
+  (`custom.yml`, `custom*.yml`, `config/profiles/`). Stage files by name; never `git add -A`
   or `git add .`.
 - **Never commit an API key.** `config/config.yml` is tracked and ships with every `key: ''` empty.
+- **Only `config/config.yml` and `config/api_profiles.yml` ship.** A user's `custom.yml` (or any other
+  saved copy) is their own working config: it holds their character cards, prompts, lore and database
+  credentials, and it must never be added to the repo. Read one only to debug a report; never copy its
+  contents into a tracked file, a test, a doc or a docstring. Verify with
+  `git status --porcelain` before you finish.
 - **Ask before changing the wording of a shipped prompt** in `config/config.yml` (`prompts.*`). The prompts are
   short and general on purpose, and every output row depends on them.
 - **New worker options go in the `kwargs=` dict** of the worker launch in `generate.py`, never in `args=` (see `docs/agents/generate-ui.md`).

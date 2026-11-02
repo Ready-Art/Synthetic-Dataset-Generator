@@ -1162,12 +1162,12 @@ class ConfigEditor(tk.Toplevel):
 
         # Add checkbox to enable random names
         self.enable_random_names_var_editor = tk.BooleanVar()
-        wrapped_checkbutton(self.character_engine_content_frame, text="Enable Random Names (overrides character Name field with random names from list below)",
+        wrapped_checkbutton(self.character_engine_content_frame, text="Enable Random Names (each conversation gets its own name from the list below; the character card itself is unchanged)",
                 variable=self.enable_random_names_var_editor, command=self._toggle_random_names_fields).grid(row=character_engine_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
         character_engine_row_idx += 1
 
         # Add random names text area
-        ttk.Label(self.character_engine_content_frame, text="Random Names (one per line, randomly selected when enabled):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
+        ttk.Label(self.character_engine_content_frame, text="Random Names (one per line; dealt without replacement so a long run spreads the whole list):").grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="nw")
         character_engine_row_idx += 1
         random_names_text = scrolledtext.ScrolledText(self.character_engine_content_frame, wrap=tk.WORD, height=6, width=1, undo=True)
         random_names_text.grid(row=character_engine_row_idx, column=0, padx=SPACING, pady=SPACING, sticky="ew")

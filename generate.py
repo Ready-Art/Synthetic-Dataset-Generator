@@ -312,6 +312,10 @@ def reset_all_stats_and_history():
     app_state.system_prompt_counter = 0
     app_state.character_counter = 0
     app_state.question_history = []
+    # A new run starts a fresh random-name pass, so a re-run deals the whole pool again
+    # instead of continuing the deck the previous run left behind.
+    app_state.random_name_deck = []
+    app_state.random_names_pool_key = None
 
     with api_response_times_lock:
         for i in range(6):
@@ -2589,7 +2593,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.8.0",
+    text="v12.8.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

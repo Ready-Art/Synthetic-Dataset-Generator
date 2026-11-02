@@ -141,6 +141,17 @@ def record_cast_events(task_id, events, api_slot_idx=0):
 MAX_REGEX_WATCH_LOG = 200
 character_counter = 0  # Round-robin counter for character selection
 character_counter_lock = Lock()  # Thread-safe access
+# Random-name deck state (prompts.random_names), dealt by generation.deal_random_names(). The pool
+# is dealt WITHOUT REPLACEMENT so a long run spreads every configured name over the whole dataset
+# instead of redrawing with replacement; the deck is reshuffled from the configured pool only once it is
+# exhausted. It is deliberately module-level RUN state, not per-worker state: every worker deals from the
+# same deck, so the pool is spread across the whole run rather than repeated once per worker. Guarded by
+# random_name_lock. `random_names_pool_key` is the fingerprint of the pool the deck was built from, so
+# editing the list or turning the feature off starts a fresh deck instead of dealing names from a pool
+# the user has replaced.
+random_name_deck = []  # Remaining names to deal, in shuffled order
+random_name_lock = Lock()  # Thread-safe access to the deck
+random_names_pool_key = None  # Fingerprint of the pool the current deck was built from
 pending_task_ids = set()
 failed_task_ids = set()
 purged_task_ids = set()
