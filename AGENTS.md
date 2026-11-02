@@ -137,6 +137,10 @@ counter, a lock or a timestamp key.
 - **Keep `tools/gemma4_thought_fix.py` out of the app** — it is a third-party helper
   written by Karki (Discord), not this repository's code
   (see `docs/agents/tools-and-docs.md`).
+- **Keep `tools/cleaner_pipeline/` out of the app too** — an optional, standalone JSONL
+  post-processor: nothing imports it, no config key controls it, no test runs it. Its rules
+  are deliberately one-corpus-specific and its warnings must stay
+  (see `docs/agents/tools-and-docs.md`).
 - **Keep features opt-in by default** — a default run must stay byte-identical to the
   previous release.
 - **Slop/Anti-Slop are OFF by default (v12.7.6)** — `detection.{slop,anti_slop}.enabled` ship `false`
@@ -158,7 +162,7 @@ reference pages live in `docs/` — `configuration.md`, `prompts-and-characters.
 `detection-and-quality.md`, `samplers-and-infrastructure.md`, `usage.md`,
 `output-formats.md`, `how-it-works.md`, `troubleshooting.md`, `performance.md`,
 `key-configuration-details.md`, `features.md`, `architecture.md`, `installation.md`,
-`file-structure.md`, `license-and-credits.md`, plus `version-history.md` over
+`file-structure.md`, `license-and-credits.md`, `cleaner-pipeline.md`, plus `version-history.md` over
 `changelog-v12.md` / `changelog-v11.md`. A feature change updates the ONE user page
 that owns it (and the matching `docs/agents/` topic file); a new user-visible feature
 also needs a changelog entry. Keep `README.md` an index: if a page grows past ~25,000

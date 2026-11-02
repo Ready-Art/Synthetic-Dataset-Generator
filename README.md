@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v12.7.6
+# ReadyArt Synthetic Dataset Generator v12.8.0
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -77,6 +77,7 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 | Page | What it covers |
 |------|----------------|
 | [Output Formats](docs/output-formats.md) | ShareGPT rows and the flat record `metadata` block (provenance + quality), trainer-safe by design |
+| [Cleaner Pipeline](docs/cleaner-pipeline.md) | **Optional** standalone post-processor in `tools/cleaner_pipeline/`: nine inspectable stages that strip chat-template sentinels, invisible characters and double-encoded text, drop foreign-script and unbalanced-quote records, and repair truncated turns in a finished `.jsonl`, writing a report for every decision. Not part of the app; read its warnings first |
 | [How It Works](docs/how-it-works.md) | The generation and quality pipelines, multi-character mode, slop/anti-slop fix flows, quote repair, circuit breaker, requeue, budget enforcement, malformed-response handling |
 | [Architecture & Modules](docs/architecture.md) | Runtime diagram, the module dependency table, and the developer documentation index |
 | [File Structure](docs/file-structure.md) | The full repository layout, including `docs/` and the per-module developer notes |
@@ -106,6 +107,7 @@ Deeper, task-specific pages also live in `docs/`:
 - [`licensing.md`](docs/licensing.md) — the licensing reasoning in detail
 - [`slop-and-antislop.md`](docs/slop-and-antislop.md) — why slop/anti-slop are off by default and where to run them instead, carrying the dev-branch warning
 - [`gemma4-chat-template.md`](docs/gemma4-chat-template.md) — the out-of-scope axolotl helper
+- [`cleaner-pipeline.md`](docs/cleaner-pipeline.md) — the optional `tools/cleaner_pipeline/` JSONL post-processor
 
 ---
 
