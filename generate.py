@@ -1717,6 +1717,21 @@ def start_processing():
         current_repeat_opener_max_retries = 1
     current_repeat_opener_max_retries = max(0, current_repeat_opener_max_retries)
 
+    # v12.7 repeated-reply guard: the sibling of the opener guard, for a reply repeated WHOLE. The opener
+    # check compares the first few content words and cannot see a byte-identical 884-character repeat; this
+    # one compares the whole reply. Same shape: nothing to validate, and an empty fix list falls back to
+    # generation.DEFAULT_REPEAT_REPLY_FIX.
+    current_repeat_reply_guard = bool(global_config.get('generation.repeat_reply_guard', False))
+    current_repeat_reply_fixes = global_config.get('generation.repeat_reply_fixes', []) or []
+    if not isinstance(current_repeat_reply_fixes, list):
+        current_repeat_reply_fixes = []
+    current_repeat_reply_fixes = [str(fix).strip() for fix in current_repeat_reply_fixes if str(fix).strip()]
+    try:
+        current_repeat_reply_max_retries = int(global_config.get('generation.repeat_reply_max_retries', 1))
+    except (TypeError, ValueError):
+        current_repeat_reply_max_retries = 1
+    current_repeat_reply_max_retries = max(0, current_repeat_reply_max_retries)
+
     # v11.10.0 non-Latin script check: a Unicode range allow-list in detection.is_non_latin(), so
     # there is nothing to validate here (no pattern to compile, no phrase list to sanitize) -- just
     # a toggle and an optional fix list. An empty fix list falls back to generation.DEFAULT_NON_LATIN_FIX.
@@ -2160,6 +2175,10 @@ def start_processing():
             'repeat_opener_enabled_local': current_repeat_opener_guard,
             'repeat_opener_fixes_local': current_repeat_opener_fixes,
             'repeat_opener_max_retries': current_repeat_opener_max_retries,
+            # v12.7 repeated-reply guard (verbatim whole-reply repeat)
+            'repeat_reply_enabled_local': current_repeat_reply_guard,
+            'repeat_reply_fixes_local': current_repeat_reply_fixes,
+            'repeat_reply_max_retries': current_repeat_reply_max_retries,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()
@@ -2544,7 +2563,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.6",
+    text="v12.7",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

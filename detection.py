@@ -10,6 +10,7 @@
 
 # detection.py
 import collections
+import difflib
 import functools
 import re
 import time
@@ -955,5 +956,86 @@ def is_repeated_opener(text, previous_texts, min_shared_words=3):
         if shared >= wanted - 1:
             label = "Repeated opener (matches an earlier reply)"
             snippet = " ".join(current[:REPEATED_OPENER_WORDS])
+            return True, [(label, snippet)]
+    return False, []
+
+
+# A whole reply shorter than this many characters is never called a repeat: two one-line replies can
+# coincide for innocent reasons ("She nods."), and staying quiet only suppresses a retry.
+REPEATED_REPLY_MIN_CHARS = 120
+
+# How much of the shorter reply two texts must share to count as a near-repeat. 0.92 catches the
+# duplicated turn with a trailing space or a swapped name while leaving a genuinely rewritten reply
+# (which differs in most of its sentences) alone.
+REPEATED_REPLY_SIMILARITY = 0.92
+
+_REPEATED_REPLY_WS_RE = re.compile(r"\s+", re.UNICODE)
+
+
+def _normalize_for_repeat(text):
+    """Whitespace-collapsed, case-folded form of *text* for whole-reply comparison."""
+    return _REPEATED_REPLY_WS_RE.sub(" ", str(text or "")).strip().casefold()
+
+
+def _similarity(left, right):
+    """Similarity ratio of two ALREADY normalised strings, 0.0-1.0.
+
+    ``difflib`` is used rather than a token overlap because the failure this detects is a verbatim
+    repeat: a byte-identical pair must score exactly 1.0, and a pair that differs only in a trailing
+    phrase should still score near 1.0. Both hold for ``SequenceMatcher`` and neither holds for a
+    bag-of-words ratio on a long text with a small edit.
+    """
+    if left == right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    return difflib.SequenceMatcher(None, left, right, autojunk=False).ratio()
+
+
+def is_repeated_reply(text, previous_texts, min_chars=REPEATED_REPLY_MIN_CHARS,
+                      similarity=REPEATED_REPLY_SIMILARITY):
+    """Detect a reply that repeats an EARLIER reply of the same conversation.
+
+    Returns ``(True, [(label, snippet), ...])`` in the same shape as the other ``is_*()`` checks.
+
+    This is the sibling of ``is_repeated_opener()``, not a replacement for it, and the two catch
+    different failures. The opener check compares the first few CONTENT words and catches a model that
+    reuses one sentence frame ("She lets out a breath" / "She lets out a laugh"). A verbatim repeat shares
+    no frame with anything -- it *is* the earlier reply -- so comparing openers sees nothing. The reported
+    defect was three byte-identical 884-character replies in one conversation, which only a whole-text
+    comparison can see.
+
+    The comparison is over the WHOLE reply: whitespace collapsed, case folded, then a similarity ratio.
+    ``similarity=1.0`` is therefore an exact (modulo whitespace/case) match, and the default 0.92 also
+    catches a repeat whose tail was slightly rewritten. Replies shorter than *min_chars* never hit: two short
+    replies can coincide innocently and a false positive costs a wasted retry.
+
+    Deliberately records NO timestamp: like ``is_missing_quotation()`` and ``is_repeated_opener()`` this is
+    an opt-in retry trigger, not a dashboard-tracked issue type. It is also a consequence rather than a
+    defect of the text -- a constant answer prompt produces it -- so counting it per conversation would
+    report the operator's prompt rather than the dataset.
+    """
+    if not text or not previous_texts:
+        return False, []
+    try:
+        floor = max(0, int(min_chars))
+    except (TypeError, ValueError):
+        floor = REPEATED_REPLY_MIN_CHARS
+    current = _normalize_for_repeat(text)
+    if len(current) < floor:
+        return False, []
+    try:
+        threshold = float(similarity)
+    except (TypeError, ValueError):
+        threshold = REPEATED_REPLY_SIMILARITY
+    threshold = min(1.0, max(0.5, threshold))
+    for previous in previous_texts:
+        earlier = _normalize_for_repeat(previous)
+        if len(earlier) < floor:
+            continue
+        score = _similarity(current, earlier)
+        if score >= threshold:
+            label = "Repeated reply (matches an earlier reply verbatim)"
+            snippet = " ".join(current.split()[:REPEATED_OPENER_WORDS])
             return True, [(label, snippet)]
     return False, []

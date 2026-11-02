@@ -129,28 +129,80 @@ SCENE_CONTINUITY_MAX_ROUNDS = 2
 # other prompts behaves the same here. `{context}` is filled as well because it is the sibling variable of
 # the same passage and a prompt that names one usually names the other.
 #
-# The character's NAME is deliberately NOT one of these variables: it already reaches the model in the
-# CHARACTER PROFILE block (`Name: ...`), which is why the block's fields are what an answer prompt should
-# refer to. A prompt that needs to say who she is can read the profile; it does not need a token.
-ANSWER_PROMPT_NATIVE_VARIABLES = ("{subject}", "{context}")
+# v12.7 adds the three CHARACTER variables, because `{subject}` is the SOURCE PASSAGE and never was a
+# name: a prompt that read "the reply of the woman, {subject}" was handed a ~1000-character slab of
+# finished prose in a slot whose grammar asks for a name, and the model's most probable continuation
+# of that instruction is to reproduce the slab. Every turn injected the SAME chunk, so every turn
+# reproduced the SAME text -- the duplicated assistant turn this release fixes.
+#
+# `{character_name}` / `{character_names}` / `{character_profile}` are the variables such a prompt
+# should name instead. They are filled from the same per-task values the profile block is built from
+# (`scene_character_names` and `character_injection`), so the name a prompt writes is the name the
+# profile's `Name:` line carries.
+#
+# `{subject}`/`{context}` keep their documented meaning (the passage the task was cut from) and are only
+# made SAFE to use inline -- see `_clean_chunk_for_inline()`. Removing them would break every prompt
+# that already relies on them, and the docs describe them as the passage.
+ANSWER_PROMPT_NATIVE_VARIABLES = ("{subject}", "{context}", "{character_name}",
+                                  "{character_names}", "{character_profile}")
+
+# Trailing punctuation a source chunk can end on that would collide with the prompt's own following
+# punctuation: "... into her guts." + ", in an intense roleplay" reads "guts.,".
+_CHUNK_TRAILING_TERMINATORS = ".,!?;:"
 
 
-def fill_answer_prompt(answer_prompt_template, subject, context, dataset_values=None):
+def _clean_chunk_for_inline(text):
+    """Make a source chunk safe to embed mid-sentence in an authored prompt.
+
+    Two problems, both visible in the operator's rendered prompt:
+
+    * A chunk is a multi-paragraph slice of a book, so its newlines and runs of spaces break the
+      instruction's own line structure. Collapsed to single spaces.
+    * A chunk ends wherever the cut landed, usually on a full stop, and the prompt's own punctuation
+      follows it (``guts.,``). Trailing sentence terminators are stripped so the prompt's comma is the
+      only one.
+
+    An empty chunk stays ``""`` here; the ``N/A`` fallback belongs to the caller, so a prompt that
+    wants the literal absence rather than a substitute still reads the same.
+    """
+    if not text:
+        return ""
+    collapsed = " ".join(str(text).split())
+    return collapsed.rstrip(_CHUNK_TRAILING_TERMINATORS).rstrip()
+
+
+def fill_answer_prompt(answer_prompt_template, subject, context, dataset_values=None,
+                      character_names=None, character_profile=""):
     """Fill the native template variables of the answer prompt for one task.
 
     Mirrors ``generate_question()``: with dataset values attached the substitution goes through
     ``render_with_native_placeholders()`` so an authored ``{{ds:alias}}`` keeps its single-pass
     guarantee, and without them it is the same ordered ``str.replace`` the question path uses. An
     empty variable is filled with ``N/A`` rather than left blank, so a prompt that reads "... of the
-    woman, {subject}" cannot end on a dangling comma.
+    woman, {character_name}" cannot end on a dangling comma.
+
+    ``{subject}``/``{context}`` are the SOURCE PASSAGE (never a name), passed through
+    ``_clean_chunk_for_inline()`` so a multi-paragraph chunk cannot break the instruction's structure
+    and a chunk that already ends on a full stop cannot produce ``guts.,``. ``{character_name}`` is the
+    first scene character's name, ``{character_names}`` every name joined by ", ", and
+    ``{character_profile}`` the whole profile block -- the variables a prompt that wants to say WHO she
+    is should name.
 
     A prompt that names none of the variables comes back byte-identical, which is what keeps a
     default run unchanged (the shipped answer prompt has no variables at all).
     """
     if not answer_prompt_template:
         return answer_prompt_template
-    replacements = (("{subject}", subject if subject else "N/A"),
-                    ("{context}", context if context else "N/A"))
+    names = [str(name) for name in (character_names or ()) if str(name).strip()]
+    replacements = (
+        ("{subject}", _clean_chunk_for_inline(subject) or "N/A"),
+        ("{context}", _clean_chunk_for_inline(context) or "N/A"),
+        # Plural first: harmless either way ("{character_name}" is not a prefix of
+        # "{character_names}", the closing brace differs), but this keeps the intent obvious.
+        ("{character_names}", ", ".join(names) if names else "N/A"),
+        ("{character_name}", names[0] if names else "N/A"),
+        ("{character_profile}", character_profile if character_profile else "N/A"),
+    )
     if dataset_values is None:
         filled = answer_prompt_template
         for token, value in replacements:
@@ -177,6 +229,34 @@ DEFAULT_REPEAT_OPENER_FIX = (
     "same words, the same sentence frame or the same reaction beat you have already used, and do not "
     "restate an opener with only its object swapped. Start on a different image, action or line of "
     "speech."
+)
+
+# Repeated-reply guard (v12.7): how many times one answer may be sent back to the SAME main API when it
+# repeats an earlier reply VERBATIM (or near-verbatim). Module scope because the worker signature uses
+# it as a default value.
+REPEAT_REPLY_MAX_RETRIES = 1
+
+# The instruction appended to the answer prompt (NOT the system prompt) when a reply comes back
+# byte-identical, or nearly so, to an earlier reply in the same conversation. Used when
+# `generation.repeat_reply_fixes` is empty.
+#
+# This is the sibling of DEFAULT_REPEAT_OPENER_FIX, and the two catch different failures.
+# `is_repeated_opener()` compares the first few CONTENT words and catches a model that reuses one
+# sentence frame. A verbatim 884-character repeat shares no frame with anything -- it IS the earlier
+# reply -- so the opener check has to look at the whole text, which is what `is_repeated_reply()` does.
+#
+# The likely cause is an answer prompt that is CONSTANT across turns (typically because it embeds the
+# same source chunk every turn). The instruction therefore points at the cause rather than only at the
+# symptom: it tells the model this is a NEW turn and that the earlier reply is already written. That
+# makes the guard useful even against a prompt the operator has not fixed yet.
+#
+# It rides on the answer prompt rather than the system prompt for the same reason as the opener fix:
+# the answer prompt is the final user message, so the system prompt and the whole history stay
+# byte-identical and a prefix-caching server still serves them.
+DEFAULT_REPEAT_REPLY_FIX = (
+    "This is a NEW turn and your earlier reply to this conversation is already written. Do not repeat "
+    "it, restate it in other words or continue from where it stopped. Read the user's latest message "
+    "and answer THAT, moving the scene forward with new action, new dialogue and a new reaction."
 )
 
 
@@ -1109,6 +1189,9 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          repeat_opener_enabled_local=False,
                          repeat_opener_fixes_local=(),
                          repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
+                         repeat_reply_enabled_local=False,
+                         repeat_reply_fixes_local=(),
+                         repeat_reply_max_retries=REPEAT_REPLY_MAX_RETRIES,
                          previous_assistant_replies_local=()):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
@@ -1235,6 +1318,9 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             repeat_opener_enabled_local=repeat_opener_enabled_local,
             repeat_opener_fixes_local=repeat_opener_fixes_local,
             repeat_opener_max_retries=repeat_opener_max_retries,
+            repeat_reply_enabled_local=repeat_reply_enabled_local,
+            repeat_reply_fixes_local=repeat_reply_fixes_local,
+            repeat_reply_max_retries=repeat_reply_max_retries,
             previous_assistant_replies_local=previous_assistant_replies_local,
         )
         if not retry_result or not retry_result[0]:
@@ -1345,6 +1431,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            repeat_opener_enabled_local=False,
            repeat_opener_fixes_local=(),
            repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
+           repeat_reply_enabled_local=False,
+           repeat_reply_fixes_local=(),
+           repeat_reply_max_retries=REPEAT_REPLY_MAX_RETRIES,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -2075,6 +2164,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     regex_patterns_local=current_regex_patterns,
                     regex_watch_enabled_local=current_regex_watch_enabled,
                     non_latin_enabled_local=current_non_latin_enabled,
+                    character_names=scene_character_names,
                 )
             
             if not initial_user_question:
@@ -2110,7 +2200,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     current_answer_prompt,
                     task[3] if len(task) > 3 else "",
                     task[4] if len(task) > 4 else "",
-                    task_dataset_values) + turn_note
+                    task_dataset_values,
+                    character_names=scene_character_names,
+                    character_profile=character_injection) + turn_note
                 # v12.5: the conversation's own earlier assistant replies, for the repeated-opener
                 # guard. Read straight from the history the request is about to send, so it can never
                 # drift from it; a first assistant turn yields an empty list and the guard never fires.
@@ -2180,6 +2272,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 repeat_opener_enabled_local=repeat_opener_enabled_local,
                                 repeat_opener_fixes_local=repeat_opener_fixes_local,
                                 repeat_opener_max_retries=repeat_opener_max_retries,
+                                repeat_reply_enabled_local=repeat_reply_enabled_local,
+                                repeat_reply_fixes_local=repeat_reply_fixes_local,
+                                repeat_reply_max_retries=repeat_reply_max_retries,
                                 previous_assistant_replies_local=previous_assistant_replies,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
@@ -2394,6 +2489,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             repeat_opener_enabled_local=repeat_opener_enabled_local,
                             repeat_opener_fixes_local=repeat_opener_fixes_local,
                             repeat_opener_max_retries=repeat_opener_max_retries,
+                            repeat_reply_enabled_local=repeat_reply_enabled_local,
+                            repeat_reply_fixes_local=repeat_reply_fixes_local,
+                            repeat_reply_max_retries=repeat_reply_max_retries,
                             previous_assistant_replies_local=previous_assistant_replies,
                         )
 
@@ -2513,6 +2611,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     regex_patterns_local=current_regex_patterns,
                     regex_watch_enabled_local=current_regex_watch_enabled,
                     non_latin_enabled_local=current_non_latin_enabled,
+                    character_names=scene_character_names,
                 )
 
                 if not user_continuation_reply:
@@ -2724,7 +2823,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
                       user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
-                      non_latin_enabled_local=False):
+                      non_latin_enabled_local=False, character_names=None):
     """Generates an initial question using the LLM, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for the
@@ -2732,6 +2831,11 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
 
     `regex_patterns_local` (v11.6) runs the Regex Watch pass on the reply; a hit is rewritten by
     this same slot before the text is returned.
+
+    `character_names` (v12.7) fills `{character_name}`/`{character_names}`, the sibling variables of
+    the answer prompt's set. `{subject}`/`{context}` stay the SOURCE PASSAGE they have always
+    been -- a prompt that used `{subject}` where it wanted a name was writing the passage into a name
+    slot, which is the confusion the new variables exist to end.
     """
 
     if not api_url_local:
@@ -2768,17 +2872,25 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 log_message(f"Thread {thread_id}: WARNING - Could not acquire question_history_lock. Using empty history.", "WARNING")
                 recent_questions_str = "None"
 
-            # Format the question prompt with placeholders
+            # Format the question prompt with placeholders. v12.7 adds the character variables and
+            # passes the source chunks through _clean_chunk_for_inline(), so a prompt that names
+            # {character_name} gets a name and one that names {subject} gets a chunk that does not
+            # break the sentence it sits in (no "guts.,", no newlines).
+            _question_character_names = [str(n) for n in (character_names or ()) if str(n).strip()]
+            _question_native_replacements = (
+                ("{recent_questions}", recent_questions_str),
+                ("{subject}", _clean_chunk_for_inline(subject) or "N/A"),
+                ("{context}", _clean_chunk_for_inline(context) or "N/A"),
+                ("{character_names}", ", ".join(_question_character_names) if _question_character_names else "N/A"),
+                ("{character_name}", _question_character_names[0] if _question_character_names else "N/A"),
+            )
             if dataset_values is None:
-                final_formatted_user_prompt = question_prompt_template.replace("{recent_questions}", recent_questions_str)
-                final_formatted_user_prompt = final_formatted_user_prompt.replace("{subject}", subject if subject else "N/A")
-                final_formatted_user_prompt = final_formatted_user_prompt.replace("{context}", context if context else "N/A")
+                final_formatted_user_prompt = question_prompt_template
+                for _q_token, _q_value in _question_native_replacements:
+                    final_formatted_user_prompt = final_formatted_user_prompt.replace(_q_token, _q_value)
             else:
                 final_formatted_user_prompt = render_with_native_placeholders(
-                    question_prompt_template, dataset_values,
-                    (("{recent_questions}", recent_questions_str),
-                     ("{subject}", subject if subject else "N/A"),
-                     ("{context}", context if context else "N/A")))
+                    question_prompt_template, dataset_values, _question_native_replacements)
             final_formatted_user_prompt += user_turn_note
 
             messages_for_llm = [
@@ -3059,7 +3171,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                                file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
                                user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
-                               non_latin_enabled_local=False):
+                               non_latin_enabled_local=False, character_names=None):
     """Generates the user's continuation reply, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for this
@@ -3067,6 +3179,18 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
     `regex_patterns_local` (v11.6) runs the Regex Watch pass on the reply; a hit is rewritten by
     this same slot before the text is returned.
+
+    `character_names` (v12.7) fills `{character_name}`/`{character_names}` for a continuation template
+    that names them; `{subject}`/`{context}` are not variables of this prompt.
+
+    **Her reply is sent ONCE (v12.7).** `conversation_history_for_llm` already ends with the assistant
+    turn (the worker appends it before calling this), and the template names
+    `{last_assistant_message}`, so the old code embedded the same reply twice in one request. Measured on
+    the operator's data, 43-65% of the man's continuation sentence was words she had just used -- the
+    model was reading her turn as both history and instruction. When the template names the variable the
+    trailing assistant message is now dropped from the history sent with the request, so the reply appears
+    exactly once, in the slot the prompt names. A template that does NOT name it keeps the full history,
+    which is what keeps an existing config's requests unchanged.
     """
 
 
@@ -3093,16 +3217,37 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             if conversation_history_for_llm and conversation_history_for_llm[-1]["role"] == "assistant":
                 last_assistant_message = conversation_history_for_llm[-1]["content"]
 
+            # v12.7: the template's own character variables. Empty/absent -> "N/A", matching the
+            # question and answer prompts.
+            _cont_character_names = [str(n) for n in (character_names or ()) if str(n).strip()]
+            _cont_native_replacements = (
+                ("{last_assistant_message}", last_assistant_message),
+                ("{character_names}", ", ".join(_cont_character_names) if _cont_character_names else "N/A"),
+                ("{character_name}", _cont_character_names[0] if _cont_character_names else "N/A"),
+            )
             if dataset_values is None:
-                final_user_continuation_prompt = user_continuation_prompt_template.replace("{last_assistant_message}", last_assistant_message)
+                final_user_continuation_prompt = user_continuation_prompt_template
+                for _c_token, _c_value in _cont_native_replacements:
+                    final_user_continuation_prompt = final_user_continuation_prompt.replace(_c_token, _c_value)
             else:
                 final_user_continuation_prompt = render_with_native_placeholders(
-                    user_continuation_prompt_template, dataset_values,
-                    (("{last_assistant_message}", last_assistant_message),))
+                    user_continuation_prompt_template, dataset_values, _cont_native_replacements)
             final_user_continuation_prompt += user_turn_note
 
+            # v12.7: send her reply ONCE. The history already ends with the assistant turn and the
+            # template embeds the same text via {last_assistant_message}, so keeping both sent the reply
+            # twice in one request and the man's continuation largely restated it. Trimmed only when the
+            # template actually names the variable -- a template that does not keeps the full history,
+            # so existing configs send byte-identical requests. The variable's VALUE is unchanged, so the
+            # prompt still reads naturally.
+            _continuation_history = list(conversation_history_for_llm or [])
+            if "{last_assistant_message}" in (user_continuation_prompt_template or "") \
+                    and _continuation_history \
+                    and _continuation_history[-1].get("role") == "assistant":
+                _continuation_history = _continuation_history[:-1]
+
             messages = [{"role": "system", "content": system_prompt}] + \
-                       conversation_history_for_llm + \
+                       _continuation_history + \
                        [{"role": "user", "content": final_user_continuation_prompt}]
 
             update_live_prompt_preview(messages, {
@@ -4394,6 +4539,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  repeat_opener_enabled_local=False,
                                  repeat_opener_fixes_local=(),
                                  repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
+                                 repeat_reply_enabled_local=False,
+                                 repeat_reply_fixes_local=(),
+                                 repeat_reply_max_retries=REPEAT_REPLY_MAX_RETRIES,
                                  previous_assistant_replies_local=()):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
@@ -4436,6 +4584,15 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     system prompt and history stay byte-identical for a prefix-caching server. Runs LAST, after Regex
     Watch, so it judges the text about to be written. Bounded by ``repeat_opener_max_retries`` and
     the best-effort answer is KEPT on exhaustion; a first assistant turn can never hit.
+
+    ``repeat_reply_enabled_local`` (v12.7) runs ``detection.is_repeated_reply()`` against the same
+    ``previous_assistant_replies_local`` list. It is the sibling of the opener guard and catches what that
+    guard cannot: a reply repeated WHOLE (the reported defect was three byte-identical 884-character
+    replies), which shares no opener frame with anything because it *is* the earlier reply. A hit is retried
+    against the SAME main API slot with one fix from ``repeat_reply_fixes_local`` (or
+    ``DEFAULT_REPEAT_REPLY_FIX``) appended to the ANSWER PROMPT, following the same cache contract as
+    the opener guard. Runs immediately AFTER the opener branch and BEFORE the success return, so it judges
+    the text about to be written.
     """
 
     refusal_detected_this_main_api_call = False
@@ -4454,7 +4611,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
                                  'missing_quotation': 0, 'non_latin': 0, 'scene_continuity': 0,
-                                 'repeat_opener': 0}
+                                 'repeat_opener': 0, 'repeat_reply': 0}
         # v12.5: the per-attempt fix suffix for the answer PROMPT (not the system prompt). It is
         # rebuilt from the ORIGINAL template on every request so two retries never stack two copies
         # of the same instruction, and it starts empty so the first request of an attempt is exactly
@@ -5312,6 +5469,38 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     log_message(
                         f"Thread {thread_id}: Repeated opener persists after "
                         f"{fix_attempts_specific['repeat_opener']} retr{'y' if fix_attempts_specific['repeat_opener'] == 1 else 'ies'}; "
+                        f"keeping the best-effort answer (API Slot {api_slot_idx+1}).", "WARNING")
+
+            # --- Repeated-reply guard (v12.7) ---
+            # The opener guard above compares the first few content words and catches a reused sentence
+            # FRAME. A reply repeated WHOLE shares no frame with anything -- it is the earlier reply -- so
+            # only a whole-text comparison can see it. That was the reported defect: three byte-identical
+            # 884-character replies, produced by an answer prompt that was constant across turns.
+            #
+            # Same contract as the opener guard: the fix goes on the ANSWER PROMPT (never the system
+            # prompt) so the system prompt and history stay byte-identical and a prefix-caching server keeps
+            # its cache, and the best-effort answer is KEPT on exhaustion -- a repeated reply is a style
+            # miss, not a reason to lose the row. A first assistant turn can never hit.
+            if (not issue_detected_this_main_api_call and repeat_reply_enabled_local
+                    and previous_assistant_replies_local):
+                repeated_reply, repeated_reply_info = detection.is_repeated_reply(
+                    answer, list(previous_assistant_replies_local))
+                if repeated_reply:
+                    issue_ever_detected_this_task = True
+                    fix_list = repeat_reply_fixes_local or (DEFAULT_REPEAT_REPLY_FIX,)
+                    if fix_attempts_specific['repeat_reply'] < max(0, int(repeat_reply_max_retries or 0)):
+                        fix_text = fix_list[fix_attempts_specific['repeat_reply'] % len(fix_list)]
+                        answer_prompt_iter = answer_prompt_template + "\n\n" + fix_text
+                        fix_attempts_specific['repeat_reply'] += 1
+                        snippet = repeated_reply_info[0][1] if repeated_reply_info else ""
+                        log_message(
+                            f"Thread {thread_id}: Repeated reply detected (API Slot {api_slot_idx+1}, "
+                            f"opens: '{snippet}'). Retrying the same main API with a new-turn instruction "
+                            f"on the answer prompt.", "DEBUG")
+                        continue
+                    log_message(
+                        f"Thread {thread_id}: Repeated reply persists after "
+                        f"{fix_attempts_specific['repeat_reply']} retr{'y' if fix_attempts_specific['repeat_reply'] == 1 else 'ies'}; "
                         f"keeping the best-effort answer (API Slot {api_slot_idx+1}).", "WARNING")
 
             if not issue_detected_this_main_api_call:

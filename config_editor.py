@@ -715,6 +715,25 @@ class ConfigEditor(tk.Toplevel):
             gen_settings_frame, wrap=tk.WORD, height=4, width=1, undo=True)
         self.repeat_opener_fixes_text.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="ew"); row_idx += 1
 
+        # v12.7 repeated-reply guard: the sibling of the opener guard, for a reply repeated WHOLE.
+        self.repeat_reply_guard_var_editor = tk.BooleanVar()
+        wrapped_checkbutton(gen_settings_frame, text="Experiment: Break a repeated reply (If a generated reply repeats an EARLIER reply in the same conversation almost verbatim -- the whole turn, not just its opening words -- send that same answer back to the SAME main API with a new-turn instruction. The usual cause is an answer prompt that is the same on every turn, e.g. one that embeds the same {subject} passage each time; the instruction tells the model this is a new turn. It goes on the answer prompt, not the system prompt, so the prefix cache survives. The first reply can never trigger it. Off by default)", variable=self.repeat_reply_guard_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
+
+        add_gen_setting("Repeated Reply Max Retries:", 'repeat_reply_max_retries_var', "(Retries per reply for a non-repeated reply before the best-effort reply is kept; 0 keeps the detection but never retries)")
+        # Created ENABLED and left that way: this Tk build silently drops delete/insert on a disabled
+        # Text widget, so the load path below can always write into it.
+        _repeat_reply_fixes_label = ttk.Label(
+            gen_settings_frame,
+            text="Repeated Reply Fixes (one per line; appended to the ANSWER PROMPT, cycled; empty = built-in default)",
+            justify="left", wraplength=1,
+        )
+        _repeat_reply_fixes_label.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 0), sticky="ew")
+        wrap_label(_repeat_reply_fixes_label, gen_settings_frame)
+        row_idx += 1
+        self.repeat_reply_fixes_text = scrolledtext.ScrolledText(
+            gen_settings_frame, wrap=tk.WORD, height=4, width=1, undo=True)
+        self.repeat_reply_fixes_text.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="ew"); row_idx += 1
+
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
 
         self.slop_to_anti_slop_fallback_var_editor = tk.BooleanVar()
@@ -2048,6 +2067,9 @@ class ConfigEditor(tk.Toplevel):
                 'repeat_opener_guard': self.repeat_opener_guard_var_editor.get(),
                 'repeat_opener_fixes': [line for line in self.repeat_opener_fixes_text.get("1.0", tk.END).split('\n') if line.strip()],
                 'repeat_opener_max_retries': int(self.repeat_opener_max_retries_var.get()),
+                'repeat_reply_guard': self.repeat_reply_guard_var_editor.get(),
+                'repeat_reply_fixes': [line for line in self.repeat_reply_fixes_text.get("1.0", tk.END).split('\n') if line.strip()],
+                'repeat_reply_max_retries': int(self.repeat_reply_max_retries_var.get()),
                 'max_slop_sentence_fix_iterations': int(self.max_slop_sentence_fix_iterations_var.get()),
                 'output_format': self.output_format_var.get(),
                 'api_request_timeout': int(self.api_request_timeout_var.get()),
@@ -2789,6 +2811,11 @@ class ConfigEditor(tk.Toplevel):
             # into it; a disabled Text widget silently drops delete/insert on this Tk build.
             self.repeat_opener_fixes_text.delete("1.0", tk.END)
             self.repeat_opener_fixes_text.insert("1.0", '\n'.join(gen_config.get('repeat_opener_fixes', []) or []))
+            self.repeat_reply_guard_var_editor.set(gen_config.get('repeat_reply_guard', False))
+            self.repeat_reply_max_retries_var.set(str(gen_config.get('repeat_reply_max_retries', 1)))
+            # Stays ENABLED (no toggle owns it) for the same reason as the opener fixes Text.
+            self.repeat_reply_fixes_text.delete("1.0", tk.END)
+            self.repeat_reply_fixes_text.insert("1.0", '\n'.join(gen_config.get('repeat_reply_fixes', []) or []))
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
             self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
             self.discard_refused_conversations_var_editor.set(gen_config.get('discard_refused_conversations', False))
@@ -3166,6 +3193,8 @@ class ConfigEditor(tk.Toplevel):
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())
             repeat_opener_retries_val = int(self.repeat_opener_max_retries_var.get() or 0)
             assert repeat_opener_retries_val >= 0, "Repeated opener max retries must be 0 or more"
+            repeat_reply_retries_val = int(self.repeat_reply_max_retries_var.get() or 0)
+            assert repeat_reply_retries_val >= 0, "Repeated reply max retries must be 0 or more"
             float(self.temperature_var.get()); float(self.top_p_var.get()); float(self.min_p_var.get()); int(self.top_k_var.get())
             float(self.repetition_penalty_var.get());
             int(self.max_tokens_question_var.get()); int(self.max_tokens_answer_var.get()); int(self.max_tokens_user_reply_var.get())
