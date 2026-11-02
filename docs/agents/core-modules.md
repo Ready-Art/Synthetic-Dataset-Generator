@@ -27,6 +27,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `logging_config.py`
 - `tests/test_api_profiles.py`
 - `text_utils.py`
+- `tests/test_repeated_words.py`
 - `ui_layout.py`
 - `style_metrics.py`
 - `tests/test_style_metrics.py`
@@ -93,10 +94,15 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ### `text_utils.py` [17]
 **Purpose:** Text processing utilities
-**Key:** `normalize_quotes()`, `repair_straight_quotes()`, `remove_markdown()`, `remove_reasoning_text()`
+**Key:** `normalize_quotes()`, `repair_straight_quotes()`, `remove_markdown()`, `remove_reasoning_text()`, `collapse_repeated_words()`
 **Edit for:**
-- Add text cleanup → New function + call in `write_conversation()` processing loop
+- Add text cleanup → New function + call in `write_conversation()` processing loop. The loop runs `remove_reasoning_text` → `remove_em_dash` → `remove_excessive_asterisks` → `remove_asterisk_space_asterisk` → `remove_all_asterisks` → `ensure_space_after_line_break` → `remove_markdown` (each behind its own config flag) → `collapse_repeated_words` (**always on**) → `repair_straight_quotes` → `normalize_quotes` (both always on). Insert a flag-gated pass before the always-on tail and an always-on pass in the tail, never after `normalize_quotes` — the quote passes stay last so nothing reintroduces an unbalanced glyph after they have balanced it
 - Quote handling → `normalize_quotes()` (curly vs straight balance)
+- **Repeated-word stalls (v12.7.3)** → `collapse_repeated_words()` is the NEWEST of the module's three always-on passes (`repair_straight_quotes()` and `normalize_quotes()` are the others), and it is justified against the rule in `AGENTS.md` ("keep features opt-in by default"): a stalled word is a property of the *reply*, not of a prompt or a setting, so a deterministic pass can remove it without a retry and without a config key. It is idempotent, safe on empty input and returns text with no repetition unchanged
+- **The exclusion list IS the safety story — do not invert it.** `_REPEAT_EXEMPT_WORDS` names ordinary English words that are *never* collapsed (`no no no`, `yes yes yes`, `very very good`, `ha ha ha`, `wait wait wait`, `hmm`, `okay` are deliberate emphasis), and every other word is collapsed. Writing it as an exclusion list is what makes the pass generalise: a word the model stalls on is caught without having been enumerated, and the module carries no inclusion list of "bad" words that would be inappropriate to publish. Do not add a word to the list because a run happened to repeat it, and do not swap the design for an inclusion list
+- **Four regexes, one per way a stall is written** — `_REPEATED_SENTENCE_WORD_PATTERN` (`Word. Word.`), `_REPEATED_COMMA_RUN_END_PATTERN` (`word, word, word.`), `_REPEATED_COMMA_RUN_PATTERN` (`word, word, word text`) and `_REPEATED_BARE_WORD_PATTERN` (`word word word`). All four are case-insensitive and keep the FIRST occurrence's casing, so a capitalised sentence opener stays capitalised. The comma-run-end pattern must be applied BEFORE the comma-run pattern: it consumes the trailing terminator, and reversing the order would leave `word.` then `text` with the punctuation already eaten
+- **Guarded by `tests/test_repeated_words.py`** — headless; it pins the four shapes, the exempt words (including that an exempt word is left alone even when it really is a stall), casing, the two-word scope, empty/`None` input, idempotency, and the `write_conversation()` call order (strictly increasing, `normalize_quotes()` LAST, no config flag on the collapse line). Run it before changing a regex or `_REPEAT_EXEMPT_WORDS`
+- **Known scope, do not "fix" it silently** — a repetition is only collapsed when the repeated token is a single word (`She said. She said.` is left alone, because the run is two words), and a repeated word that happens to be exempt is left alone even when it is genuinely a stall. Both are deliberate: the pass is a low-risk deterministic cleanup, not a detector, and a false collapse rewrites valid prose
 
 ---
 
@@ -172,5 +178,6 @@ if lock_acquired:
 | Task | Files to edit |
 |------|---------------|
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
+| Add/modify an always-on deterministic text cleanup (v12.7.3: repeated-word collapse) | `text_utils.py` (the helper + its pre-compiled patterns at the top of the module), `generation.py` (`write_conversation()` processing loop — it goes in the always-on tail BEFORE `repair_straight_quotes`/`normalize_quotes`), `docs/features.md` (Text Post-Processing list), `docs/how-it-works.md` (step 7), `tests/test_repeated_words.py`. Keep the rule an EXCLUSION list of ordinary words (`_REPEAT_EXEMPT_WORDS`) so valid emphasis such as `no no no` survives, keep the helper idempotent and empty-input safe, and keep the comma-run-end pattern ahead of the comma-run pattern. There is no config key on purpose — do not add one |
 | Add UI metric | `app_state.py` (widget ref), `generate.py` (create widget), `dashboard.py` (update) |
 | Add a style measurement / style metadata column | `style_metrics.py` (keep it dependency-free, Python 3.11-clean — no 3.12+ syntax such as PEP 695 `type` aliases), then `quality._score_tic_density()` (if it feeds the dimension) and/or `generation._style_metrics_for_record()` (it flows into the `style_*` block automatically via `response_metrics()`/`aggregate()`); `tests/test_style_metrics.py` |

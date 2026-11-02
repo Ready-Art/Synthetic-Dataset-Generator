@@ -74,7 +74,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `config_editor.py` | Configuration editor GUI (tabbed interface, validation, search) | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
 | `dashboard.py` | Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview) | `app_state`, `api_handler`, `logging_config` |
 | `detection.py` | Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes, non-Latin script) | `app_state` (for timestamps, issue tracking) |
-| `text_utils.py` | Text post-processing (quote normalization, reasoning removal, markdown stripping) | None (stdlib only) |
+| `text_utils.py` | Text post-processing (quote normalization, reasoning removal, markdown stripping, always-on repeated-word collapse) | None (stdlib only) |
 | `config_loader.py` | Configuration management, profiles, YAML load/save | `logging_config` |
 | `api_handler.py` | Rate limiting, Valkey/Redis caching, response time tracking | `logging_config` |
 | `api_profiles.py` | Per-endpoint payload compatibility profiles (thread-safe, auto-detection) | `logging_config` |

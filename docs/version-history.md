@@ -16,5 +16,5 @@ The changelog is split by major series so the current release notes stay short.
 
 | Series | Covers |
 |--------|--------|
-| [v12.x](changelog-v12.md) | The README split into per-topic pages, Scene Cast and scene continuity, the `cast_continuity` judge dimension, metadata schema v7 |
+| [v12.x](changelog-v12.md) | The README split into per-topic pages, Scene Cast and scene continuity, the `cast_continuity` judge dimension, metadata schema v7, the duplicated-turn / repeated-opener / repeated-reply guards, and the always-on repeated-word collapse (**current: v12.7.5**) |
 | [v11.x and earlier](changelog-v11.md) | Non-Latin script check, questions-file datasets, roleplay and tic-density dimensions, judge robustness, dataset bindings, the v11 GUI work |

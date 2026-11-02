@@ -19,7 +19,7 @@ readyart-dataset-generator/
 ├── generate.py              # Main application (GUI, orchestration, worker threads)
 ├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
 ├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, quotes, non-Latin script)
-├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal)
+├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal, repeated-word collapse)
 ├── quality.py               # Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions)
 ├── config_loader.py         # Configuration management, profiles, YAML load/save
 ├── api_handler.py           # Rate limiting, Valkey/Redis caching, response time tracking

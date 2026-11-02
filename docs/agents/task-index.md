@@ -30,7 +30,7 @@ file to edit — so you only need that one row, not the other topic files.
 | Topic file | Tasks |
 |------------|-------|
 | [`config.md`](config.md) | Add new API slot; Add detection type; Add config option; Add slop/anti-slop phrase; Add/modify a Regex Watch pattern; Change rate limit; Add API profile; Modify API profile params; Add character profile; Add character field; Modify opening mode prompts; Add random names feature; Add random settings pool; Add/modify persona breakthrough or emotional arc; Add/modify user-side emotional states/arcs (v10.6.0); Toggle conversation history for fixers |
-| [`core-modules.md`](core-modules.md) | Fix quote balancing; Add UI metric; Add a style measurement / style metadata column |
+| [`core-modules.md`](core-modules.md) | Fix quote balancing; Add UI metric; Add a style measurement / style metadata column; Add/modify an always-on deterministic text cleanup (v12.7.3) |
 | [`generate-ui.md`](generate-ui.md) | Change the Review tab; Fix a cramped / clipped Treeview table |
 | [`config-editor.md`](config-editor.md) | Fix a label rendering one character per line (a "skyscraper"); Fix an unreadable / white-on-white spinbox; Add dataset column→alias mapping |
 | [`generation.md`](generation.md) | Add/modify scene cast (v12.0); Modify output format; Add/modify output metadata field; Change what a request contains (prompt text, message order or role); Add/modify the answer prompt's native variables (v12.5, widened v12.7); Add/modify the repeated-reply guard (v12.7); Trim the duplicated continuation history (v12.7) |
