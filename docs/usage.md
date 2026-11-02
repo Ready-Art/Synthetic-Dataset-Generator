@@ -95,9 +95,10 @@ The **Quality** and **🔍 Review** tabs provide post-generation quality analysi
 - **Readable rows** — The table uses roomy row heights, stretches its Task ID and Flags columns to the window width, and keeps its own horizontal/vertical scrollbars
 - **Scrollable transcript** — The detail pane scrolls on its own (wheel and scrollbar) without moving the page, and keeps the reader's position across dashboard refreshes
 - **📤 Export Flagged → JSONL** — Writes every flagged conversation (with its quality score attached as `_quality_score`) to `output/quality_review_flagged.jsonl`, reading the main output, the per-API duplication files and the database
+- **🗑 Drop Selected** — Permanently removes the **one** selected conversation from the dataset: its output row, its per-API duplication rows and its database row. This is the action for a flagged conversation that is simply bad data and should not be trained on. It asks for confirmation first, refuses to act on an empty selection (it never falls back to the whole set), and leaves every other conversation — including one whose task id happens to be a prefix of the dropped one — untouched. If the conversation has no output row yet (it may never have been written) the flag is cleared and nothing is deleted. Export first if you want a copy
 - **✅ Dismiss All** — Clears all review flags after manual handling (does not delete output data)
 - **🔄 Refresh** — Manually refreshes the flagged items list
-- **Tab badge** — The Review tab label shows a count of currently flagged items (e.g., "🔍 Review (7)"); the count line also reports how many conversations the quality judge dropped
+- **Tab badge** — The Review tab label shows a count of currently flagged items (e.g., "🔍 Review (7)"); the count line also reports how many conversations the quality judge dropped and, separately, how many you dropped yourself
 
 > **Dropped conversations never appear here.** A conversation the judge rejected (invalid JSON, a `logic` score of 0, or every retry failed) is not written to the dataset, so there is nothing to review — the log records the reason.
 

@@ -54,6 +54,12 @@ else:
 
 TASK_ID = "opening_ferry_notes_chunk_at_1042"
 LONG_ID = "opening_ferry_notes_chunk_at_1042_and_a_much_longer_suffix_for_truncation"
+# A DIFFERENT task whose id is a strict PREFIX of TASK_ID. A drop must never take its row with
+# it, so this is the row that catches an id match that is too loose.
+PREFIX_ID = "opening_ferry_notes_chunk_at_10"
+# A per-API duplication row belonging to TASK_ID (same convention as
+# generate._record_belongs_to_task()), which a drop of TASK_ID must remove.
+DUP_ID = TASK_ID + "_api0_turn1"
 TRANSCRIPT = [
     {"from": "human", "value": "I know. I wanted to ask about the chronometer."},
     {"from": "gpt", "value": "Melody sets down her loupe. \u201cThat one is not for sale.\u201d"},
@@ -91,6 +97,11 @@ class ReviewTabTests(unittest.TestCase):
         with open(_os.path.join("output", "output.jsonl"), "w", encoding="utf-8") as f:
             f.write(_json.dumps({"id": TASK_ID, "conversations": TRANSCRIPT}) + "\n")
             f.write(_json.dumps({"id": LONG_ID, "conversations": TRANSCRIPT}) + "\n")
+            f.write(_json.dumps({"id": PREFIX_ID, "conversations": TRANSCRIPT}) + "\n")
+            f.write(_json.dumps({"id": DUP_ID, "conversations": TRANSCRIPT}) + "\n")
+            # A corrupt line. A drop rewrites the file, and it must copy this through
+            # rather than silently delete data it cannot attribute to a task.
+            f.write("{not json at all\n")
 
         now = _time.strftime("%Y-%m-%d %H:%M:%S")
         with app_state.quality_lock:
@@ -199,8 +210,10 @@ class ReviewTabTests(unittest.TestCase):
         self.assertTrue(_os.path.exists(path), "Export Flagged must create the JSONL file")
         with open(path, "r", encoding="utf-8") as f:
             rows = [_json.loads(line) for line in f if line.strip()]
-        self.assertEqual(len(rows), 2, "both flagged conversations must be exported")
-        self.assertEqual({row["id"] for row in rows}, {TASK_ID, LONG_ID})
+        # Both flagged conversations, plus the per-API duplication row that belongs to
+        # TASK_ID (an export has always carried a task's duplication rows with it).
+        self.assertEqual(len(rows), 3, "every flagged conversation must be exported")
+        self.assertEqual({row["id"] for row in rows}, {TASK_ID, LONG_ID, DUP_ID})
         for row in rows:
             self.assertIn("_quality_score", row, "each export row carries its quality score")
             self.assertEqual(row["conversations"], TRANSCRIPT,
@@ -219,6 +232,124 @@ class ReviewTabTests(unittest.TestCase):
         g._update_review_table(force=True)
         self.settle()
         self.assertEqual(len(tree.get_children()), 2, "clearing the filter restores the list")
+
+    # --- v12.8.2: drop ONE selected conversation from the dataset -------------------------
+
+    def output_ids(self):
+        """Every ``id`` in output/output.jsonl, plus whether the corrupt line survived."""
+        with open(_os.path.join("output", "output.jsonl"), "r", encoding="utf-8") as f:
+            lines = [line for line in f.read().splitlines() if line.strip()]
+        ids = []
+        corrupt = 0
+        for line in lines:
+            try:
+                ids.append(_json.loads(line)["id"])
+            except (_json.JSONDecodeError, KeyError, TypeError):
+                corrupt += 1
+        return ids, corrupt
+
+    def answer_yes(self, yes):
+        """Stub the confirmation dialog and return a restore callable."""
+        original = self.g.messagebox.askyesno
+        self.g.messagebox.askyesno = lambda *a, **k: yes
+
+        def restore():
+            self.g.messagebox.askyesno = original
+        return restore
+
+    def test_06_review_tab_offers_a_drop_action(self):
+        labels = [str(button.cget("text")) for button
+                  in self.widgets()["action_layout"].widgets]
+        self.assertTrue(any("Drop Selected" in label for label in labels),
+                        "the Review tab must offer a Drop Selected action")
+        # Drop must be its own action, not a rename of an existing one: Dismiss and Export
+        # both leave the dataset untouched, and dropping is the only destructive action.
+        self.assertTrue(any("Dismiss All" in label for label in labels))
+        self.assertTrue(any("Export Flagged" in label for label in labels))
+
+    def test_07_drop_removes_only_the_selected_conversation(self):
+        g = self.g
+        g._update_review_table(force=True)
+        self.settle()
+        tree = self.widgets()["review_tree"]
+        self.assertIn(TASK_ID, tree.get_children())
+        before_ids, before_corrupt = self.output_ids()
+        self.assertEqual(before_corrupt, 1, "the fixture carries one corrupt line")
+
+        restore = self.answer_yes(True)
+        try:
+            tree.selection_set(TASK_ID)
+            self.settle()
+            g._drop_review_conversation()
+            self.settle()
+        finally:
+            restore()
+
+        ids, corrupt = self.output_ids()
+        self.assertNotIn(TASK_ID, ids, "the selected conversation must be gone")
+        self.assertNotIn(DUP_ID, ids,
+                         "the dropped conversation's per-API duplication rows go with it")
+        self.assertIn(LONG_ID, ids, "every other conversation must survive the drop")
+        self.assertIn(PREFIX_ID, ids,
+                      "a task whose id is a PREFIX of the dropped one must survive")
+        self.assertEqual(len(ids), len(before_ids) - 2,
+                         "exactly the selected conversation's rows are removed")
+        self.assertEqual(corrupt, 1, "a corrupt line is never discarded by a drop")
+
+        self.assertNotIn(TASK_ID, tree.get_children(),
+                         "the dropped row must leave the Review list")
+        self.assertIn(LONG_ID, tree.get_children(), "the other flagged rows must stay")
+        # The detail pane must not be left showing the conversation that was just deleted.
+        detail = self.widgets()["detail_text"].get("1.0", "end")
+        self.assertNotEqual(detail.splitlines()[0], "TASK: " + TASK_ID,
+                            "the detail pane must not keep rendering a dropped conversation")
+
+        with self.app_state.quality_lock:
+            self.assertEqual(self.app_state.quality_dropped.get(TASK_ID),
+                             g.quality.DROP_REASON_MANUAL,
+                             "a manual drop is recorded as such")
+            self.assertIn(TASK_ID, self.app_state.dropped_task_ids)
+            self.assertNotIn(TASK_ID, self.app_state.quality_scores,
+                             "a dropped row is no longer a scored row")
+            self.assertIn(LONG_ID, self.app_state.quality_scores,
+                          "other conversations keep their scores")
+        with self.app_state.quality_review_lock:
+            self.assertNotIn(TASK_ID, self.app_state.quality_review_ids)
+            self.assertIn(LONG_ID, self.app_state.quality_review_ids)
+
+        # The count line must report a manual drop separately from a judge drop.
+        self.assertIn("dropped by you", self.widgets()["review_count_label"].cget("text"))
+
+    def test_08_cancel_or_no_selection_drops_nothing(self):
+        g = self.g
+        g._update_review_table(force=True)
+        self.settle()
+        tree = self.widgets()["review_tree"]
+        before_ids, before_corrupt = self.output_ids()
+
+        # (a) declining the confirmation must not touch the dataset.
+        restore = self.answer_yes(False)
+        try:
+            tree.selection_set(LONG_ID)
+            self.settle()
+            g._drop_review_conversation()
+        finally:
+            restore()
+        self.assertEqual(self.output_ids(), (before_ids, before_corrupt),
+                         "declining the confirmation must not remove anything")
+        with self.app_state.quality_review_lock:
+            self.assertIn(LONG_ID, self.app_state.quality_review_ids)
+
+        # (b) no selection at all must not fall back to "drop everything".
+        tree.selection_remove(*tree.selection())
+        self.settle()
+        restore = self.answer_yes(True)
+        try:
+            g._drop_review_conversation()
+        finally:
+            restore()
+        self.assertEqual(self.output_ids(), (before_ids, before_corrupt),
+                         "an empty selection must never drop the whole dataset")
 
 
 if __name__ == "__main__":

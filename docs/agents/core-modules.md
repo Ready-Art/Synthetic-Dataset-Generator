@@ -149,6 +149,10 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 **Judge drops (v11.4):** `quality_dropped` ({task_id: reason}) and `dropped_task_ids` (set), both guarded by `quality_lock`; populated by `quality._record_quality_result()`, cleared by `reset_all_stats_and_history()`, persisted as `quality_dropped` in `generation_state.json`.
 
+**Manual drops (v12.8.2):** the same two containers also carry the operator's drops, with the reason `quality.DROP_REASON_MANUAL` (`"manual"`), written by `generate._drop_review_conversation()`. Nothing in `quality.py`'s scoring path ever produces that reason, so the two causes stay distinguishable; a manual drop also removes the id from `quality_scores` and `quality_review_ids` under their own locks.
+
+**`output_data_lock`:** the lock a worker holds while it appends a finished conversation to the dataset (file or database). It lives in `app_state`, not as a local in `generate.start_processing()`, so the Review tab's drop rewrite takes the SAME lock as a write and the two cannot interleave (v12.8.2). `start_processing()` binds its local `output_data_lock` to `app_state.output_data_lock`; do not give it a fresh `Lock()` again.
+
 ---
 
 ## Thread Safety Pattern
