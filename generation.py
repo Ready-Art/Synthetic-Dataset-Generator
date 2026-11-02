@@ -5756,6 +5756,11 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         processed_content = text_utils.remove_all_asterisks(processed_content) if remove_all_asterisks_flag else processed_content
         processed_content = text_utils.ensure_space_after_line_break(processed_content) if ensure_space_after_line_break_flag else processed_content
         processed_content = text_utils.remove_markdown(processed_content) if remove_markdown_flag else processed_content
+        # Always on: collapse a word the model repeated back-to-back
+        # ("Word. Word." -> "Word."). A stalled word is a property of the reply
+        # rather than of one prompt, so a deterministic pass removes it without
+        # another retry; ordinary repeated words are exempted inside the helper.
+        processed_content = text_utils.collapse_repeated_words(processed_content)
         processed_content = text_utils.repair_straight_quotes(processed_content)
         processed_content = text_utils.normalize_quotes(processed_content)
 

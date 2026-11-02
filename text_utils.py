@@ -15,6 +15,57 @@ import re
 _EM_DASH_PATTERN = re.compile(r'[ \t]*—+[ \t]*')
 # NEW: Pattern to match two or more asterisks in a row
 _EXCESSIVE_ASTERISKS_PATTERN = re.compile(r'\*{2,}')
+# NEW: A word repeated back-to-back in the same slot.
+#
+# A model can stall on a word and emit it two or more times in a row -- "Word. Word.",
+# "word, word, word", "word word word". No phrase list can express "the same word
+# twice", so this is handled as deterministic text cleanup rather than another retry.
+#
+# The rule is deliberately written as an EXCLUSION list of ordinary words rather than
+# an inclusion list of the words to rewrite. A repeated ordinary word is frequently
+# correct English -- "no no no", "yes yes yes", "very very good" are all deliberate
+# emphasis -- so those are left alone, while a word that is not ordinary English is
+# collapsed. Writing it this way keeps the module free of any word list that would be
+# inappropriate to publish, and it generalises: an unusual word the model stalls on is
+# caught without having been enumerated in advance.
+#
+# Four shapes are collapsed, because a stall is written more than one way:
+#
+#   * the word as consecutive one-word sentences -- "Word. Word." -> "Word."
+#   * a comma-separated run ending the sentence -- "word, word, word." -> "word."
+#   * a comma-separated run that continues -- "word, word, word text" -> "word text"
+#   * a bare run with no separator -- "word word word" -> "word"
+#
+# Matching is case-insensitive and the replacement keeps the FIRST occurrence's casing,
+# so a capitalised sentence opener stays capitalised.
+_REPEAT_EXEMPT_WORDS = frozenset("""
+a an the and but or if so then than that this these those it its
+i you he she we they me my your his her our their
+is was are were be been am do does did done have has had
+not no nor yes yeah yep nah nope
+to of in on at for with from by as
+very really quite too also still even just only much many
+all some any every each
+oh ah ahh ohh ha haha heh hey hi hello bye
+hmm mm uh um er erm well now right okay ok
+sure fine good bad better best wow yay
+please wait stop more again go come back
+what why how when where who which
+don t can cant dont wont isn t wasn t
+""".split())
+
+# The same word as consecutive one-word sentences: "Word. Word."
+_REPEATED_SENTENCE_WORD_PATTERN = re.compile(
+    r'\b([A-Za-z][A-Za-z\'-]*)([.!?])(?:\s+\1\2)+', re.IGNORECASE)
+# A comma-separated run that ends the sentence: "word, word, word."
+_REPEATED_COMMA_RUN_END_PATTERN = re.compile(
+    r'\b([A-Za-z][A-Za-z\'-]*)(?:[,;]\s*\1\b)+\s*([.!?])', re.IGNORECASE)
+# A comma-separated run that continues: "word, word, word text"
+_REPEATED_COMMA_RUN_PATTERN = re.compile(
+    r'\b([A-Za-z][A-Za-z\'-]*)(?:[,;]\s*\1\b)+', re.IGNORECASE)
+# A bare space-separated run: "word word word"
+_REPEATED_BARE_WORD_PATTERN = re.compile(
+    r'\b([A-Za-z][A-Za-z\'-]*)(?:\s+\1\b)+', re.IGNORECASE)
 # --- End of pre-compiled patterns ---
 
 def remove_reasoning_text(text):
@@ -119,6 +170,59 @@ def normalize_quotes(text):
     #    dialogue). We deliberately do NOT guess here; is_incomplete_quote() plus
     #    the regeneration retry loop are the right place to handle a genuinely
     #    unbalanced straight quote.
+    return text
+
+def collapse_repeated_words(text):
+    """Collapse a word the model repeated back-to-back in the same slot.
+
+    Deterministic post-processing for the stall where a reply emits one word two or
+    more times in a row: "Word. Word. The rest." becomes "Word. The rest.", and
+    "word, word, word text" becomes "word text".
+
+    Words in ``_REPEAT_EXEMPT_WORDS`` are never collapsed. That exclusion is the
+    whole safety story: a repeated ordinary word is frequently correct English --
+    "no no no", "yes yes yes", "very very good" are all deliberate emphasis -- so
+    a general "collapse any repeated word" rule would rewrite valid prose. Every word
+    in that set is ordinary English, so the module carries no word list that would be
+    inappropriate to publish, and an unusual word the model stalls on is still caught
+    without having been enumerated in advance.
+
+    A stall is written more than one way, so each of these is collapsed the same
+    way: as consecutive one-word sentences ("Word. Word."), as a comma-separated run
+    with or without a full stop after it, and with no separator at all. Matching is
+    case-insensitive and the first occurrence's casing is kept.
+
+    Safe on empty input and on text with no repetition: returns it unchanged.
+    """
+    if not text:
+        return text
+
+    def _keep_first_sentence(match):
+        word, punct = match.group(1), match.group(2)
+        if word.lower() in _REPEAT_EXEMPT_WORDS:
+            return match.group(0)
+        return word + punct
+
+    def _keep_first_comma_end(match):
+        word, punct = match.group(1), match.group(2)
+        if word.lower() in _REPEAT_EXEMPT_WORDS:
+            return match.group(0)
+        return word + punct
+
+    def _keep_first_word(match):
+        word = match.group(1)
+        if word.lower() in _REPEAT_EXEMPT_WORDS:
+            return match.group(0)
+        return word
+
+    # "Word. Word." -> "Word."
+    text = _REPEATED_SENTENCE_WORD_PATTERN.sub(_keep_first_sentence, text)
+    # "word, word, word." -> "word."
+    text = _REPEATED_COMMA_RUN_END_PATTERN.sub(_keep_first_comma_end, text)
+    # "word, word, word text" -> "word text"
+    text = _REPEATED_COMMA_RUN_PATTERN.sub(_keep_first_word, text)
+    # "word word word" -> "word"
+    text = _REPEATED_BARE_WORD_PATTERN.sub(_keep_first_word, text)
     return text
 
 def repair_straight_quotes(text):
