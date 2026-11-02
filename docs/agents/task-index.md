@@ -64,6 +64,7 @@ it names; follow the file name to read the full step list:
 - Change how the judge's JSON is parsed (v11.5)
 - Add character field
 - Add random names feature
+- Change how random names are dealt across a run (v12.8.1)
 - Add random settings pool
 - Add/modify persona breakthrough or emotional arc
 - Add/modify user-side emotional states/arcs (v10.6.0)

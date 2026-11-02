@@ -16,5 +16,5 @@ The changelog is split by major series so the current release notes stay short.
 
 | Series | Covers |
 |--------|--------|
-| [v12.x](changelog-v12.md) | The README split into per-topic pages, Scene Cast and scene continuity, the `cast_continuity` judge dimension, metadata schema v7, the duplicated-turn / repeated-opener / repeated-reply guards, the always-on repeated-word collapse, and the v12.7.6 slop/anti-slop default-off change that steers users to AntiSlop-vLLM's dev branch, and the v12.8.0 optional cleaner pipeline (**current: v12.8.0**) |
+| [v12.x](changelog-v12.md) | The README split into per-topic pages, Scene Cast and scene continuity, the `cast_continuity` judge dimension, metadata schema v7, the duplicated-turn / repeated-opener / repeated-reply guards, the always-on repeated-word collapse, and the v12.7.6 slop/anti-slop default-off change that steers users to AntiSlop-vLLM's dev branch, the v12.8.0 optional cleaner pipeline, and the v12.8.1 random-names deck (**current: v12.8.1**) |
 | [v11.x and earlier](changelog-v11.md) | Non-Latin script check, questions-file datasets, roleplay and tic-density dimensions, judge robustness, dataset bindings, the v11 GUI work |

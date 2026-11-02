@@ -65,6 +65,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - Add new counter → Add to module level + init in `reset_all_stats_and_history()`
 - Add new lock → `threading.Lock()` at module level
 - GUI widget refs → Assign in `generate.py` after widget creation
+- Random-name deck (`random_name_deck`, `random_name_lock`, `random_names_pool_key`) → the pool dealt by `generation.deal_random_names()`. It is deliberately module-level run state, NOT per-worker state: every worker must deal from the same deck or the pool would be spread per worker and repeat across them. `random_names_pool_key` is the fingerprint of the pool the deck was built from, so editing the list or toggling the feature starts a fresh deck instead of dealing from a pool the user has replaced. `reset_all_stats_and_history()` clears it so a new run starts a fresh pass
 
 ---
 
