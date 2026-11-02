@@ -9,6 +9,6 @@
 # compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 # Optional Hugging Face, local Parquet, and saved-HF dataset support.
-# Requires Python 3.9 or later. Includes the normal application dependencies.
+# Requires Python 3.11 or later. Includes the normal application dependencies.
 -r requirements.txt
 datasets==4.4.2

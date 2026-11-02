@@ -27,9 +27,9 @@ generated conversation as an authored template. No application modules, GUI,
 network clients, or random-number generators are imported here.
 """
 
+from collections.abc import Iterable, Iterator, Mapping
 import re
 from itertools import chain
-from typing import Iterable, Iterator, Mapping, Optional, Tuple
 
 
 class DatasetTemplateError(ValueError):
@@ -68,7 +68,7 @@ def validate_alias(alias: str) -> str:
     return alias
 
 
-def _tokens(template: str) -> Iterator[Tuple[int, int, str, str]]:
+def _tokens(template: str) -> Iterator[tuple[int, int, str, str]]:
     """Yield positions, kind, and name from original template text only."""
     if not isinstance(template, str):
         raise TypeError("A prompt template must be a string.")
@@ -99,7 +99,7 @@ def _tokens(template: str) -> Iterator[Tuple[int, int, str, str]]:
         position = end
 
 
-def dataset_placeholders(template: str) -> Tuple[str, ...]:
+def dataset_placeholders(template: str) -> tuple[str, ...]:
     """List unique dataset aliases in template order without reading any data.
 
     Malformed reserved placeholders raise :class:`DatasetTemplateError`, just as
@@ -118,7 +118,7 @@ def dataset_placeholders(template: str) -> Tuple[str, ...]:
 def render_template(
     template: str,
     dataset_values: Mapping[str, str],
-    native_values: Optional[Mapping[str, str]] = None,
+    native_values: Mapping[str, str] | None = None,
 ) -> str:
     """Substitute known placeholders once, without interpreting inserted text.
 
@@ -170,8 +170,8 @@ def render_template(
 
 def render_question_line(
     line: str,
-    dataset_values: Optional[Mapping[str, str]],
-    append_alias: Optional[str] = None,
+    dataset_values: Mapping[str, str] | None,
+    append_alias: str | None = None,
     separator: str = DEFAULT_QUESTION_SEPARATOR,
 ) -> str:
     """Expand one ``input/questions.txt`` line for the task that will use it.
@@ -229,7 +229,7 @@ def render_question_line(
 def render_with_native_placeholders(
     template: str,
     dataset_values: Mapping[str, str],
-    native_replacements: Iterable[Tuple[str, str]],
+    native_replacements: Iterable[tuple[str, str]],
 ) -> str:
     """Resolve authored dataset aliases around the original native operations.
 

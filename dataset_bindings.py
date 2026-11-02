@@ -27,10 +27,10 @@ restore source cursors, pending jobs, or conversation progress.
 
 import json
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
+from typing import Any
 
 from dataset_sources import DatasetRow, DatasetSchema, DatasetSource, SourceSpec
 from dataset_templates import validate_alias
@@ -87,7 +87,7 @@ def _copy_spec(spec: SourceSpec) -> SourceSpec:
     return copied
 
 
-def _spec_dict(spec: SourceSpec) -> Dict[str, Any]:
+def _spec_dict(spec: SourceSpec) -> dict[str, Any]:
     return {name: getattr(spec, name) for name in (
         "source_id", "kind", "location", "config", "split", "revision"
     )}
@@ -163,7 +163,7 @@ class SourceProvenance:
         _text_identifier(self.row_id, "Row ID")
         object.__setattr__(self, "column_aliases", _copy_aliases(self.column_aliases))
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "spec": _spec_dict(self.spec), "fingerprint": self.fingerprint,
             "row_id": self.row_id, "column_aliases": dict(self.column_aliases),
@@ -192,7 +192,7 @@ class TaskBinding:
     run_id: str
     task_id: str
     values: Mapping
-    sources: Tuple[SourceProvenance, ...]
+    sources: tuple[SourceProvenance, ...]
 
     def __post_init__(self) -> None:
         _text_identifier(self.run_id, "Run ID")
@@ -225,7 +225,7 @@ class TaskBinding:
         object.__setattr__(self, "values", MappingProxyType(values))
         object.__setattr__(self, "sources", sources)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a detached, JSON-serializable snapshot containing actual values."""
         return {
             "version": 1, "run_id": self.run_id, "task_id": self.task_id,
@@ -257,11 +257,11 @@ class _SourceCursor:
         self.spec = spec
         self.fingerprint = schema.fingerprint
         self.column_aliases = selection.column_aliases
-        self.iterator = None  # type: Optional[Iterator[DatasetRow]]
-        self.pending = None  # type: Optional[Tuple[str, Mapping]]
-        self.failure = None  # type: Optional[Tuple[type, str]]
+        self.iterator = None  # type: Iterator[DatasetRow] | None
+        self.pending = None  # type: tuple[str, Mapping] | None
+        self.failure = None  # type: tuple[type, str] | None
 
-    def peek(self) -> Tuple[str, Mapping]:
+    def peek(self) -> tuple[str, Mapping]:
         if self.failure is not None:
             error_type, message = self.failure
             raise error_type(message)
@@ -335,7 +335,7 @@ class DatasetBindingManager:
         self.run_id = _text_identifier(run_id, "Run ID")
         self._lock = threading.Lock()
         self._closed = False
-        self._bindings = {}  # type: Dict[str, TaskBinding]
+        self._bindings = {}  # type: dict[str, TaskBinding]
         self._cursors = []
         source_ids = set()
         aliases = set()
@@ -409,13 +409,13 @@ class DatasetBindingManager:
             self._bindings[task_id] = binding
             return binding
 
-    def get(self, task_id: str) -> Optional[TaskBinding]:
+    def get(self, task_id: str) -> TaskBinding | None:
         """Look up a binding without selecting rows or creating a new task."""
         _text_identifier(task_id, "Task ID")
         with self._lock:
             return self._bindings.get(task_id)
 
-    def snapshot(self) -> Tuple[TaskBinding, ...]:
+    def snapshot(self) -> tuple[TaskBinding, ...]:
         """Return immutable committed bindings in their allocation order."""
         with self._lock:
             return tuple(self._bindings.values())

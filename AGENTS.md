@@ -45,8 +45,8 @@ listed in every topic file they touch.
 
 ## Setup and Tests
 
-The application targets Python 3.9 (see `docs/installation.md`), so code and tests must not use anything newer, such
-as `match` or `X | Y` type unions (both 3.10).
+The application targets Python 3.11 (see `docs/installation.md`), so `match` and PEP 604 `X | Y` unions are
+allowed and preferred over `typing.Optional`/`Union`; nothing newer (PEP 695 `type`/`class Foo[T]`).
 All test scripts live in `tests/` (run them from the repository root, e.g. `python -B tests/test_api_profiles.py`).
 Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_persona_arc.py`,
 `tests/test_dataset_compatibility.py`) or the Datasets panel need Tk; `tests/test_datasets_panel.py` and

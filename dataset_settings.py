@@ -20,8 +20,8 @@ without aliases may remain unfinished drafts so a partially configured panel can
 be saved. Hiding a column changes its presentation only, never its alias mapping.
 """
 
-from collections.abc import Mapping
-from typing import Any, Dict, Iterable, Optional, Tuple
+from collections.abc import Iterable, Mapping
+from typing import Any
 from uuid import uuid4
 
 from dataset_sources import DatasetSchema, SourceSpec
@@ -44,7 +44,7 @@ def _mapping(value: Any, label: str) -> Mapping:
     return value
 
 
-def _string(value: Any, label: str, optional: bool = False) -> Optional[str]:
+def _string(value: Any, label: str, optional: bool = False) -> str | None:
     if optional and value is None:
         return None
     if not isinstance(value, str):
@@ -68,7 +68,7 @@ def _names(value: Any, label: str) -> list:
     return result
 
 
-def source_selector(source: Mapping) -> Dict[str, Any]:
+def source_selector(source: Mapping) -> dict[str, Any]:
     """Return detached, comparable kind/location/config/split/revision settings.
 
     This accepts unfinished selectors and does not construct a ``SourceSpec``.
@@ -86,7 +86,7 @@ def source_selector(source: Mapping) -> Dict[str, Any]:
     return result
 
 
-def _visibility(value: Any, columns: list) -> Optional[list]:
+def _visibility(value: Any, columns: list) -> list | None:
     if value is None:
         return None
     selected = _names(value, "Visible columns")
@@ -97,7 +97,7 @@ def _visibility(value: Any, columns: list) -> Optional[list]:
     return selected
 
 
-def _source(source: Mapping, index: int = 0) -> Dict[str, Any]:
+def _source(source: Mapping, index: int = 0) -> dict[str, Any]:
     source = _mapping(source, "Dataset source")
     source_id = _string(source.get("source_id"), "Source ID")
     if not source_id.strip():
@@ -139,7 +139,7 @@ def _source(source: Mapping, index: int = 0) -> Dict[str, Any]:
     return result
 
 
-def normalize_config(data: Optional[Mapping]) -> Dict[str, list]:
+def normalize_config(data: Mapping | None) -> dict[str, list]:
     """Copy the datasets subtree, checking structure without validating drafts.
 
     Missing settings normalize to ``{'sources': []}``. Only the recognized
@@ -164,7 +164,7 @@ def normalize_config(data: Optional[Mapping]) -> Dict[str, list]:
     return {"sources": sources}
 
 
-def new_source(existing_sources: Iterable[Mapping]) -> Dict[str, Any]:
+def new_source(existing_sources: Iterable[Mapping]) -> dict[str, Any]:
     """Create one blank source with a stable unique ID and unused Dataset N name."""
     if isinstance(existing_sources, (str, bytes, Mapping)):
         raise DatasetSettingsError("Existing sources must be a collection of source objects.")
@@ -194,7 +194,7 @@ def source_spec(source: Mapping) -> SourceSpec:
         raise DatasetSettingsError(str(exc)) from exc
 
 
-def validate_config(data: Optional[Mapping]) -> None:
+def validate_config(data: Mapping | None) -> None:
     """Validate enabled mapped sources against their cached imported schema.
 
     Disabled and unmapped drafts need only be structurally valid. Hidden aliases
@@ -236,7 +236,7 @@ def validate_config(data: Optional[Mapping]) -> None:
             )
 
 
-def apply_schema(source: Mapping, schema: DatasetSchema) -> Dict[str, Any]:
+def apply_schema(source: Mapping, schema: DatasetSchema) -> dict[str, Any]:
     """Attach imported names to a detached source, preserving aliases and selectors.
 
     A refresh that removes a mapped column is rejected. Clear that mapping in the
@@ -269,7 +269,7 @@ def apply_schema(source: Mapping, schema: DatasetSchema) -> Dict[str, Any]:
     return result
 
 
-def visible_column_names(source: Mapping) -> Tuple[str, ...]:
+def visible_column_names(source: Mapping) -> tuple[str, ...]:
     """Return visible names in schema order, without changing any aliases."""
     source = _source(source)
     columns = source["columns"]
@@ -280,7 +280,7 @@ def visible_column_names(source: Mapping) -> Tuple[str, ...]:
     return tuple(column for column in columns if column in chosen)
 
 
-def with_visible_columns(source: Mapping, selection: Optional[Iterable[str]]) -> Dict[str, Any]:
+def with_visible_columns(source: Mapping, selection: Iterable[str] | None) -> dict[str, Any]:
     """Copy a source with a new visibility selection, leaving mappings intact.
 
     ``None`` means All, including columns imported later; ``[]`` means none.

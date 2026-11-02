@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v12.5.1
+# ReadyArt Synthetic Dataset Generator v12.6
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -24,7 +24,7 @@ A powerful, multi-threaded GUI application for generating high-quality synthetic
 
 ## 🚀 Quick Start
 
-1. **Install** — Python 3.9+ and `pip install -r requirements.txt`. Full details in
+1. **Install** — Python 3.11+ and `pip install -r requirements.txt`. Full details in
    [Requirements & Installation](docs/installation.md).
 2. **Add input** — drop `.txt` files into `input/` (or add `input/questions.txt`). The
    format is described in [the `input/` folder](docs/input-folder.md).

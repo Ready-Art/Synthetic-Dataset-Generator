@@ -21,6 +21,7 @@ this module does not import or install those packages, make requests, or open da
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
 import csv
 from dataclasses import asdict, dataclass
 import hashlib
@@ -30,7 +31,7 @@ from pathlib import Path
 import re
 import sys
 from threading import RLock
-from typing import Any, Iterator, Mapping, Optional, Tuple
+from typing import Any
 
 
 class DatasetSourceError(ValueError):
@@ -56,9 +57,9 @@ class SourceSpec:
     source_id: str
     kind: str
     location: str
-    config: Optional[str] = None
-    split: Optional[str] = None
-    revision: Optional[str] = None
+    config: str | None = None
+    split: str | None = None
+    revision: str | None = None
 
     def __post_init__(self):
         for key in ("source_id", "kind", "location"):
@@ -85,9 +86,9 @@ class SourceSpec:
 class DatasetSchema:
     """Names only. Fingerprints identify this reader's source snapshot."""
 
-    columns: Tuple[str, ...]
+    columns: tuple[str, ...]
     fingerprint: str
-    resolved_spec: Optional[SourceSpec] = None
+    resolved_spec: SourceSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,7 @@ class DatasetSource(ABC):
         """Release reader-owned resources after its row iterators are closed."""
 
 
-def _columns(names) -> Tuple[str, ...]:
+def _columns(names) -> tuple[str, ...]:
     columns = tuple(names)
     if any(not isinstance(name, str) or not name for name in columns):
         raise DatasetSourceError("Column names must be nonempty strings.")
@@ -347,18 +348,18 @@ class HuggingFaceSource(DatasetSource):
         return self._revision
 
     @property
-    def resolved_revision(self) -> Optional[str]:
+    def resolved_revision(self) -> str | None:
         return self._revision
 
     @property
-    def resolved_config(self) -> Optional[str]:
+    def resolved_config(self) -> str | None:
         return self._config
 
     @property
-    def resolved_split(self) -> Optional[str]:
+    def resolved_split(self) -> str | None:
         return self._split
 
-    def config_names(self) -> Tuple[str, ...]:
+    def config_names(self) -> tuple[str, ...]:
         with self._lock:
             self._check_location()
             backend = _datasets_backend()

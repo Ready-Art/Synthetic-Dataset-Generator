@@ -54,6 +54,20 @@ import yaml
 import re
 import zipfile  # For backing up output files
 import shutil  # For file operations
+
+# Runtime guard: the dataset_* modules below use PEP 604 ``X | None`` annotations, which
+# are 3.10+ syntax, and this project targets Python 3.11. Check the interpreter here,
+# before those modules are imported, so an older Python fails with a clear message instead
+# of a confusing SyntaxError or AttributeError deep inside the app.
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        "generate.py requires Python 3.11 or newer, but this interpreter reports: "
+        "{}. Install Python 3.11+ and run the app again.\n".format(
+            sys.version.replace("\n", " ")
+        )
+    )
+    sys.exit(1)
+
 import text_utils
 import detection
 from config_loader import ConfigLoader, sanitize_input
@@ -2530,7 +2544,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.5.1",
+    text="v12.6",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
