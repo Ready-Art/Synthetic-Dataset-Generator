@@ -16,8 +16,8 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 prompts:
   use_questions_file: false       # Use input/questions.txt instead of LLM-generated questions
   question: "Write the user's first message in a roleplay drawn from the passage below. ... Recent openings to avoid repeating: {recent_questions}\n\n{context}"
-  answer: "Write your next message in the roleplay. Write only the message itself. ... CHARACTER INFORMATION: ... EMOTIONAL STATE: ... SCENE CAST: ..."
-  user_continuation_prompt: "Write the user's next message. Write only as the user, not as any other character. ... USER EMOTIONAL STATE: ... SCENE CAST: ..."
+  answer: "Write your next message in the roleplay. Write only the message itself. ... CHARACTER INFORMATION: if a CHARACTER PROFILE block is present ... EMOTIONAL STATE: ... SCENE CAST: ..."
+  user_continuation_prompt: "Write the user's next message. Write only as the user, not as any other character, and do not write any character's words, actions, thoughts or feelings. ... USER EMOTIONAL STATE: ... SCENE CAST: ..."
   opening_mode: false             # Start each sample with the character's greeting (see Opening Mode below)
   greeting: "Write the opening message of this roleplay as {speaker}, ...\n{context}"  # Opening mode's greeting prompt
   greeting_context: "Source material for the setting. Take from it only the kind of place, the objects, the weather and the mood.\n---\n{chunk}\n---\nNone of the source's people, names, ships, places or events exist in this scene: ..."  # Opening mode: the greeting's {context} when there is a book chunk
@@ -162,15 +162,17 @@ An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the sam
 
 > **Note:** `{character_name}` is filled from the same per-task name the `CHARACTER PROFILE` block's `Name:` line carries, so a prompt can name her **without** `include_names_in_prompt` having to be on — the token is filled either way. Before v12.5 the name was not a variable at all (a literal `{subject}` reached the model, so she was referred to only by pronoun or job title: "the archivist", "the captain").
 
-**What the shipped prompts refer to.** The three shipped prompts name the blocks the worker actually attaches, so the injected material is used rather than half-ignored:
+**What the shipped prompts refer to.** The shipped prompts name the blocks the worker actually attaches, so the injected material is used rather than half-ignored:
 
 | Prompt | Blocks it names |
 |--------|-----------------|
-| `question` | the passage in `{context}`; `USER EMOTIONAL STATE` (when `prompts.user_emotional_states` is on, appended to that request only); the user's seat (the user is someone who meets her in her world, not one of the characters — the worker also appends its own `QUESTION_USER_SIDE` line to the question's system prompt); `{recent_questions}` |
+| `question` | the passage in `{context}`; `USER EMOTIONAL STATE` (when `prompts.user_emotional_states` is on, appended to that request only); the user's seat (the user is someone who meets the characters in their world, not one of the characters — the worker also appends its own `QUESTION_USER_SIDE` line to the question's system prompt); `{recent_questions}` |
 | `answer` | `CHARACTER PROFILE` (every field, with `Gender` called out as authoritative, and distinct voices in a multi-character scene); `EMOTIONAL STATE` including the `A -> B -> C` progression and the per-character scope of a per-character run; `INNER PERSONA BREAKTHROUGH`; `SCENE CAST` (`PRESENT` / `NOT IN THE SCENE`, and narrating a scheduled entrance or exit) |
-| `user_continuation_prompt` | the character profile so the user replies to who she is; `USER EMOTIONAL STATE`; `SCENE CAST` so the user does not address a character who is not in the scene |
+| `user_continuation_prompt` | the character profile so the user replies to who the characters actually are; `USER EMOTIONAL STATE`; `SCENE CAST` so the user does not address a character who is not in the scene |
+| `greeting` | `{speaker}` and `{context}`; the user is addressed directly as "you" and is already present when the message begins |
+| `first_line` | `{style}`; the message it receives is the character's opening greeting, not a running scene |
 
-`SCENE CAST` only appears when `prompts.scene_cast.enabled` is on and the scene has 2+ characters, and the `EMOTIONAL STATE` / `INNER PERSONA BREAKTHROUGH` blocks only when their features are on, so a default run sees none of them. The prompts say "if a ... block is present" rather than assuming it, which keeps one shipped prompt valid for every feature combination.
+`SCENE CAST` only appears when `prompts.scene_cast.enabled` is on and the scene has 2+ characters, and the `EMOTIONAL STATE` / `INNER PERSONA BREAKTHROUGH` blocks only when their features are on, so a default run sees none of them. The prompts say "if a ... block is present" rather than assuming it, which keeps one shipped prompt valid for every feature combination. **The same rule governs gender and character count:** the shipped prompts say "every character" / "them" rather than "her", because `prompts.character.num_characters` supports 1–10 and a profile's `Gender` field is authoritative, so a prompt written around one female character would misdescribe every other configuration.
 
 **Opening Mode:** With `opening_mode: true`, each sample opens the way a SillyTavern chat does, with the character's greeting:
 
