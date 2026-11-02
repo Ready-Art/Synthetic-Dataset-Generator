@@ -423,6 +423,7 @@ GREETING_PROMPT = "GREETING-PROMPT Open the scene as {speaker}. Keep \"quotes\",
 FIRST_LINE_PROMPT = "FIRSTLINE-PROMPT Write your next message: {style}."
 GOOD_GREETING = Router.DEFAULTS["greeting"][0]
 GOOD_LINE = Router.DEFAULTS["first_line"][0]
+GOOD_ANSWER = Router.DEFAULTS["answer"][0]
 
 
 def call_greeting(slot=SLOT, slot_idx=0, chunk="", attempts=4, no_impersonation=False, speaker="Ines"):
@@ -616,8 +617,13 @@ def test_opening_requests():
           roles(answer1) == ["system", "assistant", "user", "user"]
           and answer1["messages"][1]["content"] == GOOD_GREETING
           and answer1["messages"][2]["content"] == GOOD_LINE)
-    check("continuation request is [system, assistant, user, assistant, user]",
-          roles(cont) == ["system", "assistant", "user", "assistant", "user"])
+    # v12.7: CONTINUE_PROMPT names {last_assistant_message}, so the trailing assistant message is
+    # dropped from the history sent with the request -- her reply appears ONCE, in the slot the prompt
+    # names, instead of twice (history + variable). A template that does not name it keeps the full history.
+    check("continuation request is [system, assistant, user, user] (her reply sent once, v12.7)",
+          roles(cont) == ["system", "assistant", "user", "user"]
+          and GOOD_ANSWER in cont["messages"][-1]["content"]
+          and GOOD_ANSWER not in json.dumps(cont["messages"][1:-1]))
     check("second answer request is [system, assistant, user, assistant, user, user]",
           roles(answer2) == ["system", "assistant", "user", "assistant", "user", "user"])
     check("only the greeting request carries the book chunk",
@@ -898,7 +904,10 @@ def test_generate_wiring():
                      # v12.5: repeated-opener guard, plumbed
                      # config -> start_processing -> worker kwargs
                      "repeat_opener_enabled_local", "repeat_opener_fixes_local",
-                     "repeat_opener_max_retries"})
+                     "repeat_opener_max_retries",
+                     # v12.7: repeated-reply guard (verbatim whole-reply repeat)
+                     "repeat_reply_enabled_local", "repeat_reply_fixes_local",
+                     "repeat_reply_max_retries"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
