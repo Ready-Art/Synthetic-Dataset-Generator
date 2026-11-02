@@ -70,7 +70,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ---
 
 ### `requirements-datasets.txt` [40]
-**Purpose:** Optional extras for Hugging Face Hub, local Parquet, and saved-HF dataset support (includes base `requirements.txt` + `datasets==4.4.2`; requires Python 3.9+). Base `requirements.txt` only pins `requests>=2.32.4,<3`
+**Purpose:** Optional extras for Hugging Face Hub, local Parquet, and saved-HF dataset support (includes base `requirements.txt` + `datasets==4.4.2`; requires Python 3.11+). Base `requirements.txt` only pins `requests>=2.32.4,<3`
 **Edit for:** Bump optional backend pins here, never in `requirements.txt`
 
 ---

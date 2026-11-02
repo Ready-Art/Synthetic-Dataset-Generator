@@ -12,9 +12,11 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 # 📦 Requirements & Installation
 
-- **Python 3.9+**
+- **Python 3.11+**
 - **PostgreSQL** (optional, for database storage)
 - **Valkey or Redis** (optional, for response caching)
+
+An older interpreter is rejected at startup: `generate.py` checks `sys.version_info` and exits with a message telling you to install Python 3.11+.
 
 ## Python Dependencies
 

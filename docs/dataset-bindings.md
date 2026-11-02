@@ -285,7 +285,7 @@ integration are produced by this branch.
 ## Optional dependencies and compatibility boundary
 
 All foundation modules and CSV/TSV/JSON/JSONL readers use Python's standard
-library and remain compatible with the application's Python 3.9 language target.
+library and remain compatible with the application's Python 3.11 language target.
 Optional packages are imported only when their reader is used. The normal
 `requirements.txt` installation does not include Hugging Face or PyArrow.
 

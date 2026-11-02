@@ -1,13 +1,3 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-#
-# ReadyArt Synthetic Dataset Generator
-# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
-#
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
-
 api:
   master_duplication_mode: false
   apis:
@@ -86,26 +76,9 @@ generation:
   remove_all_asterisks: false
   ensure_space_after_line_break: false
   remove_markdown: false
-  # v11.7.1 "Experiment: Retry missing quotations": when on, a generated reply whose spoken
-  # line came back with NO quotation marks at all ("Its funny she says" instead of
-  # "\"Its funny,\" she says") is sent back to the SAME main API for one retry before the turn
-  # is kept. Off by default so existing output is unchanged.
   retry_missing_quotations: false
-  # v12.5 "Experiment: Break a repeated opener": when on, a generated reply that opens with the
-  # same words (or the same sentence frame with only its object swapped) as an EARLIER reply in
-  # the same conversation is sent back to the SAME main API for a fresh opener before the turn is
-  # kept. This is the shape that no phrase list can catch -- every reply is individually fine and
-  # only the repetition across turns is the defect -- and it is what turns one reply in ten into
-  # every reply by the fourth turn. The instruction rides on the ANSWER PROMPT, never the system
-  # prompt, so the system prompt and history stay byte-identical for a prefix-caching server. The
-  # first assistant turn can never hit (there is nothing to repeat yet). Off by default so
-  # existing output is unchanged.
   repeat_opener_guard: false
-  # Appended to the answer prompt, one per retry round (cycled). Empty means a built-in default
-  # instruction is used, so switching the guard on works without editing the config.
   repeat_opener_fixes: []
-  # How many times one answer may be retried for a fresh opener before the best-effort reply is
-  # kept. 0 disables the retry while leaving the detection in place.
   repeat_opener_max_retries: 1
   max_slop_sentence_fix_iterations: 5
   output_format: sharegpt
@@ -116,82 +89,27 @@ generation:
   discard_refused_conversations: false
   use_conversation_history_for_fixers: true
   include_metadata: true
-  # v11.7: also emit the flat style_metrics block (style_* columns) per record when the metadata
-  # block itself is on. Off by default so the default record stays small; the measurements are
-  # ported from the scotoma analysis layer (see style_metrics.py).
   include_style_metrics: false
 quality:
   enabled: true
   use_llm_scoring: false
   output_filter: false
   roleplay_dimensions: false
-  # v11.7: opt-in tic_density dimension (scotoma style tics measured per reply by
-  # style_metrics.py: denial-corrections, negation runs, comma stacking, formulaic warm
-  # closers, shallow narration). Heuristic-only, no extra API calls; off by default so
-  # existing composite scores stay comparable. When on it joins the composite, the Quality
-  # tab and the per-record metadata (quality_tic_density).
-  tic_dimension: false
-  # v12.0 opt-in cast-continuity dimension: scores whether entrances and exits READ
-  # naturally (motivated, not abrupt) and whether an exited character was brought back.
-  # LLM-ONLY (no heuristic): there is no measurable proxy for "was that exit earned?",
-  # and the OBJECTIVE half of the question is already answered for free by
-  # detection.check_scene_continuity(). Off by default.
   cast_continuity: false
-  # Per-turn internal-logic gate: after every assistant reply, the quality LLM checks
-  # for objective contradictions (sexed anatomy vs. stated gender, profile-contradicting
-  # body parts/clothing/injuries, impossible timelines or quantities). A failing turn is
-  # sent back to the SAME main API slot with the original system prompt, full conversation
-  # context, and the judge's specific findings -- enough context that the model knows
-  # exactly what to fix. Requires a configured quality.scoring_api (falls back to the
-  # primary API, like conversation-level scoring); off by default.
+  tic_dimension: false
   per_turn_logic_check: false
-  # Score (0-100) below which a turn is considered to fail the logic check.
   logic_threshold: 70
-  # How many regeneration rounds run per failing turn before the best-effort answer is kept.
   logic_max_rewrites: 1
-  # Truncate conversation for the per-turn check to this many characters.
   logic_max_chars_for_check: 4000
   min_score_threshold: 50
   max_chars_for_scoring: 8000
-  # v11.4 judge policy. The quality judge is a gatekeeper for the dataset:
-  #  - a transient judge failure (network error, timeout, non-200, unreadable response) is
-  #    retried up to judge_max_attempts times, waiting judge_retry_delay seconds * attempt
-  #    between tries; if every try fails the conversation is DROPPED and not written.
-  #  - a reply that is not valid JSON, or a conversation-level logic score of 0, is final:
-  #    no retry, and the conversation is DROPPED and not written.
-  # Dropped conversations are never stored as scores and never flagged for review; the
-  # Review tab shows how many the judge dropped.
   judge_max_attempts: 3
   judge_retry_delay: 1.0
-  # Seconds a worker waits for its queued judge verdict before dropping the row.
   result_timeout: 600
-  # v11.5 JSON robustness for the judge. Small local judges (e.g. Qwen 3.5 4B) usually get the
-  # evaluation right but wrap it in prose/markdown, cut it off at the token limit, or emit
-  # near-JSON. Instead of dropping those rows, the generator:
-  #  - extracts the JSON object from the reply (direct parse -> balanced scan -> repair ->
-  #    lenient normalisation -> numeric salvage),
-  #  - re-asks the same model for JSON-only output judge_json_repair_attempts times (0 = drop
-  #    immediately, i.e. v11.4 behaviour),
-  #  - retries a reply cut off by the token limit with double the budget.
   judge_json_repair_attempts: 1
-  # Token budget per judge request (0 = automatic: 512 + 64 per extra dimension).
   judge_max_tokens: 0
-  # HTTP timeout for one judge request (seconds). A local 4B judge writing a full evaluation plus
-  # evidence lists needs well over the old hard-coded 60s; a timeout only burns a retry cycle.
   judge_request_timeout: 120
-  # Ask the server for constrained JSON: auto (send response_format json_object and fall back
-  # automatically when the endpoint rejects it), off, json_object or json_schema.
   judge_structured_output: auto
-  # v11.8: vLLM request priority for the judge. Off by default because any priority other
-  # than 0 makes a server WITHOUT priority scheduling reject the request outright.
-  #  - judge_priority_enabled: when false the "priority" field is never sent at all, so
-  #    backends that do not understand it (OpenAI, Anthropic, llama.cpp, ...) are unaffected.
-  #  - judge_priority: -10 to 10, lower means earlier handling. -10 is the HIGHEST priority
-  #    (jumps the queue), 0 is vLLM's default and the only value a server without priority
-  #    scheduling accepts, 10 is the lowest.
-  # Judge requests are low-volume but bursty, so a positive number parks them behind the
-  # generation traffic instead of competing with it; a negative one does the opposite and lets
-  # the judge jump ahead of it.
   judge_priority_enabled: false
   judge_priority: 0
   scoring_api:
@@ -204,74 +122,55 @@ prompts:
     variable: false
     variations: []
     top_level_system_prompt: ''
-  # Template variables, filled where each prompt is formatted (an unused variable is
-  # left alone, so a prompt that names none of them is sent unchanged):
-  #   question            {recent_questions}, {subject}, {context}
-  #   answer              {subject}, {context}   (v12.5 -- before that the tokens
-  #                        reached the model literally)
-  #   user_continuation   {last_assistant_message}
-  # The character's NAME is not a variable: it reaches the model in the CHARACTER
-  # PROFILE block's "Name:" line (unless include_names_in_prompt is off).
   question: 'Write the users first message in a roleplay drawn from the passage below.
     Write only the message itself, as the user, not as any other character, and leave
     her words, actions, thoughts and feelings to her.
 
     Draw on the character information provided for her: her gender, age, appearance,
-    clothing, traits and backstory should show in how the user addresses her. The user is
-    someone who meets her in her world, not one of the characters in it. If a USER
-    EMOTIONAL STATE block is present, let it shape the tone and word choice of this
-    message rather than stating the feeling outright. Open this conversation differently
-    from the recent openings listed below, so two conversations never begin the same way.
+    clothing, traits and backstory should show in how the user addresses her. The
+    user is someone who meets her in her world, not one of the characters in it. If
+    a USER EMOTIONAL STATE block is present, let it shape the tone and word choice
+    of this message rather than stating the feeling outright. Open this conversation
+    differently from the recent openings listed below, so two conversations never
+    begin the same way.
 
     Recent openings to avoid repeating: {recent_questions}
 
     {context}'
-  answer: 'Write your next message in the roleplay. Write only the message itself, as
-    the character or characters in the scene, and never the words, actions, thoughts or
-    feelings of the user.
+  answer: 'Write your next message in the roleplay. Write only the message itself,
+    as the character or characters in the scene, and never the words, actions, thoughts
+    or feelings of the user.
 
     CHARACTER INFORMATION: each CHARACTER PROFILE block gives one character''s Gender,
     Age, Job, Appearance, Clothing, Jewelry, Personality, Traits and Backstory. Keep
-    every one of those true for every character, their appearance, their clothes, their
-    job, their manner of speaking and their history must all match what the profile says,
-    and must not drift between turns. A Gender field is authoritative. When more than one
-    profile is present, keep each voice distinct.
+    every one of those true for every character, their appearance, their clothes,
+    their job, their manner of speaking and their history must all match what the
+    profile says, and must not drift between turns. A Gender field is authoritative.
+    When more than one profile is present, keep each voice distinct.
 
     EMOTIONAL STATE: if an EMOTIONAL STATE block is present, that is the emotional
-    state for THIS reply and it overrides the default mood. If it is given as a
-    progression (A -> B -> C), the character named in the block is in the stage named
-    for this reply while earlier replies showed the earlier stages and later replies will
-    show the later ones, so let the shift play out through tone and word choice instead
-    of announcing it. If an INNER PERSONA BREAKTHROUGH block is present, let that private
-    self surface underneath the outward manner.
+    state for THIS reply and it overrides the default mood. If it is given as a progression
+    (A -> B -> C), the character named in the block is in the stage named for this
+    reply while earlier replies showed the earlier stages and later replies will show
+    the later ones, so let the shift play out through tone and word choice instead
+    of announcing it. If an INNER PERSONA BREAKTHROUGH block is present, let that
+    private self surface underneath the outward manner.
 
     SCENE CAST: if a SCENE CAST block is present it says who is in the scene for this
     reply. Only the characters listed under PRESENT may speak, act or be seen; a character
     listed under NOT IN THE SCENE is elsewhere, so do not give them dialogue, actions,
-    thoughts or feelings. When the block says a character leaves or arrives in this reply,
-    write that entrance or exit as part of the scene.'
+    thoughts or feelings. When the block says a character leaves or arrives in this
+    reply, write that entrance or exit as part of the scene.'
   user_continuation_prompt: 'Write the users next message. Write only as the user,
-    not as any other character, and do not write her words, actions, thoughts or
-    feelings.
+    not as any other character, and do not write her words, actions, thoughts or feelings.
 
     Draw on the character information provided for her, her gender, age, appearance,
-    clothing, traits and backstory, so the user responds to who she actually is. If a
-    USER EMOTIONAL STATE block is present, that is the user''s emotional state for
+    clothing, traits and backstory, so the user responds to who she actually is. If
+    a USER EMOTIONAL STATE block is present, that is the user''s emotional state for
     this message, so let it shape their tone and word choice rather than stating it
     outright. If a SCENE CAST block is present, the user speaks only to the characters
     listed under PRESENT and does not address a character who is not in the scene.'
   use_questions_file: false
-  # v11.9.0: dataset aliases in input/questions.txt. A questions-file line is authored text, so it
-  # may contain {{ds:alias}} placeholders; both options below are ignored by chunk mode, whose source
-  # .txt files stay literal (a chunk is cut at a random character offset, which could split a
-  # placeholder in half).
-  #  - append_alias: ONE alias whose value is appended to every question line, as a separate block
-  #    after append_separator. Leave empty to only use placeholders written into the lines.
-  #  - append_separator: the text inserted between the question and the appended value. It is written
-  #    here with real characters (the Config Editor shows it escaped, e.g. \n\n for two newlines).
-  questions_dataset:
-    append_alias: ''
-    append_separator: "\n\n"
   opening_mode: false
   greeting: 'Write the opening message of this roleplay as {speaker}, the way the
     first message of a character card reads: a few paragraphs of narration and dialogue
@@ -307,6 +206,12 @@ prompts:
   - an action with a line of dialogue
   - a short reply
   - a question to the character
+  questions_dataset:
+    append_alias: ''
+    append_separator: '
+
+
+      '
   lore: ''
   character:
     enabled: true
@@ -382,6 +287,17 @@ prompts:
       setting: ''
       class: ''
       greeting: ''
+  scene_cast:
+    enabled: false
+    shape: minimal
+    min_present: 2
+    max_churn: 2
+    max_deferrals: 1
+    placement: depth0
+    allow_cutaway: false
+    exit_guidance: []
+    arrival_guidance: []
+    cutaway_note: ''
   emotional_states:
     enabled: true
     states:
@@ -391,46 +307,10 @@ prompts:
     - calm -> wary -> tense
     - composed -> guarded -> snapped
     placement: depth0
-    # When true, in a multi-character scene (2+ selected characters) each character is assigned its OWN
-    # random emotional state/arc instead of sharing one. Off by default (single shared state/arc).
     per_character: false
   user_emotional_states:
     enabled: false
     states: []
-  # v12.0 Scene Cast: characters join and leave a multi-character scene.
-  # THE GENERATOR OWNS THE CAST -- the schedule is computed before any request is sent,
-  # the model is told who is present each reply, and the model only NARRATES the
-  # transitions. A scheduled exit the model never narrates is CANCELLED (the character
-  # stays legitimately present); a scheduled arrival it never narrates is FORCED to present.
-  # That asymmetry is deliberate: assuming a departure happened would make the character's
-  # next legitimate line a continuity violation the generator invented itself.
-  # Off by default. Acts only when 2 or more characters are selected AND the scene has
-  # enough replies and enough spare cast to hold a change (see min_present).
-  scene_cast:
-    enabled: false
-    # minimal = at most one join + one leave per conversation; churn = up to max_churn
-    # of each; none = never schedule (the feature stays configured but does nothing).
-    shape: minimal
-    # Never fewer than this many characters present at any moment. A join or a leave each
-    # cost one present character, so a 2-character scene with min_present: 2 can never
-    # change cast at all (the worker logs a warning and runs a static cast).
-    min_present: 2
-    # Only used by shape: churn.
-    max_churn: 2
-    # Assistant slots a scheduled exit/arrival may slip before the generator gives up
-    # and reverts the character's state.
-    max_deferrals: 1
-    # Where the per-reply cast note goes: depth0 (default, cache-friendly) or system.
-    placement: depth0
-    # One instruction per line; the worker rotates through them so consecutive exits do
-    # not read the same. Empty means a built-in default is used.
-    exit_guidance: []
-    arrival_guidance: []
-    # Optional cut-away: allow a short moment elsewhere while the user is not present,
-    # as long as the reply rejoins the main thread before it ends.
-    allow_cutaway: false
-    # Instruction appended on a cut-away turn. Empty means a built-in default.
-    cutaway_note: ''
   random_names:
     enabled: false
     names: []
@@ -458,28 +338,6 @@ prompts:
     - An airport gate during a delayed flight
 detection:
   no_user_impersonation: false
-  # v11.10.0 non-Latin script check: catches stray characters from another script (Chinese,
-  # Japanese, Korean, Cyrillic, Greek, Arabic, emoji, ...) in an otherwise Latin-script reply.
-  # The check is a Unicode range allow-list, so it needs NO LLM call, no phrase list and no
-  # network request -- every character outside the Latin script is flagged. On a hit the reply
-  # is regenerated with a fix appended to the system prompt (same shape as refusal/slop/OOC);
-  # once the fixes run out the attempt fails and a fresh one starts, so a permanently stray
-  # reply is never written. Off by default so existing output is unchanged.
-  non_latin:
-    enabled: false
-    # Appended to the system prompt, one per retry round. Empty means a built-in default
-    # instruction is used, so switching the check on works without editing the config.
-    fixes: []
-  # v12.0 Scene Continuity: a character who has LEFT the scene (or has not arrived yet)
-  # may not speak or act. Purely code-based (detection.check_scene_continuity): attributed
-  # quoted lines plus a curated narration action-verb list, so no LLM is involved in the
-  # CHECK itself. Inert unless prompts.scene_cast.enabled is also on.
-  scene_continuity:
-    enabled: true
-    # Appended to the system prompt, one per retry round. Empty means a built-in default.
-    fixes: []
-    # Regeneration rounds per reply before the best-effort answer is kept (1-5).
-    max_rounds: 2
   out_of_character:
     enabled: true
     phrases:
@@ -493,6 +351,13 @@ detection:
     - Is there anything else I can help you with today
     - Youre welcome! Feel free to ask
     - I hope this helps you with your question
+    fixes: []
+  non_latin:
+    enabled: false
+    fixes: []
+  scene_continuity:
+    enabled: true
+    max_rounds: 2
     fixes: []
   refusal:
     phrases: []
@@ -513,40 +378,18 @@ detection:
   slop:
     phrases: []
     fixes: []
-  # v11.6 Regex Watch: an editable list of regular expressions that describe rhetorical
-  # SHAPES rather than fixed phrases ("it is not just X, it is Y", "more than just a Z").
-  # A hit is rewritten by the SAME main API slot that produced the text, then re-checked;
-  # unlike Slop/Anti-Slop there is no separate fixer slot and no phrase list. Patterns are
-  # matched case-insensitively against the whole reply; add or remove your own below.
   regex_watch:
     enabled: false
-    # Rounds of rewrite per reply (1-5). Each round fixes the first remaining hit, then the
-    # whole reply is re-checked, so a rewrite that introduces another shape is caught too.
     max_rounds: 3
     patterns:
-    # "not just/only/merely X, but (also) Y"
-    - '\bnot\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?\s*(?:[,;:\u2014\u2013-])?\s*but\s+(?:also\s+)?\w'
-    # "not only X but also Y" (no comma in the middle)
-    - '\bnot\s+only\s+[^.!?\n]{1,60}?\bbut\s+also\s+\w'
-    # "it is not just X, it is Y"
-    - '\bit(?:''s|\u2019s|\s+is)\s+not\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:''s|\u2019s|\s+is)\b'
-    # "X is not (just/about) Y, it is (about) Z"
-    - '\b\w+\s+is\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:about\s+)?[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:''s|\u2019s|\s+is)\s+(?:about\s+)?\w'
-    # "more than just a Z"
-    - '\bmore\s+than\s+just\s+(?:a|an|the)?\s*\w+'
-    # "less about X and more about Y"
-    - '\bless\s+about\s+[^.!?\n]{1,40}?\s+and\s+(?:more|so\s+much\s+more)\s+about\s+\w'
-    # v11.7 scotoma tic: denial-then-correction (scotoma/denial_correction.py; the shape the
-    # project was built around). Negate a predicate, then assert the replacement.
-    - '\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would|should)n[''\u2019]t\b[^.;!?\n]{0,80}[;.\u2014\u2013-]\s*(?:it|he|she|they|this|that|there|instead|rather)\b'
-    # v11.7 scotoma tic: comma-appended absolute trailer (scotoma/two_tics.py + trailer_rate.py;
-    # teacher 11.8% of sentences vs human 2.5% -> rewrite fraction 0.79). This string is
-    # style_metrics.TRAILER_PATTERN verbatim (single definition, mirrored in
-    # detection.DEFAULT_REGEX_WATCH_PATTERNS); keep the three in sync. The segment must be
-    # verbless -- no finite verb, no speech attribution -- and carry a predicate signal, so an
-    # ordinary clause ("the man said", "the boat is leaving") and the comma that closes a line
-    # of dialogue are never treated as an absolute trailer.
-    - '(?<!said)(?<!says)(?<!say)(?<!asked)(?<!asks)(?<!replied)(?<!replies)(?<!muttered)(?<!murmured)(?<!whispered)(?<!called)(?<!calls)(?<!answered)(?<!told)(?<!added)(?<!began)(?<!continued)(?<!snapped)(?<!growled)(?<!laughed)(?<!sighed),(?!\s*[\"\u201d''\u2019])(?![^,.;!?\n]*\b(?:is|are|was|were|am|be|been|being|has|have|had|do|does|did|will|would|shall|can|could|should|may|might|must|isn[''\u2019]t|aren[''\u2019]t|wasn[''\u2019]t|weren[''\u2019]t|don[''\u2019]t|doesn[''\u2019]t|didn[''\u2019]t|won[''\u2019]t|can[''\u2019]t|couldn[''\u2019]t|shouldn[''\u2019]t|wouldn[''\u2019]t|hasn[''\u2019]t|haven[''\u2019]t|hadn[''\u2019]t)\b)(?![^,.;!?\n]*\b(?:said|says|say|asked|asks|replied|replies|muttered|murmured|whispered|called|calls|answered|told|added|began|continued|snapped|growled|laughed|sighed)\b)[^,.;!?\n]*?(?:\b(?:head|eyes|gaze|hands?|fingers?|lips?|mouth|jaw|breath|shoulders?|chest|back|voice|body|frame|face|brow|hair|legs?|arms?|knees?|pulse|heart|throat)\b|\b\w+ing\b|\b\w+ly\b)'
+    - \bnot\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?\s*(?:[,;:\u2014\u2013-])?\s*but\s+(?:also\s+)?\w
+    - \bnot\s+only\s+[^.!?\n]{1,60}?\bbut\s+also\s+\w
+    - \bit(?:'s|\u2019s|\s+is)\s+not\s+(?:just|only|merely|simply)\s+[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:'s|\u2019s|\s+is)\b
+    - \b\w+\s+is\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:about\s+)?[^.!?\n]{1,60}?[,;:\u2014\u2013-]\s*it(?:'s|\u2019s|\s+is)\s+(?:about\s+)?\w
+    - \bmore\s+than\s+just\s+(?:a|an|the)?\s*\w+
+    - \bless\s+about\s+[^.!?\n]{1,40}?\s+and\s+(?:more|so\s+much\s+more)\s+about\s+\w
+    - \b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would|should)n['\u2019]t\b[^.;!?\n]{0,80}[;.\u2014\u2013-]\s*(?:it|he|she|they|this|that|there|instead|rather)\b
+    - (?<!said)(?<!says)(?<!say)(?<!asked)(?<!asks)(?<!replied)(?<!replies)(?<!muttered)(?<!murmured)(?<!whispered)(?<!called)(?<!calls)(?<!answered)(?<!told)(?<!added)(?<!began)(?<!continued)(?<!snapped)(?<!growled)(?<!laughed)(?<!sighed),(?!\s*[\"\u201d'\u2019])(?![^,.;!?\n]*\b(?:is|are|was|were|am|be|been|being|has|have|had|do|does|did|will|would|shall|can|could|should|may|might|must|isn['\u2019]t|aren['\u2019]t|wasn['\u2019]t|weren['\u2019]t|don['\u2019]t|doesn['\u2019]t|didn['\u2019]t|won['\u2019]t|can['\u2019]t|couldn['\u2019]t|shouldn['\u2019]t|wouldn['\u2019]t|hasn['\u2019]t|haven['\u2019]t|hadn['\u2019]t)\b)(?![^,.;!?\n]*\b(?:said|says|say|asked|asks|replied|replies|muttered|murmured|whispered|called|calls|answered|told|added|began|continued|snapped|growled|laughed|sighed)\b)[^,.;!?\n]*?(?:\b(?:head|eyes|gaze|hands?|fingers?|lips?|mouth|jaw|breath|shoulders?|chest|back|voice|body|frame|face|brow|hair|legs?|arms?|knees?|pulse|heart|throat)\b|\b\w+ing\b|\b\w+ly\b)
 samplers:
   priority:
   - repetition_penalty
@@ -564,11 +407,6 @@ samplers:
   max_tokens_user_reply: 1024
   enable_thinking: default
   logit_bias: ''
-  # v11.1 bad_words toggle: when enabled, every main-API request (question / answer /
-  # user continuation / opening-mode greeting+first-line) plus the Slop Fixer (slot 5)
-  # and Anti-Slop Fixer (slot 6) payloads get a top-level "bad_words" list passed
-  # straight through to the endpoint (vLLM-style; leading whitespace on each entry is
-  # preserved so "word" and " word" are distinct forbidden tokens).
   use_bad_words: false
   bad_words: []
   slop_fixer_params: {}

@@ -94,7 +94,7 @@ The application is organized into focused modules with one-way dependencies to p
 The developer cheat sheet is split so a modest-context model can follow it in one pass:
 
 1. Read **[`AGENTS.md`](../AGENTS.md)** — the hub. It holds only the rules that apply to every
-   change: the Python 3.9 target, how to run the tests, the boundaries, the architecture
+   change: the Python 3.11 target, how to run the tests, the boundaries, the architecture
    diagram, the API slot indices and the thread-safety pattern.
 2. Open **one** file in [`docs/agents/`](agents/) — the one that owns the code you are
    editing. If you know the task but not the files, start at
