@@ -83,7 +83,8 @@ from generation import worker, check_budget_limit, estimate_time_remaining, save
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
                         DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
                         opening_mode_conflict, opening_mode_mismatch,
-                        DEFAULT_NOTE_PLACEMENT, note_placement, placement_cache_warning)
+                        DEFAULT_NOTE_PLACEMENT, note_placement, placement_cache_warning,
+                        FIRST_REPLY_OPENER_MAX_RETRIES)
 from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
@@ -316,6 +317,8 @@ def reset_all_stats_and_history():
     # instead of continuing the deck the previous run left behind.
     app_state.random_name_deck = []
     app_state.random_names_pool_key = None
+    # The first-reply opener caps measure shares over THIS run's first replies.
+    app_state.reset_first_reply_openers()
 
     with api_response_times_lock:
         for i in range(6):
@@ -1942,6 +1945,23 @@ def start_processing():
         current_repeat_reply_max_retries = 1
     current_repeat_reply_max_retries = max(0, current_repeat_reply_max_retries)
 
+    # First-reply opener caps: the largest share (0-1) of this run's first replies that one first
+    # word / one opening frame may hold before a first reply opening that way is retried. 0 turns a cap
+    # off, and both ship 0, so a default run is unchanged.
+    def _share_cap(key):
+        try:
+            return min(1.0, max(0.0, float(global_config.get(key, 0.0) or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+    current_first_reply_first_word_cap = _share_cap('generation.first_reply_first_word_cap')
+    current_first_reply_opener_cap = _share_cap('generation.first_reply_opener_cap')
+    try:
+        current_first_reply_opener_max_retries = int(global_config.get(
+            'generation.first_reply_opener_max_retries', FIRST_REPLY_OPENER_MAX_RETRIES))
+    except (TypeError, ValueError):
+        current_first_reply_opener_max_retries = FIRST_REPLY_OPENER_MAX_RETRIES
+    current_first_reply_opener_max_retries = max(0, current_first_reply_opener_max_retries)
+
     # v11.10.0 non-Latin script check: a Unicode range allow-list in detection.is_non_latin(), so
     # there is nothing to validate here (no pattern to compile, no phrase list to sanitize) -- just
     # a toggle and an optional fix list. An empty fix list falls back to generation.DEFAULT_NON_LATIN_FIX.
@@ -2392,6 +2412,9 @@ def start_processing():
             'repeat_reply_enabled_local': current_repeat_reply_guard,
             'repeat_reply_fixes_local': current_repeat_reply_fixes,
             'repeat_reply_max_retries': current_repeat_reply_max_retries,
+            'first_reply_first_word_cap_local': current_first_reply_first_word_cap,
+            'first_reply_opener_cap_local': current_first_reply_opener_cap,
+            'first_reply_opener_max_retries': current_first_reply_opener_max_retries,
         }, name=f"Worker-{i}")
         app_state.threads.append(thread)
         thread.start()

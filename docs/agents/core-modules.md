@@ -141,7 +141,9 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 **Issue timestamp keys:** `refusals`, `user_speaking`, `slop`, `errors`, `anti_slop`, `incomplete_quotes`, `out_of_character`, `logic_issues`, `regex_watch`, `non_latin`, `scene_continuity`
 
-**Locks:** `stats_lock`, `issue_timestamps_lock`, `quality_lock`, `task_queue_ui_lock`, `api_circuit_breaker_lock`
+**First-reply opener tally:** `first_reply_first_word_counts` / `first_reply_frame_counts` / `first_reply_total`, guarded by `first_reply_opener_lock` and touched only through `record_first_reply_opener()`, `first_reply_opener_snapshot()` and `reset_first_reply_openers()`. Like the random-name deck it is RUN state shared by every worker (the collapse it measures is across conversations), cleared by `reset_all_stats_and_history()` and not saved in `generation_state.json`
+
+**Locks:** `stats_lock`, `issue_timestamps_lock`, `quality_lock`, `task_queue_ui_lock`, `api_circuit_breaker_lock`, `first_reply_opener_lock`
 
 **GUI handles:** `root`, `dashboard_notebook`, `slot_widgets`, `rate_limit_labels`, `quality_*_label`
 

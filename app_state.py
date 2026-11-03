@@ -152,6 +152,42 @@ character_counter_lock = Lock()  # Thread-safe access
 random_name_deck = []  # Remaining names to deal, in shuffled order
 random_name_lock = Lock()  # Thread-safe access to the deck
 random_names_pool_key = None  # Fingerprint of the pool the current deck was built from
+# Run-wide first-reply opener tally, read and written by generation.generate_answer_with_retries()
+# when generation.first_reply_*_cap is on. Like the random-name deck it is deliberately module-level RUN
+# state: the collapse it measures is across conversations, so a per-worker tally would let every worker
+# repeat the same opener. Keys come from detection.opener_keys(); guarded by first_reply_opener_lock and
+# cleared when a run starts (generate.reset_all_stats_and_history()). Not saved in generation_state.json:
+# a resumed run re-learns the shares after detection.OPENER_CAP_MIN_SAMPLES first replies.
+first_reply_first_word_counts = {}  # {first word: first replies recorded with it}
+first_reply_frame_counts = {}       # {first two content words: first replies recorded with them}
+first_reply_total = 0               # First replies recorded this run
+first_reply_opener_lock = Lock()
+
+
+def first_reply_opener_snapshot():
+    """Return copies of the first-reply tally ``(first_word_counts, frame_counts, total)``."""
+    with first_reply_opener_lock:
+        return dict(first_reply_first_word_counts), dict(first_reply_frame_counts), first_reply_total
+
+
+def record_first_reply_opener(first_word, frame):
+    """Add one kept first reply's opener keys (from detection.opener_keys()) to the run tally."""
+    global first_reply_total
+    with first_reply_opener_lock:
+        first_reply_total += 1
+        if first_word:
+            first_reply_first_word_counts[first_word] = first_reply_first_word_counts.get(first_word, 0) + 1
+        if frame:
+            first_reply_frame_counts[frame] = first_reply_frame_counts.get(frame, 0) + 1
+
+
+def reset_first_reply_openers():
+    """Clear the first-reply tally (a new run starts counting from zero)."""
+    global first_reply_total
+    with first_reply_opener_lock:
+        first_reply_first_word_counts.clear()
+        first_reply_frame_counts.clear()
+        first_reply_total = 0
 pending_task_ids = set()
 failed_task_ids = set()
 purged_task_ids = set()

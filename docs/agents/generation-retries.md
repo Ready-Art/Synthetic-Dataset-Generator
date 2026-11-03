@@ -47,6 +47,9 @@ The order is deliberate and is the thing most easily broken by inserting a check
 9. **Repeated reply** (v12.7) — the opener guard's sibling, immediately AFTER it. Both compare the
    reply to the conversation rather than to a rule, and the whole-reply check must see the text the opener
    check finally settled on, so the two run together at the end.
+10. **First-reply opener caps** — LAST. They judge a conversation's first reply against the RUN's first
+    replies, the one comparison the two guards above cannot make. The tally is fed by the worker, not by
+    this function (see the per-check note).
 
 The rule behind 5–9: the shape passes (quotes, regex) must run on text that is about to be KEPT, so they
 belong after every check that can still replace the text.
@@ -125,6 +128,55 @@ Kwargs `repeat_reply_enabled_local` / `repeat_reply_fixes_local` / `repeat_reply
 the best-effort answer is KEPT, never dropped. Guarded by `tests/test_repeat_opener_and_answer_vars.py` /
 `tests/test_repeat_reply_ui.py`.
 
+### First-reply opener caps
+`detection.is_overused_opener()` plus the branch in `generate_answer_with_retries()` AFTER the repeated-reply
+branch and BEFORE the success return.
+
+**The guards above compare a reply with its OWN conversation, so a conversation's first reply is invisible to
+them**, and the first reply is where a run collapses: every first reply sees nearly the same context. The
+reported dataset had 65% of its first replies opening "A sharp intake of" and 87% opening "A"/"An".
+The caps compare a first reply with the run instead: `app_state` holds a tally of the run's kept first
+replies, keyed by `detection.opener_keys()` (the first word, stopwords kept, and the first two content words),
+and a first reply whose key already holds MORE than its cap of that tally is retried. Nothing is judged until
+`detection.OPENER_CAP_MIN_SAMPLES` (20) first replies are recorded.
+
+**A first reply is `turn_num == 0`**, passed by the worker as `first_reply_local`; in opening mode that is the
+first answer after the greeting and first line, and the greeting itself is not capped. The fix is
+`first_reply_opener_fix()`: `DEFAULT_FIRST_REPLY_OPENER_FIX` naming EVERY opening rejected so far in this
+attempt (each the rejected reply's first five words) and their first words, appended to the ANSWER PROMPT and
+rebuilt from the template on each retry: the guards' cache contract. Naming only the latest opening let Gemma 4
+31B swing back to the first on the second retry ("A sharp intake of breath" -> "A finger twitches" -> "A sharp
+intake of breath"), and a model told only to change the opening tends to keep its first word. It says "other
+replies", never "your earlier replies", because a first reply has none.
+
+**The worker records each FINAL first reply once, through `generation.record_first_reply()`, after the
+per-turn logic gate.** Recording inside `generate_answer_with_retries()` would count a reply the gate then
+rewrites, and the rewrite as well. A rejected opening never counts. A best-effort reply kept after
+`first_reply_opener_max_retries` (default `FIRST_REPLY_OPENER_MAX_RETRIES`, 2) does count, so an opening the
+model will not leave keeps costing retries rather than slipping through: with a persistent collapse every
+first reply that opens that way costs 1 + max_retries requests. In duplication mode each slot's turn-0 reply is
+its own output row and is recorded into the same run tally, so one slot's habits raise the shares the other
+slots are judged against. A first reply in a conversation that is later dropped (quality judge, a failed later
+turn, a stop) stays counted, so the shares are over the first replies kept at turn 0, a slight superset of the
+rows written. The tally is run state shared by every worker, under `app_state.first_reply_opener_lock`,
+cleared by `generate.reset_all_stats_and_history()` and not saved in `generation_state.json`. Snapshot and
+record are separate lock holds, so replies in flight on N threads are judged against the same tally and the
+cap can be overshot by about N per opening; the loop stays bounded either way.
+
+Kwargs `first_reply_local` (answer path only) / `first_reply_first_word_cap_local` /
+`first_reply_opener_cap_local` / `first_reply_opener_max_retries`, threaded through `worker()` and
+`_per_turn_logic_gate()`. Both caps 0 (the default) skip the branch AND the recording, so a default run is
+unchanged. Guarded by `tests/test_first_reply_opener.py`.
+
+### Every answer call carries every guard
+The worker calls `generate_answer_with_retries()` in two places (the single-API path and the duplication
+path) and `_per_turn_logic_gate()` in two more. Before the first-reply caps, the single-API answer call and
+the duplication path's gate call passed none of the `repeat_opener_*` / `repeat_reply_*` /
+`previous_assistant_replies_local` kwargs, so both guards were silently off in the default single-API mode
+whatever the config said. `tests/test_first_reply_opener.py` now parses `worker()` and fails if any of the
+four calls is missing one of those kwargs or the cap kwargs: add a new guard's kwargs to all four, and to its
+list.
+
 ### Continuation history trim (v12.7, not a retry)
 `generate_user_continuation()` sent `[system] + conversation_history_for_llm + [user]`, and the worker has ALREADY
 appended her reply to that history, so the final user message's `{last_assistant_message}` embedded the same reply a
@@ -141,6 +193,7 @@ variables, so a default run is byte-identical.
 |------|---------------|
 | Modify retry logic | `generation.py` (`generate_answer_with_retries()`, `MAX_TASK_REQUEUES`) |
 | Change how Regex Watch rewrites text | `generation.py` (`rewrite_regex_watch_text()` / `apply_regex_watch()`), `config/config.yml` (`detection.regex_watch.max_rounds`), `generate.py` (`current_regex_watch_max_rounds`), `tests/test_regex_watch.py` |
+| Add/modify the first-reply opener caps | `detection.py` (`is_overused_opener()` / `opener_keys()` / `opener_snippet()` / `OPENER_CAP_MIN_SAMPLES`), `app_state.py` (`first_reply_*` tally + `first_reply_opener_lock` + `record_first_reply_opener()` / `first_reply_opener_snapshot()` / `reset_first_reply_openers()`), `generation.py` (`DEFAULT_FIRST_REPLY_OPENER_FIX` + `FIRST_REPLY_OPENER_MAX_RETRIES` + the branch after the repeated-reply branch + `record_first_reply()` called by the worker after the logic gate + the `first_reply_*` kwargs on worker/`_per_turn_logic_gate` and all four worker call sites), `generate.py` (config read + the three worker kwargs + the reset in `reset_all_stats_and_history()`), `config/config.yml` (`generation.first_reply_*`, caps 0 by default), `config_editor.py` (three Generation-tab fields + save/load/validate), `tests/test_first_reply_opener.py` / `tests/test_opening_mode.py` (the worker kwarg list) — record only KEPT first replies, and keep the fix on the ANSWER PROMPT |
 | Add/modify the repeated-reply guard (v12.7) | `detection.py` (`is_repeated_reply()` / `REPEATED_REPLY_MIN_CHARS` / `REPEATED_REPLY_SIMILARITY` / `_normalize_for_repeat()`), `generation.py` (`DEFAULT_REPEAT_REPLY_FIX` + `REPEAT_REPLY_MAX_RETRIES` + the branch after the repeated-opener branch + the `answer_prompt_iter` handling + the `repeat_reply_*` kwargs on worker/`_per_turn_logic_gate`), `generate.py` (config read + the three worker kwargs), `config/config.yml` (`generation.repeat_reply_*`, off by default), `config_editor.py` (checkbox + Spinbox + fixes Text + save/load/validate; **the Text is created ENABLED and never disabled**), `tests/test_repeat_opener_and_answer_vars.py` / `tests/test_repeat_reply_ui.py` — keep the fix on the ANSWER PROMPT (not the system prompt) or the prefix cache dies, and keep it AFTER the opener guard so it judges the settled text |
 | Add/modify the repeated-opener guard (v12.5) | `detection.py` (`is_repeated_opener()` / `opener_tokens()` / `REPEATED_OPENER_WORDS`), `generation.py` (`DEFAULT_REPEAT_OPENER_FIX` + `REPEAT_OPENER_MAX_RETRIES` + the branch after Regex Watch + the `answer_prompt_iter` handling + `previous_assistant_replies` in `worker()`), `generate.py` (config read + the three worker kwargs), `config/config.yml` (`generation.repeat_opener_*`, off by default), `config_editor.py` (checkbox + Spinbox + fixes Text + save/load/validate; **the Text is created ENABLED and never disabled**), `tests/test_repeat_opener_and_answer_vars.py` / `tests/test_repeat_opener_ui.py` — keep the fix on the ANSWER PROMPT (not the system prompt) or the prefix cache dies |
 | Add/modify the non-Latin script check (v11.10.0) | `detection.py` (`is_non_latin()` / `find_non_latin_characters()` / `LATIN_ALLOWED_PATTERN` — keep it an ALLOW-list, never a block-list of known scripts), `generation.py` (`DEFAULT_NON_LATIN_FIX` + the answer branch + the question/continuation/opening-mode re-roll), `generate.py` (config read + `current_non_latin_enabled` / `current_non_latin_fixes` worker kwargs), `config/config.yml` (`detection.non_latin.*`, off by default), `config_editor.py` (Detection tab panel + `_toggle_non_latin_fields()` + save/load/validate), `dashboard.py` (metric label + panels + graph series), `app_state.py` (`non_latin_count_total` / `non_latin_counts_per_api` / `recent_non_latin_*` / the `non_latin` timestamp key), `tests/test_non_latin.py` — keep the check LLM-free (it is a character-class test, not a judge call) |

@@ -734,6 +734,12 @@ class ConfigEditor(tk.Toplevel):
             gen_settings_frame, wrap=tk.WORD, height=4, width=1, undo=True)
         self.repeat_reply_fixes_text.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=(2, SPACING), sticky="ew"); row_idx += 1
 
+        # First-reply opener caps: the run-wide check the two guards above cannot make, because a
+        # conversation's first reply has no earlier reply to compare against. 0 turns a cap off.
+        add_gen_setting("First-Reply First-Word Cap (0 to 1):", 'first_reply_first_word_cap_var', "(Experiment: the largest share of this run's FIRST replies that may open with one word, e.g. 0.3. A first reply whose first word already holds more is sent back to the same main API with that opening named on the answer prompt. Judged once 20 first replies are recorded. 0 = off, the default)")
+        add_gen_setting("First-Reply Opening Cap (0 to 1):", 'first_reply_opener_cap_var', "(Experiment: the same for the first two content words, so \"A sharp intake of breath\" counts as 'sharp intake' whatever article starts it, e.g. 0.05. 0 = off, the default)")
+        add_gen_setting("First-Reply Opener Max Retries:", 'first_reply_opener_max_retries_var', "(Retries per first reply before the best-effort reply is kept; 0 keeps the detection but never retries)")
+
         add_gen_setting("Max Slop Sentence Fix Iterations:", 'max_slop_sentence_fix_iterations_var', "(Iterations for sentence-level slop fixing by Slop Fixer LLM)")
 
         self.slop_to_anti_slop_fallback_var_editor = tk.BooleanVar()
@@ -2091,6 +2097,9 @@ class ConfigEditor(tk.Toplevel):
                 'repeat_reply_guard': self.repeat_reply_guard_var_editor.get(),
                 'repeat_reply_fixes': [line for line in self.repeat_reply_fixes_text.get("1.0", tk.END).split('\n') if line.strip()],
                 'repeat_reply_max_retries': int(self.repeat_reply_max_retries_var.get()),
+                'first_reply_first_word_cap': float(self.first_reply_first_word_cap_var.get() or 0),
+                'first_reply_opener_cap': float(self.first_reply_opener_cap_var.get() or 0),
+                'first_reply_opener_max_retries': int(self.first_reply_opener_max_retries_var.get() or 0),
                 'max_slop_sentence_fix_iterations': int(self.max_slop_sentence_fix_iterations_var.get()),
                 'output_format': self.output_format_var.get(),
                 'api_request_timeout': int(self.api_request_timeout_var.get()),
@@ -2839,6 +2848,9 @@ class ConfigEditor(tk.Toplevel):
             # Stays ENABLED (no toggle owns it) for the same reason as the opener fixes Text.
             self.repeat_reply_fixes_text.delete("1.0", tk.END)
             self.repeat_reply_fixes_text.insert("1.0", '\n'.join(gen_config.get('repeat_reply_fixes', []) or []))
+            self.first_reply_first_word_cap_var.set(str(gen_config.get('first_reply_first_word_cap', 0.0)))
+            self.first_reply_opener_cap_var.set(str(gen_config.get('first_reply_opener_cap', 0.0)))
+            self.first_reply_opener_max_retries_var.set(str(gen_config.get('first_reply_opener_max_retries', 2)))
             self.max_slop_sentence_fix_iterations_var.set(str(gen_config.get('max_slop_sentence_fix_iterations', 5)))
             self.slop_to_anti_slop_fallback_var_editor.set(gen_config.get('slop_to_anti_slop_fallback', False))
             self.discard_refused_conversations_var_editor.set(gen_config.get('discard_refused_conversations', False))
@@ -3222,6 +3234,12 @@ class ConfigEditor(tk.Toplevel):
             assert repeat_opener_retries_val >= 0, "Repeated opener max retries must be 0 or more"
             repeat_reply_retries_val = int(self.repeat_reply_max_retries_var.get() or 0)
             assert repeat_reply_retries_val >= 0, "Repeated reply max retries must be 0 or more"
+            for cap_label, cap_var in (("First-reply first-word cap", self.first_reply_first_word_cap_var),
+                                       ("First-reply opening cap", self.first_reply_opener_cap_var)):
+                cap_val = float(cap_var.get() or 0)
+                assert 0 <= cap_val <= 1, f"{cap_label} must be between 0 and 1"
+            first_reply_retries_val = int(self.first_reply_opener_max_retries_var.get() or 0)
+            assert first_reply_retries_val >= 0, "First-reply opener max retries must be 0 or more"
             float(self.temperature_var.get()); float(self.top_p_var.get()); float(self.min_p_var.get()); int(self.top_k_var.get())
             float(self.repetition_penalty_var.get());
             int(self.max_tokens_question_var.get()); int(self.max_tokens_answer_var.get()); int(self.max_tokens_user_reply_var.get())

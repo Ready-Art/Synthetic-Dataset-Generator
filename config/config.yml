@@ -83,6 +83,9 @@ generation:
   repeat_reply_guard: false
   repeat_reply_fixes: []
   repeat_reply_max_retries: 1
+  first_reply_first_word_cap: 0.0
+  first_reply_opener_cap: 0.0
+  first_reply_opener_max_retries: 2
   max_slop_sentence_fix_iterations: 5
   output_format: sharegpt
   api_request_timeout: 300
