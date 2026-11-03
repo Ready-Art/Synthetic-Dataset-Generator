@@ -55,6 +55,7 @@ readyart-dataset-generator/
 │   ├── input-folder.md      # The input/ folder format
 │   ├── dataset-bindings.md  # Dataset sources and {{ds:...}} variables
 │   ├── scene-cast.md        # Scene Cast design notes
+│   ├── dataset-comparison.md  # depth0 vs. system placement: output comparison (preliminary)
 │   ├── postgresql.md        # PostgreSQL backend
 │   ├── licensing.md         # Licensing reasoning
 │   ├── cleaner-pipeline.md  # The optional tools/cleaner_pipeline/ JSONL post-processor
