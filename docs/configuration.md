@@ -214,7 +214,24 @@ generation:
   repeat_opener_guard: false          # v12.5 Experiment: send a reply that reuses an earlier reply's opener back to the same main API
   repeat_opener_fixes: []             # Instructions appended to the ANSWER PROMPT on a retry (cycled; empty = built-in default)
   repeat_opener_max_retries: 1         # Retries per reply for a fresh opener; 0 detects but never retries
+  first_reply_first_word_cap: 0.0     # Experiment: largest share of the run's FIRST replies one first word may hold (e.g. 0.3); 0 = off
+  first_reply_opener_cap: 0.0         # Experiment: the same for the first two content words, e.g. 'sharp intake' (e.g. 0.05); 0 = off
+  first_reply_opener_max_retries: 2   # Retries per first reply over a cap; the best-effort reply is kept after them
 ```
+
+**First-reply opener caps.** `repeat_opener_guard` compares a reply with the earlier replies of its own
+conversation, so it can never judge a conversation's first reply, and that is where a run collapses: every
+first reply sees nearly the same context, so the model can open most of them the same way (one dataset had
+65% of its first replies opening "A sharp intake of"). The two caps count the run's first replies instead.
+Once 20 are recorded, a first reply whose first word (stopwords kept: "a", "she") or opening frame (the
+first two content words: "sharp intake") already holds more than its cap is sent back to the same main API
+with every opening rejected so far named on the answer prompt, so the system prompt and history stay byte-identical for
+a prefix-caching server. A reply that still opens that way after `first_reply_opener_max_retries` is kept;
+a miss costs one request per retry and never a row. If the model keeps opening that way despite the
+instruction, every first reply that does so costs 1 + `first_reply_opener_max_retries` requests, so watch the
+log's "persists after" warnings when you first turn a cap on. The tally starts empty for each run, including a
+resumed run, and in duplication mode all slots share it. A first word is naturally far more common than a
+frame, so set the first-word cap well above the frame cap.
 
 > **Note (v12.7.6):** the slop/anti-slop fixer settings above are inert by default. `detection.slop.enabled`
 > and `detection.anti_slop.enabled` both ship `false`, so `max_slop_sentence_fix_iterations`,

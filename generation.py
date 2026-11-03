@@ -259,6 +259,54 @@ DEFAULT_REPEAT_REPLY_FIX = (
     "and answer THAT, moving the scene forward with new action, new dialogue and a new reaction."
 )
 
+# First-reply opener caps: how many times one FIRST reply may be sent back to the SAME main API
+# when its opener is already over the run's cap. Two, not the opener guard's one: a reply that still
+# opens the over-used way is kept (a style miss never loses the row), so a second chance is cheap
+# insurance against the model echoing the opening the instruction names.
+FIRST_REPLY_OPENER_MAX_RETRIES = 2
+
+def record_first_reply(answer, turn_num, first_word_cap, opener_cap):
+    """Add a conversation's FINAL first reply to the run tally the first-reply caps judge against.
+
+    Called by the worker once per answer it keeps for turn 0 (each duplication slot's reply is its own
+    row, so each is recorded), AFTER the per-turn logic gate: a gate rewrite replaces the reply, so
+    recording inside generate_answer_with_retries() would count the discarded version and then the
+    rewrite. Does nothing when both caps are off, so a default run never touches the tally.
+    """
+    if turn_num != 0 or not answer:
+        return
+    if _safe_float(first_word_cap, 0.0) > 0 or _safe_float(opener_cap, 0.0) > 0:
+        app_state.record_first_reply_opener(*detection.opener_keys(answer))
+
+
+# The instruction appended to the answer prompt (NOT the system prompt) when a first reply opens the
+# way too many of this run's first replies already do. {openings} lists EVERY opening rejected so far for
+# this reply, as written, and {first_words} their first words: naming only the latest one lets the model
+# swing back to the first ("A sharp intake of breath" -> "A finger twitches" -> "A sharp intake of
+# breath" on Gemma 4 31B), and naming the first word matters because a model told only to change the
+# opening keeps the article ("A finger twitches"). It says "other replies", not "your earlier replies": a
+# first reply HAS no earlier reply in its conversation, which is why the per-conversation opener guard can
+# never fire on it. Same cache contract as DEFAULT_REPEAT_OPENER_FIX: the answer prompt is the final user
+# message, so the system prompt and the history stay byte-identical for a prefix-caching server.
+DEFAULT_FIRST_REPLY_OPENER_FIX = (
+    "Too many other replies already open the way this one did: {openings}. Open this reply "
+    "differently: do not begin with {first_words}, and do not open on that reaction, image or "
+    "phrase. Start on a different action, detail or line of speech."
+)
+
+
+def first_reply_opener_fix(rejected_openings):
+    """DEFAULT_FIRST_REPLY_OPENER_FIX filled with every opening rejected so far (oldest first)."""
+    openings = " / ".join(f'"{o}"' for o in dict.fromkeys(rejected_openings))
+    words = []
+    for opening in rejected_openings:
+        word = detection.opener_keys(opening)[0]
+        if word and word.capitalize() not in words:
+            words.append(word.capitalize())
+    first_words = " or ".join(f'"{w}"' for w in words) or "the same word"
+    return (DEFAULT_FIRST_REPLY_OPENER_FIX.replace("{openings}", openings)
+            .replace("{first_words}", first_words))
+
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
@@ -1192,7 +1240,10 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          repeat_reply_enabled_local=False,
                          repeat_reply_fixes_local=(),
                          repeat_reply_max_retries=REPEAT_REPLY_MAX_RETRIES,
-                         previous_assistant_replies_local=()):
+                         previous_assistant_replies_local=(),
+                         first_reply_first_word_cap_local=0.0,
+                         first_reply_opener_cap_local=0.0,
+                         first_reply_opener_max_retries=FIRST_REPLY_OPENER_MAX_RETRIES):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
     ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
@@ -1322,6 +1373,10 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             repeat_reply_fixes_local=repeat_reply_fixes_local,
             repeat_reply_max_retries=repeat_reply_max_retries,
             previous_assistant_replies_local=previous_assistant_replies_local,
+            first_reply_local=(turn_num == 0),
+            first_reply_first_word_cap_local=first_reply_first_word_cap_local,
+            first_reply_opener_cap_local=first_reply_opener_cap_local,
+            first_reply_opener_max_retries=first_reply_opener_max_retries,
         )
         if not retry_result or not retry_result[0]:
             log_message(
@@ -1434,6 +1489,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            repeat_reply_enabled_local=False,
            repeat_reply_fixes_local=(),
            repeat_reply_max_retries=REPEAT_REPLY_MAX_RETRIES,
+           first_reply_first_word_cap_local=0.0,
+           first_reply_opener_cap_local=0.0,
+           first_reply_opener_max_retries=FIRST_REPLY_OPENER_MAX_RETRIES,
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -2293,6 +2351,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 repeat_reply_fixes_local=repeat_reply_fixes_local,
                                 repeat_reply_max_retries=repeat_reply_max_retries,
                                 previous_assistant_replies_local=previous_assistant_replies,
+                                first_reply_local=(turn_num == 0),
+                                first_reply_first_word_cap_local=first_reply_first_word_cap_local,
+                                first_reply_opener_cap_local=first_reply_opener_cap_local,
+                                first_reply_opener_max_retries=first_reply_opener_max_retries,
                             )
                             if per_turn_logic_check_local and dup_api_idx == 0 and answer_result and answer_result[0]:
                                 # Per-turn logic gate on the primary (slot 1) answer only; the
@@ -2320,6 +2382,16 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         current_regex_patterns, current_regex_watch_enabled,
                                         current_regex_watch_max_rounds,
                                         current_retry_missing_quotations=retry_missing_quotations_local,
+                                        repeat_opener_enabled_local=repeat_opener_enabled_local,
+                                        repeat_opener_fixes_local=repeat_opener_fixes_local,
+                                        repeat_opener_max_retries=repeat_opener_max_retries,
+                                        repeat_reply_enabled_local=repeat_reply_enabled_local,
+                                        repeat_reply_fixes_local=repeat_reply_fixes_local,
+                                        repeat_reply_max_retries=repeat_reply_max_retries,
+                                        previous_assistant_replies_local=previous_assistant_replies,
+                                        first_reply_first_word_cap_local=first_reply_first_word_cap_local,
+                                        first_reply_opener_cap_local=first_reply_opener_cap_local,
+                                        first_reply_opener_max_retries=first_reply_opener_max_retries,
                                     ),
                                     answer_result[1] if len(answer_result) > 1 else False,
                                     answer_result[2] if len(answer_result) > 2 else False,
@@ -2327,6 +2399,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
                             if answer_result and answer_result[0]:  # Check if answer is not None
                                 duplicated_answer_text = answer_result[0]
+                                record_first_reply(duplicated_answer_text, turn_num,
+                                                   first_reply_first_word_cap_local, first_reply_opener_cap_local)
                                 issue_in_this_call = answer_result[1] if len(answer_result) > 1 else False
                                 refusal_in_this_call = answer_result[2] if len(answer_result) > 2 else False
 
@@ -2479,6 +2553,17 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         scene_continuity_max_rounds=scene_continuity_max_rounds,
                         cast_blocked_names_local=cast_blocked_names,
                         cast_expected_names_local=cast_expected_names,
+                        repeat_opener_enabled_local=repeat_opener_enabled_local,
+                        repeat_opener_fixes_local=repeat_opener_fixes_local,
+                        repeat_opener_max_retries=repeat_opener_max_retries,
+                        repeat_reply_enabled_local=repeat_reply_enabled_local,
+                        repeat_reply_fixes_local=repeat_reply_fixes_local,
+                        repeat_reply_max_retries=repeat_reply_max_retries,
+                        previous_assistant_replies_local=previous_assistant_replies,
+                        first_reply_local=(turn_num == 0),
+                        first_reply_first_word_cap_local=first_reply_first_word_cap_local,
+                        first_reply_opener_cap_local=first_reply_opener_cap_local,
+                        first_reply_opener_max_retries=first_reply_opener_max_retries,
                     )
                     if per_turn_logic_check_local and answer_result and answer_result[0]:
                         # Per-turn logic gate BEFORE the answer enters the output history, so a
@@ -2510,10 +2595,15 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             repeat_reply_fixes_local=repeat_reply_fixes_local,
                             repeat_reply_max_retries=repeat_reply_max_retries,
                             previous_assistant_replies_local=previous_assistant_replies,
+                            first_reply_first_word_cap_local=first_reply_first_word_cap_local,
+                            first_reply_opener_cap_local=first_reply_opener_cap_local,
+                            first_reply_opener_max_retries=first_reply_opener_max_retries,
                         )
 
                     if answer_result and answer_result[0]:  # Check if answer is not None
                         assistant_answer = answer_result[0]
+                        record_first_reply(assistant_answer, turn_num,
+                                           first_reply_first_word_cap_local, first_reply_opener_cap_local)
                         issue_in_this_call = answer_result[1] if len(answer_result) > 1 else False
                         refusal_in_this_call = answer_result[2] if len(answer_result) > 2 else False
 
@@ -4649,7 +4739,11 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  repeat_reply_enabled_local=False,
                                  repeat_reply_fixes_local=(),
                                  repeat_reply_max_retries=REPEAT_REPLY_MAX_RETRIES,
-                                 previous_assistant_replies_local=()):
+                                 previous_assistant_replies_local=(),
+                                 first_reply_local=False,
+                                 first_reply_first_word_cap_local=0.0,
+                                 first_reply_opener_cap_local=0.0,
+                                 first_reply_opener_max_retries=FIRST_REPLY_OPENER_MAX_RETRIES):
     """
     Generates an assistant's answer, handling retries for refusals, user speaking, slop, and
     out-of-character drift. Applies jailbreaks, speaking fixes, OOC fixes, and slop fixes
@@ -4718,7 +4812,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
                                  'missing_quotation': 0, 'non_latin': 0, 'scene_continuity': 0,
-                                 'repeat_opener': 0, 'repeat_reply': 0}
+                                 'repeat_opener': 0, 'repeat_reply': 0, 'first_reply_opener': 0}
+        first_reply_rejected_openings = []  # every opening the first-reply caps rejected this attempt
         # v12.5: the per-attempt fix suffix for the answer PROMPT (not the system prompt). It is
         # rebuilt from the ORIGINAL template on every request so two retries never stack two copies
         # of the same instruction, and it starts empty so the first request of an attempt is exactly
@@ -5608,6 +5703,44 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                     log_message(
                         f"Thread {thread_id}: Repeated reply persists after "
                         f"{fix_attempts_specific['repeat_reply']} retr{'y' if fix_attempts_specific['repeat_reply'] == 1 else 'ies'}; "
+                        f"keeping the best-effort answer (API Slot {api_slot_idx+1}).", "WARNING")
+
+            # --- First-reply opener caps ---
+            # The two guards above compare a reply with THIS conversation's earlier replies, so they can
+            # never fire on a conversation's first reply -- and that is where a run collapses: every first
+            # reply sees nearly the same context, so the model takes the same opening move in most
+            # conversations. Only a tally over the RUN's first replies shows it. A first reply whose first
+            # word or opening frame already holds more than its cap of that tally is sent back with the
+            # openings rejected so far named on the ANSWER PROMPT (same cache contract as the guards above).
+            #
+            # Runs LAST so it judges the settled text. Once the retries are exhausted the best-effort answer
+            # is KEPT (a style miss never loses the row). Nothing is recorded here: the worker records a
+            # conversation's first reply once, after the logic gate has settled it (record_first_reply()).
+            first_reply_caps_on = first_reply_local and (
+                _safe_float(first_reply_first_word_cap_local, 0.0) > 0
+                or _safe_float(first_reply_opener_cap_local, 0.0) > 0)
+            if not issue_detected_this_main_api_call and first_reply_caps_on:
+                first_word_counts, frame_counts, recorded = app_state.first_reply_opener_snapshot()
+                overused, overused_info = detection.is_overused_opener(
+                    answer, first_word_counts, frame_counts, recorded,
+                    first_word_cap=first_reply_first_word_cap_local,
+                    frame_cap=first_reply_opener_cap_local)
+                if overused:
+                    issue_ever_detected_this_task = True
+                    label, opening = overused_info[0] if overused_info else ("", "")
+                    if fix_attempts_specific['first_reply_opener'] < max(0, int(first_reply_opener_max_retries or 0)):
+                        first_reply_rejected_openings.append(opening)
+                        fix_text = first_reply_opener_fix(first_reply_rejected_openings)
+                        answer_prompt_iter = answer_prompt_template + "\n\n" + fix_text
+                        fix_attempts_specific['first_reply_opener'] += 1
+                        log_message(
+                            f"Thread {thread_id}: {label} (API Slot {api_slot_idx+1}, opens: '{opening}'). "
+                            f"Retrying the same main API with a different-opening instruction on the "
+                            f"answer prompt.", "DEBUG")
+                        continue
+                    log_message(
+                        f"Thread {thread_id}: {label} persists after "
+                        f"{fix_attempts_specific['first_reply_opener']} retr{'y' if fix_attempts_specific['first_reply_opener'] == 1 else 'ies'}; "
                         f"keeping the best-effort answer (API Slot {api_slot_idx+1}).", "WARNING")
 
             if not issue_detected_this_main_api_call:

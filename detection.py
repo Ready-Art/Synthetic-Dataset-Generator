@@ -1039,3 +1039,86 @@ def is_repeated_reply(text, previous_texts, min_chars=REPEATED_REPLY_MIN_CHARS,
             snippet = " ".join(current.split()[:REPEATED_OPENER_WORDS])
             return True, [(label, snippet)]
     return False, []
+
+
+# --- Overused first-reply opener ----------------------------------------------------
+# The failure this catches: across a whole RUN, the first reply of most conversations opens the
+# same way (a reported dataset had 65% of first replies opening "A sharp intake of" and 87% opening
+# with "A"/"An"). Each conversation is fine on its own, so the per-conversation checks above cannot
+# see it -- and the first reply has no earlier reply to compare against at all. Only a tally over
+# the run's first replies shows the collapse, so this check takes the tally, not the conversation.
+#
+# Two keys, because the collapse happens at two grains:
+#   * the FIRST WORD, stopwords included ("a"), which catches one sentence shape ("A <noun> of ...");
+#   * the FRAME, the first two CONTENT words from opener_tokens() ("sharp intake"), which catches one
+#     reaction beat whatever article or pronoun it starts with.
+# A first word is naturally far more common than a frame ("She" can open a large share of honest
+# replies), so each key has its own cap.
+
+# No reply is judged until the run has recorded this many first replies: a share computed over a
+# handful of replies is noise, and staying quiet only skips a retry.
+OPENER_CAP_MIN_SAMPLES = 20
+
+# How many words of the rejected reply are quoted back to the model as "the opening to avoid".
+OPENER_CAP_SNIPPET_WORDS = 5
+
+_OPENER_SNIPPET_RE = re.compile(r"\S+", re.UNICODE)
+
+
+def opener_keys(text):
+    """Return ``(first_word, frame)`` for the run-wide first-reply tally.
+
+    ``first_word`` is the first word of *text*, lowercased, with stopwords kept ("A sharp intake of
+    breath" gives ``"a"``); leading markup and quote marks are skipped because only letters count as a
+    word. ``frame`` is the first two content words joined by a space (``"sharp intake"``). Either is
+    ``""`` when the text has no such word.
+    """
+    words = _OPENER_TOKEN_RE.findall(str(text or ""))
+    first_word = words[0].lower() if words else ""
+    frame = " ".join(opener_tokens(text, limit=2))
+    return first_word, frame
+
+
+def opener_snippet(text, limit=OPENER_CAP_SNIPPET_WORDS):
+    """The first *limit* whitespace-separated words of *text*, as written (for a fix instruction)."""
+    return " ".join(_OPENER_SNIPPET_RE.findall(str(text or ""))[:limit])
+
+
+def is_overused_opener(text, first_word_counts, frame_counts, total,
+                       first_word_cap=0.0, frame_cap=0.0, min_samples=OPENER_CAP_MIN_SAMPLES):
+    """Detect a first reply whose opener the run has already used more than its share.
+
+    *first_word_counts* and *frame_counts* map a key from ``opener_keys()`` to how many of the run's
+    *total* recorded first replies had it. A cap is the largest share (0-1) one key may hold; 0 or
+    less turns that key's check off. A reply hits when its key ALREADY holds more than the cap, so a
+    run converges on the cap rather than stopping one reply short of it, and nothing hits until
+    *total* reaches *min_samples*.
+
+    Returns ``(True, [(label, snippet), ...])`` in the same shape as the other ``is_*()`` checks; the
+    snippet is the reply's opening words as written, for the fix instruction. Records NO timestamp,
+    like ``is_repeated_opener()``: it is an opt-in retry trigger, not a dashboard-tracked issue type.
+    """
+    try:
+        total = int(total)
+        floor = max(1, int(min_samples))
+    except (TypeError, ValueError):
+        return False, []
+    if total < floor or not text:
+        return False, []
+    first_word, frame = opener_keys(text)
+    hits = []
+    for name, key, counts, cap in (("first word", first_word, first_word_counts, first_word_cap),
+                                   ("opening", frame, frame_counts, frame_cap)):
+        try:
+            cap = float(cap or 0.0)
+        except (TypeError, ValueError):
+            cap = 0.0
+        if cap <= 0 or not key:
+            continue
+        share = (counts or {}).get(key, 0) / total
+        if share > cap:
+            hits.append(f"{name} '{key}' opens {share:.0%} of {total} first replies (cap {cap:.0%})")
+    if not hits:
+        return False, []
+    label = "Overused first-reply opener (" + "; ".join(hits) + ")"
+    return True, [(label, opener_snippet(text))]

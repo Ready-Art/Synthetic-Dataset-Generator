@@ -907,7 +907,10 @@ def test_generate_wiring():
                      "repeat_opener_max_retries",
                      # v12.7: repeated-reply guard (verbatim whole-reply repeat)
                      "repeat_reply_enabled_local", "repeat_reply_fixes_local",
-                     "repeat_reply_max_retries"})
+                     "repeat_reply_max_retries",
+                     # first-reply opener caps (run-wide share of first replies)
+                     "first_reply_first_word_cap_local", "first_reply_opener_cap_local",
+                     "first_reply_opener_max_retries"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
