@@ -168,7 +168,9 @@ reference pages live in `docs/` — `configuration.md`, `prompts-and-characters.
 `detection-and-quality.md`, `samplers-and-infrastructure.md`, `usage.md`,
 `output-formats.md`, `how-it-works.md`, `troubleshooting.md`, `performance.md`,
 `key-configuration-details.md`, `features.md`, `architecture.md`, `installation.md`,
-`file-structure.md`, `license-and-credits.md`, `cleaner-pipeline.md`, plus `version-history.md` over
+`file-structure.md`, `license-and-credits.md`, `cleaner-pipeline.md`, `dataset-comparison.md` (the
+`depth0` vs `system` output comparison — **preliminary findings; it needs further testing to be
+conclusive**, so do not cite it as settled or tune defaults to it), plus `version-history.md` over
 `changelog-v12.md` / `changelog-v11.md`. A feature change updates the ONE user page
 that owns it (and the matching `docs/agents/` topic file); a new user-visible feature
 also needs a changelog entry. Keep `README.md` an index: if a page grows past ~25,000

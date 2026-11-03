@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v12.8.2
+# ReadyArt Synthetic Dataset Generator v12.8.3
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
 
@@ -67,6 +67,7 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 | Page | What it covers |
 |------|----------------|
 | [Prompts & Character Engine](docs/prompts-and-characters.md) | Question/answer/continuation prompts, opening mode, character profiles, emotional states and arcs, persona breakthrough, lore, variable system prompts |
+| [Dataset Comparison: depth-0 vs. system](docs/dataset-comparison.md) | What the `depth0` and `system` placements actually do to the generated prompts: a side-by-side of two 287-conversation sets. **Preliminary** — needs further testing to be conclusive, but initial results show promise |
 | [Detection & Quality Control](docs/detection-and-quality.md) | Refusal and user-speaking detection, slop and anti-slop, Regex Watch, Scene Cast, the non-Latin script check, quality scoring and its opt-in dimensions |
 | [Slop & Anti-Slop — Use the Fork](docs/slop-and-antislop.md) | Why the built-in slop/anti-slop functions are off by default, twelve reasons to use AntiSlop-vLLM's dev branch instead, and when the built-in path is still the right call |
 | [Samplers & Infrastructure](docs/samplers-and-infrastructure.md) | Sampler parameters, database and Valkey caching, budget and cost control, the circuit breaker, rate limiting |
@@ -103,6 +104,7 @@ Deeper, task-specific pages also live in `docs/`:
 - [`input-folder.md`](docs/input-folder.md) — the accepted format of `input/*.txt`
 - [`dataset-bindings.md`](docs/dataset-bindings.md) — dataset sources and `{{ds:alias}}` variables
 - [`scene-cast.md`](docs/scene-cast.md) — the Scene Cast design notes
+- [`dataset-comparison.md`](docs/dataset-comparison.md) — what `depth0` vs. `system` placement does to the generated prompts, from a two-dataset comparison (preliminary: promising initial results, needs further testing to be conclusive)
 - [`postgresql.md`](docs/postgresql.md) — the optional database backend
 - [`licensing.md`](docs/licensing.md) — the licensing reasoning in detail
 - [`slop-and-antislop.md`](docs/slop-and-antislop.md) — why slop/anti-slop are off by default and where to run them instead, carrying the dev-branch warning
