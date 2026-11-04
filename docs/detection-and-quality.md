@@ -258,6 +258,11 @@ immediately**; the judge scores the conversation and writes the row itself. Thre
 A row still appears **only after it has a verdict**, so a written row is always complete. This means rows
 land later and out of order rather than all at once, but never unscored.
 
+This applies in **duplication mode too** (v12.9.2): each turn writes one row per enabled API, all carrying
+that turn's single verdict, and the judge writes all of them after it scores. Before v12.9.2 duplication
+mode passed no write job at all, so `async_scoring` was silently ignored there and the worker still blocked
+on the judge every turn.
+
 Two things are unchanged, because they are deliberate rather than accidental:
 
 - **A conversation the judge rejects is never written.** It is recorded with its `drop_reason` in the dashboard
@@ -271,10 +276,14 @@ counted, never silently discarded; its verdict is kept, so the score is still vi
 This mode pairs naturally with `judge_concurrency`: raise the concurrency to the judge server's real capacity
 and the queue absorbs any burst while generation keeps running.
 
-**Note:** `quality.per_turn_logic_check` now goes through the same queue (v12.9), so it shares
-`judge_concurrency` and the rate limiter instead of firing one unthrottled request per turn per worker.
-It is still off by default, and it still costs one extra judge call per turn, so at 30 threads expect it
-to dominate the judge's load — leave it off unless you have raised `judge_concurrency` deliberately.
+**Note:** `quality.per_turn_logic_check` respects `judge_concurrency` and the rate limiter, but it does
+**not** share the conversation-scoring queue (v12.9.2). It runs inline on the worker that needs the
+verdict, capped by its own semaphore, because it *blocks* that worker until the judge answers. Routing
+it through the same 1-wide queue froze generation — a worker's next turn waited behind another task's
+conversation score — and `async_scoring` could not help, because the block is in the per-turn path
+rather than the write path. It is still off by default, and it still costs one extra judge call per
+turn, so at 30 threads expect it to dominate the judge's load — leave it off unless you have raised
+`judge_concurrency` deliberately.
 
 ## Judge Concurrency (v12.9)
 

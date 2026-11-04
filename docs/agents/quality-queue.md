@@ -14,13 +14,14 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
-**Read this when:** you are touching the scoring queue, the judge's concurrency, its rate-limit slot, the cost of one conversation, or **async scoring** (`quality.async_scoring`). For the scoring dimensions, the judge request/JSON parsing and the drop policy, read [`quality.md`](quality.md) instead.
+**Read this when:** you are touching the scoring queue, the judge's concurrency, its rate-limit slot, the cost of one conversation, the **per-turn logic gate**, or **async scoring** (`quality.async_scoring`). For the scoring dimensions, the judge request/JSON parsing and the drop policy, read [`quality.md`](quality.md) instead.
 
 **Related:** [`docs/agents/quality.md`](quality.md), [`docs/agents/core-modules.md`](core-modules.md), [`docs/agents/generation.md`](generation.md)
 
 ## Contents
 
 - The queue in `quality.py`
+- The per-turn logic gate is a SEPARATE lane (v12.9.2)
 - Two modes: GATE and QUEUE (`quality.async_scoring`)
 - Judge concurrency (v12.9)
 - The judge's rate-limit slot (v12.9)
@@ -51,6 +52,23 @@ is false (tests, or scoring disabled). `_record_quality_result()` stores a score
 `app_state.quality_scores`, or a drop in `app_state.quality_dropped` / `app_state.dropped_task_ids`
 — a drop is never stored as a score and never flagged for review. A later successful verdict
 supersedes an earlier drop for the same task (a dropped task stays retryable).
+
+## The per-turn logic gate is a SEPARATE lane (v12.9.2)
+
+`submit_judge_request()` (used only by `check_logic()`) does **not** put anything on
+`_quality_scoring_queue`. It runs the request **inline on the calling thread**, capped by
+`_judge_gate_semaphore()` (a `BoundedSemaphore` sized to `quality.judge_concurrency`, rebuilt when
+that setting changes).
+
+**Never route it back through the queue.** `check_logic()` blocks its worker for the verdict (it decides
+whether the turn is rewritten before entering the history), so on the 1-wide FIFO it deadlocked
+generation: a worker finishing task A queued A's conversation score and every worker's next turn waited
+behind that bulk job, so no main-API request was sent until the judge caught up. `async_scoring` could
+not help — the block is in the per-turn path, not the write path. Pre-v12.9 called the judge directly
+and was never serialised this way, so this is a regression the tests now guard.
+
+A saturated gate returns `success=False` (`llm_gate_busy`) rather than blocking a turn forever; the gate
+already treats an unsuccessful check as "pass the answer through".
 
 ## Two modes: GATE and QUEUE (`quality.async_scoring`)
 
@@ -97,9 +115,22 @@ never binds, and additionally pins this call site, the attribute it names and th
 `generation._make_quality_write_job(write_conversation_kwargs, on_written)` binds everything the
 worker would have passed to `write_conversation` EXCEPT `quality_result`, and the helper fills that in.
 The row is therefore byte-identical to the worker's own write (guarded by
-`tests/test_quality_async_queue.py`). `on_written` (`_mark_task_written`) marks the task complete
-**only after the row is on disk** — marking it earlier would let an interrupted run skip it on resume
-with no row to show.
+`tests/test_quality_async_queue.py`). `on_written` marks the task complete **only after the row is on
+disk** — marking it earlier would let an interrupted run skip it on resume with no row to show. It takes
+no arguments, so a call site that wants `_mark_task_written(task_id, thread_id)` must bind them with a
+lambda: v12.9 passed the bare function and every async write raised `TypeError` *after* the row landed,
+which the processor reports as a WRITE FAILED and counts in `quality_write_failures` (a present row
+reported as lost).
+
+**Duplication mode needs one job per per-API row.** Duplication writes a row per enabled generation API
+per turn, all carrying that turn's single verdict, so `_make_duplication_turn_write_jobs()` returns
+`{slot_idx: job}` and the processor calls each with the same verdict. v12.9 passed **no** `write_job`
+there, so `async_scoring` was silently ignored and the worker blocked on the judge on every turn. The
+`on_written` callback must run on **one** job only (and only on the task's **last** turn): every
+per-API row of a task shares a `task_id`, so per-row bookkeeping would mark the task written repeatedly.
+`quality_write_deferred` is reset with the other per-task flags at the top of `worker()` — duplication
+mode reads it in its per-turn write guard, and initialising it only in the non-duplication branch raised
+`NameError` there.
 
 ## Judge concurrency (v12.9)
 
@@ -160,11 +191,25 @@ raising any of the three, and raise `judge_concurrency` instead.
 In QUEUE mode this cost still matters (it is throughput, not a drop), but a long conversation no longer
 drops anyone else's row.
 
-`quality.per_turn_logic_check` sends `check_logic()` requests through **this same queue** via
-`submit_judge_request()`, so they share `judge_concurrency`, the rate limiter and the drain. They are
-NOT conversation scores: nothing is written and nothing is recorded in `app_state` — the caller decides
-what to do with the reply. Each still costs one extra judge call per turn, so leave the feature off
-unless you have deliberately sized the judge for it.
+`quality.per_turn_logic_check` sends `check_logic()` requests through `submit_judge_request()`, which
+does **NOT** use `_quality_scoring_queue` (v12.9.2). They are NOT conversation scores: nothing is
+written and nothing is recorded in `app_state` — the caller decides what to do with the reply. Each
+still costs one extra judge call per turn, so leave the feature off unless you have deliberately sized
+the judge for it.
+
+**Why they must not share the queue.** `check_logic()` runs mid-conversation and BLOCKS its worker for
+the verdict (it decides whether the turn is rewritten before entering the history). v12.9 put it on the
+same 1-wide FIFO as conversation scoring, so with `judge_concurrency: 1` a worker finishing task A
+queued A's conversation score and **every** worker's next turn waited behind that bulk job: the generator
+stopped sending main-API requests until the judge caught up. `async_scoring` did not help, because the
+block is in the per-turn path rather than the write path. Pre-v12.9 called the judge directly and was
+never serialised this way, so this was a regression.
+
+The gate now runs **inline on the calling thread**, capped by a separate `threading.BoundedSemaphore`
+(`_judge_gate_semaphore()`, rebuilt when `judge_concurrency` changes) so a gate request only ever waits
+for another gate request. A saturated gate returns `success=False` instead of blocking a turn forever,
+which the gate already treats as "pass the answer through". `tests/test_quality_async_queue.py` case 8
+holds a bulk score open and requires a gate request to complete anyway.
 
 ## Tests
 
@@ -175,7 +220,14 @@ unless you have deliberately sized the judge for it.
   recorded, and `quality.scoring_api.slot_idx` is honoured.
 - `tests/test_quality_async_queue.py` — async mode end to end: generation returns immediately, the
   drain waits, nothing is lost to a short timeout, a rejected conversation is never written, a write failure
-  is counted, all queued jobs are written, and `async_scoring: false` keeps the blocking gate.
+  is counted, all queued jobs are written, and `async_scoring: false` keeps the blocking gate. Cases 8-9
+  (v12.9.2) pin the per-turn gate as **separate** from the scoring queue: a gate request completes while a
+  bulk score is held open, and the gate semaphore is its own object sized to `judge_concurrency`.
+- `tests/test_opening_mode.py` — `test_duplication_mode_async_scoring_does_not_block()` runs the real
+  worker in duplication mode against a judge that blocks until released: the worker must return in well
+  under 5 s and hand the job to the queue. Removing the duplication `write_job` makes it hang for 10 s.
+- `tests/test_quality_judge_policy.py` case 13 asserts `check_logic` runs inline on the calling thread
+  and leaves the scoring queue untouched (it used to assert the opposite, i.e. the v12.9 bug).
 - `tests/test_undefined_globals.py` — the wiring itself: no application module references a global it
   never binds (the v12.9.1 `NameError` class), and `generate.start_processing()`'s
   `generation._install_quality_write_handler()` call resolves to a bound module object whose attribute

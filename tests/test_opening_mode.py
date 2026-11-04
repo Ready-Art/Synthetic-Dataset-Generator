@@ -25,6 +25,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 from queue import Queue
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1437,6 +1438,78 @@ def test_metadata_matches_prompt():
           meta["setting"] == "A harbor at dawn." and "Setting: A harbor at dawn." in json.dumps(ROUTER.requests))
 
 
+def test_duplication_mode_async_scoring_does_not_block():
+    """v12.9.2: ``quality.async_scoring`` must not freeze generation in duplication mode.
+
+    Duplication mode writes one row per enabled API per turn, and it used to pass NO
+    ``write_job`` to ``_score_and_store_quality``. ``quality.async_scoring`` was therefore
+    silently ignored there: the worker still blocked on the judge for every single turn, so a
+    slow judge stalled the generator exactly as in gate mode. This pins the fix -- the worker
+    must hand the turn to the queue and move on, and the judge must still write every
+    per-API row (each carrying this turn's verdict).
+    """
+    reset_state()
+    for path in [os.path.join("output", f) for f in os.listdir("output")
+                 if f.startswith("output_api_slot_")]:
+        os.remove(path)
+
+    real_score = g.quality.score_conversation
+    real_async = g.quality.judge_async_enabled
+    real_handler = g.quality._quality_write_handler
+    app_state.quality_enabled = True
+    app_state.master_duplication_enabled_var = Var(True)
+
+    # A judge that BLOCKS until released: if the worker waits for it, run_worker never
+    # returns and the check below fails on the elapsed time.
+    release = threading.Event()
+    verdict = {"composite": 88, "dimensions": {}, "flags": [],
+               "scored_at": "2026-01-01 00:00:00", "method": "stub"}
+
+    def slow_score(conv, *a, **k):
+        release.wait(timeout=10)
+        return dict(verdict)
+
+    written = []
+    g.quality.score_conversation = slow_score
+    g.quality.judge_async_enabled = lambda *a, **k: True
+    # Install the real handler FIRST, then wrap it so the test can see the hand-off.
+    g._install_quality_write_handler()
+    real_writer = g.quality._quality_write_handler
+    g.quality.set_quality_write_handler(
+        lambda job, result: (written.append(job), real_writer(job, result)))
+    # The queue must actually be RUNNING: without it _enqueue_quality_write falls back
+    # to scoring inline, which is the blocking path this test is here to rule out.
+    g.quality.initialize_quality_queue()
+    try:
+        started = time.time()
+        run_worker(chunk_task(), current_num_turns=1,
+                   master_duplication_enabled_local=True)
+        elapsed = time.time() - started
+        check("duplication mode did not wait for the judge (took %.2fs)" % elapsed,
+              elapsed < 5.0)
+        # The job is ON THE QUEUE (the judge thread is still blocked in score_conversation),
+        # which is what "handed over and generation continued" means.
+        check("the turn was handed to the judge queue",
+              g.quality._quality_scoring_queue.unfinished_tasks >= 1)
+        check("the row was not written by the worker while the judge held it",
+              read_rows() == [])
+
+        # Let the judge finish; it must then write the turn's per-API rows itself.
+        release.set()
+        deadline = time.time() + 15
+        while time.time() < deadline and not written:
+            time.sleep(0.02)
+        check("the judge was given the job to write", bool(written))
+    finally:
+        release.set()
+        g.quality.shutdown_quality_queue()
+        g.quality.score_conversation = real_score
+        g.quality.judge_async_enabled = real_async
+        g.quality.set_quality_write_handler(real_handler)
+        app_state.quality_enabled = False
+        app_state.master_duplication_enabled_var = Var(False)
+
+
 def main():
     print("(1) completion check")
     test_conversation_is_complete()
@@ -1454,6 +1527,7 @@ def main():
     test_opening_speakers()
     test_opening_quality_scoring()
     test_quality_judge_drop_skips_the_write()
+    test_duplication_mode_async_scoring_does_not_block()
     test_config_defaults()
     test_generate_wiring()
     print("(4) emotional arc and persona through the worker")

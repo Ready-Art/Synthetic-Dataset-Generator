@@ -420,7 +420,7 @@ def test_dedup_keeps_the_newest_verdict():
 
 
 def test_check_logic_goes_through_the_queue():
-    print("(13) check_logic uses the shared queue, not the judge directly (v12.9)")
+    print("(13) check_logic does NOT queue behind conversation scoring (v12.9.2)")
     set_config(judge_config())
     app_state.quality_scores.clear()
     app_state.quality_dropped.clear()
@@ -428,8 +428,11 @@ def test_check_logic_goes_through_the_queue():
     quality._quality_processor_running = False
     quality._quality_processor_threads = []
 
-    # Record WHICH THREAD ran the judge. The processor must run it; the calling
-    # worker must not, because a direct call from the worker escapes the limit.
+    # v12.9.2: the per-turn gate runs INLINE on the calling thread, gated by its own
+    # semaphore -- NOT on the conversation-scoring queue. Routing it through that queue
+    # deadlocked generation: the worker blocked on its own Event while the 1-wide processor
+    # was busy with a bulk conversation score, so no main-API request was sent until the judge
+    # caught up. This test pins the corrected contract.
     import threading as _t
     call_threads = []
     real_direct = quality._call_logic_judge
@@ -454,12 +457,13 @@ def test_check_logic_goes_through_the_queue():
              {"role": "assistant", "content": "Not for sale."}],
             character_profile_text="", turn_number=2,
             task_id="t-logic-q", thread_id=1, file_name="f.txt")
-        check("check_logic succeeded through the queue", result.get("success") is True)
+        check("check_logic succeeded", result.get("success") is True)
         check("check_logic read the score", result.get("score") == 95)
         check("the judge ran", call_threads)
-        check("the judge ran on a processor thread, not the worker",
-              all(n.startswith("QualityScoringProcessor") for n in call_threads))
-        check("the queue is empty again", quality._quality_scoring_queue.qsize() == 0)
+        check("the judge ran inline on the calling thread, NOT the bulk processor",
+              all(not n.startswith("QualityScoringProcessor") for n in call_threads))
+        check("the conversation-scoring queue was left untouched",
+              quality._quality_scoring_queue.qsize() == 0)
     finally:
         quality._call_logic_judge = real_direct
         quality.shutdown_quality_queue()

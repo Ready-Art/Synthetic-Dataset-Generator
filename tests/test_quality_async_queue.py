@@ -320,6 +320,84 @@ def test_gate_mode_still_blocks_and_returns_a_verdict():
         _reset_queue()
 
 
+def test_per_turn_gate_is_not_queued_behind_conversation_scoring():
+    """v12.9.2 regression: the per-turn logic gate must never freeze generation.
+
+    ``check_logic`` runs mid-conversation and BLOCKS its worker for the verdict, so it used
+    to be put on the same 1-wide FIFO as conversation scoring. A worker finishing task A
+    queued A's conversation score, and every worker's next turn then waited behind that bulk
+    job -- the generator stopped sending main-API requests until the judge caught up, in BOTH
+    async and gate mode. This pins the fix: a gate request completes while a bulk score is
+    still in flight, and the bulk scorer's processor thread is not involved.
+    """
+    print("(8) the per-turn logic gate does not queue behind conversation scoring (v12.9.2)")
+    _reset_queue()
+    bulk_started = threading.Event()
+    bulk_release = threading.Event()
+    gate_done = threading.Event()
+
+    def handler(url, headers=None, data=None, timeout=None):
+        body = json.loads(data)
+        prompt = body["messages"][-1]["content"]
+        if "INTERNAL LOGIC ERRORS" in prompt:
+            # The per-turn gate request.
+            gate_done.set()
+            return _Resp(json.dumps({"logic": 95, "logic_evidence": [],
+                                     "rewrite_instruction": ""}))
+        # The conversation score: hold it open so the gate MUST overtake it.
+        bulk_started.set()
+        bulk_release.wait(timeout=20)
+        return _Resp(json.dumps(GOOD_SCORES))
+
+    set_config(judge_config(async_scoring=True, judge_concurrency=1))
+    real = _stub(handler)
+    quality.initialize_quality_queue()
+    try:
+        # 1) A bulk conversation score is now occupying the single processor.
+        quality.enqueue_quality_scoring(
+            CONV, "t-bulk", 1, 0, "", "", None, None,
+            write_job=lambda verdict: None)
+        check("the bulk score reached the judge", bulk_started.wait(timeout=10))
+
+        # 2) A per-turn gate request must still complete, with the bulk job stuck.
+        gate = threading.Thread(
+            target=lambda: quality.check_logic(
+                "She nods.", CONV, task_id="t-gate", thread_id=2),
+            daemon=True)
+        gate.start()
+        check("the per-turn gate completed while the bulk score was still in flight",
+              gate_done.wait(timeout=5))
+        gate.join(timeout=10)
+        check("the gate thread is not stuck", not gate.is_alive())
+    finally:
+        bulk_release.set()
+        quality.requests.post = real
+        try:
+            quality.wait_for_quality_queue(quiet=True)
+        except Exception:
+            pass
+        _reset_queue()
+
+
+def test_gate_semaphore_is_separate_from_the_queue():
+    print("(9) the gate has its own concurrency cap, sized to judge_concurrency")
+    _reset_queue()
+    set_config(judge_config(async_scoring=True, judge_concurrency=2))
+    try:
+        sem = quality._judge_gate_semaphore()
+        check("the gate semaphore exists", sem is not None)
+        check("it is not the queue", sem is not quality._quality_scoring_queue)
+        check("it admits judge_concurrency requests at once",
+              sem.acquire(timeout=0) and sem.acquire(timeout=0))
+        check("and no more than that", sem.acquire(timeout=0) is False)
+        sem.release()
+        sem.release()
+    finally:
+        set_config(judge_config())
+        quality._judge_gate_semaphore_obj = None
+        quality._judge_gate_semaphore_size = 0
+
+
 def main():
     test_async_flag_defaults_off()
     test_generation_does_not_wait_for_a_slow_judge()
@@ -328,6 +406,8 @@ def main():
     test_write_failure_is_counted_not_lost()
     test_queue_drains_every_job()
     test_gate_mode_still_blocks_and_returns_a_verdict()
+    test_per_turn_gate_is_not_queued_behind_conversation_scoring()
+    test_gate_semaphore_is_separate_from_the_queue()
     print()
     if FAILURES:
         print("{} async queue test(s) failed".format(len(FAILURES)))
