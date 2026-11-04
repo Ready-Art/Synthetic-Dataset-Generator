@@ -2773,10 +2773,45 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         if conversation_is_complete(conversation_history_for_output, current_num_turns, has_greeting=has_greeting):
                             # --- Quality Scoring (BEFORE the write, so the record metadata can carry it) ---
                             final_quality_result = None
+                            quality_write_deferred = False
                             if app_state.quality_enabled:
                                 # The greeting is not a reply, so score from the first user turn
+                                conv_for_scoring_final = (
+                                    conversation_history_for_output[1:] if has_greeting
+                                    else conversation_history_for_output)
+                                # quality.async_scoring: the judge scores this conversation and
+                                # writes the row itself, so generation never waits for it and a
+                                # slow judge can no longer drop the row on a timeout.
+                                final_write_job = None
+                                if quality.judge_async_enabled():
+                                    final_write_job = _make_quality_write_job(dict(
+                                        conversation_history=conversation_history_for_output,
+                                        remove_reasoning_flag=current_remove_reasoning,
+                                        remove_em_dash_flag=current_remove_em_dash,
+                                        remove_asterisks_flag=current_remove_asterisks,
+                                        remove_asterisk_space_asterisk_flag=current_remove_asterisk_space_asterisk,
+                                        remove_all_asterisks_flag=current_remove_all_asterisks,
+                                        ensure_space_after_line_break_flag=current_ensure_space_after_line_break,
+                                        remove_markdown_flag=current_remove_markdown,
+                                        output_format_local=current_output_format,
+                                        task_id_for_output=task_id,
+                                        api_slot_idx_for_output_file=None,
+                                        mask_greeting=has_greeting,
+                                        leading_placeholder=leading_placeholder,
+                                        character_names=scene_character_names,
+                                        emotional_state=current_emotional_state_label,
+                                        user_emotional_state=current_user_emotional_state_label,
+                                        setting=meta_setting,
+                                        opening_mode=opening_mode_local,
+                                        has_greeting=has_greeting,
+                                        num_characters=len(opening_chars),
+                                        include_metadata=include_metadata_local,
+                                        include_style_metrics=include_style_metrics_local,
+                                        cast_schedule=cast_schedule_label,
+                                        cast_events=list(cast_events_this_task),
+                                    ), on_written=_mark_task_written)
                                 final_quality_result = _score_and_store_quality(
-                                    conversation_history_for_output[1:] if has_greeting else conversation_history_for_output,
+                                    conv_for_scoring_final,
                                     task_id,
                                     thread_id,
                                     api_slot_idx=api_slot_idx_for_this_task,
@@ -2785,8 +2820,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                     scene_characters=scene_character_names,
                                     logic_findings=logic_findings_this_task,
                                     cast_schedule=cast_schedule_label,
-                                    cast_events=list(cast_events_this_task)
+                                    cast_events=list(cast_events_this_task),
+                                    write_job=final_write_job,
                                 )
+                                quality_write_deferred = final_write_job is not None
                                 # v11.4: the quality judge is a gatekeeper. A dropped
                                 # conversation (invalid JSON, a logic score 0, or every retry
                                 # failed) is NOT written to the dataset.
@@ -2809,12 +2846,22 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         # The row is still written and carries its score in its
                                         # metadata, so it can be filtered on quality_composite.
 
-                            if quality_dropped_this_task:
+                            if quality_write_deferred:
+                                # The judge owns this row now. It is NOT written and NOT
+                                # marked complete here: _mark_task_written() does both after
+                                # the row is actually on disk, so an interrupted run cannot
+                                # leave a task marked complete with no row behind it.
+                                log_message(
+                                    f"Thread {thread_id}: Task {task_id} handed to the quality "
+                                    f"queue; generation continues.", "INFO")
+                                save_generation_state()
+                            elif quality_dropped_this_task:
                                 # v11.4: the judge rejected this conversation, so it is never
                                 # written, never marked complete and never flagged.
                                 with app_state.task_queue_ui_lock:
                                     app_state.pending_task_ids.discard(task_id)
                                 app_state.completed_task_ids.discard(task_id)
+                                save_generation_state()
                             else:
                                 with output_data_lock:
                                     if task_id not in app_state.completed_task_ids:
@@ -2843,7 +2890,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 # Update UI tracking on success
                                 with app_state.task_queue_ui_lock:
                                     app_state.pending_task_ids.discard(task_id)
-                            save_generation_state()
+                                save_generation_state()
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {expected_messages} messages, got {actual_messages}. NOT saving to output.jsonl.", "WARNING")
                             # Do NOT add to completed_task_ids - this task should be retried.
@@ -5893,7 +5940,8 @@ def _style_metrics_for_record(turns):
 
 def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
                              character_profile_text="", scene_characters=None,
-                             logic_findings=None, cast_schedule="", cast_events=None):
+                             logic_findings=None, cast_schedule="", cast_events=None,
+                             write_job=None):
     """Scores a conversation and stores the result in app_state.quality_scores (deduped by task).
     Mirrors the pre-existing quality bookkeeping (threshold review flags included).
 
@@ -5918,17 +5966,89 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     The judge is a gatekeeper, so this call waits for its verdict (the dedicated queue
     processor still runs one judge at a time). v11.2's fire-and-forget behaviour let a row be
     written before the judge had spoken, which made "drop it" impossible to enforce.
+
+    With ``quality.async_scoring`` on and a ``write_job`` supplied, the verdict is NOT waited
+    for: the judge scores the conversation and writes the row itself, so a slow judge cannot
+    hold up generation and nothing can be lost to ``quality.result_timeout``. This call then
+    returns ``None`` and the caller must not write the row.
     """
     try:
         return quality.enqueue_quality_scoring(
             conv_for_scoring, task_id, thread_id, api_slot_idx, file_name,
             character_profile_text, scene_characters, logic_findings,
-            cast_schedule=cast_schedule, cast_events=cast_events
+            cast_schedule=cast_schedule, cast_events=cast_events,
+            write_job=write_job,
         )
     except Exception as e_quality:
         log_message(f"Thread {thread_id}: Quality scoring queue error for {task_id}: {e_quality}", "ERROR")
+        if write_job is not None and quality.judge_async_enabled():
+            # In async mode the row has not been written yet, and returning a drop
+            # verdict here would lose it. Hand the job to the queue synchronously
+            # instead: the conversation is already generated, so it must not be discarded.
+            try:
+                quality._enqueue_quality_write(
+                    write_job, conv_for_scoring, task_id, thread_id, api_slot_idx,
+                    file_name, character_profile_text, scene_characters,
+                    logic_findings, cast_schedule, cast_events)
+                return None
+            except Exception as e_enqueue:
+                log_message(
+                    f"Thread {thread_id}: Could not queue {task_id} for async scoring "
+                    f"({e_enqueue}); the conversation is not written.", "ERROR")
+                with app_state.quality_lock:
+                    app_state.quality_write_failures.add(task_id)
+                return None
         # An unjudged conversation must not reach the dataset.
         return quality._dropped_result(quality.DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+
+
+def _make_quality_write_job(write_conversation_kwargs, on_written=None):
+    """Bind a conversation's write arguments so the judge can write the row later.
+
+    ``quality.async_scoring`` moves the write from the worker to the judge processor. The row
+    must still be byte-identical to what the worker would have written, so this captures the
+    exact ``write_conversation`` keyword arguments and the helper only fills in
+    ``quality_result`` -- the one value that does not exist until the judge has spoken.
+
+    ``on_written()`` runs after a successful write, and is where the task-completion
+    bookkeeping lives in async mode: a task must not be marked complete until its row is
+    actually on disk, or an interrupted run would skip it on resume with no row to show.
+
+    Returns a callable ``job(quality_result)``.
+    """
+    def _write(quality_result):
+        kwargs = dict(write_conversation_kwargs)
+        kwargs["quality_result"] = quality_result
+        write_conversation(None, **kwargs)
+        if on_written is not None:
+            on_written()
+    return _write
+
+
+def _mark_task_written(task_id, thread_id):
+    """Task-completion bookkeeping for a row the ASYNC judge just wrote (v12.9).
+
+    Mirrors the worker's own success path, but only once the row is on disk: mark it
+    complete so a resume skips it, and drop it from the pending set the dashboard counts.
+    The caller holds no lock here, so this takes ``task_queue_ui_lock`` itself.
+    """
+    with app_state.task_queue_ui_lock:
+        app_state.completed_task_ids.add(task_id)
+        app_state.pending_task_ids.discard(task_id)
+    log_message(f"Quality processor: Task {task_id} written and marked complete.", "INFO")
+    try:
+        save_generation_state()
+    except Exception as e:
+        log_message(f"Quality processor: could not save state after {task_id}: {e}", "WARNING")
+
+
+def _install_quality_write_handler():
+    """Register the async-judge writer with quality.py (v12.9).
+
+    Injected rather than imported the other way round: generation.py already imports
+    quality, so quality importing generation would be circular.
+    """
+    quality.set_quality_write_handler(lambda job, verdict: job(verdict))
 
 
 def _quality_dropped(quality_result):

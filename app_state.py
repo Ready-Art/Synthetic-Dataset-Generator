@@ -28,7 +28,7 @@ anti_slop_count_total = 0
 completed_task_ids = set() # Set of IDs for tasks that have been successfully processed
 db_pool = None
 error_count_total = 0
-error_counts_per_api = {i: 0 for i in range(6)}
+error_counts_per_api = {i: 0 for i in range(7)}
 issue_timestamps = {
     'refusals': [],
     'user_speaking': [],
@@ -51,30 +51,30 @@ question_history = [] # Stores recently generated initial questions to avoid rep
 question_history_lock = Lock()  # For question_history list
 questions_list = [] # List of questions if using questions.txt
 rate_limit_labels = {}
-recent_anti_slop_per_api = {i: [] for i in range(6)}
+recent_anti_slop_per_api = {i: [] for i in range(7)}
 recent_anti_slop_total = []
-recent_errors_per_api = {i: [] for i in range(6)}
+recent_errors_per_api = {i: [] for i in range(7)}
 recent_errors_total = []
-recent_refusals_per_api = {i: [] for i in range(6)}
+recent_refusals_per_api = {i: [] for i in range(7)}
 recent_refusals_total = []
-recent_slop_per_api = {i: [] for i in range(6)}
+recent_slop_per_api = {i: [] for i in range(7)}
 recent_slop_total = []
-recent_user_speaking_per_api = {i: [] for i in range(6)}
+recent_user_speaking_per_api = {i: [] for i in range(7)}
 recent_user_speaking_total = []
-recent_ooc_per_api = {i: [] for i in range(6)}
+recent_ooc_per_api = {i: [] for i in range(7)}
 recent_ooc_total = []
-recent_logic_per_api = {i: [] for i in range(6)}
+recent_logic_per_api = {i: [] for i in range(7)}
 recent_logic_total = []
-recent_regex_per_api = {i: [] for i in range(6)}
+recent_regex_per_api = {i: [] for i in range(7)}
 recent_regex_total = []
-recent_non_latin_per_api = {i: [] for i in range(6)}
+recent_non_latin_per_api = {i: [] for i in range(7)}
 recent_non_latin_total = []
-recent_scene_continuity_per_api = {i: [] for i in range(6)}
+recent_scene_continuity_per_api = {i: [] for i in range(7)}
 recent_scene_continuity_total = []
 refusal_count_total = 0
-refusal_counts_per_api = {i: 0 for i in range(6)}
+refusal_counts_per_api = {i: 0 for i in range(7)}
 slop_count_total = 0
-slop_counts_per_api = {i: 0 for i in range(6)}
+slop_counts_per_api = {i: 0 for i in range(7)}
 state_file_lock = Lock() # Lock for thread-safe access to the generation_state.json file
 stats_lock = Lock()  # For counters (attempts, errors, tokens, refusals, slop, etc.)
 stop_processing = False # Flag to signal threads to stop processing
@@ -84,29 +84,29 @@ system_prompts_list = [] # List of system prompts (base or variations)
 task_queue = None # Queue for distributing tasks to worker threads
 threads = [] # List to hold active worker thread objects
 total_attempts_global = 0 # Total LLM calls made across all APIs for generation tasks
-total_attempts_per_api = {i: 0 for i in range(6)} # Total LLM calls per specific API slot
+total_attempts_per_api = {i: 0 for i in range(7)} # Total LLM calls per specific API slot
 total_input_tokens = 0
 total_output_tokens = 0
 user_speaking_count_total = 0
-user_speaking_counts_per_api = {i: 0 for i in range(6)}
+user_speaking_counts_per_api = {i: 0 for i in range(7)}
 ooc_count_total = 0
-ooc_counts_per_api = {i: 0 for i in range(6)}
+ooc_counts_per_api = {i: 0 for i in range(7)}
 logic_issue_count_total = 0
-logic_issue_counts_per_api = {i: 0 for i in range(6)}
+logic_issue_counts_per_api = {i: 0 for i in range(7)}
 regex_watch_count_total = 0
-regex_watch_counts_per_api = {i: 0 for i in range(6)}
+regex_watch_counts_per_api = {i: 0 for i in range(7)}
 # --- Non-Latin script check (v11.10.0) ---
 # A Unicode-range allow-list (detection.is_non_latin) flags stray characters from another
 # script. Purely character-class based: no LLM call, no phrase list, no network request.
 non_latin_count_total = 0
-non_latin_counts_per_api = {i: 0 for i in range(6)}
+non_latin_counts_per_api = {i: 0 for i in range(7)}
 # --- Scene cast continuity (v12.0) ---
 # A character who has LEFT the scene (or has not arrived yet) may not speak or act. The check
 # is code-only (detection.check_scene_continuity): attributed quoted lines plus a curated
 # narration action-verb list, so no LLM is involved in the DETECTION itself. These counters
 # track hard violations that triggered a regeneration.
 scene_continuity_count_total = 0
-scene_continuity_counts_per_api = {i: 0 for i in range(6)}
+scene_continuity_counts_per_api = {i: 0 for i in range(7)}
 # --- Regex Watch (v11.6) ---
 # Every pattern hit that led to a rewrite, kept for the Regex Watch dashboard area so the user
 # can see WHICH pattern fires and what it matched. Bounded ring buffer, guarded by
@@ -206,12 +206,12 @@ BASE_OUTPUT_FILE_PATH = os.path.join(OUTPUT_DIR, 'output')
 BASE_DEBUG_LOG_PATH = os.path.join(OUTPUT_DIR, 'debug_prompt')
 estimated_cost = 0.0
 MAX_RECENT = 10 # Max number of recent issues to store and display
-anti_slop_counts_per_api = {i: 0 for i in range(6)}
+anti_slop_counts_per_api = {i: 0 for i in range(7)}
 API_CIRCUIT_BREAKER = {
     "max_consecutive_failures": 5,
     "base_cooldown_seconds": 60,
     "max_cooldown_seconds": 600,
-    "failures": {i: 0 for i in range(6)},
+    "failures": {i: 0 for i in range(7)},
     "last_failure_time": {i: 0.0 for i in range(6)},
     "is_open": {i: False for i in range(6)},
     "current_cooldown": {i: 60 for i in range(6)}
@@ -234,6 +234,12 @@ quality_review_lock = Lock()
 # dashboard can report them. Guarded by quality_lock.
 quality_dropped = {}  # {task_id: reason}
 dropped_task_ids = set()
+# --- Async judge write failures (v12.9) ---
+# Conversations the judge SCORED but could not write (disk full, DB down, permissions).
+# Only produced by quality.async_scoring: in gate mode the worker does the write, so a
+# failure there is the worker's own error path. Tracked separately from quality_dropped
+# because a scored-but-unwritten row is recoverable work, not a deliberate rejection.
+quality_write_failures = set()
 # The lock the worker holds while it appends a finished conversation to the dataset (file or
 # database). It lives here, not in start_processing(), so the Review tab's "drop this
 # conversation" rewrite takes the SAME lock as a write and cannot interleave with one

@@ -593,6 +593,22 @@ class ConfigEditor(tk.Toplevel):
                         "(Wait before the next judge attempt; grows linearly per attempt)")
         add_gen_setting("Judge Result Timeout (seconds):", 'quality_result_timeout_var',
                         "(How long a worker waits for its queued verdict before dropping the row)")
+        # v12.9: the judge used to be served by exactly ONE processor thread, which capped it at one
+        # request at a time no matter how many workers were running. Raise this to the judge server's
+        # real parallel capacity: a local vLLM that slows down past 2-3 concurrent sequences wants
+        # 2-3 here. Too high just moves the queue into the server's scheduler.
+        add_gen_setting("Judge Concurrency:", 'quality_judge_concurrency_var',
+                        "(How many judge requests may be in flight at once, 1-32. Match the judge server's real parallel capacity -- a local vLLM that slows down past 2-3 concurrent requests wants 2 or 3, not 8. Default 1)")
+        # v12.9: async mode. Off (default) = the worker waits for the verdict, so a slow judge
+        # can drop rows on the result timeout. On = the worker hands the judge a complete write job
+        # and moves on; the judge scores it and writes the row itself, so generation never waits,
+        # nothing is lost to a timeout, and the run ends only once the queue is drained.
+        self.quality_async_scoring_var = tk.BooleanVar()
+        wrapped_checkbutton(
+            gen_settings_frame,
+            text="Async Scoring (judge queues and writes rows; generation never waits, nothing is lost to a timeout)",
+            variable=self.quality_async_scoring_var,
+        ).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx += 1
         # v11.5 JSON robustness: small local judges usually get the evaluation right but wrap it
         # in prose/fences or get cut off. These two knobs recover those replies instead of
         # dropping the conversation.
@@ -670,6 +686,12 @@ class ConfigEditor(tk.Toplevel):
         ttk.Label(gen_settings_frame, text="Quality Scoring API Key:").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="w"); row_idx += 1
         self.quality_api_key_var = tk.StringVar()
         ttk.Entry(gen_settings_frame, width=1, textvariable=self.quality_api_key_var, show="*").grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=2, sticky="ew"); row_idx += 1
+
+        # v12.9: the rate-limiter slot the judge's requests are counted against. Index 6 is the
+        # judge's own logical slot (it has no api.apis entry); point it at a generation slot to make
+        # the judge share that slot's rate limit instead.
+        add_gen_setting("Quality Scoring API Slot (1-7):", 'quality_api_slot_var',
+                        "(Which rate-limiter slot the judge's requests count against. 7 (index 6) is the judge's own slot; pick a generation slot to share its rate limit)")
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
         wrapped_checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
@@ -2127,6 +2149,8 @@ class ConfigEditor(tk.Toplevel):
                 'judge_max_attempts': max(1, min(10, int(self.quality_judge_max_attempts_var.get() or 3))),
                 'judge_retry_delay': max(0.0, float(self.quality_judge_retry_delay_var.get() or 0)),
                 'result_timeout': max(30, int(self.quality_result_timeout_var.get() or 600)),
+                'judge_concurrency': max(1, min(32, int(self.quality_judge_concurrency_var.get() or 1))),
+                'async_scoring': self.quality_async_scoring_var.get(),
                 'judge_json_repair_attempts': max(0, min(3, int(self.quality_judge_json_repair_var.get() or 0))),
                 'judge_max_tokens': max(0, int(self.quality_judge_max_tokens_var.get() or 0)),
                 'judge_request_timeout': max(5, min(1800, int(self.quality_judge_request_timeout_var.get() or 120))),
@@ -2137,6 +2161,7 @@ class ConfigEditor(tk.Toplevel):
                     'url': sanitize_input(self.quality_api_url_var.get()),
                     'model': sanitize_input(self.quality_api_model_var.get()),
                     'key': self.quality_api_key_var.get(),
+                    'slot_idx': max(0, min(6, int(self.quality_api_slot_var.get() or 6))),
                 },
             },
             'prompts': {
@@ -2874,6 +2899,8 @@ class ConfigEditor(tk.Toplevel):
             self.quality_judge_max_attempts_var.set(str(quality_conf.get('judge_max_attempts', 3)))
             self.quality_judge_retry_delay_var.set(str(quality_conf.get('judge_retry_delay', 1.0)))
             self.quality_result_timeout_var.set(str(quality_conf.get('result_timeout', 600)))
+            self.quality_judge_concurrency_var.set(str(quality_conf.get('judge_concurrency', 1)))
+            self.quality_async_scoring_var.set(bool(quality_conf.get('async_scoring', False)))
             self.quality_judge_json_repair_var.set(str(quality_conf.get('judge_json_repair_attempts', 1)))
             self.quality_judge_max_tokens_var.set(str(quality_conf.get('judge_max_tokens', 0)))
             self.quality_judge_request_timeout_var.set(str(quality_conf.get('judge_request_timeout', 120)))
@@ -2884,6 +2911,7 @@ class ConfigEditor(tk.Toplevel):
             self.quality_api_url_var.set(quality_conf.get('scoring_api', {}).get('url', ''))
             self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
             self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
+            self.quality_api_slot_var.set(str(quality_conf.get('scoring_api', {}).get('slot_idx', 6)))
             self.output_format_var.set(gen_config.get('output_format', 'sharegpt'))
 
             prompts_config = config.get('prompts', {})
@@ -3357,6 +3385,10 @@ class ConfigEditor(tk.Toplevel):
             assert 0 <= judge_delay_val <= 30, "Judge retry delay must be 0-30 seconds"
             result_timeout_val = int(self.quality_result_timeout_var.get() or 600)
             assert result_timeout_val >= 30, "Judge result timeout must be at least 30 seconds"
+            judge_concurrency_val = int(self.quality_judge_concurrency_var.get() or 1)
+            assert 1 <= judge_concurrency_val <= 32, "Judge concurrency must be between 1 and 32"
+            judge_slot_val = int(self.quality_api_slot_var.get() or 6)
+            assert 0 <= judge_slot_val <= 6, "Judge API slot must be between 1 and 7 (0-6 in config)"
             judge_repair_val = int(self.quality_judge_json_repair_var.get() or 0)
             assert 0 <= judge_repair_val <= 3, "Judge JSON repair rounds must be between 0 and 3"
             judge_max_tokens_val = int(self.quality_judge_max_tokens_var.get() or 0)

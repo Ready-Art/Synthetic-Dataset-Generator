@@ -321,7 +321,7 @@ def reset_all_stats_and_history():
     app_state.reset_first_reply_openers()
 
     with api_response_times_lock:
-        for i in range(6):
+        for i in range(len(api_response_times_per_slot)):
             api_response_times_per_slot[i] = []
 
     app_state.total_attempts_global = 0
@@ -335,7 +335,7 @@ def reset_all_stats_and_history():
     app_state.non_latin_count_total = 0
     anti_slop_count_total = 0
 
-    for i in range(6): # For all 6 API slots
+    for i in range(len(app_state.refusal_counts_per_api)): # Every tracked slot, incl. the judge's
         app_state.refusal_counts_per_api[i] = 0
         app_state.user_speaking_counts_per_api[i] = 0
         app_state.slop_counts_per_api[i] = 0
@@ -2322,6 +2322,14 @@ def start_processing():
     # This ensures quality scoring requests are processed asynchronously without blocking workers
     if app_state.quality_enabled and global_config.get('quality.use_llm_scoring', False):
         import quality
+        # v12.9: async mode needs the writer injected (quality cannot import
+        # generation without a circular import), and it must be registered BEFORE
+        # the queue starts so a processor can never pick up a job with no writer.
+        if quality.judge_async_enabled():
+            generation._install_quality_write_handler()
+            log_message(
+                "Quality async scoring ON: the judge scores and writes rows; "
+                "generation does not wait for verdicts.", "INFO")
         quality.initialize_quality_queue()
         log_message("Quality scoring queue system initialized.", "INFO")
     
@@ -2551,6 +2559,29 @@ def start_processing():
 
         if app_state.task_queue: 
             app_state.task_queue.join() # Wait for all tasks in the queue to be processed
+
+        # v12.9: with quality.async_scoring on, the workers finishing is NOT the end of
+        # the run -- the judge may still hold queued conversations, and each one is a row
+        # that has not been written yet. Drain it here, before the run is declared
+        # finished, so "the judge continues until it is finished" is literally true.
+        #
+        # Deliberately NOT conditional on stop_processing: a Stop must not silently
+        # discard conversations that are already generated and queued. A Stop means "stop
+        # generating", not "throw away what the judge already owes us".
+        try:
+            import quality
+            if quality.judge_async_enabled() and app_state.quality_enabled:
+                log_message("Generation finished; waiting for the quality queue to drain.", "INFO")
+                if not quality.wait_for_quality_queue():
+                    log_message("Quality queue did not drain fully; some scored rows were not written.", "ERROR")
+                with app_state.quality_lock:
+                    unwritten = len(app_state.quality_write_failures)
+                if unwritten:
+                    log_message(
+                        f"{unwritten} scored conversation(s) could not be written to the dataset "
+                        f"(see the ERROR lines above).", "ERROR")
+        except Exception as e:
+            log_message(f"Error draining the quality queue: {e}", "ERROR")
 
         log_message("All tasks completed or processing stopped. All threads joined.", "INFO")
         app_state.processing_active = False 
@@ -2799,7 +2830,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.8.3",
+    text="v12.9",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

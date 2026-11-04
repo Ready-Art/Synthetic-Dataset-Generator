@@ -17,15 +17,23 @@ from logging_config import log_message
 
 valkey_client = None
 
-api_response_times_per_slot = {i: [] for i in range(6)}  # Store response times for each API slot (0-5)
+# Slots 0-5 are the configured API slots (1-4 generation, 5 slop fixer, 6 anti-slop fixer).
+# Slot 6 is the LOGICAL quality-judge slot: it has no ``api.apis`` entry (the judge is configured
+# under ``quality.scoring_api``) but the judge calls the rate limiter and the response-time tracker
+# with ``slot_idx=6``, so those structures must be 7 wide or the judge is silently unthrottled and
+# unmeasured. ``quality.scoring_api.slot_idx`` can point the judge at another slot instead; the
+# width covers every value that setting is allowed to take.
+RATE_LIMITER_SLOT_COUNT = 7
+
+api_response_times_per_slot = {i: [] for i in range(RATE_LIMITER_SLOT_COUNT)}  # Response times per slot
 api_response_times_lock = Lock()  # Thread-safe access to response times
 MAX_RESPONSE_TIMES_TO_TRACK = 100  # Keep last 100 response times per API
 
 class RateLimiter:
     def __init__(self):
         """Initializes the rate limiter with empty request logs for each API slot."""
-        self.requests_per_slot = {i: [] for i in range(6)}  # Store timestamps per API slot (0-5)
-        self.rates_per_slot = {i: 60 for i in range(6)}  # Default 60 requests per minute per slot
+        self.requests_per_slot = {i: [] for i in range(RATE_LIMITER_SLOT_COUNT)}  # Timestamps per slot
+        self.rates_per_slot = {i: 60 for i in range(RATE_LIMITER_SLOT_COUNT)}  # Default 60 RPM per slot
         self.lock = Lock()  # Thread-safe access to request logs
 
     def set_rate_limit(self, slot_idx, rpm):

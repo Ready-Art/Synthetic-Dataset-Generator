@@ -36,7 +36,7 @@ import random
 import requests
 import hashlib
 import threading
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 from threading import Lock
 
 import app_state
@@ -131,6 +131,33 @@ ROLEPLAY_LLM_DIMENSIONS = set(ROLEPLAY_SCORING_DIMENSIONS)
 QUALITY_JUDGE_MAX_ATTEMPTS = 3
 QUALITY_JUDGE_RETRY_DELAY = 1.0  # seconds, multiplied by the attempt number
 
+# --- Judge concurrency (v12.9) --------------------------------------------------------
+# How many quality-scoring requests may be in flight at once. The queue processor used to be a
+# single thread, which capped the judge at ONE request at a time no matter how many workers were
+# generating or how wide the judge server was: a 30-thread run queued 30 verdicts behind one
+# service slot and the tail of that queue blew past ``quality.result_timeout``, so healthy
+# conversations were dropped as ``judge_failed``. The default stays 1 so a default run is
+# byte-identical to the previous release; the ceiling is 32 because a judge server's own
+# ``--max-num-seqs`` is the real limit, not this number.
+QUALITY_JUDGE_CONCURRENCY = 1
+JUDGE_CONCURRENCY_MIN = 1
+JUDGE_CONCURRENCY_MAX = 32
+
+# --- Async scoring (v12.9) ------------------------------------------------------------
+# By default the judge is a GATE: the worker blocks until the verdict arrives, because a row
+# it rejects must never reach the dataset. ``quality.async_scoring`` flips that: the worker hands
+# the judge a complete write job and moves on, and the judge scores the conversation and writes
+# the row itself. Two things follow that the gate cannot offer:
+#   * a slow judge no longer holds up generation, and
+#   * NOTHING IS LOST TO A TIMEOUT -- there is no wait to time out of. A queued job stays
+#     queued until it is scored, and the run does not end until the queue is drained.
+# The row still appears only once it has a verdict, so a written row is always complete and a
+# rejected conversation never appears at all.
+#
+# The writer is INJECTED (``set_quality_write_handler``) rather than imported: generation.py
+# already imports quality, so quality importing generation would be a circular import.
+QUALITY_ASYNC_SCORING = False
+
 # Flags that make a judge failure final (no retry, drop the conversation).
 JUDGE_FINAL_FAILURE_FLAGS = frozenset({"llm_invalid_json"})
 
@@ -160,6 +187,35 @@ def judge_max_attempts(config=None):
     except (TypeError, ValueError):
         attempts = QUALITY_JUDGE_MAX_ATTEMPTS
     return max(1, min(10, attempts))
+
+
+def judge_concurrency(config=None):
+    """How many judge requests may be in flight at once (``quality.judge_concurrency``).
+
+    Raise this to match the judge server's real capacity. A local vLLM that slows down sharply
+    past 2-3 concurrent sequences wants 2 or 3, not 8: pushing more requests at it only moves the
+    queue from this process into vLLM's scheduler, where it is harder to see and still costs the
+    same latency. Size it as ``ceil(threads * judge_latency / seconds_per_conversation)`` and stop
+    at the server's ``--max-num-seqs``.
+
+    Clamped to 1-32; an unparsable value falls back to 1, because a bad config value must never
+    break a run (same rule as ``judge_max_attempts``).
+    """
+    cfg = global_config if config is None else config
+    try:
+        workers = int(cfg.get('quality.judge_concurrency', QUALITY_JUDGE_CONCURRENCY))
+    except (TypeError, ValueError):
+        workers = QUALITY_JUDGE_CONCURRENCY
+    return max(JUDGE_CONCURRENCY_MIN, min(JUDGE_CONCURRENCY_MAX, workers))
+
+
+def judge_async_enabled(config=None):
+    """Whether the judge runs as a queue instead of a blocking gate (``quality.async_scoring``).
+
+    Off by default, so a default run keeps the blocking-gate behaviour byte for byte.
+    """
+    cfg = global_config if config is None else config
+    return bool(cfg.get('quality.async_scoring', QUALITY_ASYNC_SCORING))
 
 
 def judge_retry_delay(config=None):
@@ -1640,6 +1696,64 @@ def _default_judge_dims():
     return dims
 
 
+def submit_judge_request(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+                          file_name, sampler_settings, prompt, expected_dims=None,
+                          max_attempts=None, timeout=None):
+    """Run one judge request through the shared queue, or inline when it is not running.
+
+    EVERY judge request must come through here. ``quality.judge_concurrency`` is only a
+    real limit if it gates every request, so a caller that talks to the judge directly
+    (bypassing this function) escapes the limit, the drain and the async write path -- which
+    is exactly what ``check_logic`` used to do, sending one unthrottled judge request per
+    turn per worker, in parallel with the queue.
+
+    Returns the same ``(scores, flags, success, extras)`` tuple as
+    ``_call_logic_judge()``. A request that cannot be queued falls back to calling the
+    judge inline, so a queue problem never blocks a generation turn.
+    """
+    if not _quality_processor_running:
+        return _call_logic_judge(
+            api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+            file_name, sampler_settings, prompt, expected_dims=expected_dims,
+            max_attempts=max_attempts)
+
+    job = {"event": threading.Event(), "result": None, "abandoned": False,
+           "judge_request": True}
+    try:
+        _quality_scoring_queue.put((
+            {"kind": "judge_request", "api_url": api_url, "model_name": model_name,
+             "api_key": api_key, "scoring_api_slot": scoring_api_slot,
+             "sampler_settings": sampler_settings, "prompt": prompt,
+             "expected_dims": expected_dims, "max_attempts": max_attempts},
+            task_id, thread_id, scoring_api_slot, file_name, "", None, None, "", None,
+            job,
+        ), block=False)
+    except Full:
+        log_message(
+            f"Thread {thread_id}: Quality queue full for a judge request ({task_id}); "
+            f"calling the judge directly.", "WARNING")
+        return _call_logic_judge(
+            api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+            file_name, sampler_settings, prompt, expected_dims=expected_dims,
+            max_attempts=max_attempts)
+
+    wait_seconds = quality_result_timeout() if timeout is None else max(1.0, float(timeout))
+    deadline = time.time() + wait_seconds
+    while not job["event"].wait(0.25):
+        if app_state.stop_processing or time.time() >= deadline:
+            break
+    if not job["event"].is_set():
+        job["abandoned"] = True
+        log_message(
+            f"Thread {thread_id}: Timed out after {wait_seconds:.0f}s waiting for a judge "
+            f"request ({task_id}); calling the judge directly.", "ERROR")
+        return _call_logic_judge(
+            api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
+            file_name, sampler_settings, prompt, expected_dims=expected_dims,
+            max_attempts=max_attempts)
+    return job["result"] or ({}, ["llm_exception"], False, {})
+
+
 def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
                       file_name, sampler_settings, prompt, expected_dims=None, max_attempts=None):
     """Sends ``prompt`` to the quality-scoring LLM and parses the JSON reply.
@@ -1796,11 +1910,15 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
     except Exception:
         pass
 
-    # Rate limit
+    # Rate limit. This used to swallow every exception, which hid the fact that the judge's slot
+    # (index 6 by default) was outside the limiter's range and therefore never throttled at all.
+    # A failure here must not kill the judge call, but it must not be invisible either.
     try:
         global_rate_limiter.wait_if_needed(scoring_api_slot)
-    except Exception:
-        pass
+    except Exception as e:
+        log_message(
+            f"Thread {thread_id}: Quality judge rate limiter failed for slot "
+            f"{scoring_api_slot + 1} ({e}); the request is sent unthrottled.", "WARNING")
 
     # Make the API call
     api_call_start = time.time()
@@ -2071,7 +2189,7 @@ def check_logic(answer, conversation_history, character_profile_text="", turn_nu
     prompt += "\nCONVERSATION (final message is the one to check):\n" + conversation_text
 
     expected_dims = ["logic"]
-    scores, flags, success, extras = _call_logic_judge(
+    scores, flags, success, extras = submit_judge_request(
         api_url, model_name, api_key, scoring_api_slot, thread_id, task_id, file_name,
         sampler_settings, prompt, expected_dims=expected_dims,
     )
@@ -2212,63 +2330,198 @@ def get_quality_stats():
 
 
 # =============================================================================
-# Quality Scoring Queue System (v11.2)
+# Quality Scoring Queue System (v11.2, async in v12.9)
 # =============================================================================
-# The LLM quality judge can only process one request at a time. This queue
-# system ensures that quality scoring requests from multiple worker threads
-# are processed sequentially without blocking the workers or losing requests.
+# The LLM quality judge is a scarce resource (a local server, or a rate-limited API).
+# Every request goes through this one queue, so the judge's concurrency is capped by
+# ``quality.judge_concurrency`` rather than by how many workers happen to be running.
+#
+# Two modes, chosen by ``quality.async_scoring``:
+#
+#   GATE (default) -- the worker blocks on its job's ``threading.Event`` until the
+#     verdict arrives, because a conversation the judge rejects must never be written
+#     (v11.4). The wait is bounded by ``quality.result_timeout``, which is why a slow
+#     judge DROPS rows.
+#
+#   QUEUE -- the worker hands over a COMPLETE write job and returns immediately; the
+#     processor scores it and calls the injected writer itself. There is no wait, so there
+#     is no timeout to lose work to: a job stays queued until it is scored, and the run
+#     does not end until the queue is drained (``wait_for_quality_queue``). The row is
+#     written only after its verdict, so a written row is complete and a rejected
+#     conversation never appears at all.
 # =============================================================================
 
 # Quality scoring queue: holds tuples of (conversation_history, task_id, thread_id,
-# api_slot_idx, file_name, character_profile_text, scene_characters, logic_findings)
+# api_slot_idx, file_name, character_profile_text, scene_characters, logic_findings,
+# cast_schedule, cast_events, job)
+#
+# v12.9: the queue is served by ``quality.judge_concurrency`` processor threads instead of one.
+# The queue object itself is unchanged -- it is already thread-safe, and every job carries its own
+# ``threading.Event``, so ``_quality_queue_processor()`` needs no per-job coordination. Only the
+# pool's size changed. Kept as a list (not a single thread handle) so shutdown can join them all.
 _quality_scoring_queue = Queue()
 _quality_queue_lock = Lock()
-_quality_processor_thread = None
+_quality_processor_threads = []
 _quality_processor_running = False
+# True while wait_for_quality_queue() is draining, so the processor's stop condition and the
+# drain agree on when the run may end.
+_quality_draining = False
+# The writer generation.py injects for QUEUE mode (see set_quality_write_handler).
+_quality_write_handler = None
+
+
+def set_quality_write_handler(handler):
+    """Register the function that writes one scored row (v12.9, QUEUE mode only).
+
+    ``handler(job, verdict)`` is called by the processor AFTER the judge has spoken, so a
+    written row always carries its verdict. Injected rather than imported because
+    generation.py already imports quality: quality importing generation would be circular.
+    """
+    global _quality_write_handler
+    _quality_write_handler = handler
+
+
+def _quality_job_finished():
+    """True when this job's row is settled (written or deliberately dropped)."""
+    job = _current_quality_job()
+    if job is None:
+        return False
+    event = job.get("event")
+    return bool(event is not None and event.is_set())
+
+
+# The job a processor thread is currently working on. ``threading.local`` so two processor
+# threads never see each other's job -- the scorer needs it to mark a job finished even when it
+# returns early (a skip, an empty conversation) without going through _record_quality_result().
+_quality_job_context = threading.local()
+
+
+def _current_quality_job():
+    """The job this processor thread is scoring, or None outside a processor thread."""
+    return getattr(_quality_job_context, "job", None)
 
 
 def initialize_quality_queue():
-    """Initialize the quality scoring queue system. Called once at app startup."""
-    global _quality_processor_thread, _quality_processor_running
+    """Initialize the quality scoring queue system. Called once at app startup.
+
+    Starts ``quality.judge_concurrency`` processor threads (default 1, so a default run behaves
+    exactly as before). More than one lets the judge server actually be used in parallel; the
+    workers still block on their own verdict, and the queue keeps a single FIFO order.
+    """
+    global _quality_processor_threads, _quality_processor_running
     with _quality_queue_lock:
         if _quality_processor_running:
             return  # Already initialized
         _quality_processor_running = True
-        _quality_processor_thread = threading.Thread(
-            target=_quality_queue_processor,
-            daemon=True,
-            name="QualityScoringProcessor"
-        )
-        _quality_processor_thread.start()
-        log_message("Quality scoring queue processor started.", "INFO")
+        workers = judge_concurrency()
+        _quality_processor_threads = []
+        for worker_idx in range(workers):
+            thread = threading.Thread(
+                target=_quality_queue_processor,
+                daemon=True,
+                name=f"QualityScoringProcessor-{worker_idx + 1}"
+            )
+            _quality_processor_threads.append(thread)
+        for thread in _quality_processor_threads:
+            thread.start()
+        log_message(
+            f"Quality scoring queue started with {workers} processor thread(s) "
+            f"(quality.judge_concurrency)"
+            f"{' [async: the judge writes the rows]' if judge_async_enabled() else ''}.",
+            "INFO")
 
 
 def shutdown_quality_queue():
-    """Shutdown the quality scoring queue processor. Called on app exit."""
-    global _quality_processor_running
+    """Shutdown every quality scoring queue processor. Called on app exit."""
+    global _quality_processor_running, _quality_processor_threads
     with _quality_queue_lock:
         _quality_processor_running = False
-    if _quality_processor_thread:
-        _quality_processor_thread.join(timeout=2.0)
-        log_message("Quality scoring queue processor stopped.", "INFO")
+        threads = list(_quality_processor_threads)
+    # Give each thread its own slice of time rather than 2 s total, so a wide pool can still
+    # finish the request it is holding before the process exits.
+    budget = max(2.0, 0.5 * len(threads))
+    for thread in threads:
+        thread.join(timeout=budget)
+    with _quality_queue_lock:
+        _quality_processor_threads = []
+    if threads:
+        log_message(
+            f"Quality scoring queue stopped ({len(threads)} processor thread(s)).", "INFO")
+
+
+def wait_for_quality_queue(quiet=False):
+    """Block until every queued verdict has been processed and written (QUEUE mode).
+
+    The worker threads finishing is NOT the end of the run in async mode: the judge may still
+    hold queued conversations. This waits for them, which is what makes "the judge continues
+    until it is finished" true rather than "the judge stops when generation stops".
+
+    Polls ``unfinished_tasks`` instead of calling ``join()`` so a Stop request can break out
+    (a Stop still drains first -- it must not silently lose queued work either). Returns True
+    when the queue drained, False when it gave up because processing was stopped.
+    """
+    global _quality_draining
+    if not _quality_processor_running:
+        return True
+    _quality_draining = True
+    try:
+        last_report = 0.0
+        while True:
+            try:
+                pending = _quality_scoring_queue.unfinished_tasks
+            except AttributeError:
+                pending = 0
+            if pending <= 0:
+                if not quiet:
+                    log_message("Quality queue drained: every queued verdict was processed.", "INFO")
+                return True
+            if not _quality_processor_running:
+                # Shutdown mid-drain: the rest is lost, and saying so is the only honest
+                # thing to do. It should not happen -- the drain runs before shutdown.
+                log_message(
+                    f"Quality queue stopped with {pending} verdict(s) still pending.", "ERROR")
+                return False
+            if not quiet and time.time() - last_report >= 15:
+                last_report = time.time()
+                log_message(
+                    f"Quality queue: waiting for {pending} queued verdict(s) to finish "
+                    f"before the run can end.", "INFO")
+            time.sleep(0.25)
+    finally:
+        _quality_draining = False
 
 
 def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_idx,
                             file_name, character_profile_text, scene_characters,
                             logic_findings, timeout=None,
-                            cast_schedule="", cast_events=None):
+                            cast_schedule="", cast_events=None, write_job=None):
     """Scores one conversation and returns the verdict (never ``None``).
 
-    The judge is a gatekeeper for the dataset: the worker needs the verdict BEFORE it writes
-    the row, because a dropped conversation must never reach output.jsonl (v11.4). So this
-    call queues the request (the processor still runs one judge at a time) and waits for its
-    result. When the processor is not running (tests, or scoring disabled) it scores inline.
+    Two modes, chosen by ``quality.async_scoring``:
 
-    Returns the ``score_conversation`` dict. A dropped conversation carries
-    ``{"dropped": True, "drop_reason": ...}``; a queue that could not accept the job (full,
-    or the wait timed out) is reported as a dropped row with reason ``judge_failed`` so an
+    GATE (default) -- the judge is a gatekeeper for the dataset: the worker needs the verdict
+    BEFORE it writes the row, because a dropped conversation must never reach output.jsonl (v11.4).
+    This call queues the request and waits for its result, bounded by
+    ``quality.result_timeout``. When the processor is not running (tests, or scoring disabled)
+    it scores inline.
+
+    QUEUE -- requires ``write_job``: the caller has handed over everything needed to write the
+    row, so this queues the job and returns ``None`` IMMEDIATELY. The processor scores the
+    conversation and then calls the injected writer, so the row appears only once it has a verdict.
+    There is no wait, so nothing can be lost to a timeout.
+
+    Returns the ``score_conversation`` dict (GATE) or ``None`` (QUEUE). A dropped conversation
+    carries ``{"dropped": True, "drop_reason": ...}``; a queue that could not accept the job
+    (full, or the wait timed out) is reported as a dropped row with reason ``judge_failed`` so an
     unjudged conversation never slips into the dataset.
     """
+    async_mode = judge_async_enabled()
+    if async_mode and write_job is not None:
+        return _enqueue_quality_write(
+            write_job, conversation_history, task_id, thread_id, api_slot_idx,
+            file_name, character_profile_text, scene_characters, logic_findings,
+            cast_schedule, cast_events)
+
     if not _quality_processor_running:
         # Fallback to synchronous scoring when processor isn't running (e.g., tests)
         log_message(f"Thread {thread_id}: Quality scoring queue not running, using synchronous scoring for {task_id}.", "DEBUG")
@@ -2327,6 +2580,141 @@ def enqueue_quality_scoring(conversation_history, task_id, thread_id, api_slot_i
     return job["result"] or _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
 
 
+def _enqueue_quality_write(write_job, conversation_history, task_id, thread_id,
+                             api_slot_idx, file_name, character_profile_text,
+                             scene_characters, logic_findings, cast_schedule,
+                             cast_events):
+    """Queue a write job for the judge to score and write (QUEUE mode, v12.9).
+
+    Returns ``None``: the caller must NOT write the row itself, the processor owns it. The
+    verdict therefore cannot delay generation and there is no timeout to lose it to.
+
+    The queue is unbounded, so a job is never refused. If the processors are not running the
+    job is scored and written inline instead, so a run without the queue (tests) still produces
+    the row rather than silently dropping it.
+    """
+    job = {
+        "event": threading.Event(),
+        "result": None,
+        "abandoned": False,
+        "write_job": write_job,
+        "task_id": task_id,
+        "thread_id": thread_id,
+    }
+    item = (
+        conversation_history,
+        task_id,
+        thread_id,
+        api_slot_idx,
+        file_name,
+        character_profile_text,
+        scene_characters,
+        logic_findings,
+        cast_schedule,
+        cast_events,
+        job,
+    )
+
+    if not _quality_processor_running:
+        log_message(
+            f"Thread {thread_id}: Quality queue not running; scoring {task_id} inline.", "DEBUG")
+        _score_and_write_job(item)
+        return None
+
+    _quality_scoring_queue.put(item, block=False)
+    log_message(
+        f"Thread {thread_id}: Quality scoring queued for {task_id} "
+        f"(queue depth: {_quality_scoring_queue.qsize()}); generation continues.", "DEBUG")
+    return None
+
+
+def _score_and_write_job(item):
+    """Score one queued job and write its row (QUEUE mode). Never raises.
+
+    The row is written ONLY after a verdict, so a written row is always scored and a
+    rejected conversation never appears in the dataset. A job that cannot be written is reported
+    at ERROR and counted, never silently dropped: losing work quietly is the exact failure this
+    mode exists to prevent.
+    """
+    (conversation_history, task_id, thread_id, api_slot_idx, file_name,
+     character_profile_text, scene_characters, logic_findings,
+     cast_schedule, cast_events) = item[:10]
+    job = item[10] if len(item) > 10 else None
+    write_job = (job or {}).get("write_job")
+
+    qr = None
+    try:
+        _quality_job_context.job = job
+        qr = score_conversation(
+            conversation_history,
+            task_id,
+            thread_id,
+            api_slot_idx=api_slot_idx,
+            file_name=file_name,
+            character_profile_text=character_profile_text,
+            scene_characters=scene_characters,
+            logic_findings=logic_findings,
+            cast_schedule=cast_schedule,
+            cast_events=cast_events,
+        )
+    except Exception as e:
+        log_message(f"Quality processor: Error scoring {task_id}: {e}", "ERROR")
+        qr = _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+    finally:
+        _quality_job_context.job = None
+
+    if write_job is None:
+        # No writer registered: record the verdict in app_state only, which is the old
+        # gate-mode bookkeeping and still better than losing the score entirely.
+        _record_quality_result(qr, task_id, thread_id, "Quality processor")
+        _settle_quality_job(job, qr)
+        return
+
+    if qr.get("dropped"):
+        # A rejected conversation is a DELIBERATE removal, not a loss: it is recorded
+        # with its reason and the row is never written.
+        _record_quality_result(qr, task_id, thread_id, "Quality processor")
+        log_message(
+            f"Quality processor: {task_id} rejected by the judge "
+            f"({qr.get('drop_reason')}); not written to the dataset.", "WARNING")
+        _settle_quality_job(job, qr)
+        return
+
+    try:
+        # The injected writer takes the job's callable and the verdict; generation.py
+        # supplies both, so this module never has to import generation (circular).
+        if _quality_write_handler is None:
+            # Not registered (a test, or a run that started before the handler was
+            # installed). Recording the verdict is better than losing the row, and the
+            # count below keeps it visible rather than silent.
+            raise RuntimeError(
+                "no quality write handler registered; call "
+                "set_quality_write_handler() before async scoring")
+        _quality_write_handler(write_job, qr)
+    except Exception as e:
+        log_message(
+            f"Quality processor: WRITE FAILED for {task_id} after it was scored: {e}. "
+            f"The verdict is kept, but this conversation is not in the dataset.", "ERROR")
+        with app_state.quality_lock:
+            app_state.quality_write_failures.add(task_id)
+        # Keep the verdict: the judge's work is not thrown away just because the
+        # write failed, so the score is still on the dashboard and a retry can reuse it.
+        _record_quality_result(qr, task_id, thread_id, "Quality processor")
+    else:
+        _record_quality_result(qr, task_id, thread_id, "Quality processor")
+    _settle_quality_job(job, qr)
+
+
+def _settle_quality_job(job, qr):
+    """Mark a QUEUE-mode job finished so the drain knows it is done."""
+    if job is None:
+        return
+    job["result"] = qr
+    event = job.get("event")
+    if event is not None:
+        event.set()
+
+
 def _dropped_result(reason, flags=None):
     """A score_conversation-shaped result for a conversation the judge rejected."""
     return {
@@ -2357,8 +2745,13 @@ def _record_quality_result(qr, task_id, thread_id, prefix="Quality score"):
         return qr
 
     with app_state.quality_lock:
-        if task_id not in app_state.quality_scores:
-            app_state.quality_scores[task_id] = qr
+        # v12.9: ALWAYS take the newest verdict. This used to keep only the first one
+        # (``if task_id not in ...``), which in duplication mode meant every per-turn
+        # row of a task carried TURN 1's verdict: the turn-1 conversation is scored
+        # first, stored, and the later, longer conversations' verdicts were discarded.
+        # Each per-turn row is a partial conversation, so each should carry the verdict
+        # for the state it actually represents.
+        app_state.quality_scores[task_id] = qr
         # A later successful verdict supersedes an earlier drop for the same task (a dropped
         # task stays retryable, so this happens on the retry).
         app_state.quality_dropped.pop(task_id, None)
@@ -2377,8 +2770,13 @@ def _record_quality_result(qr, task_id, thread_id, prefix="Quality score"):
 
 def _quality_queue_processor():
     """
-    Background thread that processes quality scoring requests one at a time.
-    This ensures the LLM judge is never overwhelmed with concurrent requests.
+    Background worker that processes quality scoring requests.
+
+    ``quality.judge_concurrency`` of these threads run at once (default 1). The queue keeps a
+    single FIFO order and each job carries its own ``threading.Event``, so this body needs no
+    per-job coordination: whichever thread picks a job up scores it and sets that job's event.
+    The concurrency limit exists so the judge SERVER is never overwhelmed -- raise it only as far
+    as the judge server can actually serve in parallel.
     """
     log_message("Quality scoring processor thread started.", "DEBUG")
     
@@ -2388,42 +2786,86 @@ def _quality_queue_processor():
             item = _quality_scoring_queue.get(timeout=1.0)
         except Empty:
             continue
-        
-        (conversation_history, task_id, thread_id, api_slot_idx, file_name,
-         character_profile_text, scene_characters, logic_findings,
-         cast_schedule, cast_events) = item[:10]
-        job = item[10] if len(item) > 10 else None
-        
-        log_message(f"Quality processor: Starting score for {task_id} (from thread {thread_id}).", "DEBUG")
-        
+
         try:
-            # Perform the actual scoring
-            qr = score_conversation(
-                conversation_history,
-                task_id,
-                thread_id,
-                api_slot_idx=api_slot_idx,
-                file_name=file_name,
-                character_profile_text=character_profile_text,
-                scene_characters=scene_characters,
-                logic_findings=logic_findings,
-                cast_schedule=cast_schedule,
-                cast_events=cast_events
-            )
-            # The waiting worker gave up (stop/timeout) and already recorded the drop; storing
-            # the late score too would resurrect a row that was dropped.
-            if job is not None and job.get("abandoned"):
-                log_message(f"Quality processor: {task_id} was abandoned by its worker; "
-                            f"discarding the late verdict.", "WARNING")
+            job = item[10] if len(item) > 10 else None
+            if job is not None and job.get("write_job") is not None:
+                # QUEUE mode: the processor scores AND writes the row, so the worker
+                # never waited and nothing can be lost to a timeout.
+                _score_and_write_job(item)
+            elif job is not None and job.get("judge_request") is not None:
+                # A bare judge request (check_logic): run it here so it shares the
+                # concurrency limit and the rate limiter with every other request.
+                _run_judge_request_job(item)
             else:
-                _record_quality_result(qr, task_id, thread_id, "Quality processor")
-        except Exception as e:
-            log_message(f"Quality processor: Error scoring {task_id}: {e}", "ERROR")
-            qr = _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+                _process_gate_job(item)
         finally:
-            if job is not None:
-                job["result"] = qr
-                job["event"].set()
             _quality_scoring_queue.task_done()
+    
+    log_message("Quality scoring processor thread exiting.", "DEBUG")
+
+
+def _run_judge_request_job(item):
+    """Run one queued judge request and hand the result to its waiting caller.
+
+    Used by ``submit_judge_request()`` (``check_logic``): the request is not a
+    conversation score, so nothing is written and nothing is recorded in app_state -- the
+    caller decides what to do with the reply.
+    """
+    request = item[0]
+    job = item[10] if len(item) > 10 else None
+    try:
+        result = _call_logic_judge(
+            request["api_url"], request["model_name"], request["api_key"],
+            request["scoring_api_slot"], item[2], item[1], item[4],
+            request["sampler_settings"], request["prompt"],
+            expected_dims=request.get("expected_dims"),
+            max_attempts=request.get("max_attempts"))
+    except Exception as e:
+        log_message(f"Quality processor: judge request failed: {e}", "ERROR")
+        result = ({}, ["llm_exception"], False, {})
+    finally:
+        if job is not None:
+            job["result"] = result
+            job["event"].set()
+
+
+def _process_gate_job(item):
+    """Score one GATE-mode job and hand the verdict to the waiting worker."""
+    (conversation_history, task_id, thread_id, api_slot_idx, file_name,
+     character_profile_text, scene_characters, logic_findings,
+     cast_schedule, cast_events) = item[:10]
+    job = item[10] if len(item) > 10 else None
+
+    log_message(f"Quality processor: Starting score for {task_id} (from thread {thread_id}).", "DEBUG")
+
+    try:
+        # Perform the actual scoring
+        qr = score_conversation(
+            conversation_history,
+            task_id,
+            thread_id,
+            api_slot_idx=api_slot_idx,
+            file_name=file_name,
+            character_profile_text=character_profile_text,
+            scene_characters=scene_characters,
+            logic_findings=logic_findings,
+            cast_schedule=cast_schedule,
+            cast_events=cast_events
+        )
+        # The waiting worker gave up (stop/timeout) and already recorded the drop; storing
+        # the late score too would resurrect a row that was dropped.
+        if job is not None and job.get("abandoned"):
+            log_message(f"Quality processor: {task_id} was abandoned by its worker; "
+                        f"discarding the late verdict.", "WARNING")
+        else:
+            _record_quality_result(qr, task_id, thread_id, "Quality processor")
+    except Exception as e:
+        log_message(f"Quality processor: Error scoring {task_id}: {e}", "ERROR")
+        qr = _dropped_result(DROP_REASON_JUDGE_FAILED, ["llm_exception"])
+    finally:
+        if job is not None:
+            job["result"] = qr
+            job["event"].set()
     
     log_message("Quality scoring processor thread exiting.", "DEBUG")
