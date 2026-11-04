@@ -32,7 +32,7 @@ file to edit — so you only need that one row, not the other topic files.
 | [`config.md`](config.md) | Add new API slot; Add detection type; Add config option; Add slop/anti-slop phrase; Enable/disable Slop or Anti-Slop (v12.7.6); Add/modify a Regex Watch pattern; Change rate limit; Add API profile; Modify API profile params; Add character profile; Add character field; Modify opening mode prompts; Add random names feature; Add random settings pool; Add/modify persona breakthrough or emotional arc; Add/modify user-side emotional states/arcs (v10.6.0); Toggle conversation history for fixers |
 | [`slop-antislop-default-off.md`](slop-antislop-default-off.md) | Enable/disable Slop or Anti-Slop (v12.7.6); Change the default state of a detection layer; Change where slop/anti-slop documentation points |
 | [`core-modules.md`](core-modules.md) | Fix quote balancing; Add UI metric; Add a style measurement / style metadata column; Add/modify an always-on deterministic text cleanup (v12.7.3) |
-| [`generate-ui.md`](generate-ui.md) | Change the Review tab; Fix a cramped / clipped Treeview table |
+| [`generate-ui.md`](generate-ui.md) | Change the Review tab; Fix a cramped / clipped Treeview table; Call a module object (`<module>.<attr>()`) from `generate.py` / fix a `NameError` on an unbound global (v12.9.1) |
 | [`config-editor.md`](config-editor.md) | Fix a label rendering one character per line (a "skyscraper"); Fix an unreadable / white-on-white spinbox; Add dataset column→alias mapping |
 | [`generation.md`](generation.md) | Add/modify scene cast (v12.0); Modify output format; Add/modify output metadata field; Change what a request contains (prompt text, message order or role); Add/modify the answer prompt's native variables (v12.5, widened v12.7); Add/modify the repeated-reply guard (v12.7); Trim the duplicated continuation history (v12.7) |
 | [`generation-retries.md`](generation-retries.md) | Modify retry logic; Change how Regex Watch rewrites text; Add/modify the repeated-opener guard (v12.5); Add/modify the first-reply opener caps |
@@ -79,3 +79,4 @@ it names; follow the file name to read the full step list:
 - Change the default state of a detection layer
 - Change where slop/anti-slop documentation points
 - Add/modify a cleaner-pipeline stage or rule (v12.8.0)
+- Call a module object from `generate.py` / fix a `NameError` on an unbound global (v12.9.1)

@@ -46,6 +46,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - **Dropped conversations (v11.4)** → `generation._quality_dropped(verdict)` gates both write paths (non-duplication final write, duplication per-turn write). A drop must never write a row, never `completed_task_ids.add()`, and never enter `quality_review_ids`
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - **Version label (v12.9)** → the `version_label` in the header frame is ONE of the FOUR sites a release bump must touch: the GUI label here, the `README.md` title, the `docs/changelog-v12.md` heading and the `docs/version-history.md` index row (`(**current: vX.Y**)`). Bumping only the changelog leaves the other three stale — v12.8.3 did exactly that, and v12.8.3's own entry had already missed two of them. **Do not bump it for a code change that ships no release**, and do not retag the historical `(v12.8.2)` markers, which annotate when a feature landed.
+- **Async-judge wiring in `start_processing()` (v12.9.1)** → `generation._install_quality_write_handler()` must be called through the **module object**, so `generate.py` carries a plain `import generation` alongside its `from generation import ...` lines. `from generation import worker` binds `worker` and **not** `generation`; v12.9 shipped without the module import and every async-scoring run died on the first Start click with `NameError: name 'generation' is not defined`, inside the Tk callback. The branch is gated on `quality.async_scoring` **and** `quality.use_llm_scoring`, so no default run, import-time check or test reached it. `tests/test_undefined_globals.py` now fails on any global a function references but the module never binds — add it to your mental checklist whenever you introduce a new module-object call (`<module>.<attr>()`) in this file
 - DB export → `export_db_to_jsonl()`, `clear_database()`
 - Quality tab layout → `_rebuild_quality_roleplay_layout()` builds the summary labels + score-table columns from `quality.active_scoring_dimensions()` (the toggle is read at build time and re-checked each tick, so a change in the Config Editor mid-run re-lays-out the Quality tab automatically; `update_quality_tab()` fills rows in that column order)
 
@@ -75,9 +76,18 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ---
 
+### `tests/test_undefined_globals.py`
+**Purpose:** Headless guard against a global name a function USES but the module never BINDS — the v12.9.1 `NameError: name 'generation' is not defined` class of bug
+**Key:** walks the `symtable` of every application module and fails on any global that is referenced but never bound at module level (assignment, import, `def`/`class`, `global` declaration or builtin); then pins the async-judge wiring specifically — the `generation._install_quality_write_handler()` call in `start_processing()` resolves to a module-level name bound to the module object, that object really defines the attribute, and `generate.py` imports the module rather than only names from it
+**Run:** `python -B tests/test_undefined_globals.py` (headless: the modules are parsed from source, never imported, so it needs no display, config, network or model)
+**Edit for:** add a module to `CHECKED_MODULES` when you add a new top-level module; extend the wiring cases when a new module-object call is added to a gated branch
+
+---
+
 ## Tasks that touch these files
 
 | Task | Files to edit |
 |------|---------------|
+| Call a module object (`<module>.<attr>()`) from `generate.py` | `generate.py` — add the plain `import <module>`, not only `from <module> import x`; a `from ... import` never binds the module name and the call fails with `NameError` on whichever branch reaches it. `tests/test_undefined_globals.py` guards it |
 | Change the Review tab | `generate.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_drop_review_conversation()` + `_drop_task_output_rows()` / `_drop_task_db_rows()`, `_iter_review_records()`, the `elif tab_name == "🔍 Review"` layout block), `tests/test_review_tab_ui.py` |
 | Fix a cramped / clipped Treeview table | `generate.py` — give the table its own style with an explicit `font` + `rowheight` from `font.metrics('linespace')`, and size columns from the heading text. Regex Watch does this via `REGEX_TREE_STYLE`, `_configure_regex_tree_style()`, `_configure_regex_tree_columns()`; guarded by `tests/test_regex_watch_tab_ui.py` |

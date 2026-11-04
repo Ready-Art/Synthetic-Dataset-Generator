@@ -84,6 +84,16 @@ The writer is **injected** with `set_quality_write_handler(handler)`; `generatio
 registers it at run start, before `initialize_quality_queue()`. It is injected rather than imported
 because `generation.py` already imports `quality`, so `quality` importing `generation` would be circular.
 
+**`generate.py` must import the generation MODULE, not only names from it.** The call site is
+`generation._install_quality_write_handler()`, and `from generation import worker, ...` binds `worker`
+but never the name `generation`. v12.9 shipped without the plain `import generation` and every async
+run died on the first Start click with `NameError: name 'generation' is not defined` inside the Tk
+callback — invisible to the default run and to every import-time check, because the branch is gated on
+`async_scoring` **and** `use_llm_scoring`. The install must also stay BEFORE
+`initialize_quality_queue()`, so a processor can never pick up a job with no writer.
+`tests/test_undefined_globals.py` (v12.9.1) fails on any global a function references but its module
+never binds, and additionally pins this call site, the attribute it names and the module import.
+
 `generation._make_quality_write_job(write_conversation_kwargs, on_written)` binds everything the
 worker would have passed to `write_conversation` EXCEPT `quality_result`, and the helper fills that in.
 The row is therefore byte-identical to the worker's own write (guarded by
@@ -166,3 +176,7 @@ unless you have deliberately sized the judge for it.
 - `tests/test_quality_async_queue.py` — async mode end to end: generation returns immediately, the
   drain waits, nothing is lost to a short timeout, a rejected conversation is never written, a write failure
   is counted, all queued jobs are written, and `async_scoring: false` keeps the blocking gate.
+- `tests/test_undefined_globals.py` — the wiring itself: no application module references a global it
+  never binds (the v12.9.1 `NameError` class), and `generate.start_processing()`'s
+  `generation._install_quality_write_handler()` call resolves to a bound module object whose attribute
+  really exists.
