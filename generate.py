@@ -77,6 +77,10 @@ import matplotlib.ticker as ticker
 import api_handler
 import api_profiles
 import app_state
+# The module object is needed for the async-judge wiring in start_processing()
+# (generation._install_quality_write_handler()); `from generation import x` alone does
+# not bind the name `generation`, so referring to generation.<attr> raised NameError.
+import generation
 from dataset_tasks import configure_queue_datasets
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
@@ -2830,7 +2834,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.9",
+    text="v12.9.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
