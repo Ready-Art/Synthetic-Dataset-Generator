@@ -38,6 +38,8 @@ file to edit — so you only need that one row, not the other topic files.
 | [`generation-retries.md`](generation-retries.md) | Modify retry logic; Change how Regex Watch rewrites text; Add/modify the repeated-opener guard (v12.5); Add/modify the first-reply opener caps |
 | [`detection.md`](detection.md) | Add/modify the non-Latin script check (v11.10.0); Add/modify missing-quotations retry (v11.7.1, apostrophe guard v11.7.2); Add/modify the repeated-opener guard (v12.5); Add/modify the first-reply opener caps |
 | [`quality.md`](quality.md) | Add quality dimension; Change judge retry/drop policy (v11.4); Change/add the judge's vLLM priority (v11.8.x); Change how the judge's JSON is parsed (v11.5) |
+| [`quality-queue.md`](quality-queue.md) | Change the judge's concurrency (v12.9); Change the judge's rate-limit slot (v12.9); Change the cost of one judge conversation; Fix a judge queue stall or a `judge_failed` drop |
+| [`quality-queue.md`](quality-queue.md) | **Run the judge as a queue instead of a gate (`quality.async_scoring`, v12.9); Change where/when a row is written; Fix rows lost to a judge timeout** |
 | [`datasets.md`](datasets.md) | Add dataset source type; Modify dataset placeholder rendering; Add/modify dataset variables in `input/questions.txt` (v11.9.0); Change per-task row allocation |
 | [`tools-and-docs.md`](tools-and-docs.md) | Add or change the license header on every file; Run dataset tests; Run GUI layout tests; Fix Gemma 4 thinking in an axolotl fine-tune (**out of scope, not this app's code**); Add/modify a cleaner-pipeline stage or rule (v12.8.0) |
 
@@ -63,6 +65,8 @@ it names; follow the file name to read the full step list:
 - Change judge retry/drop policy (v11.4)
 - Change/add the judge's vLLM priority (v11.8.x)
 - Change how the judge's JSON is parsed (v11.5)
+- Change the judge's concurrency or rate-limit slot (v12.9)
+- Make the judge write rows instead of gating them (`quality.async_scoring`, v12.9)
 - Add character field
 - Add random names feature
 - Change how random names are dealt across a run (v12.8.1)

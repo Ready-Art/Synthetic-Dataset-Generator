@@ -208,6 +208,8 @@ quality:
   judge_max_attempts: 3            # Transient judge failures are retried this many times, then the row is dropped
   judge_retry_delay: 1.0           # Seconds between judge attempts (grows linearly per attempt)
   result_timeout: 600              # Seconds a worker waits for its queued verdict before dropping the row
+  judge_concurrency: 1             # v12.9: judge requests allowed in flight at once (1-32). Match the judge server's real parallel capacity
+  async_scoring: false             # v12.9: run the judge as a QUEUE, not a GATE. Off = the worker waits for the verdict (a slow judge drops rows on result_timeout). On = the worker hands over the write job and moves on; the judge scores and writes the row, so generation never waits and nothing is lost to a timeout
   judge_json_repair_attempts: 1     # Re-ask the model for JSON-only output this many times before dropping (0 = v11.4 behaviour)
   judge_max_tokens: 0              # Token budget per judge request (0 = automatic; a token-limited reply is retried with double)
   judge_request_timeout: 120        # HTTP timeout for one judge request (was a hard-coded 60s)
@@ -218,6 +220,7 @@ quality:
     url: ""                        # Dedicated LLM endpoint for scoring (optional)
     model: ""                      # Model name for scoring LLM
     key: ""                        # API key for scoring LLM
+    slot_idx: 6                     # v12.9: rate-limiter slot the judge's requests count against (0-6; 6 = the judge's own slot)
 ```
 
 **Scoring Dimensions & Default Weights:**
@@ -234,6 +237,88 @@ quality:
 **Heuristic Scoring (no API call required):**
 - **Diversity** — Type-token ratio, sentence length variance, trigram repetition rate, paragraph structure
 - **Technical** — Quote balance (straight + curly), stray asterisks, em dashes, tab characters, excessive whitespace, trailing whitespace, all-lowercase detection
+
+## Async Scoring: the Judge as a Queue (v12.9)
+
+By default the judge is a **gate**: a worker hands its conversation to the judge and waits for the
+verdict before it writes the row, because a conversation the judge rejects must never reach the dataset.
+That wait is bounded by `quality.result_timeout` (600 s), so a judge that is slower than the run can keep
+up with **drops rows** — they are logged as `judge_failed`, and the generation work that produced them is
+thrown away.
+
+`quality.async_scoring: true` changes that. The worker hands the judge a complete write job and **moves on
+immediately**; the judge scores the conversation and writes the row itself. Three things follow:
+
+- **Generation never waits for a verdict**, so a slow judge cannot hold up generation.
+- **Nothing is lost to a timeout.** There is no wait to time out of, so `result_timeout` is not consulted
+  at all in this mode. A queued conversation stays queued until it is scored.
+- **The run does not end until the judge is finished.** When the last worker stops, the run waits for the
+  quality queue to drain, so every queued conversation is scored and written before the run completes.
+
+A row still appears **only after it has a verdict**, so a written row is always complete. This means rows
+land later and out of order rather than all at once, but never unscored.
+
+Two things are unchanged, because they are deliberate rather than accidental:
+
+- **A conversation the judge rejects is never written.** It is recorded with its `drop_reason` in the dashboard
+  and the log, exactly as in gate mode — a deliberate removal, not a lost row.
+- **A Stop still drains first.** Stopping means "stop generating conversations", not "throw away the
+  conversations the judge already owes us".
+
+A conversation the judge scored but could **not** write (disk full, database down) is reported at ERROR and
+counted, never silently discarded; its verdict is kept, so the score is still visible and a retry can reuse it.
+
+This mode pairs naturally with `judge_concurrency`: raise the concurrency to the judge server's real capacity
+and the queue absorbs any burst while generation keeps running.
+
+**Note:** `quality.per_turn_logic_check` now goes through the same queue (v12.9), so it shares
+`judge_concurrency` and the rate limiter instead of firing one unthrottled request per turn per worker.
+It is still off by default, and it still costs one extra judge call per turn, so at 30 threads expect it
+to dominate the judge's load — leave it off unless you have raised `judge_concurrency` deliberately.
+
+## Judge Concurrency (v12.9)
+
+Every verdict the judge returns is a **gate**: a worker blocks on it before it may write the row, and a
+conversation the judge rejects is never written to the dataset. That makes the judge's throughput a hard
+ceiling on the whole run — and until v12.9 that ceiling was **one request at a time**, because the scoring
+queue was drained by a single processor thread no matter how many workers were generating.
+
+The arithmetic that made it drop rows: with `T` generation threads and `W` judge requests in flight, the
+last waiter in line waits about `(T / W) × L` for `L` seconds of judge latency. Once that passes
+`quality.result_timeout` (600 s) the row is dropped as `judge_failed`. At `T=30, W=1` and a 20–30 s
+judge, that is 600–900 s — so healthy conversations were being thrown away purely for queueing behind
+each other.
+
+`quality.judge_concurrency` (**1-32, default 1**) sizes the pool. The default of 1 keeps a default run
+byte-identical to the previous release.
+
+**Size it to the judge server, not to the worker count.** The target is
+
+```
+W  ≥  threads × judge_latency / seconds_per_conversation
+```
+
+but never more than the judge server can actually serve in parallel. A local vLLM that slows down sharply
+past 2–3 concurrent sequences wants `2` or `3` here: setting `8` against such a server does not make it
+faster, it only moves the queue from this process into vLLM's scheduler, where it is harder to see and
+costs the same latency. Raise `judge_concurrency` only as far as the server's `--max-num-seqs` and its
+KV-cache headroom allow — a judge request carries the conversation (`max_chars_for_scoring`) plus the
+character profile, so wide concurrency can trigger preemption and make latency worse than before.
+
+Two related notes:
+
+- **`quality.scoring_api.slot_idx`** (0-6, default 6) picks the rate-limiter slot the judge's requests are
+  counted against. Index 6 is the judge's own logical slot; point it at a generation slot to make the judge
+  share that slot's `rate_limit_rpm` instead. Before v12.9 the limiter's structures were only 6 wide, so the
+  judge's `slot_idx` of 6 raised a `KeyError` inside a bare `try/except` — the judge was **never
+  rate-limited and its latency was never recorded**, which is why a saturated judge was invisible on the
+  dashboard.
+- **`quality.judge_max_attempts` and `quality.judge_json_repair_attempts` multiply the cost of one
+  conversation.** Worst case is `attempts × (1 + repair_rounds)` requests at `judge_request_timeout` each: the
+  defaults (3 attempts, 1 repair round, 120 s) allow **~723 s of exclusive occupancy**, longer than
+  `result_timeout` itself. One flaky conversation could therefore stall the queue past every other waiter's
+  deadline. Lowering `judge_max_attempts` to `1` and the repair rounds to `0` is the cheapest way to stop that
+  cascade.
 
 ## Roleplay Dimensions (opt-in)
 

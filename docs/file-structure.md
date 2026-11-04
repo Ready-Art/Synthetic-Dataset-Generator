@@ -68,6 +68,7 @@ readyart-dataset-generator/
 │       ├── generation.md    # generation.py (worker loop, retries, metadata)
 │       ├── detection.md     # detection.py (issue checks)
 │       ├── quality.md       # quality.py (scoring, judge)
+│       ├── quality-queue.md # quality.py (scoring queue, judge concurrency, judge rate-limit slot)
 │       ├── config.md        # config/config.yml + api_profiles.yml reference
 │       ├── core-modules.md  # app_state, api_handler, config_loader, state/locks
 │       ├── datasets.md      # dataset_*.py, datasets_panel.py
