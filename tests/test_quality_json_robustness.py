@@ -515,6 +515,56 @@ def test_bad_envelope_is_transient():
         quality.requests.post = real
 
 
+def test_judge_slot_is_rate_limited_and_measured():
+    print("(10) the judge's slot is inside the limiter's range (v12.9)")
+    import api_handler
+
+    # The judge calls the rate limiter and the response-time tracker with slot_idx=6 by default.
+    # Both structures were 6 wide, so every judge request raised KeyError inside a bare
+    # try/except: the judge was never throttled and its latency was never recorded.
+    check("the limiter knows the judge's slot",
+          api_handler.RATE_LIMITER_SLOT_COUNT > 6)
+    check("response-time tracker knows the judge's slot",
+          6 in api_handler.api_response_times_per_slot)
+
+    limiter = api_handler.RateLimiter()
+    check("rates_per_slot covers the judge's slot", 6 in limiter.rates_per_slot)
+    check("requests_per_slot covers the judge's slot", 6 in limiter.requests_per_slot)
+    try:
+        limiter.wait_if_needed(6)
+        ok = True
+    except Exception as exc:  # noqa: BLE001 - the assertion below reports the type
+        ok = False
+        print("     raised:", type(exc).__name__, exc)
+    check("wait_if_needed(6) does not raise", ok)
+    check("the judge request is recorded for throttling",
+          len(limiter.requests_per_slot[6]) == 1)
+
+    # And a judge reply actually lands in the tracker, so the dashboard can show it.
+    quality._record_judge_response_time(6, 1.25)
+    check("a judge response time is recorded",
+          api_handler.api_response_times_per_slot[6][-1] == 1.25)
+
+    # The judge's slot is configurable, so it can share a generation slot's limit instead.
+    set_config(judge_config(scoring_api={"url": "http://judge.invalid/v1/chat/completions",
+                                        "model": "judge-model",
+                                        "slot_idx": 2}))
+    seen = []
+    real_wait = quality.global_rate_limiter.wait_if_needed
+    quality.global_rate_limiter.wait_if_needed = lambda slot: seen.append(slot)
+
+    def handler(url, headers=None, data=None, timeout=None):
+        return _Resp(json.dumps(GOOD))
+
+    real = _stub(handler)
+    try:
+        quality.score_conversation(CONV, "t-slot", 1)
+        check("quality.scoring_api.slot_idx is honoured", seen and seen[0] == 2)
+    finally:
+        quality.requests.post = real
+        quality.global_rate_limiter.wait_if_needed = real_wait
+
+
 def main():
     test_extraction_ladder()
     test_salvage_requires_every_dimension()
@@ -527,6 +577,7 @@ def main():
     test_request_timeout_is_configurable()
     test_judge_priority_field()
     test_bad_envelope_is_transient()
+    test_judge_slot_is_rate_limited_and_measured()
     print()
     if FAILURES:
         print("{} judge JSON robustness test(s) failed".format(len(FAILURES)))

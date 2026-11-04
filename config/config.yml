@@ -112,6 +112,15 @@ quality:
   judge_max_attempts: 3
   judge_retry_delay: 1.0
   result_timeout: 600
+  # v12.9: how many judge requests may be in flight at once (1-32). Raise it to match the judge
+  # server's real parallel capacity; a local vLLM that slows down past 2-3 concurrent sequences
+  # wants 2 or 3 here, not 8. Default 1 keeps a default run byte-identical to the previous release.
+  judge_concurrency: 1
+  # v12.9: run the judge as a QUEUE instead of a GATE. Off (default) = the worker waits for
+  # the verdict, so a slow judge drops rows on `result_timeout`. On = the worker hands the judge a
+  # complete write job and moves on; the judge scores it and writes the row itself. Generation
+  # never waits, nothing is lost to a timeout, and the run does not end until the queue is drained.
+  async_scoring: false
   judge_json_repair_attempts: 1
   judge_max_tokens: 0
   judge_request_timeout: 120
@@ -122,6 +131,9 @@ quality:
     url: ''
     model: ''
     key: ''
+    # v12.9: the rate-limiter slot the judge's requests are counted against (0-6; index 6 is the
+    # judge's own logical slot). Set this to a generation slot to share its rate limit.
+    slot_idx: 6
 prompts:
   system:
     base: You are an excellent role-player.

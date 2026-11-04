@@ -273,6 +273,201 @@ def test_worker_skips_the_write_for_a_dropped_row():
         g.write_conversation = real_write
 
 
+def test_judge_concurrency_defaults_and_clamping():
+    print("(9) quality.judge_concurrency is clamped and defaults to 1")
+    set_config(judge_config())
+    check("absent key -> 1 (a default run is unchanged)", quality.judge_concurrency() == 1)
+    set_config(judge_config(judge_concurrency=3))
+    check("configured value is used", quality.judge_concurrency() == 3)
+    set_config(judge_config(judge_concurrency=0))
+    check("below the floor -> 1", quality.judge_concurrency() == 1)
+    set_config(judge_config(judge_concurrency=-5))
+    check("negative -> 1", quality.judge_concurrency() == 1)
+    set_config(judge_config(judge_concurrency=999))
+    check("above the ceiling -> 32", quality.judge_concurrency() == 32)
+    set_config(judge_config(judge_concurrency="garbage"))
+    check("unparsable -> 1 (a bad config value never breaks a run)",
+          quality.judge_concurrency() == 1)
+    set_config(judge_config(judge_concurrency="4"))
+    check("string form is accepted", quality.judge_concurrency() == 4)
+
+
+def test_concurrent_processors_serve_jobs_in_parallel():
+    print("(10) judge_concurrency N runs N judge requests at once")
+    import threading as _threading
+
+    # The judge is stubbed so that each request blocks until every expected request has
+    # arrived. A single-threaded pool can never satisfy that: the first request would wait
+    # forever. So this both proves the pool is parallel and proves the queue hands each job
+    # to a different thread.
+    expected = 3
+    arrived = _threading.Semaphore(0)
+    all_arrived = _threading.Event()
+    counter = {"n": 0}
+    counter_lock = _threading.Lock()
+
+    def handler(url, headers=None, data=None, timeout=None):
+        with counter_lock:
+            counter["n"] += 1
+            if counter["n"] >= expected:
+                all_arrived.set()
+        arrived.release()
+        all_arrived.wait(timeout=10)
+        return _Resp(json.dumps(GOOD_SCORES))
+
+    set_config(judge_config(judge_concurrency=expected))
+    app_state.quality_scores.clear()
+    app_state.quality_dropped.clear()
+    app_state.dropped_task_ids.clear()
+    quality._quality_processor_running = False
+    quality._quality_processor_threads = []
+
+    real = _stub(handler)
+    quality.initialize_quality_queue()
+    try:
+        check("pool size follows the config",
+              len(quality._quality_processor_threads) == expected)
+        results = {}
+
+        def enqueue(task_id):
+            results[task_id] = quality.enqueue_quality_scoring(
+                CONV, task_id, 1, 0, "", "", None, None, timeout=30)
+
+        waiters = [_threading.Thread(target=enqueue, args=(f"t-conc-{i}",))
+                   for i in range(expected)]
+        for w in waiters:
+            w.start()
+        for w in waiters:
+            w.join(timeout=30)
+
+        check("every waiter got a verdict", len(results) == expected)
+        check("no waiter timed out",
+              all(not r.get("dropped") for r in results.values()))
+        check("all requests reached the judge at the same time (truly parallel)",
+              all_arrived.is_set())
+        check("every job was scored",
+              all(f"t-conc-{i}" in app_state.quality_scores for i in range(expected)))
+    finally:
+        quality.shutdown_quality_queue()
+        quality.requests.post = real
+
+
+def test_single_processor_pool_is_still_serial():
+    print("(11) judge_concurrency 1 keeps the old one-at-a-time behaviour")
+    peak = {"now": 0, "max": 0}
+    peak_lock = __import__("threading").Lock()
+
+    def handler(url, headers=None, data=None, timeout=None):
+        import threading as _t
+        with peak_lock:
+            peak["now"] += 1
+            peak["max"] = max(peak["max"], peak["now"])
+        try:
+            _t.Event().wait(0.05)
+            return _Resp(json.dumps(GOOD_SCORES))
+        finally:
+            with peak_lock:
+                peak["now"] -= 1
+
+    set_config(judge_config())  # no judge_concurrency -> 1
+    app_state.quality_scores.clear()
+    app_state.quality_dropped.clear()
+    app_state.dropped_task_ids.clear()
+    quality._quality_processor_running = False
+    quality._quality_processor_threads = []
+
+    real = _stub(handler)
+    quality.initialize_quality_queue()
+    try:
+        import threading as _t
+        check("one processor thread", len(quality._quality_processor_threads) == 1)
+        waiters = [_t.Thread(target=quality.enqueue_quality_scoring,
+                             args=(CONV, f"t-serial-{i}", 1, 0, "", "", None, None),
+                             kwargs={"timeout": 30})
+                   for i in range(3)]
+        for w in waiters:
+            w.start()
+        for w in waiters:
+            w.join(timeout=30)
+        check("only one judge request was ever in flight", peak["max"] == 1)
+    finally:
+        quality.shutdown_quality_queue()
+        quality.requests.post = real
+
+
+def test_dedup_keeps_the_newest_verdict():
+    print("(12) a repeated task_id keeps the NEWEST verdict, not the first (v12.9)")
+    app_state.quality_scores.clear()
+    app_state.quality_dropped.clear()
+    app_state.dropped_task_ids.clear()
+
+    first = {"composite": 10, "dimensions": {}, "flags": [], "method": "hybrid",
+             "scored_at": "t1"}
+    second = {"composite": 90, "dimensions": {}, "flags": [], "method": "hybrid",
+              "scored_at": "t2"}
+
+    quality._record_quality_result(first, "t-dedup", 1, "test")
+    quality._record_quality_result(second, "t-dedup", 1, "test")
+    check("the newest verdict wins",
+          app_state.quality_scores["t-dedup"]["composite"] == 90)
+
+    # And the other way round: a better score must not survive a later, worse one,
+    # because in duplication mode each row carries the verdict for ITS turn.
+    quality._record_quality_result(second, "t-dedup2", 1, "test")
+    quality._record_quality_result(first, "t-dedup2", 1, "test")
+    check("a later verdict replaces an earlier one (not max)",
+          app_state.quality_scores["t-dedup2"]["composite"] == 10)
+
+
+def test_check_logic_goes_through_the_queue():
+    print("(13) check_logic uses the shared queue, not the judge directly (v12.9)")
+    set_config(judge_config())
+    app_state.quality_scores.clear()
+    app_state.quality_dropped.clear()
+    app_state.dropped_task_ids.clear()
+    quality._quality_processor_running = False
+    quality._quality_processor_threads = []
+
+    # Record WHICH THREAD ran the judge. The processor must run it; the calling
+    # worker must not, because a direct call from the worker escapes the limit.
+    import threading as _t
+    call_threads = []
+    real_direct = quality._call_logic_judge
+
+    def spy_direct(*args, **kwargs):
+        call_threads.append(_t.current_thread().name)
+        return real_direct(*args, **kwargs)
+
+    def handler(url, headers=None, data=None, timeout=None):
+        return _Resp(json.dumps({"logic": 95, "logic_evidence": [],
+                                 "rewrite_instruction": ""}))
+
+    real = _stub(handler)
+    quality.initialize_quality_queue()
+    try:
+        # While the queue runs, check_logic must NOT call the judge directly from
+        # the worker thread -- it must hand the request to the queue.
+        quality._call_logic_judge = spy_direct
+        result = quality.check_logic(
+            "She sets the loupe down.",
+            [{"role": "user", "content": "Show me the chronometer."},
+             {"role": "assistant", "content": "Not for sale."}],
+            character_profile_text="", turn_number=2,
+            task_id="t-logic-q", thread_id=1, file_name="f.txt")
+        check("check_logic succeeded through the queue", result.get("success") is True)
+        check("check_logic read the score", result.get("score") == 95)
+        check("the judge ran", call_threads)
+        check("the judge ran on a processor thread, not the worker",
+              all(n.startswith("QualityScoringProcessor") for n in call_threads))
+        check("the queue is empty again", quality._quality_scoring_queue.qsize() == 0)
+    finally:
+        quality._call_logic_judge = real_direct
+        quality.shutdown_quality_queue()
+        quality.requests.post = real
+        quality._quality_processor_running = False
+        quality._quality_processor_threads = []
+
+
 def main():
     test_transient_failure_retries_three_times_then_drops()
     test_retry_count_is_configurable()
@@ -282,6 +477,11 @@ def main():
     test_unconfigured_judge_keeps_heuristics()
     test_dropped_results_are_not_stored()
     test_worker_skips_the_write_for_a_dropped_row()
+    test_judge_concurrency_defaults_and_clamping()
+    test_concurrent_processors_serve_jobs_in_parallel()
+    test_single_processor_pool_is_still_serial()
+    test_dedup_keeps_the_newest_verdict()
+    test_check_logic_goes_through_the_queue()
     print()
     if FAILURES:
         print("{} quality judge policy test(s) failed".format(len(FAILURES)))
