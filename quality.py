@@ -1699,59 +1699,73 @@ def _default_judge_dims():
 def submit_judge_request(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
                           file_name, sampler_settings, prompt, expected_dims=None,
                           max_attempts=None, timeout=None):
-    """Run one judge request through the shared queue, or inline when it is not running.
+    """Run one per-turn judge request (``check_logic``) WITHOUT queueing it behind bulk scoring.
 
-    EVERY judge request must come through here. ``quality.judge_concurrency`` is only a
-    real limit if it gates every request, so a caller that talks to the judge directly
-    (bypassing this function) escapes the limit, the drain and the async write path -- which
-    is exactly what ``check_logic`` used to do, sending one unthrottled judge request per
-    turn per worker, in parallel with the queue.
+    This is the per-turn logic gate: the worker calls it in the middle of generating a
+    conversation and BLOCKS until the answer comes back, because the verdict decides whether
+    the turn is rewritten before it enters the history. It therefore must not share a lane
+    with the conversation-scoring queue.
 
-    Returns the same ``(scores, flags, success, extras)`` tuple as
-    ``_call_logic_judge()``. A request that cannot be queued falls back to calling the
-    judge inline, so a queue problem never blocks a generation turn.
+    v12.9.2: it used to be put on ``_quality_scoring_queue``, the same FIFO the
+    conversation scorer is served from, and then wait on its own ``Event``. With
+    ``quality.judge_concurrency`` at its default of 1 that deadlocked generation: a worker
+    finishing task A queued A's conversation score, and every worker's next turn then sat in
+    line BEHIND that bulk job -- so the generator stopped sending main-API requests until the
+    judge had caught up. That is the exact opposite of what the queue exists to do, and it
+    affected both async and gate mode, because the block is in the per-turn path, not the write
+    path. (Pre-v12.9 ``check_logic`` called the judge directly, so it was never serialised
+    behind conversation scoring at all.)
+
+    The concurrency cap still applies -- a per-turn check is a real judge request and must not
+    be allowed to flood the server -- but it is enforced by a SEPARATE semaphore sized to
+    ``quality.judge_concurrency``, so a gate request only ever waits for another gate request.
+    The request is made inline on the calling thread, which is what keeps a judge outage from
+    blocking generation: the gate already treats ``success=False`` as "pass the answer through".
+
+    Returns the same ``(scores, flags, success, extras)`` tuple as ``_call_logic_judge()``.
     """
-    if not _quality_processor_running:
-        return _call_logic_judge(
-            api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
-            file_name, sampler_settings, prompt, expected_dims=expected_dims,
-            max_attempts=max_attempts)
-
-    job = {"event": threading.Event(), "result": None, "abandoned": False,
-           "judge_request": True}
+    semaphore = _judge_gate_semaphore()
+    acquired = semaphore.acquire(timeout=_judge_gate_wait_seconds(timeout))
+    if not acquired:
+        # Never block a turn indefinitely on a saturated gate: the caller treats an
+        # unsuccessful check as "let the answer through", which is the safe outcome.
+        log_message(
+            f"Thread {thread_id}: Timed out waiting for a per-turn judge slot ({task_id}); "
+            f"the logic check is skipped for this turn.", "WARNING")
+        return {}, ["llm_gate_busy"], False, {}
     try:
-        _quality_scoring_queue.put((
-            {"kind": "judge_request", "api_url": api_url, "model_name": model_name,
-             "api_key": api_key, "scoring_api_slot": scoring_api_slot,
-             "sampler_settings": sampler_settings, "prompt": prompt,
-             "expected_dims": expected_dims, "max_attempts": max_attempts},
-            task_id, thread_id, scoring_api_slot, file_name, "", None, None, "", None,
-            job,
-        ), block=False)
-    except Full:
-        log_message(
-            f"Thread {thread_id}: Quality queue full for a judge request ({task_id}); "
-            f"calling the judge directly.", "WARNING")
         return _call_logic_judge(
             api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
             file_name, sampler_settings, prompt, expected_dims=expected_dims,
             max_attempts=max_attempts)
+    finally:
+        semaphore.release()
 
-    wait_seconds = quality_result_timeout() if timeout is None else max(1.0, float(timeout))
-    deadline = time.time() + wait_seconds
-    while not job["event"].wait(0.25):
-        if app_state.stop_processing or time.time() >= deadline:
-            break
-    if not job["event"].is_set():
-        job["abandoned"] = True
-        log_message(
-            f"Thread {thread_id}: Timed out after {wait_seconds:.0f}s waiting for a judge "
-            f"request ({task_id}); calling the judge directly.", "ERROR")
-        return _call_logic_judge(
-            api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
-            file_name, sampler_settings, prompt, expected_dims=expected_dims,
-            max_attempts=max_attempts)
-    return job["result"] or ({}, ["llm_exception"], False, {})
+
+def _judge_gate_wait_seconds(timeout=None):
+    """How long a per-turn gate request waits for a concurrency slot before giving up."""
+    if timeout is not None:
+        try:
+            return max(1.0, float(timeout))
+        except (TypeError, ValueError):
+            pass
+    return max(1.0, float(quality_result_timeout()))
+
+
+def _judge_gate_semaphore():
+    """The semaphore that caps concurrent per-turn logic checks.
+
+    Sized to ``quality.judge_concurrency`` so the gate cannot flood the judge server, and
+    rebuilt when that setting changes (a config reload must take effect). Kept separate from
+    the conversation-scoring queue on purpose: see ``submit_judge_request()``.
+    """
+    global _judge_gate_semaphore_obj, _judge_gate_semaphore_size
+    size = judge_concurrency()
+    with _judge_gate_lock:
+        if _judge_gate_semaphore_obj is None or _judge_gate_semaphore_size != size:
+            _judge_gate_semaphore_obj = threading.BoundedSemaphore(size)
+            _judge_gate_semaphore_size = size
+        return _judge_gate_semaphore_obj
 
 
 def _call_logic_judge(api_url, model_name, api_key, scoring_api_slot, thread_id, task_id,
@@ -2361,6 +2375,12 @@ def get_quality_stats():
 # pool's size changed. Kept as a list (not a single thread handle) so shutdown can join them all.
 _quality_scoring_queue = Queue()
 _quality_queue_lock = Lock()
+# Per-turn logic-gate concurrency (v12.9.2). SEPARATE from the queue above: see
+# submit_judge_request(). A gate request blocks its worker until the verdict arrives, so it must
+# never sit behind a bulk conversation score -- with a 1-wide queue that deadlocked generation.
+_judge_gate_semaphore_obj = None
+_judge_gate_semaphore_size = 0
+_judge_gate_lock = Lock()
 _quality_processor_threads = []
 _quality_processor_running = False
 # True while wait_for_quality_queue() is draining, so the processor's stop condition and the
@@ -2793,41 +2813,12 @@ def _quality_queue_processor():
                 # QUEUE mode: the processor scores AND writes the row, so the worker
                 # never waited and nothing can be lost to a timeout.
                 _score_and_write_job(item)
-            elif job is not None and job.get("judge_request") is not None:
-                # A bare judge request (check_logic): run it here so it shares the
-                # concurrency limit and the rate limiter with every other request.
-                _run_judge_request_job(item)
             else:
                 _process_gate_job(item)
         finally:
             _quality_scoring_queue.task_done()
     
     log_message("Quality scoring processor thread exiting.", "DEBUG")
-
-
-def _run_judge_request_job(item):
-    """Run one queued judge request and hand the result to its waiting caller.
-
-    Used by ``submit_judge_request()`` (``check_logic``): the request is not a
-    conversation score, so nothing is written and nothing is recorded in app_state -- the
-    caller decides what to do with the reply.
-    """
-    request = item[0]
-    job = item[10] if len(item) > 10 else None
-    try:
-        result = _call_logic_judge(
-            request["api_url"], request["model_name"], request["api_key"],
-            request["scoring_api_slot"], item[2], item[1], item[4],
-            request["sampler_settings"], request["prompt"],
-            expected_dims=request.get("expected_dims"),
-            max_attempts=request.get("max_attempts"))
-    except Exception as e:
-        log_message(f"Quality processor: judge request failed: {e}", "ERROR")
-        result = ({}, ["llm_exception"], False, {})
-    finally:
-        if job is not None:
-            job["result"] = result
-            job["event"].set()
 
 
 def _process_gate_job(item):

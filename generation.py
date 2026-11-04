@@ -1607,6 +1607,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         raw_context_content_for_debug = ""
         turns_counted_this_attempt = 0            # Progress turns this attempt added (non-duplication mode)
         quality_dropped_this_task = False         # v11.4: judge rejected this conversation; do not write it
+        # v12.9.2: True once the async judge owns this task's row(s). Duplication mode sets it
+        # per turn (the judge writes each turn's per-API rows), so it must be initialised here
+        # rather than only in the non-duplication branch -- otherwise the per-turn write guard
+        # below raises NameError in duplication mode.
+        quality_write_deferred = False
         start_time_task_overall = time.time() # For timing the whole task processing
 
         with output_data_lock:
@@ -2261,6 +2266,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 if app_state.stop_processing or app_state.pause_processing: break # Check before starting a new turn
 
                 assistant_answer = None # This will hold the assistant's response for the current turn
+                # Per-TURN, not per-task: the async judge takes ownership of one turn's rows at a
+                # time, and a sticky True would skip the synchronous write of a LATER turn whose
+                # scoring did not get handed off.
+                quality_write_deferred = False
 
                 # This turn's system prompt and answer prompt carry the slot's persona and
                 # emotional-state notes, each where its placement says; slot 1 = first assistant reply.
@@ -2447,6 +2456,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     # Scored BEFORE the per-turn writes so each row's metadata can carry the
                     # quality numbers for this turn. Deduped by task_id inside the helper.
                     primary_turn_quality_result = None
+                    # v12.9.2: one async write job per (turn, API) row below, keyed by the
+                    # destination slot. Without this, duplication mode passed no ``write_job``
+                    # and ``quality.async_scoring`` was silently ignored there: the worker
+                    # blocked on the judge for every single turn, so a slow judge froze
+                    # generation exactly as in gate mode.
+                    primary_turn_write_jobs = {}
                     if app_state.quality_enabled and assistant_answer:
                         if has_greeting and conversation_history_for_output:
                             # Opening mode: the greeting is not a reply, so score from the first user turn,
@@ -2457,14 +2472,63 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         else:
                             primary_conv_for_scoring = list(current_llm_conversation_context)
                             primary_conv_for_scoring.append({"role": "assistant", "content": assistant_answer})
+                        primary_turn_write_job = None
+                        if quality.judge_async_enabled() and all_duplicated_answers_for_output:
+                            # One job per per-API row of this turn, all carrying this
+                            # turn's single verdict. The task is marked complete only by
+                            # the LAST turn's write, so only that turn passes on_written.
+                            _last_turn = (turn_num == current_num_turns - 1)
+                            primary_turn_write_jobs = _make_duplication_turn_write_jobs(
+                                dict(
+                                    conversation_history=current_llm_conversation_context,
+                                    remove_reasoning_flag=current_remove_reasoning,
+                                    remove_em_dash_flag=current_remove_em_dash,
+                                    remove_asterisks_flag=current_remove_asterisks,
+                                    remove_asterisk_space_asterisk_flag=current_remove_asterisk_space_asterisk,
+                                    remove_all_asterisks_flag=current_remove_all_asterisks,
+                                    ensure_space_after_line_break_flag=current_ensure_space_after_line_break,
+                                    remove_markdown_flag=current_remove_markdown,
+                                    output_format_local=current_output_format,
+                                    task_id_for_output=task_id,
+                                    character_names=scene_character_names,
+                                    emotional_state=current_emotional_state_label,
+                                    user_emotional_state=current_user_emotional_state_label,
+                                    setting=meta_setting,
+                                    opening_mode=opening_mode_local,
+                                    has_greeting=has_greeting,
+                                    num_characters=len(opening_chars),
+                                    include_metadata=include_metadata_local,
+                                    include_style_metrics=include_style_metrics_local,
+                                    cast_schedule=cast_schedule_label,
+                                    cast_events=list(cast_events_this_task),
+                                ),
+                                turn_num,
+                                {slot: text for text, slot in all_duplicated_answers_for_output},
+                                on_written=(lambda: _mark_task_written(task_id, thread_id))
+                                if _last_turn else None,
+                            )
+                            # The verdict gates EVERY per-API row of this turn, so the
+                            # primary slot's job is the one that also runs the per-task
+                            # completion bookkeeping; the sibling slots write silently.
+                            primary_turn_write_job = primary_turn_write_jobs.get(0)
+                            if primary_turn_write_job is None and primary_turn_write_jobs:
+                                primary_turn_write_job = next(iter(primary_turn_write_jobs.values()))
                         primary_turn_quality_result = _score_and_store_quality(
                             primary_conv_for_scoring, task_id, thread_id, api_slot_idx=0, file_name=file_name,
                             character_profile_text=character_injection,
                             scene_characters=scene_character_names,
                             logic_findings=logic_findings_this_task,
                             cast_schedule=cast_schedule_label,
-                            cast_events=list(cast_events_this_task)
+                            cast_events=list(cast_events_this_task),
+                            write_job=primary_turn_write_job,
                         )
+                        if primary_turn_write_job is not None:
+                            # The judge owns this turn's rows now; it writes them (and marks
+                            # the task complete on the last turn) once the verdict is in.
+                            quality_write_deferred = True
+                            log_message(
+                                f"Thread {thread_id}: Task {task_id} turn {turn_num + 1} handed to "
+                                f"the quality queue; generation continues.", "INFO")
                         # v11.4: a judge drop stops the whole duplicated task -- the
                         # per-API turn rows below must not reach the dataset either.
                         if _quality_dropped(primary_turn_quality_result):
@@ -2477,7 +2541,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         # Note: completed_task_ids.add() and save_generation_state() are handled once per task_id at the end of the worker.
 
                     # Write all successful duplicated answers to their respective per-API files for this turn
-                    if assistant_answer and not quality_dropped_this_task:
+                    if assistant_answer and not quality_dropped_this_task and not quality_write_deferred:
                         for ans_text, original_slot_idx_for_file in all_duplicated_answers_for_output:
                             # CRITICAL FIX: Check if this specific answer had a refusal
                             # We need to track refusals per API call, not just overall
@@ -2773,6 +2837,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         if conversation_is_complete(conversation_history_for_output, current_num_turns, has_greeting=has_greeting):
                             # --- Quality Scoring (BEFORE the write, so the record metadata can carry it) ---
                             final_quality_result = None
+                            # quality_write_deferred was reset at the top of the task; reset it
+                            # here too so a re-entered non-duplication attempt starts clean.
                             quality_write_deferred = False
                             if app_state.quality_enabled:
                                 # The greeting is not a reply, so score from the first user turn
@@ -2809,7 +2875,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         include_style_metrics=include_style_metrics_local,
                                         cast_schedule=cast_schedule_label,
                                         cast_events=list(cast_events_this_task),
-                                    ), on_written=_mark_task_written)
+                                    ), on_written=lambda: _mark_task_written(task_id, thread_id))
                                 final_quality_result = _score_and_store_quality(
                                     conv_for_scoring_final,
                                     task_id,
@@ -6023,6 +6089,55 @@ def _make_quality_write_job(write_conversation_kwargs, on_written=None):
         if on_written is not None:
             on_written()
     return _write
+
+
+def _make_duplication_turn_write_jobs(write_conversation_kwargs, turn_num,
+                                      per_slot_answers, on_written=None):
+    """Build one async write job per per-API turn row of a duplication-mode turn.
+
+    Duplication mode writes ONE row per enabled generation API for every turn
+    (``write_conversation(..., is_duplication_turn=True, turn_number_for_duplication=...)``),
+    and every one of those rows carries the SAME verdict -- the one the judge gives the
+    primary flow. ``quality.async_scoring`` therefore needs one job per destination slot,
+    keyed by that slot index, and the processor calls each with that single verdict.
+
+    v12.9.2: duplication mode used to pass no ``write_job`` at all, so
+    ``quality.async_scoring`` was silently ignored there and the worker still blocked on the
+    judge for every turn. That is the freeze this helper exists to prevent.
+
+    ``write_conversation_kwargs`` is the same dict the non-duplication path binds, minus the
+    per-row fields (``conversation_history``, ``api_slot_idx_for_output_file``,
+    ``is_duplication_turn``, ``turn_number_for_duplication`` and ``quality_result``), which are
+    filled in here so each row is byte-identical to what the worker would have written.
+    ``per_slot_answers`` maps slot index -> that slot's answer text for this turn.
+
+    Only ONE job runs ``on_written()`` (the lowest slot): every per-API row of a task shares
+    the same ``task_id``, so running the completion callback per row would mark the task
+    written several times over. A turn that is not the task's last does not pass a callback at
+    all -- the task is only complete once its final turn is written.
+
+    Returns ``{slot_idx: callable(quality_result)}``.
+    """
+    jobs = {}
+    slots = sorted(per_slot_answers)
+    for slot_idx in slots:
+        answer_text = per_slot_answers[slot_idx]
+        def _write(quality_result, _slot=slot_idx, _answer=answer_text,
+                   _is_first=(slot_idx == slots[0])):
+            kwargs = dict(write_conversation_kwargs)
+            kwargs["conversation_history"] = list(
+                write_conversation_kwargs["conversation_history"]) + [
+                    {"role": "assistant", "content": _answer}]
+            kwargs["api_slot_idx_for_output_file"] = _slot
+            kwargs["is_duplication_turn"] = True
+            kwargs["turn_number_for_duplication"] = turn_num + 1
+            kwargs["quality_result"] = quality_result
+            with app_state.output_data_lock:
+                write_conversation(None, **kwargs)
+            if on_written is not None and _is_first:
+                on_written()
+        jobs[slot_idx] = _write
+    return jobs
 
 
 def _mark_task_written(task_id, thread_id):
