@@ -86,11 +86,12 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ---
 
 ### `logging_config.py` [13]
-**Purpose:** Shared logging utility
-**Key:** `log_message()`, `LOG_FILE_PATH`, `DEBUG_LOGGING_ENABLED`
+**Purpose:** Shared logging utility, and the ONE gate for the per-request prompt traces
+**Key:** `log_message()`, `LOG_FILE_PATH`, `DEBUG_LOGGING_ENABLED`, `DEBUG_PROMPT_LOGGING_ENABLED`, `debug_prompt_logging_enabled()`, `write_debug_prompt()`
 **Edit for:**
 - Log path → `LOG_FILE_PATH`
 - Enable debug → `DEBUG_LOGGING_ENABLED = True` or UI checkbox
+- Prompt traces (`output/debug_prompt*.jsonl`) → `generation.debug_prompt_log: true` in the config, or the "Prompt Trace" checkbox in the Tools panel. **Opt-in since v13.1.1**: the traces used to be written UNCONDITIONALLY, one append per request from every worker and every judge thread. Every write site must go through `debug_prompt_logging_enabled()` / `write_debug_prompt()` — never a bare `open(..., 'a')` on a debug path, which is what `tests/test_prompt_trace_gate.py` fails on. Check the flag at CALL time, so a toggle takes effect without a restart
 
 ---
 

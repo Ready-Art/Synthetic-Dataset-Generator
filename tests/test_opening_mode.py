@@ -924,9 +924,16 @@ def test_generate_wiring():
           any(isinstance(n, ast.Constant) and n.value == "opening_" for n in ast.walk(start)))
     check("load_generation_state uses opening_mode_mismatch",
           len(_calls(_function(generate_tree, "load_generation_state"), "opening_mode_mismatch")) == 1)
-    save = _function(generation_tree, "save_generation_state")
-    check("save_generation_state writes prompts.opening_mode in the snapshot",
+    # v13.1.1: the state document is assembled by _build_generation_state_data, which
+    # save_generation_state() writes. The snapshot key is asserted on the builder, which is
+    # where it lives now.
+    save = _function(generation_tree, "_build_generation_state_data")
+    check("the state snapshot writes prompts.opening_mode",
           any(isinstance(n, ast.Constant) and n.value == "prompts.opening_mode" for n in ast.walk(save)))
+    check("save_generation_state still writes the snapshot",
+          any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+              and n.func.id == "_build_generation_state_data"
+              for n in ast.walk(_function(generation_tree, "save_generation_state"))))
 
 
 ARC = "calm -> wary -> tense"
