@@ -130,10 +130,20 @@ could interleave its `open(..., 'a')`/`write()` with a worker's and corrupt a li
 fixed alongside this note, which is exactly the kind of slip the "the judge writes" phrasing hid — a
 judge needs no lock, a writer does. `on_written` marks the task complete **only after the row is on
 disk** — marking it earlier would let an interrupted run skip it on resume with no row to show. It takes
-no arguments, so a call site that wants `_mark_task_written(task_id, thread_id)` must bind them with a
-lambda: v12.9 passed the bare function and every async write raised `TypeError` *after* the row landed,
-which the processor reports as a WRITE FAILED and counts in `quality_write_failures` (a present row
-reported as lost).
+no arguments, so a call site that wants `_mark_task_written(task_id, thread_id, turns, queue)` must
+bind them with a lambda: v12.9 passed the bare function and every async write raised `TypeError` *after*
+the row landed, which the processor reports as a WRITE FAILED and counts in `quality_write_failures` (a
+present row reported as lost).
+
+**Async completion is what credits progress (v13.0.5).** `_mark_task_written()` is the ONLY place an
+async-scored task's turns reach the bar, because the worker returns before the row exists: it calls
+`generation._credit_task_progress(task_id, turns, queue)` after adding the id to `completed_task_ids`,
+and skips the credit when the id was already there. Before this the worker credited a turn as its
+answer arrived and **refunded** it in its epilogue whenever the task was not yet complete — which
+under `async_scoring` is always — so a completed async task netted **zero** and the bar was pinned to
+turns in flight (~60 on 40 threads) and oscillated. The worker passes `current_num_turns` and its own
+`q` through the `on_written` lambda, because a processor thread cannot see a worker local. See
+[`generation.md`](generation.md) for the invariant and `tests/test_progress_accounting.py`.
 
 **Duplication mode needs one job per per-API row.** Duplication writes a row per enabled generation API
 per turn, all carrying that turn's single verdict, so `_make_duplication_turn_write_jobs()` returns

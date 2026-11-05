@@ -862,24 +862,24 @@ def test_generate_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-def test_the_version_is_13_0_4_everywhere_it_is_declared():
+def test_the_version_is_13_0_5_everywhere_it_is_declared():
     """The version lives in four places; all of them must agree."""
     import control
-    assert control.GENERATOR_VERSION == "13.0.4", control.GENERATOR_VERSION
+    assert control.GENERATOR_VERSION == "13.0.5", control.GENERATOR_VERSION
 
     generate_source = (ROOT / "generate.py").read_text(encoding="utf-8")
-    assert 'text="v13.0.4"' in generate_source, (
-        "generate.py version label is not v13.0.4")
+    assert 'text="v13.0.5"' in generate_source, (
+        "generate.py version label is not v13.0.5")
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     titles = [line for line in readme.splitlines()
               if line.startswith("# ReadyArt Synthetic Dataset Generator")]
     assert titles, "README.md has no '# ReadyArt Synthetic Dataset Generator' title"
-    assert "v13.0.4" in titles[0], (
-        f"README.md title does not name v13.0.4: {titles[0]!r}")
+    assert "v13.0.5" in titles[0], (
+        f"README.md title does not name v13.0.5: {titles[0]!r}")
 
     history = (ROOT / "docs" / "version-history.md").read_text(encoding="utf-8")
-    assert "v13.0.4" in history, "docs/version-history.md has no v13.0.4 row"
+    assert "v13.0.5" in history, "docs/version-history.md has no v13.0.5 row"
 
 
 # ---------------------------------------------------------------------------
