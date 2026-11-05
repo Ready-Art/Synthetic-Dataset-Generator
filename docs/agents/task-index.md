@@ -68,7 +68,7 @@ it names; follow the file name to read the full step list:
 - Change/add the judge's vLLM priority (v11.8.x)
 - Change how the judge's JSON is parsed (v11.5)
 - Change the judge's concurrency or rate-limit slot (v12.9)
-- Make the judge write rows instead of gating them (`quality.async_scoring`, v12.9)
+- Make the queue PROCESSOR write rows instead of gating them (`quality.async_scoring`, v12.9). The judge still only scores — it never writes a row
 - Add character field
 - Add random names feature
 - Change how random names are dealt across a run (v12.8.1)

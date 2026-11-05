@@ -209,7 +209,7 @@ quality:
   judge_retry_delay: 1.0           # Seconds between judge attempts (grows linearly per attempt)
   result_timeout: 600              # Seconds a worker waits for its queued verdict before dropping the row
   judge_concurrency: 1             # v12.9: judge requests allowed in flight at once (1-32). Match the judge server's real parallel capacity
-  async_scoring: false             # v12.9: run the judge as a QUEUE, not a GATE. Off = the worker waits for the verdict (a slow judge drops rows on result_timeout). On = the worker hands over the write job and moves on; the judge scores and writes the row, so generation never waits and nothing is lost to a timeout
+  async_scoring: false             # v12.9: run the judge as a QUEUE, not a GATE. Off = the worker waits for the verdict (a slow judge drops rows on result_timeout). On = the worker hands over the write job and moves on; a processor thread scores it and writes the row once the judge has returned a verdict (the judge itself only scores), so generation never waits and nothing is lost to a timeout
   judge_json_repair_attempts: 1     # Re-ask the model for JSON-only output this many times before dropping (0 = v11.4 behaviour)
   judge_max_tokens: 0              # Token budget per judge request (0 = automatic; a token-limited reply is retried with double)
   judge_request_timeout: 120        # HTTP timeout for one judge request (was a hard-coded 60s)
@@ -247,7 +247,9 @@ up with **drops rows** — they are logged as `judge_failed`, and the generation
 thrown away.
 
 `quality.async_scoring: true` changes that. The worker hands the judge a complete write job and **moves on
-immediately**; the judge scores the conversation and writes the row itself. Three things follow:
+immediately**; a processor thread then scores the conversation and writes the row once the judge has
+returned a verdict. **The judge itself never writes a row** — it is an HTTP scorer that returns a
+verdict and nothing else; the processor thread does the write. Three things follow:
 
 - **Generation never waits for a verdict**, so a slow judge cannot hold up generation.
 - **Nothing is lost to a timeout.** There is no wait to time out of, so `result_timeout` is not consulted
@@ -259,7 +261,7 @@ A row still appears **only after it has a verdict**, so a written row is always 
 land later and out of order rather than all at once, but never unscored.
 
 This applies in **duplication mode too** (v12.9.2): each turn writes one row per enabled API, all carrying
-that turn's single verdict, and the judge writes all of them after it scores. Before v12.9.2 duplication
+that turn's single verdict, and the processor writes all of them after the judge scores. Before v12.9.2 duplication
 mode passed no write job at all, so `async_scoring` was silently ignored there and the worker still blocked
 on the judge every turn.
 

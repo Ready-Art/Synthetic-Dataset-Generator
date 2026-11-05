@@ -78,7 +78,14 @@ reach the dataset (v11.4). The wait is bounded by `quality.result_timeout` (600 
 slow judge DROPS rows as `judge_failed`. `_process_gate_job()` serves this mode.
 
 **QUEUE (`true`).** The worker hands over a COMPLETE write job and returns immediately;
-`_score_and_write_job()` scores it and calls the injected writer itself. Consequences:
+a queue PROCESSOR thread (`_score_and_write_job()`) scores it and calls the injected writer itself.
+Consequences:
+
+- **The judge never writes a row.** It is an HTTP scorer: it returns a verdict and nothing else. The
+  processor thread is the writer, and the only thing that appends is still
+  `generation.write_conversation()`. Older comments that said "the judge writes the rows" meant
+  "the processor writes, once the judge has spoken" — keep the two apart, because only a writer
+  takes `app_state.output_data_lock`.
 
 - **Generation never waits for a verdict**, so a slow judge cannot hold up generation.
 - **Nothing can be lost to a timeout** — there is no wait to time out of. `quality.result_timeout`
@@ -115,7 +122,13 @@ never binds, and additionally pins this call site, the attribute it names and th
 `generation._make_quality_write_job(write_conversation_kwargs, on_written)` binds everything the
 worker would have passed to `write_conversation` EXCEPT `quality_result`, and the helper fills that in.
 The row is therefore byte-identical to the worker's own write (guarded by
-`tests/test_quality_async_queue.py`). `on_written` marks the task complete **only after the row is on
+`tests/test_quality_async_queue.py`). **The append runs under `app_state.output_data_lock`** — the same
+lock every worker holds while it calls `write_conversation()` and the same lock the Review tab's drop
+rewrite takes. `write_conversation()` takes no lock itself, so a processor thread appending without it
+could interleave its `open(..., 'a')`/`write()` with a worker's and corrupt a line.
+`_make_duplication_turn_write_jobs()` already locked; the non-duplication job did not until it was
+fixed alongside this note, which is exactly the kind of slip the "the judge writes" phrasing hid — a
+judge needs no lock, a writer does. `on_written` marks the task complete **only after the row is on
 disk** — marking it earlier would let an interrupted run skip it on resume with no row to show. It takes
 no arguments, so a call site that wants `_mark_task_written(task_id, thread_id)` must bind them with a
 lambda: v12.9 passed the bare function and every async write raised `TypeError` *after* the row landed,
