@@ -56,7 +56,7 @@ scanning the source with `ast`.
 
 ### `control.py`
 **Purpose:** The command protocol, the socket server, and `HeadlessController` (one `cmd_*` per verb)
-**Key:** `PROTOCOL_VERSION`, `ERROR_EXIT_CODES`, `CommandError`, `StaticVar`, `build_stats_payload()`, `DETECTION_COUNTERS`, `ControlServer`, `HeadlessController`, `send_request()`, `is_server_running()`
+**Key:** `PROTOCOL_VERSION`, `ERROR_EXIT_CODES`, `CommandError`, `StaticVar`, `build_stats_payload()`, `DETECTION_COUNTERS`, `ControlServer`, `HeadlessController`, `send_request()`, `is_server_running()`. `ControlServer` owns `_stopped` (teardown begun) and `_stopped_done` (teardown finished, released last) — see the one-accept-loop rule below
 **Edit for:**
 - **A new verb** → add `cmd_<verb>` to `HeadlessController` AND the name to `COMMANDS`. `handle()` dispatches on `getattr(self, f"cmd_{command}")` and rejects anything not in `COMMANDS`, so a method without a `COMMANDS` entry is unreachable over the wire (but still callable in-process, which hides the bug from a unit test that calls it directly).
 - **A new error code** → add it to `ERROR_EXIT_CODES` or the CLI falls back to exit 1. Several codes deliberately share a status (all usage errors are 2; `not_running` and `no_daemon` are both 3), so do not assume the mapping is one-to-one.
@@ -64,6 +64,7 @@ scanning the source with `ast`.
 - **A new worker parameter** → `_worker_args(thread_id, settings)` / `_worker_kwargs(settings)`. `worker()` has 92 parameters and **no keyword-only tail**: all are `POSITIONAL_OR_KEYWORD`. The controller fills a 52-argument positional prefix and passes the rest by keyword. `tests/test_cli_control.py::test_worker_arguments_bind_to_the_real_signature` binds them with `inspect.Signature.bind()` and fails on an unknown name, a duplicate (positional + keyword), or a missing required parameter.
 - **`stop` semantics** → `_join_workers()` uses ONE shared deadline for all workers and RETURNS the ones still alive. A per-thread timeout made the real budget `timeout x threads` (10 workers × 30 s = 300 s), so the client's own socket timeout fired first and reported a timeout for a stop that was working. `cmd_stop()` reports `still_stopping` instead of failing, and `phase()` treats a live worker as `stopping` rather than `idle` — a worker still writing rows means the dataset is not final.
 - **TCP safety** → `ControlServer(allow_remote=False)` refuses any non-loopback bind via `_check_tcp_host()` / `_is_loopback_host()`. This is a safety limit, not a feature: the channel can TRUNCATE the database.
+- **One accept loop, never two** → `ControlServer.start()` puts the ONLY `serve_forever` loop on its own thread; `ControlServer.serve_forever()` then parks the calling thread on `_stopped_done` and must **never** call `_unix_server.serve_forever()` a second time. Two loops over one `BaseServer` share a single `__shutdown_request` / `__is_shut_down` pair, so whichever exits first resets the flag and the other is left in `accept()` on a closed socket — an EINVAL spin that keeps the process at ~90% CPU forever. `stop()` sets `_stopped_done` **last**, after the socket is unlinked, so `serve_forever()` cannot return before teardown is complete. The leak is invisible to the CLI (the socket is already gone, so `status` says `no_daemon`) and only shows up as a stray process in `ps`. `tests/test_cli_control.py::test_serve_forever_returns_when_the_server_is_stopped` asserts exactly one loop is started — a timing-only assertion is not enough, because the race passes by luck roughly a third of the time.
 - **The wire format** → one JSON object per line each way. `handle()` never raises; every failure becomes `{"ok": false, "error": {"code": ..., "message": ...}}`. The renderer hint is passed to `_request(..., kind=...)` as a LOCAL argument and never put on the wire.
 
 ### `cli.py`
@@ -79,10 +80,10 @@ scanning the source with `ast`.
 
 ## Tests
 
-`tests/test_cli_control.py` — 32 headless checks, no display/network/DB. It covers config
+`tests/test_cli_control.py` — 33 headless checks, no display/network/DB. It covers config
 resolution, worker-arg binding, the socket round-trip, every verb, the stats contract, exit
-codes, the `_kind`-must-not-leak rule, save idempotency, stop semantics, TCP safety, and
-default-GUI-unchanged.
+codes, the `_kind`-must-not-leak rule, save idempotency, stop semantics, TCP safety,
+one-accept-loop-per-server, and default-GUI-unchanged.
 
 **When a check in that file fails, first confirm the real signature or return shape with
 `inspect` before changing the product.** Six of the nine initial failures were wrong assumptions

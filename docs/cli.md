@@ -210,6 +210,10 @@ python -m cli shutdown
 python -m cli shutdown --force    # exit even if the run will not stop cleanly
 ```
 
+`shutdown` replies before it tears anything down, because the caller is waiting on the same
+socket — replying after the close would turn a successful shutdown into a connection reset. The
+process then exits on its own; you do not need to kill it.
+
 ### `shell` — one verb per line, from stdin
 
 ```bash
