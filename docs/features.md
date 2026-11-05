@@ -108,6 +108,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **API Connection Testing** — Test API connectivity directly from the configuration editor
 - **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
 - **Real-Time Dashboard** — Monitor refusals, slop, errors, quality scores, and API response times with time-series graphs, search, and copy functionality
+- **📊 vLLM Metrics tab (v13.1.0)** — Reads every vLLM backend's own `/metrics` endpoint and shows **prompt-processing speed**, **token-generation speed** and **endpoint load** (KV-cache usage) **per API endpoint, never aggregated**: API Slots 1-4, the Slop Fixer, the Anti-Slop Fixer and the Quality Judge each get their own row and their own graph line, with two slots on one server still listed separately (and their own measured throughput still differing). Unreachable endpoints keep their row, marked as such, and nothing is polled unless the GUI is running
 - **Queue Management** — View pending, completed, and failed tasks; purge pending tasks, retry failed tasks, and export queue state to CSV
 - **Live Prompt Preview** — View prompts being sent to APIs in real-time with role-based color coding, search & highlight, section copy, and auto-scroll toggle
 - **Toast Notifications** — Non-blocking, auto-dismissing notification popups for status updates (success, error, warning, info)

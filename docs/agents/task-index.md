@@ -16,7 +16,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 **Read this when:** you know WHAT you want to change and need the list of files to edit.
 
-**Related:** [`docs/agents/config.md`](config.md), [`docs/agents/core-modules.md`](core-modules.md), [`docs/agents/generation.md`](generation.md), [`docs/agents/detection.md`](detection.md), [`docs/agents/quality.md`](quality.md), [`docs/agents/generate-ui.md`](generate-ui.md), [`docs/agents/config-editor.md`](config-editor.md), [`docs/agents/dashboard.md`](dashboard.md), [`docs/agents/datasets.md`](datasets.md), [`docs/agents/tools-and-docs.md`](tools-and-docs.md)
+**Related:** [`docs/agents/config.md`](config.md), [`docs/agents/core-modules.md`](core-modules.md), [`docs/agents/generation.md`](generation.md), [`docs/agents/detection.md`](detection.md), [`docs/agents/quality.md`](quality.md), [`docs/agents/generate-ui.md`](generate-ui.md), [`docs/agents/config-editor.md`](config-editor.md), [`docs/agents/dashboard.md`](dashboard.md), [`docs/agents/vllm-metrics.md`](vllm-metrics.md), [`docs/agents/datasets.md`](datasets.md), [`docs/agents/tools-and-docs.md`](tools-and-docs.md)
 
 ## Where is my task?
 
@@ -33,6 +33,7 @@ file to edit — so you only need that one row, not the other topic files.
 | [`slop-antislop-default-off.md`](slop-antislop-default-off.md) | Enable/disable Slop or Anti-Slop (v12.7.6); Change the default state of a detection layer; Change where slop/anti-slop documentation points |
 | [`core-modules.md`](core-modules.md) | Fix quote balancing; Add UI metric; Add a style measurement / style metadata column; Add/modify an always-on deterministic text cleanup (v12.7.3) |
 | [`generate-ui.md`](generate-ui.md) | Change the Review tab; Fix a cramped / clipped Treeview table; Call a module object (`<module>.<attr>()`) from `generate.py` / fix a `NameError` on an unbound global (v12.9.1) |
+| [`vllm-metrics.md`](vllm-metrics.md) | **Add a metric to the 📊 Metrics tab (v13.1.0)**; Change how a vLLM speed or load is computed; Add a new API endpoint source to the metrics poller; Record a new slot's own token usage |
 | [`config-editor.md`](config-editor.md) | Fix a label rendering one character per line (a "skyscraper"); Fix an unreadable / white-on-white spinbox; Add dataset column→alias mapping |
 | [`generation.md`](generation.md) | Fix the progress bar stalling or oscillating / change how progress is counted (v13.0.5); Add/modify scene cast (v12.0); Modify output format; Add/modify output metadata field; Change what a request contains (prompt text, message order or role); Add/modify the answer prompt's native variables (v12.5, widened v12.7); Add/modify the repeated-reply guard (v12.7); Trim the duplicated continuation history (v12.7) |
 | [`generation-retries.md`](generation-retries.md) | Modify retry logic; Change how Regex Watch rewrites text; Add/modify the repeated-opener guard (v12.5); Add/modify the first-reply opener caps |
@@ -63,6 +64,7 @@ it names; follow the file name to read the full step list:
 - Add/modify the first-reply opener caps
 - Modify retry logic
 - Add UI metric
+- Add a metric to the 📊 Metrics tab (v13.1.0)
 - Change rate limit
 - Change judge retry/drop policy (v11.4)
 - Change/add the judge's vLLM priority (v11.8.x)

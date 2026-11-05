@@ -87,6 +87,8 @@ CHECKED_MODULES = (
     "run_config.py",
     "control.py",
     "cli.py",
+    # v13.1.0: the 📊 Metrics tab's vLLM /metrics reader.
+    "vllm_metrics.py",
 )
 
 
