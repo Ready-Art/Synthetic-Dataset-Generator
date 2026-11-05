@@ -128,6 +128,27 @@ def workers_alive():
         thread.is_alive() for thread in app_state.threads if thread)
 
 
+def reported_thread_count(config=None):
+    """The worker count to report for the current (or next) run.
+
+    ``app_state.num_threads`` alone is not a reliable answer: it is the legacy
+    ``api.threads`` scalar, which is a fallback, not the run total (the workers are split
+    per API slot). Report what is actually spawned while a run is live, and otherwise the
+    total the next run would start, so a status call before and after ``start`` agree.
+    """
+    spawned = len([thread for thread in app_state.threads if thread])
+    if spawned:
+        return spawned
+    cfg = app_state.global_config if config is None else config
+    try:
+        settings = run_config.build_run_settings(cfg)
+        return run_config.total_threads_for_run(settings)
+    except Exception:
+        # A config that cannot be resolved is not this payload's problem -- fall back to
+        # the scalar rather than failing the whole status call.
+        return app_state.num_threads
+
+
 def default_socket_path(config=None):
     """Where the control socket lives, honouring ``control.socket_path``."""
     cfg = app_state.global_config if config is None else config
@@ -377,7 +398,7 @@ def build_stats_payload(config=None, include_recent=True, generator=None):
             'generating': bool(app_state.processing_active),
             'paused': bool(app_state.pause_processing),
             'stopping': bool(app_state.stop_processing),
-            'threads': app_state.num_threads,
+            'threads': reported_thread_count(cfg),
             'alive_threads': sum(1 for thread in app_state.threads
                                  if thread and thread.is_alive()),
             'duplication_mode': bool(
@@ -602,7 +623,7 @@ class HeadlessController:
             'uptime_s': self.uptime(),
             'version': self.version,
             'config_path': app_state.global_config.path,
-            'threads': app_state.num_threads,
+            'threads': reported_thread_count(),
             'alive_threads': alive,
             'tasks': {
                 'pending': len(app_state.pending_task_ids),
@@ -1560,4 +1581,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.0.1"
+GENERATOR_VERSION = "13.0.2"

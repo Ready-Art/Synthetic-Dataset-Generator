@@ -2025,7 +2025,18 @@ def start_processing():
     app_state.processing_active = True 
     update_dashboard() 
 
-    log_message(f"Start processing: {app_state.num_threads} threads. Output: {current_output_format}. Turns: {current_num_turns}. Remove Reasoning: {current_remove_reasoning}. Gender: {active_gender}. Use QFile: {current_use_questions_file}. Use VarSys: {current_use_variable_system}", "INFO")
+    # The run's worker total is the sum over the API slots that will do work -- never the
+    # legacy `api.threads` scalar, which is only a fallback for when the per-slot counts are
+    # absent. Computed here (before the "Start processing" line) so the number the user reads
+    # is the number of threads this run actually launches, and reused by the launch loop below.
+    total_threads = run_config.count_worker_threads(
+        all_api_configs_runtime, active_enabled_api_configs_for_worker_list,
+        master_duplication_enabled)
+    # Publish the resolved total so the control server's status payloads report the run's
+    # real worker count instead of the legacy scalar.
+    app_state.num_threads = total_threads
+
+    log_message(f"Start processing: {total_threads} threads. Output: {current_output_format}. Turns: {current_num_turns}. Remove Reasoning: {current_remove_reasoning}. Gender: {active_gender}. Use QFile: {current_use_questions_file}. Use VarSys: {current_use_variable_system}", "INFO")
     if should_resume: log_message(f"Resuming with {len(app_state.completed_task_ids)} previously completed unique tasks.", "INFO")
 
     for widget in progress_frame.winfo_children(): 
@@ -2294,22 +2305,9 @@ def start_processing():
     # interleave with one (v12.8.2).
     output_data_lock = app_state.output_data_lock
     
-    # Determine total number of threads based on API configurations
-    total_threads = 0
-    if master_duplication_enabled:
-        # In duplication mode, use the sum of threads from all enabled APIs
-        for api_idx, api_conf in enumerate(all_api_configs_runtime):
-            if api_idx < 4 and api_conf.get('enabled', False) and api_conf.get('url'):
-                total_threads += api_conf.get('threads', 10)
-    else:
-        # In non-duplication mode, use threads from each API for distribution
-        for api_config in active_enabled_api_configs_for_worker_list:
-            total_threads += api_config['config'].get('threads', 10)
-    
-    # Ensure at least one thread
-    if total_threads <= 0:
-        total_threads = 10
-        log_message(f"Warning: No valid thread count found in API configs. Using default of {total_threads}.", "WARNING")
+    # total_threads was resolved above, before the "Start processing" line, from the same
+    # run_config.count_worker_threads() the CLI uses -- one definition, so the logged count
+    # and the number of threads started here can never disagree.
     
     # v11.2: Initialize the quality scoring queue system before starting worker threads
     # This ensures quality scoring requests are processed asynchronously without blocking workers
@@ -2823,7 +2821,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.0.1",
+    text="v13.0.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

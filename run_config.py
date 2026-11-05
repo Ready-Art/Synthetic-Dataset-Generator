@@ -767,21 +767,39 @@ def validate_run_shape(settings):
         settings.slop_fixer_config['url'] = None
 
 
-def total_threads_for_run(settings):
-    """How many worker threads this run starts (sum over the APIs that will do work)."""
+def count_worker_threads(api_configs, active_api_configs, master_duplication_enabled):
+    """How many worker threads a run starts, from the resolved API slot dicts.
+
+    THE one definition of the worker total. ``api.threads`` is a legacy scalar and is NOT
+    the total: the workers are split per API slot, so the total is the sum over the slots
+    that will actually do work. Everything that reports a thread count -- the GUI's
+    "Start processing: N threads" line, the launch loop in ``generate.py``, the CLI's
+    ``start`` plan and its ``status`` payload -- must come through here, or the number
+    shown to the user stops matching the number of threads actually started.
+
+    ``api_configs`` is the full six-slot runtime list, ``active_api_configs`` the
+    non-duplication list of ``{'config': ..., 'original_slot_idx': ...}`` entries.
+    """
     total = 0
-    if settings.master_duplication_enabled:
-        for api_idx, api_conf in enumerate(settings.api_configs):
+    if master_duplication_enabled:
+        for api_idx, api_conf in enumerate(api_configs):
             if api_idx < 4 and api_conf.get('enabled', False) and api_conf.get('url'):
                 total += api_conf.get('threads', 10)
     else:
-        for api_config in settings.active_api_configs:
+        for api_config in active_api_configs:
             total += api_config['config'].get('threads', 10)
     if total <= 0:
         log_message(f"Warning: No valid thread count found in API configs. Using default of "
                     f"10.", "WARNING")
         total = 10
     return total
+
+
+def total_threads_for_run(settings):
+    """How many worker threads this run starts (sum over the APIs that will do work)."""
+    return count_worker_threads(
+        settings.api_configs, settings.active_api_configs,
+        settings.master_duplication_enabled)
 
 
 # ---------------------------------------------------------------------------------------
