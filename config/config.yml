@@ -106,6 +106,11 @@ generation:
   use_conversation_history_for_fixers: true
   include_metadata: true
   include_style_metrics: false
+  # Per-request prompt traces (output/debug_prompt*.jsonl): the full message list and
+  # payload of every request, plus the judge's raw reply. Very useful for debugging a
+  # prompt, but it is one append per request from every worker and every judge thread, so
+  # it is OFF by default. Turn it on when you are diagnosing a prompt, not for a long run.
+  debug_prompt_log: false
 quality:
   enabled: true
   use_llm_scoring: false

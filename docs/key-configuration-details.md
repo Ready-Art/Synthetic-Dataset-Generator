@@ -86,6 +86,12 @@ When Valkey caching is enabled, question generation uses an MD5 hash of the full
 
 ## Per-API Debug Logs
 
+> **Off by default since v13.1.1.** These traces are one file append per request, from every
+> worker and every judge thread. That is pure diagnostic overhead on the request path, and nothing
+> reads the files during a run, so they are written only when you ask for them: set
+> `generation.debug_prompt_log: true` in `config.yml`, or tick **📝 Prompt Trace** in the Tools
+> panel. Turn it on while debugging a prompt, not for a long run.
+
 In duplication mode, each API slot writes to its own debug log file:
 - `output/debug_prompt_api_slot_0.jsonl`
 - `output/debug_prompt_api_slot_1.jsonl`

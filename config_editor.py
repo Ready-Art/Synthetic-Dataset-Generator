@@ -861,6 +861,10 @@ class ConfigEditor(tk.Toplevel):
         self.include_style_metrics_var_editor = tk.BooleanVar(value=False)
         wrapped_checkbutton(gen_settings_frame, text="Include Style Metrics in Metadata (v11.7: flat style_* columns from the scotoma measurements -- comma habits, negation runs, denial-corrections, trailers, tail-end positivity. Off by default so the default record stays small)",
                         variable=self.include_style_metrics_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
+
+        self.debug_prompt_log_var_editor = tk.BooleanVar(value=False)
+        wrapped_checkbutton(gen_settings_frame, text="Write Prompt Traces (v13.1.1: dump every request's full message list and payload to output/debug_prompt*.jsonl, plus the judge's raw reply. Useful for debugging a prompt, but it is one file append per request from every worker and every judge thread, so leave it off for long runs)",
+                        variable=self.debug_prompt_log_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
         
         ttk.Label(gen_settings_frame, text="Output Format:").grid(row=row_idx, column=0, padx=SPACING, pady=SPACING, sticky="e")
         self.output_format_var = tk.StringVar(value="sharegpt")
@@ -2268,7 +2272,8 @@ class ConfigEditor(tk.Toplevel):
                 'discard_refused_conversations': self.discard_refused_conversations_var_editor.get(),
                 'use_conversation_history_for_fixers': self.use_conversation_history_for_fixers_var_editor.get(),
                 'include_metadata': self.include_metadata_var_editor.get(),
-                'include_style_metrics': self.include_style_metrics_var_editor.get()
+                'include_style_metrics': self.include_style_metrics_var_editor.get(),
+                'debug_prompt_log': self.debug_prompt_log_var_editor.get()
             },
             'quality': {
                 'enabled': self.quality_enabled_var_editor.get(),
@@ -3055,6 +3060,7 @@ class ConfigEditor(tk.Toplevel):
             self.use_conversation_history_for_fixers_var_editor.set(gen_config.get('use_conversation_history_for_fixers', True))
             self.include_metadata_var_editor.set(gen_config.get('include_metadata', True))
             self.include_style_metrics_var_editor.set(gen_config.get('include_style_metrics', False))
+            self.debug_prompt_log_var_editor.set(gen_config.get('debug_prompt_log', False))
             # Load quality scoring config
             quality_conf = config.get('quality', {})
             self.quality_enabled_var_editor.set(quality_conf.get('enabled', True))

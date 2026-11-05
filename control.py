@@ -50,6 +50,7 @@ import detection
 import generation
 import quality
 import run_config
+import logging_config
 from logging_config import log_message
 
 PROTOCOL_VERSION = 1
@@ -678,6 +679,12 @@ class HeadlessController:
             return plan
 
         # --- real start ---------------------------------------------------------------
+        # v13.1.1: prompt traces are opt-in (generation.debug_prompt_log), and a headless
+        # run must honour the same key the GUI does.
+        logging_config.DEBUG_PROMPT_LOGGING_ENABLED = bool(
+            cfg.get('generation.debug_prompt_log', False))
+        log_message(f"Prompt trace logging: {'enabled' if logging_config.DEBUG_PROMPT_LOGGING_ENABLED else 'disabled'}", "INFO")
+
         run_config.init_valkey(cfg)
         run_config.register_api_profiles(settings.api_configs)
         run_config.apply_rate_limits(settings.api_configs)
@@ -1116,7 +1123,7 @@ class HeadlessController:
             return result
 
         app_state.processing_active = False
-        generation.save_generation_state()
+        generation.flush_generation_state()
         if clear:
             result.update(self._clear_progress())
             result['cleared'] = True
@@ -1333,7 +1340,7 @@ class HeadlessController:
             time.sleep(0.2)  # let the reply reach the client
             try:
                 self._shutdown_quality_queue()
-                generation.save_generation_state()
+                generation.flush_generation_state()
             except Exception as exc:  # noqa: BLE001
                 log_message(f"Shutdown save failed: {exc}", "WARNING")
             run_config.close_db_pool()
@@ -1615,4 +1622,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.1.0"
+GENERATOR_VERSION = "13.1.1"

@@ -862,24 +862,37 @@ def test_generate_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-def test_the_version_is_13_1_0_everywhere_it_is_declared():
-    """The version lives in four places; all of them must agree."""
+VERSION = "13.1.1"
+
+
+def test_the_version_is_13_1_1_everywhere_it_is_declared():
+    """The version lives in four places; all of them must agree.
+
+    Bumping only some of them is the easy mistake -- the README title, the GUI's header label,
+    the constant the CLI reports and the version-history row are edited by hand, so this test is
+    the only thing that keeps them in step.
+    """
     import control
-    assert control.GENERATOR_VERSION == "13.1.0", control.GENERATOR_VERSION
+    assert control.GENERATOR_VERSION == VERSION, control.GENERATOR_VERSION
 
     generate_source = (ROOT / "generate.py").read_text(encoding="utf-8")
-    assert 'text="v13.1.0"' in generate_source, (
-        "generate.py version label is not v13.1.0")
+    assert f'text="v{VERSION}"' in generate_source, (
+        f"generate.py version label is not v{VERSION}")
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     titles = [line for line in readme.splitlines()
               if line.startswith("# ReadyArt Synthetic Dataset Generator")]
     assert titles, "README.md has no '# ReadyArt Synthetic Dataset Generator' title"
-    assert "v13.1.0" in titles[0], (
-        f"README.md title does not name v13.1.0: {titles[0]!r}")
+    assert f"v{VERSION}" in titles[0], (
+        f"README.md title does not name v{VERSION}: {titles[0]!r}")
 
     history = (ROOT / "docs" / "version-history.md").read_text(encoding="utf-8")
-    assert "v13.1.0" in history, "docs/version-history.md has no v13.1.0 row"
+    assert f"v{VERSION}" in history, f"docs/version-history.md has no v{VERSION} row"
+
+    # The changelog must also carry a section for it, or a bump leaves the release notes behind.
+    changelog = (ROOT / "docs" / "changelog-v13.md").read_text(encoding="utf-8")
+    assert f"### v{VERSION}" in changelog, (
+        f"docs/changelog-v13.md has no '### v{VERSION}' section")
 
 
 # ---------------------------------------------------------------------------

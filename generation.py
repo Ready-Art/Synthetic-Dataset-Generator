@@ -20,6 +20,7 @@ import hashlib
 import json
 import random
 import requests
+import threading
 import time
 import tkinter as tk
 
@@ -35,6 +36,7 @@ from dataset_tasks import (
 )
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, render_with_native_placeholders
 from queue import Queue, Empty, Full
+import logging_config
 from logging_config import log_message, LOG_FILE_PATH
 from api_handler import (
     RateLimiter, global_rate_limiter, get_cached_response, set_cached_response,
@@ -526,70 +528,173 @@ def opening_mode_mismatch(saved_snapshot, current_opening_mode):
     return None
 
 
-def save_generation_state():
-    """Saves the current generation state to a JSON file for potential recovery."""
-    global api_response_times_per_slot
+# --- Generation state persistence -------------------------------------------
+#
+# The state file is crash-recovery data: it lets an interrupted run resume without
+# redoing completed tasks. It is serialised as one JSON document, so its size is
+# proportional to the run's progress (``completed_task_ids``, ``progress_credited_task_ids``
+# and ``quality_scores`` all grow with the task count).
+#
+# v13.1.1: this used to be called SYNCHRONOUSLY on every completed task, from every
+# worker, and (in async scoring) from every judge thread too, all serialised on one global
+# lock. The cost of a single save grows with the run, so the total cost is quadratic in the
+# task count and the stall per completion grows with it: measured at 0.19 s at 500 tasks,
+# 1.4 s at 4,000 and 4.3 s (8.4 s worst case) at 12,000. Every worker's completion path
+# waited behind it, which is the "generation pauses, then starts again" report -- and it
+# started to be noticeable around the few-hundred-task mark, exactly as observed.
+#
+# So the per-task path no longer writes the file itself. ``request_generation_state_save()``
+# marks the state dirty and returns immediately; one background thread performs the write,
+# coalescing every request that arrives while a write is in flight or inside the debounce
+# window. A crash can therefore lose at most the last ``STATE_SAVE_MIN_INTERVAL_SECONDS``
+# of completions, which resume simply re-runs -- the same trade the async quality queue
+# already makes for rows.
+#
+# ``save_generation_state()`` itself stays SYNCHRONOUS and unchanged in behaviour: it is
+# what a run uses at its end (Stop, quit, the GUI's completion path) and what the tests
+# call, so the file is always complete and current when a run actually finishes.
 
+STATE_SAVE_MIN_INTERVAL_SECONDS = 2.0
+
+_state_save_event = threading.Event()
+_state_save_stop = threading.Event()
+_state_save_thread = None
+_state_save_thread_lock = threading.Lock()
+
+
+def _build_generation_state_data():
+    """Assemble the state document. Caller holds ``app_state.state_file_lock``."""
+    state_data = {
+            'completed_task_ids': list(app_state.completed_task_ids), # Convert set to list for JSON
+            # v13.0.5: which tasks' turns are already in processed_tasks_snapshot, so a
+            # resume does not credit them a second time. Run progress, NOT configuration --
+            # deliberately absent from config_snapshot.
+            'progress_credited_task_ids': sorted(app_state.progress_credited_task_ids),
+            'system_prompt_counter': app_state.system_prompt_counter,
+            'question_history': app_state.question_history,
+            'total_attempts_global': app_state.total_attempts_global,
+            'refusal_count_total': app_state.refusal_count_total,
+            'user_speaking_count_total': app_state.user_speaking_count_total,
+            'slop_count_total': app_state.slop_count_total,
+            'error_count_total': app_state.error_count_total,
+            'ooc_count_total': app_state.ooc_count_total,
+            'regex_watch_count_total': getattr(app_state, 'regex_watch_count_total', 0),
+            'non_latin_count_total': getattr(app_state, 'non_latin_count_total', 0),
+            'refusal_counts_per_api': app_state.refusal_counts_per_api,
+            'total_input_tokens': app_state.total_input_tokens,
+            'total_output_tokens': app_state.total_output_tokens,
+            'estimated_cost': estimated_cost,
+            'user_speaking_counts_per_api': app_state.user_speaking_counts_per_api,
+            'slop_counts_per_api': app_state.slop_counts_per_api,
+            'error_counts_per_api': app_state.error_counts_per_api,
+            'ooc_counts_per_api': app_state.ooc_counts_per_api,
+            'regex_watch_counts_per_api': getattr(app_state, 'regex_watch_counts_per_api', {}),
+            'non_latin_counts_per_api': getattr(app_state, 'non_latin_counts_per_api', {}),
+            'total_attempts_per_api': app_state.total_attempts_per_api,
+            'anti_slop_count_total': app_state.anti_slop_count_total,
+            'anti_slop_counts_per_api': anti_slop_counts_per_api,
+            'character_counter': app_state.character_counter,
+            # Snapshot of critical config settings at the time of saving state
+            'config_snapshot': {
+                'prompts.use_questions_file': global_config.get('prompts.use_questions_file'),
+                'generation.num_turns': global_config.get('generation.num_turns', 1),
+                'generation.subject_size': global_config.get('generation.subject_size', 1000),
+                'generation.context_size': global_config.get('generation.context_size', 3000),
+                'api.master_duplication_mode': global_config.get('api.master_duplication_mode', False),
+                'prompts.opening_mode': bool(global_config.get('prompts.opening_mode', False)),
+            },
+            'quality_scores': {k: v for k, v in app_state.quality_scores.items()},
+            # v11.4: judge drops persist so a resumed run does not retry (or re-flag) a
+            # conversation the judge already rejected.
+            'quality_dropped': dict(app_state.quality_dropped),
+        }
+    # If in master duplication mode and task queue has per-API progress, save it
+    # Also save overall progress if not in duplication mode
+    if app_state.task_queue:
+        if global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'api_processed_tasks'):
+            state_data['api_processed_tasks_snapshot'] = dict(app_state.task_queue.api_processed_tasks)
+        elif not global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'processed_tasks'):
+            state_data['processed_tasks_snapshot'] = app_state.task_queue.processed_tasks
+
+    return state_data
+
+
+def save_generation_state():
+    """Write the generation state to disk NOW, on the calling thread.
+
+    Synchronous on purpose: this is the run-end / test path, where the file must be
+    complete and current by the time the call returns. The per-task hot path uses
+    ``request_generation_state_save()`` instead, which coalesces and returns at once.
+    """
     with app_state.state_file_lock: # Ensure thread-safe file writing
         try:
-            state_data = {
-                'completed_task_ids': list(app_state.completed_task_ids), # Convert set to list for JSON
-                # v13.0.5: which tasks' turns are already in processed_tasks_snapshot, so a
-                # resume does not credit them a second time. Run progress, NOT configuration --
-                # deliberately absent from config_snapshot.
-                'progress_credited_task_ids': sorted(app_state.progress_credited_task_ids),
-                'system_prompt_counter': app_state.system_prompt_counter,
-                'question_history': app_state.question_history,
-                'total_attempts_global': app_state.total_attempts_global,
-                'refusal_count_total': app_state.refusal_count_total,
-                'user_speaking_count_total': app_state.user_speaking_count_total,
-                'slop_count_total': app_state.slop_count_total,
-                'error_count_total': app_state.error_count_total,
-                'ooc_count_total': app_state.ooc_count_total,
-                'regex_watch_count_total': getattr(app_state, 'regex_watch_count_total', 0),
-                'non_latin_count_total': getattr(app_state, 'non_latin_count_total', 0),
-                'refusal_counts_per_api': app_state.refusal_counts_per_api,
-                'total_input_tokens': app_state.total_input_tokens,
-                'total_output_tokens': app_state.total_output_tokens,
-                'estimated_cost': estimated_cost,
-                'user_speaking_counts_per_api': app_state.user_speaking_counts_per_api,
-                'slop_counts_per_api': app_state.slop_counts_per_api,
-                'error_counts_per_api': app_state.error_counts_per_api,
-                'ooc_counts_per_api': app_state.ooc_counts_per_api,
-                'regex_watch_counts_per_api': getattr(app_state, 'regex_watch_counts_per_api', {}),
-                'non_latin_counts_per_api': getattr(app_state, 'non_latin_counts_per_api', {}),
-                'total_attempts_per_api': app_state.total_attempts_per_api,
-                'anti_slop_count_total': app_state.anti_slop_count_total,
-                'anti_slop_counts_per_api': anti_slop_counts_per_api,
-                'character_counter': app_state.character_counter,
-                # Snapshot of critical config settings at the time of saving state
-                'config_snapshot': {
-                    'prompts.use_questions_file': global_config.get('prompts.use_questions_file'),
-                    'generation.num_turns': global_config.get('generation.num_turns', 1),
-                    'generation.subject_size': global_config.get('generation.subject_size', 1000),
-                    'generation.context_size': global_config.get('generation.context_size', 3000),
-                    'api.master_duplication_mode': global_config.get('api.master_duplication_mode', False),
-                    'prompts.opening_mode': bool(global_config.get('prompts.opening_mode', False)),
-                },
-                'quality_scores': {k: v for k, v in app_state.quality_scores.items()},
-                # v11.4: judge drops persist so a resumed run does not retry (or re-flag) a
-                # conversation the judge already rejected.
-                'quality_dropped': dict(app_state.quality_dropped),
-            }
-            # If in master duplication mode and task queue has per-API progress, save it
-            # Also save overall progress if not in duplication mode
-            if app_state.task_queue:
-                if global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'api_processed_tasks'):
-                    state_data['api_processed_tasks_snapshot'] = dict(app_state.task_queue.api_processed_tasks)
-                elif not global_config.get('api.master_duplication_mode', False) and hasattr(app_state.task_queue, 'processed_tasks'):
-                    state_data['processed_tasks_snapshot'] = app_state.task_queue.processed_tasks
-
-
+            state_data = _build_generation_state_data()
             with open(STATE_FILE_PATH, 'w', encoding='utf-8') as f:
                 json.dump(state_data, f, indent=4)
             log_message("Generation state saved.", "INFO")
         except Exception as e:
             log_message(f"Error saving generation state: {e}", "ERROR")
+
+
+def _generation_state_save_worker():
+    """Background writer: coalesces requests and writes at most once per interval.
+
+    Every request that arrives while a write is in flight or inside the debounce window
+    collapses into a single following write, so a burst of 40 simultaneous task completions
+    costs one dump instead of 40. The document is a snapshot of current state, so writing it
+    once is exactly equivalent to writing it repeatedly.
+    """
+    while not _state_save_stop.is_set():
+        # Wake on a request, but never busy-loop when idle.
+        if not _state_save_event.wait(timeout=0.5):
+            continue
+        if _state_save_stop.is_set():
+            break
+        _state_save_event.clear()
+        # Coalesce anything that lands while we serialise: the dump itself is the
+        # expensive part, so let the burst finish first and write it once.
+        if _state_save_stop.wait(timeout=STATE_SAVE_MIN_INTERVAL_SECONDS):
+            break
+        _state_save_event.clear()
+        try:
+            save_generation_state()
+        except Exception as e:  # save_generation_state already logs; never kill the thread
+            log_message(f"State writer: {e}", "ERROR")
+
+
+def request_generation_state_save():
+    """Mark the state dirty and return IMMEDIATELY (v13.1.1).
+
+    Called on the per-task completion path and by the async judge's writer. The actual
+    dump happens on one background thread, so no worker ever waits for it.
+    """
+    global _state_save_thread
+    if _state_save_thread is None or not _state_save_thread.is_alive():
+        with _state_save_thread_lock:
+            if _state_save_thread is None or not _state_save_thread.is_alive():
+                _state_save_stop.clear()
+                _state_save_thread = threading.Thread(
+                    target=_generation_state_save_worker,
+                    name="GenerationStateWriter", daemon=True)
+                _state_save_thread.start()
+    _state_save_event.set()
+
+
+def flush_generation_state():
+    """Stop the background writer and write the state synchronously.
+
+    Called where the run is finishing, so the file on disk reflects the final state
+    and no writer thread outlives the run. Safe to call when the writer never started.
+    """
+    global _state_save_thread
+    with _state_save_thread_lock:
+        _state_save_stop.set()
+        _state_save_event.set()
+        thread = _state_save_thread
+        _state_save_thread = None
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=30.0)
+    save_generation_state()
 
 
 def update_question_history(question, current_history_size):
@@ -2802,7 +2907,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # v13.0.5: the work is finished even though the row is not kept, so the bar
                 # credits it; otherwise 100% would be unreachable by construction.
                 _credit_task_progress(task_id, queue=q)
-                save_generation_state()
+                request_generation_state_save()
                 q.task_done()
                 continue
 
@@ -2915,7 +3020,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 log_message(
                                     f"Thread {thread_id}: Task {task_id} handed to the quality "
                                     f"queue; generation continues.", "INFO")
-                                save_generation_state()
+                                request_generation_state_save()
                             elif quality_dropped_this_task:
                                 # v11.4: the judge rejected this conversation, so it is never
                                 # written, never marked complete and never flagged.
@@ -2927,7 +3032,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 # processed", not "every conversation written". The drop
                                 # itself stays visible via app_state.dropped_task_ids.
                                 _credit_task_progress(task_id, queue=q)
-                                save_generation_state()
+                                request_generation_state_save()
                             else:
                                 with output_data_lock:
                                     if task_id not in app_state.completed_task_ids:
@@ -2957,7 +3062,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 # Update UI tracking on success
                                 with app_state.task_queue_ui_lock:
                                     app_state.pending_task_ids.discard(task_id)
-                                save_generation_state()
+                                request_generation_state_save()
                         else:
                             log_message(f"Thread {thread_id}: Task {task_id} incomplete. Expected {expected_messages} messages, got {actual_messages}. NOT saving to output.jsonl.", "WARNING")
                             # Do NOT add to completed_task_ids - this task should be retried.
@@ -3248,20 +3353,21 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             if api_key_local:
                 headers['Authorization'] = f"Bearer {api_key_local}"
 
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
-
-            debug_log_entry = {
-                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "question_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1,
-                "api_url": api_url_local, "model": model_name_local,
-                "source_file": file_name,
-                "raw_subject_chunk_length": len(raw_subject_chunk),
-                "raw_context_chunk_length": len(raw_context_chunk),
-                "messages": messages_for_llm,
-                "sampler_settings": sampler_settings_local,
-                "payload_dict": payload_dict
-            }
-            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps(debug_log_entry) + '\n')
+            # Prompt trace (opt-in, see logging_config.debug_prompt_logging_enabled). The
+            # entry is only built when tracing is on: assembling it walks the whole message
+            # list, which is not free at 40 threads even when the write is skipped.
+            if logging_config.debug_prompt_logging_enabled():
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                logging_config.write_debug_prompt(current_debug_log_path, {
+                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "question_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1,
+                    "api_url": api_url_local, "model": model_name_local,
+                    "source_file": file_name,
+                    "raw_subject_chunk_length": len(raw_subject_chunk),
+                    "raw_context_chunk_length": len(raw_context_chunk),
+                    "messages": messages_for_llm,
+                    "sampler_settings": sampler_settings_local,
+                    "payload_dict": payload_dict
+                })
 
             # Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx)
@@ -3604,9 +3710,10 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             if api_key_local:
                 headers['Authorization'] = f"Bearer {api_key_local}"
 
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
-            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict}) + '\n')
+            # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
+            if logging_config.debug_prompt_logging_enabled():
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict})
 
             # NEW: Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx)
@@ -3928,13 +4035,14 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
         if api_key_local:
             headers['Authorization'] = f"Bearer {api_key_local}"
 
-        debug_log_path = BASE_DEBUG_LOG_PATH + (f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else ".jsonl")
-        with open(debug_log_path, 'a', encoding='utf-8') as debug_log:
-            debug_log.write(json.dumps({
+        # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
+        if logging_config.debug_prompt_logging_enabled():
+            debug_log_path = BASE_DEBUG_LOG_PATH + (f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else ".jsonl")
+            logging_config.write_debug_prompt(debug_log_path, {
                 "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": log_type,
                 "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "source_file": file_name,
                 "api_url": api_url_local, "model": model_name_local, "messages": messages,
-                "payload_dict": payload_dict}) + '\n')
+                "payload_dict": payload_dict})
 
         global_rate_limiter.wait_if_needed(api_slot_idx)
         if not check_circuit_breaker(api_slot_idx):
@@ -4449,10 +4557,10 @@ def call_slop_fixer_llm(text_context, slop_phrase,
             if api_key:
                 headers['Authorization'] = f"Bearer {api_key}"
 
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
-
-            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
+            # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
+            if logging_config.debug_prompt_logging_enabled():
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data })
 
             # NEW: Apply rate limiting before making the API call
             global_rate_limiter.wait_if_needed(api_slot_idx_slop_fixer)
@@ -4709,9 +4817,10 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
             if api_key:
                 headers['Authorization'] = f"Bearer {api_key}"
 
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_anti_slop}.jsonl" if master_duplication_enabled else BASE_DEBUG_LOG_PATH + ".jsonl"
-            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "anti_slop_request", "api_slot_idx": api_slot_idx_anti_slop, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data }) + '\n')
+            # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
+            if logging_config.debug_prompt_logging_enabled():
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_anti_slop}.jsonl" if master_duplication_enabled else BASE_DEBUG_LOG_PATH + ".jsonl"
+                logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "anti_slop_request", "api_slot_idx": api_slot_idx_anti_slop, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data })
 
             # FIX 2: Rate limiter already called BEFORE lock acquisition above
             # Track API response time
@@ -5047,9 +5156,10 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                 if api_key_local:
                     headers['Authorization'] = f"Bearer {api_key_local}"
 
-                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
-                with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                    debug_log.write(json.dumps({"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "source_file": file_name, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans}) + '\n')
+                # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
+                if logging_config.debug_prompt_logging_enabled():
+                    current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                    logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "source_file": file_name, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans})
 
                 global_rate_limiter.wait_if_needed(api_slot_idx)
 
@@ -6242,7 +6352,7 @@ def _mark_task_written(task_id, thread_id, turns=None, queue=None):
         _credit_task_progress(task_id, turns, queue)
     log_message(f"Quality processor: Task {task_id} written and marked complete.", "INFO")
     try:
-        save_generation_state()
+        request_generation_state_save()
     except Exception as e:
         log_message(f"Quality processor: could not save state after {task_id}: {e}", "WARNING")
 
