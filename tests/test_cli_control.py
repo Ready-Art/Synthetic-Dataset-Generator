@@ -725,6 +725,72 @@ def test_tcp_refuses_a_non_loopback_bind_unless_explicitly_allowed():
         allowed._check_tcp_host("0.0.0.0")  # must not raise
 
 
+def test_serve_forever_returns_when_the_server_is_stopped():
+    """``ControlServer.serve_forever()`` must return once ``stop()`` has run.
+
+    Regression test for a busy-loop that kept the controller alive at ~90% CPU after a
+    successful ``shutdown``. ``start()`` already puts a ``serve_forever`` loop on its own
+    thread; this method used to start a SECOND loop over the same ``BaseServer``. Both
+    shared the single ``__shutdown_request`` / ``__is_shut_down`` pair, so whichever loop
+    exited first reset the flag and the other was left calling ``accept()`` on a closed
+    socket -- an EINVAL spin that never ended. ``shutdown`` still replied
+    ``{"shutting_down": true}`` and removed the socket, so the leak was invisible to the
+    CLI and only showed up as a stray process in ``ps``.
+
+    Asserted two ways, because the spin itself is a RACE and a pure timing assertion can
+    pass by luck on the buggy code:
+
+    * structurally -- exactly one ``serve_forever`` loop may be started per server, which
+      is the actual invariant the bug violated; and
+    * behaviourally -- the serving thread must have finished after ``stop()``.
+    """
+    with TempWorkspace() as base:
+        import control
+
+        socket_path = str(base / "serve-forever.sock")
+        server = control.ControlServer(
+            controller=control.HeadlessController(), socket_path=socket_path)
+
+        # Count how many accept loops get started. ``start()`` legitimately starts one on
+        # a background thread; ``serve_forever()`` must not start a second.
+        loops_started = []
+        original_serve_forever = control._ThreadedUnixServer.serve_forever
+
+        def counting_serve_forever(self, *args, **kwargs):
+            loops_started.append(threading.current_thread().name)
+            return original_serve_forever(self, *args, **kwargs)
+
+        control._ThreadedUnixServer.serve_forever = counting_serve_forever
+        try:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            # Wait for the loop to be live before stopping it, or the test could pass by
+            # stopping a server that never started.
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not control.is_server_running(socket_path):
+                time.sleep(0.05)
+            assert control.is_server_running(socket_path), (
+                "the control server never became reachable")
+
+            assert len(loops_started) == 1, (
+                f"{len(loops_started)} accept loops were started on one server "
+                f"({loops_started}). Two loops share a single "
+                f"__shutdown_request/__is_shut_down pair, so one of them survives "
+                f"stop() and spins on a closed socket forever.")
+
+            server.stop()
+            thread.join(timeout=10.0)
+
+            assert not thread.is_alive(), (
+                "serve_forever() did not return after stop(): the process would be "
+                "left spinning on a closed socket instead of exiting")
+            assert not os.path.exists(socket_path), (
+                "stop() left the socket file behind")
+        finally:
+            control._ThreadedUnixServer.serve_forever = original_serve_forever
+
+
 # ---------------------------------------------------------------------------
 # Default behaviour unchanged
 # ---------------------------------------------------------------------------
@@ -796,22 +862,24 @@ def test_generate_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-def test_the_version_is_13_0_everywhere_it_is_declared():
+def test_the_version_is_13_0_1_everywhere_it_is_declared():
     """The version lives in four places; all of them must agree."""
     import control
-    assert control.GENERATOR_VERSION == "13.0", control.GENERATOR_VERSION
+    assert control.GENERATOR_VERSION == "13.0.1", control.GENERATOR_VERSION
 
     generate_source = (ROOT / "generate.py").read_text(encoding="utf-8")
-    assert 'text="v13.0"' in generate_source, "generate.py version label is not v13.0"
+    assert 'text="v13.0.1"' in generate_source, (
+        "generate.py version label is not v13.0.1")
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     titles = [line for line in readme.splitlines()
               if line.startswith("# ReadyArt Synthetic Dataset Generator")]
     assert titles, "README.md has no '# ReadyArt Synthetic Dataset Generator' title"
-    assert "v13.0" in titles[0], f"README.md title does not name v13.0: {titles[0]!r}"
+    assert "v13.0.1" in titles[0], (
+        f"README.md title does not name v13.0.1: {titles[0]!r}")
 
     history = (ROOT / "docs" / "version-history.md").read_text(encoding="utf-8")
-    assert "v13.0" in history, "docs/version-history.md has no v13.0 row"
+    assert "v13.0.1" in history, "docs/version-history.md has no v13.0.1 row"
 
 
 # ---------------------------------------------------------------------------

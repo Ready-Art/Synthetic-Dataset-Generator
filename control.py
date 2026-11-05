@@ -1383,6 +1383,9 @@ class ControlServer:
         self._tcp_server = None
         self._threads = []
         self._stopped = threading.Event()
+        # Set when stop() has finished tearing everything down, so serve_forever() can
+        # block until the teardown is COMPLETE rather than merely begun.
+        self._stopped_done = threading.Event()
 
     def _check_tcp_host(self, host):
         """Reject a non-loopback TCP bind unless the caller explicitly allowed it."""
@@ -1451,12 +1454,19 @@ class ControlServer:
         Reuses a server ``start()`` already bound: calling ``_prepare_socket_path()`` again
         would see this process's own socket file, decide a controller was already listening
         and refuse to start. Only a server that was never started is bound here.
+
+        ``start()`` has already put a ``serve_forever`` loop on its own thread, so this
+        method's whole job is to park the calling thread until ``stop()`` finishes. It must
+        NOT start a second loop: two ``serve_forever`` loops over one ``BaseServer`` share
+        the single ``__shutdown_request`` / ``__is_shut_down`` pair, so whichever loop exits
+        first resets the flag, and the other is left accepting on a closed socket -- an
+        EINVAL spin that never ends and keeps the process alive at ~90% CPU.
         """
         if self._unix_server is None:
             self.start()
             if self._unix_server is None:
                 raise CommandError('failed', 'The control server could not be started.')
-        self._unix_server.serve_forever()
+        self._stopped_done.wait()
 
     def stop(self):
         """Stop serving and remove the socket file."""
@@ -1477,6 +1487,9 @@ class ControlServer:
                 os.unlink(self.socket_path)
         except OSError:
             pass
+        # Released LAST: this is what lets serve_forever() return, so the process can
+        # actually exit instead of leaving a busy controller behind.
+        self._stopped_done.set()
         log_message("Control server stopped.", "INFO")
 
 
@@ -1547,4 +1560,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.0"
+GENERATOR_VERSION = "13.0.1"
