@@ -2319,8 +2319,9 @@ def start_processing():
         if quality.judge_async_enabled():
             generation._install_quality_write_handler()
             log_message(
-                "Quality async scoring ON: the judge scores and writes rows; "
-                "generation does not wait for verdicts.", "INFO")
+                "Quality async scoring ON: workers hand the queue a write job and move on; "
+                "the judge scores it and a processor thread writes the row. "
+                "Generation does not wait for verdicts.", "INFO")
         quality.initialize_quality_queue()
         log_message("Quality scoring queue system initialized.", "INFO")
     
@@ -2821,7 +2822,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.0.2",
+    text="v13.0.3",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

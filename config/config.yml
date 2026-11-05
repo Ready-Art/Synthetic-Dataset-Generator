@@ -128,7 +128,8 @@ quality:
   judge_concurrency: 1
   # v12.9: run the judge as a QUEUE instead of a GATE. Off (default) = the worker waits for
   # the verdict, so a slow judge drops rows on `result_timeout`. On = the worker hands the judge a
-  # complete write job and moves on; the judge scores it and writes the row itself. Generation
+  # complete write job and moves on; a processor thread scores it and writes the row once the
+  # judge has returned a verdict (the judge itself never writes). Generation
   # never waits, nothing is lost to a timeout, and the run does not end until the queue is drained.
   async_scoring: false
   judge_json_repair_attempts: 1

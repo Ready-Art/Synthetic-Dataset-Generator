@@ -1608,7 +1608,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         turns_counted_this_attempt = 0            # Progress turns this attempt added (non-duplication mode)
         quality_dropped_this_task = False         # v11.4: judge rejected this conversation; do not write it
         # v12.9.2: True once the async judge owns this task's row(s). Duplication mode sets it
-        # per turn (the judge writes each turn's per-API rows), so it must be initialised here
+        # per turn (the processor writes each turn's per-API rows), so it must be initialised here
         # rather than only in the non-duplication branch -- otherwise the per-turn write guard
         # below raises NameError in duplication mode.
         quality_write_deferred = False
@@ -6034,9 +6034,10 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
     written before the judge had spoken, which made "drop it" impossible to enforce.
 
     With ``quality.async_scoring`` on and a ``write_job`` supplied, the verdict is NOT waited
-    for: the judge scores the conversation and writes the row itself, so a slow judge cannot
-    hold up generation and nothing can be lost to ``quality.result_timeout``. This call then
-    returns ``None`` and the caller must not write the row.
+    for: a queue processor thread scores the conversation and then writes the row itself, so a
+    slow judge cannot hold up generation and nothing can be lost to ``quality.result_timeout``.
+    The judge only ever returns a verdict -- it never writes. This call then returns ``None``
+    and the caller must not write the row.
     """
     try:
         return quality.enqueue_quality_scoring(
@@ -6069,12 +6070,23 @@ def _score_and_store_quality(conv_for_scoring, task_id, thread_id, api_slot_idx,
 
 
 def _make_quality_write_job(write_conversation_kwargs, on_written=None):
-    """Bind a conversation's write arguments so the judge can write the row later.
+    """Bind a conversation's write arguments so the PROCESSOR can write the row later.
 
-    ``quality.async_scoring`` moves the write from the worker to the judge processor. The row
-    must still be byte-identical to what the worker would have written, so this captures the
+    ``quality.async_scoring`` moves the write OFF the worker and onto the queue processor
+    thread. The JUDGE never writes anything: it only returns a verdict, and the processor
+    calls this job with that verdict once it has one. Keeping the two roles apart is what
+    makes the mode safe -- the judge stays a read-only scorer, and the only thing that ever
+    appends a row is still ``write_conversation()``.
+
+    The row must still be byte-identical to what the worker would have written, so this captures the
     exact ``write_conversation`` keyword arguments and the helper only fills in
     ``quality_result`` -- the one value that does not exist until the judge has spoken.
+
+    The append runs under ``app_state.output_data_lock``, the same lock every worker holds
+    while it calls ``write_conversation()`` and the same lock the Review tab's drop rewrite
+    takes. ``write_conversation()`` takes no lock itself, so a processor thread appending
+    without it could interleave its ``open(..., 'a')``/``write()`` with a worker's and corrupt
+    a line. A processor thread is a real writer here, so it must queue like one.
 
     ``on_written()`` runs after a successful write, and is where the task-completion
     bookkeeping lives in async mode: a task must not be marked complete until its row is
@@ -6085,7 +6097,8 @@ def _make_quality_write_job(write_conversation_kwargs, on_written=None):
     def _write(quality_result):
         kwargs = dict(write_conversation_kwargs)
         kwargs["quality_result"] = quality_result
-        write_conversation(None, **kwargs)
+        with app_state.output_data_lock:
+            write_conversation(None, **kwargs)
         if on_written is not None:
             on_written()
     return _write

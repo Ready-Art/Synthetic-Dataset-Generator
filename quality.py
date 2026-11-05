@@ -146,8 +146,10 @@ JUDGE_CONCURRENCY_MAX = 32
 # --- Async scoring (v12.9) ------------------------------------------------------------
 # By default the judge is a GATE: the worker blocks until the verdict arrives, because a row
 # it rejects must never reach the dataset. ``quality.async_scoring`` flips that: the worker hands
-# the judge a complete write job and moves on, and the judge scores the conversation and writes
-# the row itself. Two things follow that the gate cannot offer:
+# the queue a complete write job and moves on, and a PROCESSOR THREAD scores the conversation and
+# then writes the row. THE JUDGE ITSELF NEVER WRITES A ROW -- it is an HTTP scorer that returns a
+# verdict and nothing else; every append still goes through generation.write_conversation().
+# Two things follow that the gate cannot offer:
 #   * a slow judge no longer holds up generation, and
 #   * NOTHING IS LOST TO A TIMEOUT -- there is no wait to time out of. A queued job stays
 #     queued until it is scored, and the run does not end until the queue is drained.
@@ -2357,12 +2359,12 @@ def get_quality_stats():
 #     (v11.4). The wait is bounded by ``quality.result_timeout``, which is why a slow
 #     judge DROPS rows.
 #
-#   QUEUE -- the worker hands over a COMPLETE write job and returns immediately; the
-#     processor scores it and calls the injected writer itself. There is no wait, so there
-#     is no timeout to lose work to: a job stays queued until it is scored, and the run
-#     does not end until the queue is drained (``wait_for_quality_queue``). The row is
-#     written only after its verdict, so a written row is complete and a rejected
-#     conversation never appears at all.
+#   QUEUE -- the worker hands over a COMPLETE write job and returns immediately; a processor
+#     thread scores it and calls the injected writer itself. The JUDGE only ever produces a
+#     verdict -- it never writes a row. There is no wait, so there is no timeout to lose work to:
+#     a job stays queued until it is scored, and the run does not end until the queue is drained
+#     (``wait_for_quality_queue``). The row is written only after its verdict, so a written row is
+#     complete and a rejected conversation never appears at all.
 # =============================================================================
 
 # Quality scoring queue: holds tuples of (conversation_history, task_id, thread_id,
@@ -2447,7 +2449,7 @@ def initialize_quality_queue():
         log_message(
             f"Quality scoring queue started with {workers} processor thread(s) "
             f"(quality.judge_concurrency)"
-            f"{' [async: the judge writes the rows]' if judge_async_enabled() else ''}.",
+            f"{' [async: the PROCESSOR writes the rows after scoring; the judge only scores]' if judge_async_enabled() else ''}.",
             "INFO")
 
 
@@ -2604,10 +2606,16 @@ def _enqueue_quality_write(write_job, conversation_history, task_id, thread_id,
                              api_slot_idx, file_name, character_profile_text,
                              scene_characters, logic_findings, cast_schedule,
                              cast_events):
-    """Queue a write job for the judge to score and write (QUEUE mode, v12.9).
+    """Queue a write job for a processor thread to score and write (QUEUE mode, v12.9).
 
     Returns ``None``: the caller must NOT write the row itself, the processor owns it. The
     verdict therefore cannot delay generation and there is no timeout to lose it to.
+
+    Naming note: the JUDGE does not write the row -- it returns a verdict. The queue PROCESSOR
+    thread scores the conversation (asking the judge) and then appends the row itself. Every
+    mention of "the judge writes" in older comments meant "the processor writes, once the judge
+    has spoken"; the two are kept apart here because only the processor is a writer, and only
+    writers take ``app_state.output_data_lock``.
 
     The queue is unbounded, so a job is never refused. If the processors are not running the
     job is scored and written inline instead, so a run without the queue (tests) still produces
@@ -2650,6 +2658,10 @@ def _enqueue_quality_write(write_job, conversation_history, task_id, thread_id,
 
 def _score_and_write_job(item):
     """Score one queued job and write its row (QUEUE mode). Never raises.
+
+    This runs on a queue PROCESSOR thread. It is the only async-path writer: it asks the judge
+    for a verdict, then calls the injected writer (``generation.write_conversation``, which takes
+    ``app_state.output_data_lock``). The judge is never given write access and never writes a row.
 
     The row is written ONLY after a verdict, so a written row is always scored and a
     rejected conversation never appears in the dataset. A job that cannot be written is reported

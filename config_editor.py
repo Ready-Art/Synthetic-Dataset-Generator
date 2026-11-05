@@ -647,12 +647,13 @@ class ConfigEditor(tk.Toplevel):
                         "(How many judge requests may be in flight at once, 1-32. Match the judge server's real parallel capacity -- a local vLLM that slows down past 2-3 concurrent requests wants 2 or 3, not 8. Default 1)")
         # v12.9: async mode. Off (default) = the worker waits for the verdict, so a slow judge
         # can drop rows on the result timeout. On = the worker hands the judge a complete write job
-        # and moves on; the judge scores it and writes the row itself, so generation never waits,
+        # and moves on; a processor thread scores it and writes the row once the judge has spoken,
+        # so generation never waits,
         # nothing is lost to a timeout, and the run ends only once the queue is drained.
         self.quality_async_scoring_var = tk.BooleanVar()
         wrapped_checkbutton(
             gen_settings_frame,
-            text="Async Scoring (judge queues and writes rows; generation never waits, nothing is lost to a timeout)",
+            text="Async Scoring (the judge queues verdicts and a processor thread writes the rows; generation never waits, nothing is lost to a timeout)",
             variable=self.quality_async_scoring_var,
         ).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx += 1
         # v11.5 JSON robustness: small local judges usually get the evaluation right but wrap it
