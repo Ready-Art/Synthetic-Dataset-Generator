@@ -13,14 +13,22 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 # 🏗 Architecture & Modules
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Tkinter GUI (Main Thread)             │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
-│  │ Controls  │ │ Progress │ │ Dashboard│ │ Config    │  │
-│  │ & Toasts  │ │  Bars    │ │ & Queue  │ │  Editor   │  │
-│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
-└──────────────────────┬──────────────────────────────────┘
-                       │
+┌─────────────────────────────┐   ┌─────────────────────────────┐
+│  Tkinter GUI (Main Thread)   │   │  CLI (cli.py)                │
+│  ┌──────────┐ ┌───────────┐  │   │  launch / start / stop       │
+│  │ Controls  │ │ Dashboard │  │   │  stats / save / clear        │
+│  │ & Toasts  │ │ & Config  │  │   │  JSON + exit codes          │
+│  └──────────┘ └───────────┘  │   └──────────────┬──────────────┘
+└──────────────┬──────────────┘                  │
+               │  control.py: Unix socket, one   │
+               │  JSON object per line          │
+               └───────────────┬─────────────────┘
+                               ▼
+                     ┌───────────────────┐
+                     │  run_config.py    │
+                     │  config -> run    │
+                     └─────────┬─────────┘
+                               ▼
           ┌────────────┼────────────┐
           ▼            ▼            ▼
     ┌──────────┐ ┌──────────┐ ┌──────────┐
@@ -69,6 +77,9 @@ The application is organized into focused modules with one-way dependencies to p
 | Module | Purpose | Imports From |
 |--------|---------|--------------|
 | `generate.py` | Main GUI, orchestration, worker thread management, startup | All modules (root of dependency tree) |
+| `run_config.py` | Config -> run resolution, output/DB/JSONL plumbing, optional control server | `generation`, `quality`, `app_state`, `api_profiles`, `dataset_tasks` |
+| `control.py` | Control protocol, Unix/TCP socket server, `HeadlessController` (one `cmd_*` per verb) | `run_config`, `generation`, `quality`, `app_state` |
+| `cli.py` | argparse surface, socket client, daemon launcher | `control` (+ `generate` only in `_launch_gui`) |
 | `generation.py` | Worker loop, LLM calls, answer generation, task processing | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `quality`, `logging_config` |
 | `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
 | `config_editor.py` | Configuration editor GUI (tabbed interface, validation, search) | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |

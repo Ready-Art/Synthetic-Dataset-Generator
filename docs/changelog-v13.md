@@ -1,0 +1,54 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+ReadyArt Synthetic Dataset Generator
+Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+
+All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+it is unlikely any of that code survives. Unless you have the original MIT-era code to
+compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+-->
+
+# 📝 Changelog — v13.x
+
+Newest first. [v12](changelog-v12.md) holds the rest of the history.
+
+### v13.0
+- **New: headless / CLI control — the generator runs without a window** — `python -m cli` drives the same engine, the same `config/config.yml` and the same output files as the GUI, from a terminal. Every verb the GUI has is reachable: `launch`, `serve`, `status`, `version`, `start`, `stop`, `pause`, `resume`, `stats`, `export`/`save`, `clear`, `wait`, `shutdown`, and `shell`. Built for a shell script and for an LLM agent as much as for a person, so the JSON is the contract and the human table sits on top of it. See [`docs/cli.md`](cli.md)
+- **Three new GUI-free modules, and the boundary is enforced** — `run_config.py` resolves a config into a run and owns the output/DB/JSONL plumbing; `control.py` is the protocol, the socket server and `HeadlessController`; `cli.py` is the argparse surface, the client and the daemon launcher. `generate.py` builds the whole Tk UI at module scope, so **none of them may import it** — doing so would make every headless verb require a display. `tests/test_cli_control.py` scans the source with `ast` and fails on any import outside the one allowed GUI-launch path. The dependency chain stays one-way: `cli` → `control` → `run_config` → `generation`/`quality`/`app_state`
+- **Machine-readable by default, and the exit code is the contract** — every verb prints one JSON object when stdout is not a terminal, so a script parses it with no flags; `--json` forces JSON on a terminal and `--text` forces the table when piped. `--json`, `--text`, `--config` and `--socket` work **before or after** the verb, because argparse only accepts them before the subcommand and an LLM cannot be relied on to remember that. Exit codes: `0` ok, `1` failed, `2` usage, `3` nothing to talk to, `4` already running, `5` refused, `6` timeout. Several codes deliberately share a status, so `error.code` in the JSON distinguishes them when it matters
+- **`stats` reports both meanings of "filtering", kept apart** — **`detected`** is caught and handled (rewritten or retried) and the row is still written; **`filtered`** is dropped and never written, keyed by reason (`invalid_json`, `logic_zero`, `judge_failed`, `manual`); **`detection_config`** is which checks are actually armed. A counter reading zero means either "nothing was caught" or "the check is switched off", and only the third section tells them apart. Conflating the first two leads a reader to conclude the dataset is smaller, or cleaner, than it is. `--filters-only` returns just those three
+- **The rate limiter is now interruptible, so Stop actually stops** — `RateLimiter.wait_if_needed()` slept with a plain `time.sleep()`, which cannot be interrupted. A rate-limited slot can wait almost a full minute before its next request is allowed, so a Stop had to wait out that minute before any worker noticed it — on a rate-limited slot the generator looked unstoppable for up to 60 s after the Stop was accepted. `_interruptible_sleep()` now sleeps in 0.25 s slices and returns as soon as `app_state.stop_processing` is set. The slot's request timestamp is still recorded, so nothing is over-sent: a stop only means the next request is not made. **Measured with `rate_limit_rpm: 2`:** `stop` returns `generation stopped` immediately instead of timing out
+- **Fixed: `stop` reported a working stop as a timeout, three separate ways** — (a) `_join_workers(timeout)` applied the budget **per thread**, so ten workers with a 30 s timeout meant a real budget of 300 s, and the caller's own 30 s socket timeout fired first; (b) the client's socket timeout equalled the server's stop budget, so the client always gave up first; (c) a worker blocked inside a request cannot be interrupted, and a stop that ran out of time was reported as an **error** even though the run was genuinely stopping. `_join_workers()` now uses ONE shared deadline and **returns** the workers still alive rather than dropping them (dropping them would let a later run start on top of them); `cmd_stop()` reports `still_stopping` with a note instead of failing; the CLI's socket timeout is the stop budget plus 15 s
+- **Fixed: `status` said `idle` while workers were still writing rows** — a reader told "idle" would reasonably treat the dataset as final and the process as safe to kill. That mismatch is exactly what a slow HTTP call produces: the queue drains, `processing_active` clears, and two workers stay alive for another 300 s. `phase()` now reports `stopping` while a worker is alive, `status` reports `running = processing_active or workers_alive()` plus a narrower `generating` flag, and the human table names the three states distinctly. Live workers also win over the remembered phase, so a stop whose workers then exited in the background no longer reports `stopping` forever
+- **Fixed: `control.allow_remote` was documented in the config but never implemented** — the TCP listener would bind `0.0.0.0` happily, so a control channel that can TRUNCATE the database was reachable from the network the moment anyone set `tcp_host`. `ControlServer(allow_remote=...)` plus `_check_tcp_host()` now refuses any non-loopback bind unless it is set, and `_is_loopback_host()` accepts only `127.0.0.0/8`, `::1` and `localhost` (a hostname that resolves off-box counts as remote). Enabling TCP must not be the same thing as exposing the generator
+- **Fixed: `save` doubled the row count on every save** — `jsonl_output_files()` swept in its own previous export, so each save re-read the last one. `DERIVED_OUTPUT_PREFIXES` is now one list used by BOTH `save` and `clear`, so the two cannot disagree about which files are derived output. Re-saving to the same destination is also no longer refused: the destination is dropped from the source list so it is never read while written
+- **Fixed: four of ten detection counters reported `per_api: {}`** — the `app_state` attribute names are not consistent (`refusal_count_total` is singular, `ooc_count_total` is abbreviated, `logic_issue_count_total` sits next to `recent_logic_total`), so deriving a name from a stem silently produced an empty map. `DETECTION_COUNTERS` is now one explicit table of attribute names, used by both the stats payload and the stats reset, and a test asserts every row resolves to a real attribute
+- **The GUI's DB actions now use the same implementation as the CLI** — `clear_database()`, `export_db_to_jsonl()` and `init_database_pool()` in `generate.py` are thin wrappers over `run_config`, keeping every `toast`/`messagebox` line so the window's behaviour and wording are unchanged. Two implementations of the same TRUNCATE is how the two front ends drift apart
+- **The GUI can also serve the control interface, off by default** — `control.enabled: false` by default, so `python generate.py` behaves exactly as before. Set it to `true` (or tick **Serve control commands** in **Edit Config → Control Interface**) to drive a running window from a terminal. `start_control_server_if_enabled()` swallows every failure to a log line: a busy port must never stop the GUI opening, because being unable to drive the generator from a terminal is an inconvenience and refusing to start is a regression
+- **New `control:` config block and Config Editor group** — `enabled`, `socket_path`, `tcp_host`, `tcp_port` and `allow_remote`, with a **Control Interface (CLI)** group in the editor that enables its entries only while the checkbox is on and validates the port as 1-65535 before saving
+- **Docs: `README.md` "At a Glance" now shows both front ends, and `docs/architecture.md` was
+  brought up to date** — the README diagram showed the Tk GUI as the only entry point, which stopped
+  being true the moment a terminal could drive a run, so it now shows both front ends, the `control.py`
+  socket protocol and `run_config.py` between them. `docs/architecture.md` had never been updated: its
+  diagram and its module table both lacked the three new modules, so `run_config.py`, `control.py` and
+  `cli.py` were added there with their real import edges (and `generate.py`'s row left as the root)
+- **Docs: one new user page, one new agent topic file, and four index rows** — `docs/cli.md` is the
+  user page (verbs, JSON, exit codes, the `control:` block, the files the CLI writes, a typical session and
+  a troubleshooting table); `docs/agents/cli.md` is the LLM topic file (the dependency rule, a per-module
+  edit guide, the tests, and the traps). Rows were added to `README.md`'s doc map,
+  `docs/file-structure.md` (both the module list and the `docs/agents/` index),
+  `docs/agents/task-index.md` and the `AGENTS.md` hub table
+- **Removed: the "Slop and Anti-Slop are DISABLED BY DEFAULT" block from `README.md`** —
+  **`README.md` only**; `docs/slop-and-antislop.md` and the topic docs still carry the full argument,
+  so nothing was lost, and the README keeps its `Slop & Anti-Slop — Use the Fork` row in the doc map
+- **No unintended edits, and that is asserted rather than assumed** — the tree was diffed against
+  upstream and three pieces of collateral damage were found and undone: `tools/add_license_header.py` had
+  put a 10-line SPDX header on `.gitignore` (a gitignore is not a source file), and two LF files
+  (`docs/file-structure.md`, `docs/architecture.md`) had been rewritten with CRLF, which turns a
+  handful of changed lines into a whole-file diff. This repository is genuinely mixed (20 CRLF files,
+  98 LF), so the rule is **preserve whichever a file already uses** — `api_handler.py` is CRLF and was
+  patched at the byte level for that reason
+- **New tests** — `tests/test_cli_control.py` (32 headless checks: config resolution, worker-arg binding against the real signature, socket round-trip, every verb, the stats contract, exit codes, `_kind`-must-not-leak, save idempotency, stop semantics, TCP safety, default-GUI-unchanged). The three new modules were added to `tests/test_undefined_globals.py`'s `CHECKED_MODULES`
+- **Version bumped to v13.0** — a **minor** bump: new feature, new config block, new modules. **A default GUI run is unchanged**: no socket is opened unless the daemon runs or `control.enabled` is on, and no worker option, prompt, request or output row changed
