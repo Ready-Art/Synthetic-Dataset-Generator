@@ -472,6 +472,8 @@ class HeadlessController:
         self._completion_done = threading.Event()
         self._completion_done.set()
         self._settings = None
+        # v13.0.5: the saved progress counter a resume continues from (see _load_state).
+        self._loaded_processed_tasks = None
         self._server = None
         self._shutdown_requested = False
         self._socket_path = socket_path or default_socket_path()
@@ -717,8 +719,21 @@ class HeadlessController:
         app_state.task_queue.all_tasks_queued = True
         app_state.task_queue.total_tasks_for_progress = total_tasks * settings.num_turns
         app_state.task_queue.processed_tasks_lock = threading.Lock()
-        if not hasattr(app_state.task_queue, 'processed_tasks'):
-            app_state.task_queue.processed_tasks = 0
+        # v13.0.5: a resume continues from the saved counter, exactly as the GUI does.
+        app_state.task_queue.processed_tasks = 0
+        loaded_processed = getattr(self, '_loaded_processed_tasks', None)
+        if resumed and loaded_processed is not None:
+            app_state.task_queue.processed_tasks = loaded_processed
+        elif resumed:
+            app_state.task_queue.processed_tasks = len(app_state.completed_task_ids) * settings.num_turns
+        # v13.0.5: progress is credited per completed task, so the credit helper needs the
+        # run's turn count, and a resume must not re-credit tasks the state file already counts.
+        app_state.current_num_turns_for_progress = settings.num_turns
+        with app_state.progress_credited_lock:
+            if resumed:
+                app_state.progress_credited_task_ids |= set(app_state.completed_task_ids)
+            else:
+                app_state.progress_credited_task_ids = set()
         app_state.task_queue.start_times_list = []
         if settings.master_duplication_enabled:
             app_state.task_queue.api_processed_tasks = {i: 0 for i in range(4)}
@@ -911,6 +926,21 @@ class HeadlessController:
                 return False
 
         app_state.completed_task_ids = set(state.get('completed_task_ids', []))
+        # v13.0.5: the saved progress counter, restored when the queue is rebuilt in
+        # cmd_start(). Before this the headless path always restarted the bar at 0 on a resume.
+        # Deliberately a per-run attribute rather than an app_state global: generate.py uses
+        # app_state.loaded_processed_tasks_snapshot for the GUI's own resume, and this server
+        # never drives the GUI.
+        if not cfg.get('api.master_duplication_mode', False):
+            self._loaded_processed_tasks = state.get('processed_tasks_snapshot')
+        # v13.0.5: which tasks' turns the snapshot already counts (older state files have no
+        # such key; there completed_task_ids is the correct fallback).
+        with app_state.progress_credited_lock:
+            if 'progress_credited_task_ids' in state:
+                app_state.progress_credited_task_ids = set(
+                    state.get('progress_credited_task_ids') or [])
+            else:
+                app_state.progress_credited_task_ids = set(app_state.completed_task_ids)
         app_state.system_prompt_counter = state.get('system_prompt_counter', 0)
         app_state.character_counter = state.get('character_counter', 0)
         app_state.question_history = state.get('question_history', [])
@@ -933,6 +963,10 @@ class HeadlessController:
     def _reset_stats(self):
         """Zero every counter and history list a new run starts from."""
         app_state.completed_task_ids = set()
+        # v13.0.5: nothing is credited in a fresh run, and no saved counter is restored.
+        self._loaded_processed_tasks = None
+        with app_state.progress_credited_lock:
+            app_state.progress_credited_task_ids = set()
         app_state.system_prompt_counter = 0
         app_state.character_counter = 0
         app_state.question_history = []
@@ -1581,4 +1615,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.0.4"
+GENERATOR_VERSION = "13.0.5"

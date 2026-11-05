@@ -533,6 +533,10 @@ def save_generation_state():
         try:
             state_data = {
                 'completed_task_ids': list(app_state.completed_task_ids), # Convert set to list for JSON
+                # v13.0.5: which tasks' turns are already in processed_tasks_snapshot, so a
+                # resume does not credit them a second time. Run progress, NOT configuration --
+                # deliberately absent from config_snapshot.
+                'progress_credited_task_ids': sorted(app_state.progress_credited_task_ids),
                 'system_prompt_counter': app_state.system_prompt_counter,
                 'question_history': app_state.question_history,
                 'total_attempts_global': app_state.total_attempts_global,
@@ -1526,6 +1530,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
 
     log_message(f"Thread {thread_id}: Worker started.", "DEBUG")
 
+    # v13.0.5: _credit_task_progress() runs on the quality processor thread for async-scored
+    # tasks, which cannot see this worker's ``current_num_turns`` local, so publish it run-wide.
+    # All workers in a run are launched with the same value.
+    app_state.current_num_turns_for_progress = current_num_turns
+
     # Keep authored inputs pristine across this worker's successive tasks.
     # Dynamic native placeholders are still filled by their original helpers.
     dataset_authored_inputs = (
@@ -1606,7 +1615,6 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         initial_user_question = None
         raw_subject_content_for_debug = ""
         raw_context_content_for_debug = ""
-        turns_counted_this_attempt = 0            # Progress turns this attempt added (non-duplication mode)
         quality_dropped_this_task = False         # v11.4: judge rejected this conversation; do not write it
         # v12.9.2: True once the async judge owns this task's row(s). Duplication mode sets it
         # per turn (the processor writes each turn's per-API rows), so it must be initialised here
@@ -1619,25 +1627,20 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             if task_id in app_state.completed_task_ids: # Skip if task was already completed (e.g., from a resumed session)
                 log_message(f"Thread {thread_id}: Skipping already completed task {task_id}.", "INFO")
                 q.task_done()
-                # If resuming, need to update progress bars for skipped tasks
-                if hasattr(q, 'processed_tasks_lock'):
+                # v13.0.5: overall progress (non-duplication mode) is NOT incremented here any
+                # more. The resume path seeds processed_tasks from the saved snapshot and seeds
+                # progress_credited_task_ids with the already-completed tasks, so a skipped task
+                # is already counted; adding its turns again double-counted them and pushed the
+                # bar past its true value. _credit_task_progress is now the only writer.
+                if master_duplication_enabled_local and hasattr(q, 'processed_tasks_lock'):
                     with q.processed_tasks_lock:
-                        # A completed task means all its turns are done.
-                        # current_num_turns is passed to worker and available here.
+                        # Duplication mode keeps its own per-API counter (see FIX-PLAN §7).
                         increment_amount = current_num_turns
-                        if master_duplication_enabled_local:
-                            # In duplication mode, increment progress for each enabled API (0-3)
-                            for api_idx_skip, api_conf_skip in enumerate(all_api_configs_local):
-                                if api_idx_skip < 4 and api_conf_skip.get('enabled', False): # Only for enabled generation APIs
-                                    if api_idx_skip not in q.api_processed_tasks: q.api_processed_tasks[api_idx_skip] = 0
-                                    # Increment by num_turns, ensuring not to over-increment against the new total_tasks_for_progress
-                                    target_processed_for_this_api = q.api_processed_tasks[api_idx_skip] + increment_amount
-                                    q.api_processed_tasks[api_idx_skip] = min(target_processed_for_this_api, q.total_tasks_for_progress)
-                        else:
-                            # In non-duplication mode, increment overall progress
-                            if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
-                            target_processed_overall = q.processed_tasks + increment_amount
-                            q.processed_tasks = min(target_processed_overall, q.total_tasks_for_progress)
+                        for api_idx_skip, api_conf_skip in enumerate(all_api_configs_local):
+                            if api_idx_skip < 4 and api_conf_skip.get('enabled', False): # Only for enabled generation APIs
+                                if api_idx_skip not in q.api_processed_tasks: q.api_processed_tasks[api_idx_skip] = 0
+                                target_processed_for_this_api = q.api_processed_tasks[api_idx_skip] + increment_amount
+                                q.api_processed_tasks[api_idx_skip] = min(target_processed_for_this_api, q.total_tasks_for_progress)
                 continue
 
         # --- Resilience gate: if this worker's API host is down (circuit open),
@@ -2505,7 +2508,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 ),
                                 turn_num,
                                 {slot: text for text, slot in all_duplicated_answers_for_output},
-                                on_written=(lambda: _mark_task_written(task_id, thread_id))
+                                on_written=(lambda: _mark_task_written(
+                                    task_id, thread_id, current_num_turns, q))
                                 if _last_turn else None,
                             )
                             # The verdict gates EVERY per-API row of this turn, so the
@@ -2688,31 +2692,16 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         # Track if refusal was detected in this task
                         if refusal_in_this_call:
                             refusal_detected_in_task = True
-                        # Update overall progress for non-duplication mode (per turn)
-                        turn_incremented = False
-                        retry_count = 0
-                        while not turn_incremented and retry_count < 5:
-                            lock_acquired = q.processed_tasks_lock.acquire(timeout=1.0)
-                            if lock_acquired:
-                                try:
-                                    if not hasattr(q, 'processed_tasks'): q.processed_tasks = 0
-                                    if q.processed_tasks < q.total_tasks_for_progress:
-                                        q.processed_tasks += 1
-                                        turns_counted_this_attempt += 1
-                                    # At the cap there is nothing to add; retrying would loop forever
-                                    turn_incremented = True
-                                finally:
-                                    q.processed_tasks_lock.release()
-                            else:
-                                retry_count += 1
-                                time.sleep(0.1)
-
-                        if not turn_incremented:
-                            log_message(f"Thread {thread_id}: CRITICAL - Failed to increment turn counter after 5 retries!", "ERROR")
+                        # v13.0.5: overall progress is credited per COMPLETED TASK, not per
+                        # turn (see _credit_task_progress). Counting a turn the moment its
+                        # answer arrived was speculative -- under quality.async_scoring the
+                        # task is not saved yet, so the epilogue refunded it and every
+                        # completed task netted zero. Only the ETA sample is kept here.
+                        with q.processed_tasks_lock:
                             if not hasattr(q, 'start_times_list'): q.start_times_list = []
                             q.start_times_list.append(api_task_duration)
                             if len(q.start_times_list) > 50: q.start_times_list.pop(0)
-                        
+
                         # In non-duplication, add the assistant's answer to the main conversation history for output
                         conversation_history_for_output.append({"role": "assistant", "content": assistant_answer})
 
@@ -2809,6 +2798,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 log_message(
                     f"Thread {thread_id}: Task {task_id} was dropped by the quality judge. "
                     "Not written to the dataset.", "WARNING")
+                # v13.0.5: the work is finished even though the row is not kept, so the bar
+                # credits it; otherwise 100% would be unreachable by construction.
+                _credit_task_progress(task_id, queue=q)
                 save_generation_state()
                 q.task_done()
                 continue
@@ -2876,7 +2868,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         include_style_metrics=include_style_metrics_local,
                                         cast_schedule=cast_schedule_label,
                                         cast_events=list(cast_events_this_task),
-                                    ), on_written=lambda: _mark_task_written(task_id, thread_id))
+                                    ), on_written=lambda: _mark_task_written(
+                                        task_id, thread_id, current_num_turns, q))
                                 final_quality_result = _score_and_store_quality(
                                     conv_for_scoring_final,
                                     task_id,
@@ -2928,6 +2921,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 with app_state.task_queue_ui_lock:
                                     app_state.pending_task_ids.discard(task_id)
                                 app_state.completed_task_ids.discard(task_id)
+                                # v13.0.5: the work IS finished even though the row is not
+                                # kept, so the bar credits it -- 100% means "every task
+                                # processed", not "every conversation written". The drop
+                                # itself stays visible via app_state.dropped_task_ids.
+                                _credit_task_progress(task_id, queue=q)
                                 save_generation_state()
                             else:
                                 with output_data_lock:
@@ -2951,6 +2949,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                             cast_schedule=cast_schedule_label,
                                             cast_events=list(cast_events_this_task))
                                         app_state.completed_task_ids.add(task_id)
+                                        _credit_task_progress(task_id, queue=q)
                                         log_message(f"Thread {thread_id}: Task {task_id} marked complete ({actual_messages}/{expected_messages} messages)", "INFO")
                                     else:
                                         log_message(f"Thread {thread_id}: Task {task_id} already marked complete, skipping", "DEBUG")
@@ -2999,12 +2998,6 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 err_summary = f"T{thread_id} TaskErr: {str(e)[:30]}" # Short summary
                 if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
                 app_state.recent_errors_total.append((err_summary, -1)) # -1 indicates a general task error not tied to a specific API call error
-
-        # An attempt that was not saved (paused, requeued, failed) gives back the turns it counted,
-        # so its rerun does not count them twice and 100% means every conversation is written
-        if turns_counted_this_attempt and task_id not in app_state.completed_task_ids:
-            with q.processed_tasks_lock:
-                q.processed_tasks = max(0, q.processed_tasks - turns_counted_this_attempt)
 
         end_time_task_overall = time.time()
         task_duration_overall = end_time_task_overall - start_time_task_overall
@@ -6175,16 +6168,55 @@ def _make_duplication_turn_write_jobs(write_conversation_kwargs, turn_num,
     return jobs
 
 
-def _mark_task_written(task_id, thread_id):
+def _credit_task_progress(task_id, turns=None, queue=None):
+    """Credit a completed task's turns to the progress bar, exactly once (v13.0.5).
+
+    Progress is per TASK, not per turn-in-flight: a turn credited when its answer arrived and
+    then refunded when the task turned out not to be saved yet is what made the bar oscillate
+    instead of advancing (``quality.async_scoring`` writes the row on a processor thread, long
+    after the worker's epilogue had already refunded the turns). So the credit happens here,
+    once, at the moment the work is finished, and is never taken back.
+
+    ``progress_credited_task_ids`` makes this idempotent, so the sync write path, the async
+    processor and a resumed run can all call it without double-counting.
+
+    ``turns`` defaults to ``app_state.current_num_turns_for_progress``, which the worker sets
+    for the duration of a run: a processor thread cannot see the worker's local. ``queue`` is
+    the run's queue; the async path passes the worker's own ``q`` explicitly because a processor
+    thread is not the caller that built it.
+    """
+    q = queue if queue is not None else getattr(app_state, 'task_queue', None)
+    if q is None:
+        return
+    n = getattr(app_state, 'current_num_turns_for_progress', 1) if turns is None else turns
+    lock = getattr(app_state, 'progress_credited_lock', None)
+    if lock is None:
+        return
+    with lock:
+        if task_id in app_state.progress_credited_task_ids:
+            return
+        app_state.progress_credited_task_ids.add(task_id)
+        if not hasattr(q, 'processed_tasks'):
+            q.processed_tasks = 0
+        cap = getattr(q, 'total_tasks_for_progress', 0)
+        q.processed_tasks = q.processed_tasks + n if not cap else min(q.processed_tasks + n, cap)
+
+
+def _mark_task_written(task_id, thread_id, turns=None, queue=None):
     """Task-completion bookkeeping for a row the ASYNC judge just wrote (v12.9).
 
     Mirrors the worker's own success path, but only once the row is on disk: mark it
-    complete so a resume skips it, and drop it from the pending set the dashboard counts.
+    complete so a resume skips it, drop it from the pending set the dashboard counts, and
+    credit its turns to the progress bar (v13.0.5 -- this is the only place an async-scored
+    task's progress is counted, because the worker returns before the row exists).
     The caller holds no lock here, so this takes ``task_queue_ui_lock`` itself.
     """
     with app_state.task_queue_ui_lock:
+        already_complete = task_id in app_state.completed_task_ids
         app_state.completed_task_ids.add(task_id)
         app_state.pending_task_ids.discard(task_id)
+    if not already_complete:
+        _credit_task_progress(task_id, turns, queue)
     log_message(f"Quality processor: Task {task_id} written and marked complete.", "INFO")
     try:
         save_generation_state()

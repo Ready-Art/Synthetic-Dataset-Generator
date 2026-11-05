@@ -263,6 +263,15 @@ def load_generation_state():
 
                 # Load state data into global variables
                 app_state.completed_task_ids = set(state_data.get('completed_task_ids', []))
+                # v13.0.5: which tasks' turns are already in processed_tasks_snapshot. Older
+                # state files have no such key; there, every completed task was already counted
+                # by the snapshot, so completed_task_ids is the correct fallback.
+                with app_state.progress_credited_lock:
+                    if 'progress_credited_task_ids' in state_data:
+                        app_state.progress_credited_task_ids = set(
+                            state_data.get('progress_credited_task_ids') or [])
+                    else:
+                        app_state.progress_credited_task_ids = set(app_state.completed_task_ids)
                 app_state.system_prompt_counter = state_data.get('system_prompt_counter', 0)
                 app_state.quality_scores = state_data.get('quality_scores', {})
                 app_state.quality_dropped = state_data.get('quality_dropped', {})
@@ -377,6 +386,9 @@ def reset_all_stats_and_history():
 
     app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
+    # v13.0.5: a reset run has credited nothing yet (see generation._credit_task_progress).
+    with app_state.progress_credited_lock:
+        app_state.progress_credited_task_ids = set()
     with app_state.quality_lock:
         app_state.quality_scores = {}
         app_state.quality_dropped = {}
@@ -2278,13 +2290,26 @@ def start_processing():
         app_state.task_queue.overall_progress_bar = overall_progress_bar
         app_state.task_queue.overall_time_label = overall_time_label
         app_state.task_queue.overall_percent_label = overall_percent_label
-        # Initialize processed_tasks (turns)
+        # Initialize processed_tasks (turns). v13.0.5: the saved snapshot is the single source
+        # of truth, and every task it already counts is seeded into progress_credited_task_ids
+        # below -- otherwise the worker's "skip an already completed task" path credited those
+        # turns a second time on every resume.
         if should_resume and loaded_processed_tasks_snapshot is not None:
             app_state.task_queue.processed_tasks = loaded_processed_tasks_snapshot
         elif should_resume:
             app_state.task_queue.processed_tasks = len(app_state.completed_task_ids) * current_num_turns
         else:
             app_state.task_queue.processed_tasks = 0
+
+        # v13.0.5: whatever is already counted is already credited, so a resume must not
+        # re-credit it. load_generation_state() seeds this from the state file when it has the
+        # key (old files fall back to completed_task_ids); this covers the fallback branch
+        # above and makes a fresh run start with an empty credited set.
+        with app_state.progress_credited_lock:
+            if should_resume:
+                app_state.progress_credited_task_ids |= set(app_state.completed_task_ids)
+            else:
+                app_state.progress_credited_task_ids = set()
         
         app_state.task_queue.start_times_list = [] 
         if app_state.task_queue.total_tasks_for_progress > 0: 
@@ -2822,7 +2847,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.0.4",
+    text="v13.0.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

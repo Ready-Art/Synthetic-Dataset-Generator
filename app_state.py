@@ -26,6 +26,17 @@ import json
 _previous_progress_values = {}
 anti_slop_count_total = 0
 completed_task_ids = set() # Set of IDs for tasks that have been successfully processed
+# --- Progress crediting (v13.0.5) ---
+# task_ids already added to task_queue.processed_tasks. Progress is credited per COMPLETED
+# TASK (see generation._credit_task_progress), so this set is what makes the credit idempotent:
+# the sync write path, the async quality processor and a resumed run can all credit the same
+# task without double-counting it. Persisted in generation_state.json.
+progress_credited_task_ids = set()
+progress_credited_lock = Lock()
+# The turn count one completed task is worth. Published by generation.worker() because
+# _credit_task_progress() also runs on quality PROCESSOR threads, which cannot see a worker
+# local. Read only by that function.
+current_num_turns_for_progress = 1
 # v13.0: the control server serving this window, or None when it is not serving.
 # Owned by generate.start_control_server_if_enabled() / stop_control_server().
 control_server = None
