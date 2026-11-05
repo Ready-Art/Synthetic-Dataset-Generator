@@ -68,11 +68,41 @@ class RateLimiter:
         # FIX: Sleep and Log OUTSIDE the lock
         if wait_time > 0:
             log_message(f"API Slot {slot_idx+1} rate limit reached. Waiting {wait_time:.2f}s", "DEBUG")
-            time.sleep(wait_time)
+            self._interruptible_sleep(wait_time)
 
         # Re-acquire lock to record this request timestamp safely
         with self.lock:
             self.requests_per_slot[slot_idx].append(time.time())
+
+    def _interruptible_sleep(self, seconds):
+        """Sleep up to `seconds`, waking early when a stop is requested (v13.0).
+
+        A rate-limited slot can wait almost a full minute before its next request
+        is allowed. A plain ``time.sleep`` is not interruptible, so a Stop had to
+        wait out that minute before the worker noticed it -- on a rate-limited
+        slot the generator looked unstoppable for up to 60 s after the Stop was
+        accepted, which is what made ``generator stop`` report the run as still
+        winding down for that whole time.
+
+        Sleeps in short slices and returns as soon as
+        ``app_state.stop_processing`` is set, so a Stop takes effect within one
+        slice. The caller still records this slot's request timestamp, so nothing
+        is over-sent: a stop only means the next request is not made.
+
+        Returns True when the whole wait elapsed, False when it was cut short.
+        """
+        # Imported lazily: this module is imported very early, and the sleep
+        # path is the only place that needs the run flags.
+        import app_state
+        remaining = float(seconds)
+        slice_seconds = 0.25
+        while remaining > 0:
+            if app_state.stop_processing:
+                return False
+            time.sleep(min(slice_seconds, remaining))
+            remaining -= slice_seconds
+        return True
+
 
 global_rate_limiter = RateLimiter()
 

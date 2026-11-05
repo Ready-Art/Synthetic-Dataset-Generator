@@ -26,6 +26,9 @@ import json
 _previous_progress_values = {}
 anti_slop_count_total = 0
 completed_task_ids = set() # Set of IDs for tasks that have been successfully processed
+# v13.0: the control server serving this window, or None when it is not serving.
+# Owned by generate.start_control_server_if_enabled() / stop_control_server().
+control_server = None
 db_pool = None
 error_count_total = 0
 error_counts_per_api = {i: 0 for i in range(7)}

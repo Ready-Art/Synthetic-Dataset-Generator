@@ -83,6 +83,10 @@ CHECKED_MODULES = (
     "dataset_tasks.py",
     "dataset_templates.py",
     "datasets_panel.py",
+    # v13.0: the headless / CLI control layer.
+    "run_config.py",
+    "control.py",
+    "cli.py",
 )
 
 

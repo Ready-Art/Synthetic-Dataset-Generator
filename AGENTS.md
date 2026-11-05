@@ -25,6 +25,41 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 4. If a topic file is still long, read it in sections — its `## Contents` list is the map.
 5. Only open a second topic file when a change genuinely spans two areas.
 
+## Running the generator (read this before using it, not before editing it)
+
+The topic files below are for CHANGING the code. To actually RUN a generation from a
+terminal — launch it, start and stop generation, read the statistics, export or clear the
+dataset — read **[`docs/cli.md`](docs/cli.md)**, the user page for the terminal front end.
+
+The whole loop, with no display and no GUI:
+
+```sh
+python -m cli launch              # start the background controller
+python -m cli start --dry-run       # validate config/config.yml, send nothing
+python -m cli start                 # generate
+python -m cli stats --filters-only  # what is being filtered, and why
+python -m cli stop                  # stop, keep the dataset
+python -m cli save --output out.jsonl # write the dataset to one file
+python -m cli shutdown              # stop the run and exit the controller
+```
+
+Three things worth knowing before you type a verb:
+
+- **JSON is the default when stdout is not a terminal**, so parse it directly; `--text`
+  gives the human table and `--json` forces JSON on a terminal. The global flags
+  (`--json`, `--text`, `--config`, `--socket`) work before OR after the verb.
+- **The exit code is the contract**, not the wording: `0` ok, `1` failed, `2` usage,
+  `3` nothing to talk to, `4` already running, `5` refused, `6` timeout. Branch on it.
+- **`stats` reports "filtering" in two senses.** `detected` means caught and handled (the
+  row is still written); `filtered` means dropped and never written; `detection_config`
+  means which checks are armed. Do not conflate them.
+
+`python generate.py` still opens the ordinary Tk window, and `control.enabled` is `false`
+by default, so nothing above changes a default GUI run.
+
+If you are editing the control layer rather than using it, the topic file is
+[`docs/agents/cli.md`](docs/agents/cli.md) — the row in the table below.
+
 | Topic file | Read it when |
 |------------|--------------|
 | [`docs/agents/task-index.md`](docs/agents/task-index.md) | you know WHAT you want to change and need the list of files to edit. |
@@ -39,6 +74,7 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 | [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
 | [`docs/agents/quality-queue.md`](docs/agents/quality-queue.md) | you are touching the scoring queue, the judge's concurrency (`quality.judge_concurrency`), its rate-limit slot (`quality.scoring_api.slot_idx`) or the cost of one judge conversation. |
 | [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. |
+| [`docs/agents/cli.md`](docs/agents/cli.md) | you are touching `cli.py`, `control.py`, `run_config.py`, the control socket/protocol, the `control:` config block, or the GUI's control-server hook. |
 | [`docs/agents/tools-and-docs.md`](docs/agents/tools-and-docs.md) | you are touching `tools/*.py`, `docs/gemma4-chat-template.md` or `docs/scene-cast.md`. |
 
 Cross-cutting tasks (a new detection type, a new quality dimension, scene cast) are

@@ -356,6 +356,52 @@ class ConfigEditor(tk.Toplevel):
         self.valkey_password_var = tk.StringVar()
         ttk.Entry(valkey_frame, width=30, textvariable=self.valkey_password_var, show="*").grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
+        # v13.0: Control Interface (docs/cli.md). Off by default, so a default run is
+        # unchanged; the CLI's own `launch` serves regardless, because serving is that
+        # command's whole job. This group exists so the GUI can also be driven from a
+        # terminal without editing YAML by hand.
+        control_frame = ttk.LabelFrame(self.api_content_frame, text="Control Interface (CLI)")
+        control_frame.columnconfigure(1, weight=1)
+        control_frame.grid(row=6, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+
+        self.control_enabled_var = tk.BooleanVar()
+        wrapped_checkbutton(
+            control_frame,
+            text="Serve control commands (lets `generator stats/stop` reach this window)",
+            variable=self.control_enabled_var,
+            command=self._toggle_control_fields
+        ).grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+
+        ttk.Label(control_frame, text="Socket Path:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        self.control_socket_path_var = tk.StringVar()
+        self.control_socket_path_entry = ttk.Entry(control_frame, width=40, textvariable=self.control_socket_path_var)
+        self.control_socket_path_entry.grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+        ttk.Label(control_frame, text="(empty = output/generator-control.sock)").grid(row=2, column=1, padx=SPACING, pady=(0, SPACING), sticky="w")
+
+        ttk.Label(control_frame, text="TCP Host (optional):").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        self.control_tcp_host_var = tk.StringVar()
+        self.control_tcp_host_entry = ttk.Entry(control_frame, width=40, textvariable=self.control_tcp_host_var)
+        self.control_tcp_host_entry.grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+        ttk.Label(control_frame, text="(empty = unix socket only; 127.0.0.1 to add TCP)").grid(row=4, column=1, padx=SPACING, pady=(0, SPACING), sticky="w")
+
+        ttk.Label(control_frame, text="TCP Port:").grid(row=5, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        self.control_tcp_port_var = tk.StringVar()
+        self.control_tcp_port_entry = ttk.Entry(control_frame, width=10, textvariable=self.control_tcp_port_var)
+        self.control_tcp_port_entry.grid(row=5, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+        # A real checkbox, not a value silently copied from the loaded config: the
+        # editor must round-trip every key it writes, or a save quietly changes a
+        # setting the user cannot see. This one is a safety limit, so it is worth
+        # showing explicitly.
+        self.control_allow_remote_var = tk.BooleanVar()
+        wrapped_checkbutton(
+            control_frame,
+            text="Allow a non-loopback TCP bind (exposes the control channel)",
+            variable=self.control_allow_remote_var
+        ).grid(row=6, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+
         self.master_duplication_mode_var_editor = tk.BooleanVar(self)
         self.master_duplication_mode_var_editor.set(self.master_duplication_enabled_var.get())
         master_duplication_check = wrapped_checkbutton(self.api_content_frame, text="Enable Master Duplication Mode (for enabled APIs 1-4)", variable=self.master_duplication_mode_var_editor, command=self._sync_global_duplication_var_from_editor)
@@ -2087,6 +2133,13 @@ class ConfigEditor(tk.Toplevel):
                 'password': self.valkey_password_var.get() if self.valkey_password_var.get() else None,
                 'enabled': self.valkey_enabled_var.get()
             },
+            'control': {
+                'enabled': self.control_enabled_var.get(),
+                'socket_path': sanitize_input(self.control_socket_path_var.get() or ''),
+                'tcp_host': sanitize_input(self.control_tcp_host_var.get() or ''),
+                'tcp_port': int(self.control_tcp_port_var.get() or 8765),
+                'allow_remote': bool(self.control_allow_remote_var.get())
+            },
             'database': {
                 'enabled': self.db_enabled_var.get(),
                 'host': sanitize_input(self.db_host_var.get() or 'localhost'),
@@ -2599,6 +2652,24 @@ class ConfigEditor(tk.Toplevel):
             warning = ""
         self.placement_cache_warning_label.config(text=warning)
 
+    def _toggle_control_fields(self):
+        """Enable the Control Interface entries only while the checkbox is on.
+
+        A disabled entry cannot be typed into, and this Tk build drops writes to a
+        disabled Text widget silently, so the path/port entries are `normal` whenever
+        they are meant to be editable.
+        """
+        state = tk.NORMAL if getattr(self, 'control_enabled_var', None) and \
+            self.control_enabled_var.get() else tk.DISABLED
+        for attr in ('control_socket_path_entry', 'control_tcp_host_entry',
+                     'control_tcp_port_entry'):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                try:
+                    widget.config(state=state)
+                except tk.TclError:
+                    pass
+
     def _toggle_bad_words_fields(self):
         """v11.1: enable/disable the bad-words text field based on the toggle's state."""
         is_enabled = self.use_bad_words_var_editor.get()
@@ -2801,6 +2872,14 @@ class ConfigEditor(tk.Toplevel):
             self.db_user_var.set(db_config.get('user', ''))
             self.db_password_var.set(db_config.get('password', ''))
             self.db_pool_size_var.set(str(db_config.get('pool_size', 10)))
+
+            control_config = config.get('control', {}) or {}
+            self.control_enabled_var.set(bool(control_config.get('enabled', False)))
+            self.control_socket_path_var.set(str(control_config.get('socket_path', '') or ''))
+            self.control_tcp_host_var.set(str(control_config.get('tcp_host', '') or ''))
+            self.control_tcp_port_var.set(str(control_config.get('tcp_port', 8765)))
+            self.control_allow_remote_var.set(bool(control_config.get('allow_remote', False)))
+            self._toggle_control_fields()
 
             self.master_duplication_mode_var_editor.set(self.master_duplication_enabled_var.get())
 
@@ -3255,6 +3334,8 @@ class ConfigEditor(tk.Toplevel):
             int(self.subject_size_var.get()); int(self.context_size_var.get()); int(self.max_attempts_var.get())
             int(self.db_port_var.get())
             int(self.db_pool_size_var.get())
+            control_port_val = int(self.control_tcp_port_var.get() or 8765)
+            assert 1 <= control_port_val <= 65535, "Control TCP port must be between 1 and 65535"
             num_turns_val = int(self.num_turns_var.get()); assert num_turns_val > 0, "Number of turns must be > 0"
             placeholder_share_val = float(self.placeholder_share_var.get() or 0); assert 0 <= placeholder_share_val <= 1, "Placeholder share must be between 0 and 1"
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())
