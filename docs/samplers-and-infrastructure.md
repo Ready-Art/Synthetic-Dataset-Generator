@@ -50,6 +50,11 @@ samplers:
     top_k: 50
     repetition_penalty: 1.0
     max_tokens: 200
+
+  # v13.0.4 thinking mode for the two fixers. SIBLING keys of the blocks above --
+  # see the enable_thinking note below for why they cannot go inside them.
+  slop_fixer_enable_thinking: "inherit"       # inherit|default|enable|disable
+  anti_slop_fixer_enable_thinking: "inherit"   # inherit|default|enable|disable
 ```
 
 - **`logit_bias`** — JSON object mapping token IDs to bias values. Passed directly to the API payload. Leave empty (`""`) to disable.
@@ -66,10 +71,19 @@ samplers:
   ```
 
   Endpoints that don't understand `bad_words` typically ignore it; use the API compatibility profile (`custom_allowed_params`) to filter it out per slot if your hosted provider rejects unknown fields.
-- **`enable_thinking`** — Controls chain-of-thought output in reasoning models:
-  - `"default"` — Don't send `chat_template_kwargs` parameter
+- **`enable_thinking`** — Controls chain-of-thought output in reasoning models. Applies to the question, answer, user-continuation and opening-mode requests, and is the fallback for the Slop Fixer, Anti-Slop Fixer and Quality Judge:
+  - `"default"` — Don't send `chat_template_kwargs` parameter (the server's own default applies)
   - `"enable"` — Send `{"chat_template_kwargs": {"enable_thinking": true}}`
   - `"disable"` — Send `{"chat_template_kwargs": {"enable_thinking": false}}`
+
+  **This setting now reaches every request, not just the main four (v13.0.4).** Before v13.0.4 the Slop Fixer, the Anti-Slop Fixer and the Quality Judge sent **no** `chat_template_kwargs` at all, so a reasoning model thought on every rewrite and every score request no matter what this setting said — and on a local vLLM that chain of thought dominated their runtime (users reported roughly a **5x** overall generation speedup after switching thinking off). Each of those three now has its **own** `enable_thinking` key which accepts one extra value:
+  - `"inherit"` (the shipped default) — Follow the `samplers.enable_thinking` above
+
+  Set them in the config editor: **Thinking Mode (Slop Fixer)** and **Thinking Mode (Anti-Slop)** at the bottom of their sampler-override groups in the **Samplers** tab, and **Judge Thinking Mode** under the Quality Scoring API fields in the **Generation** tab. `"inherit"` plus the shipped `enable_thinking: "default"` resolves to "send nothing", so a config that never mentions these keys behaves exactly as it did in v13.0.3.
+
+  The three keys are `samplers.slop_fixer_enable_thinking`, `samplers.anti_slop_fixer_enable_thinking` and `quality.scoring_api.enable_thinking`. **They are SIBLING keys, never entries inside `slop_fixer_params` / `anti_slop_params` / `sampler_settings`.** Those dicts are read with an all-or-nothing `params or main_sampler_settings` fallback, so a single extra key inside one makes it truthy and stops it inheriting the main sampler defaults — the Slop Fixer's `top_p` would silently jump from the main `0.9` to its hardcoded `0.95`, and `repetition_penalty` from `1.0` to `1.1`, on every rewrite. `tests/test_thinking_mode.py` pins this.
+
+  For a reasoning model, `"disable"` is usually the right answer for the judge and the two fixers: they are short, structured jobs (a small JSON verdict, one rewritten passage) where a chain of thought is pure cost.
 - **`max_tokens_user_reply`** — Maximum tokens for LLM-generated user continuation messages.
 - **`slop_fixer_params` / `anti_slop_params`** — Leave individual fields blank to inherit from the main sampler defaults.
 

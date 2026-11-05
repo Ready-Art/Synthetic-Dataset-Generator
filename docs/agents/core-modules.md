@@ -39,12 +39,19 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ---
 
 ### `api_handler.py` [4]
-**Purpose:** API calls, rate limiting, Valkey caching
-**Key:** `RateLimiter`, `global_rate_limiter`, `get/set_cached_response`
+**Purpose:** API calls, rate limiting, Valkey caching, and the ONE definition of the thinking-mode rule
+**Key:** `RateLimiter`, `global_rate_limiter`, `get/set_cached_response`,
+`resolve_thinking_mode()`, `thinking_payload_fragment()`, `apply_thinking_mode()`, `THINKING_MODES`
 **Edit for:**
 - Rate limit logic → `RateLimiter.wait_if_needed()`
 - Cache TTL → `set_cached_response()` ttl param
 - Response time tracking → `api_response_times_per_slot`
+- **Anything about `chat_template_kwargs` / `enable_thinking`** → `resolve_thinking_mode()`,
+  `thinking_payload_fragment()`, `apply_thinking_mode()` (v13.0.4). They live here because both
+  `generation.py` and `quality.py` import this module and `quality.py` must not import
+  `generation.py`. **Any new request builder that sends `messages` must call
+  `apply_thinking_mode()`** — a builder that reads `enable_thinking` itself silently ignores
+  `inherit`. See the v13.0.4 task row below for the full list of files.
 
 ---
 
@@ -187,4 +194,5 @@ if lock_acquired:
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
 | Add/modify an always-on deterministic text cleanup (v12.7.3: repeated-word collapse) | `text_utils.py` (the helper + its pre-compiled patterns at the top of the module), `generation.py` (`write_conversation()` processing loop — it goes in the always-on tail BEFORE `repair_straight_quotes`/`normalize_quotes`), `docs/features.md` (Text Post-Processing list), `docs/how-it-works.md` (step 7), `tests/test_repeated_words.py`. Keep the rule an EXCLUSION list of ordinary words (`_REPEAT_EXEMPT_WORDS`) so valid emphasis such as `no no no` survives, keep the helper idempotent and empty-input safe, and keep the comma-run-end pattern ahead of the comma-run pattern. There is no config key on purpose — do not add one |
 | Add UI metric | `app_state.py` (widget ref), `generate.py` (create widget), `dashboard.py` (update) |
+| Change which requests send `chat_template_kwargs` / add a per-request `enable_thinking` override (v13.0.4) | `api_handler.py` (`resolve_thinking_mode()` / `thinking_payload_fragment()` / `apply_thinking_mode()` / `THINKING_MODES` / the `*_THINKING_KEY` constants — the ONE definition, here because both `generation.py` and `quality.py` import it and `quality.py` must not import `generation.py`), the four call sites (`generation.call_slop_fixer_llm`, `call_anti_slop_llm`, `rewrite_regex_watch_text`, `quality._call_logic_judge_once`), `config/config.yml`, `config_editor.py` (three dropdowns; `THINKING_MODE_CHOICES` is asserted equal to `api_handler.THINKING_MODES`), `tests/test_thinking_mode.py`. **The keys are SIBLINGS of `slop_fixer_params` / `anti_slop_params` / `sampler_settings`, never entries in them** — those dicts are read with an all-or-nothing `params or main_sampler_settings` fallback, so a lone extra key makes one truthy and stops it inheriting the main defaults (top_p 0.9 -> 0.95). **`inherit` is the default for the auxiliary three and must stay so.** Mechanism: `docs/samplers-and-infrastructure.md` |
 | Add a style measurement / style metadata column | `style_metrics.py` (keep it dependency-free, Python 3.11-clean — no 3.12+ syntax such as PEP 695 `type` aliases), then `quality._score_tic_density()` (if it feeds the dimension) and/or `generation._style_metrics_for_record()` (it flows into the `style_*` block automatically via `response_metrics()`/`aggregate()`); `tests/test_style_metrics.py` |
