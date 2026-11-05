@@ -30,7 +30,7 @@ from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DE
                         DEFAULT_GREETING_PROMPT, DEFAULT_NOTE_PLACEMENT, NOTE_PLACEMENTS, note_placement,
                         placement_cache_warning)
 from logging_config import log_message
-from api_handler import global_rate_limiter
+from api_handler import global_rate_limiter, THINKING_MODES
 from datasets_panel import DatasetsPanel
 from dataset_settings import DatasetSettingsError
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
@@ -38,6 +38,11 @@ from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
                        bind_scroll_wheel, fit_window, scroll_to_widget, wrap_label)
 
 SPACING = 8  # UI padding constant (mirrors generate.py)
+# v13.0.4: the choices offered by every Thinking Mode dropdown. ``inherit`` only makes
+# sense for the auxiliary requests (fixers, judge) and is listed first because it is the
+# shipped default; the main Samplers-tab dropdown offers the other three only.
+THINKING_MODE_CHOICES = ("inherit", "default", "enable", "disable")
+assert THINKING_MODE_CHOICES == THINKING_MODES, "Thinking Mode choices must match api_handler.THINKING_MODES"
 QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate.py (UI label only)
 
 # ttk.Spinbox needs an explicit field colour on the 'superhero' theme. The theme configures the
@@ -739,6 +744,32 @@ class ConfigEditor(tk.Toplevel):
         # the judge share that slot's rate limit instead.
         add_gen_setting("Quality Scoring API Slot (1-7):", 'quality_api_slot_var',
                         "(Which rate-limiter slot the judge's requests count against. 7 (index 6) is the judge's own slot; pick a generation slot to share its rate limit)")
+
+        # v13.0.4: the judge never sent chat_template_kwargs, so a reasoning model thought on
+        # every score request even with the Samplers tab set to disable. That chain of thought
+        # is pure cost for a small JSON verdict; on local vLLM it dominated scoring time.
+        self.quality_judge_thinking_var = tk.StringVar(value="inherit")
+        judge_thinking_field = ttk.Frame(gen_settings_frame)
+        judge_thinking_field.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        judge_thinking_field.columnconfigure(0, weight=1)
+        judge_thinking_label = ttk.Label(judge_thinking_field, text="Judge Thinking Mode:", justify="left", wraplength=1)
+        judge_thinking_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(judge_thinking_label, judge_thinking_field, padding=180)
+        ttk.Combobox(
+            judge_thinking_field,
+            textvariable=self.quality_judge_thinking_var,
+            values=list(THINKING_MODE_CHOICES),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e")
+        judge_thinking_help = ttk.Label(
+            judge_thinking_field, style='Small.TLabel', justify="left", wraplength=1,
+            text="(inherit = follow the Samplers tab's main Thinking Mode. disable = no chain of thought for score/judge "
+                 "requests, which is much faster on a reasoning model and is what the judge wants anyway -- it answers "
+                 "with a small JSON object)")
+        judge_thinking_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(judge_thinking_help, judge_thinking_field)
+        row_idx += 1
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
         wrapped_checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
@@ -1705,6 +1736,30 @@ class ConfigEditor(tk.Toplevel):
         add_slop_fixer_param("Max Tokens (Slop Fixer):", 'slop_fixer_max_tokens_var', "(Auto-calculated if blank, e.g. 200)")
         add_slop_fixer_param("Top K (Slop Fixer):", 'slop_fixer_top_k_var', "(E.g., 40, uses main if blank)")
         add_slop_fixer_param("Repetition Penalty (Slop Fixer):", 'slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
+        # v13.0.4: the fixers and the judge got no chat_template_kwargs at all before this,
+        # so a reasoning model thought on every rewrite/score request no matter what the
+        # main Thinking Mode said. Each auxiliary request now has its own mode; 'inherit'
+        # (the shipped default) follows the main Thinking Mode above.
+        self.slop_fixer_thinking_var = tk.StringVar(value="inherit")
+        sf_thinking_field = ttk.Frame(slop_fixer_sampler_lf)
+        sf_thinking_field.grid(row=sf_sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        sf_thinking_field.columnconfigure(0, weight=1)
+        sf_thinking_label = ttk.Label(sf_thinking_field, text="Thinking Mode (Slop Fixer):", justify="left", wraplength=1)
+        sf_thinking_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(sf_thinking_label, sf_thinking_field, padding=180)
+        ttk.Combobox(
+            sf_thinking_field,
+            textvariable=self.slop_fixer_thinking_var,
+            values=list(THINKING_MODE_CHOICES),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e")
+        sf_thinking_help = ttk.Label(
+            sf_thinking_field, style='Small.TLabel', justify="left", wraplength=1,
+            text="(inherit = follow the main Thinking Mode; disable = no chain of thought for this rewrite)")
+        sf_thinking_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(sf_thinking_help, sf_thinking_field)
+        sf_sampler_row += 1
         # --- NEW: Anti-Slop Fixer Sampler Settings ---
         ttk.Label(
             sampler_params_frame,
@@ -1740,6 +1795,26 @@ class ConfigEditor(tk.Toplevel):
         add_anti_slop_fixer_param("Max Tokens (Anti-Slop):", 'anti_slop_fixer_max_tokens_var', "(Auto-calculated if blank, e.g. 200)")
         add_anti_slop_fixer_param("Top K (Anti-Slop):", 'anti_slop_fixer_top_k_var', "(E.g., 40, uses main if blank)")
         add_anti_slop_fixer_param("Repetition Penalty (Anti-Slop):", 'anti_slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
+        self.anti_slop_fixer_thinking_var = tk.StringVar(value="inherit")
+        asf_thinking_field = ttk.Frame(anti_slop_fixer_sampler_lf)
+        asf_thinking_field.grid(row=asf_sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        asf_thinking_field.columnconfigure(0, weight=1)
+        asf_thinking_label = ttk.Label(asf_thinking_field, text="Thinking Mode (Anti-Slop):", justify="left", wraplength=1)
+        asf_thinking_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(asf_thinking_label, asf_thinking_field, padding=180)
+        ttk.Combobox(
+            asf_thinking_field,
+            textvariable=self.anti_slop_fixer_thinking_var,
+            values=list(THINKING_MODE_CHOICES),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e")
+        asf_thinking_help = ttk.Label(
+            asf_thinking_field, style='Small.TLabel', justify="left", wraplength=1,
+            text="(inherit = follow the main Thinking Mode; disable = no chain of thought for this rewrite)")
+        asf_thinking_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(asf_thinking_help, asf_thinking_field)
+        asf_sampler_row += 1
         ttk.Label(sampler_params_frame, text="Thinking Mode:").grid(row=sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
         enable_thinking_combo = ttk.Combobox(
             sampler_params_frame,
@@ -1749,7 +1824,15 @@ class ConfigEditor(tk.Toplevel):
             width=20
         )
         enable_thinking_combo.grid(row=sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(sampler_params_frame, text="(Controls chat_template_kwargs enable_thinking)").grid(row=sampler_row + 1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        thinking_help = ttk.Label(
+            sampler_params_frame,
+            text="(Controls chat_template_kwargs enable_thinking for question / answer / user-continuation / opening-mode "
+                 "requests. The Slop Fixer, Anti-Slop Fixer and Quality Judge follow it unless their own Thinking Mode "
+                 "override is set.)",
+            style='Small.TLabel', justify="left", wraplength=1,
+        )
+        thinking_help.grid(row=sampler_row + 1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        wrap_label(thinking_help, sampler_params_frame)
         sampler_row += 1
 
 
@@ -2216,6 +2299,10 @@ class ConfigEditor(tk.Toplevel):
                     'model': sanitize_input(self.quality_api_model_var.get()),
                     'key': self.quality_api_key_var.get(),
                     'slot_idx': max(0, min(6, int(self.quality_api_slot_var.get() or 6))),
+                    # v13.0.4: the judge's own thinking mode, a SIBLING of sampler_settings
+                    # (that dict is the sampler override handed to the payload builder, so a
+                    # non-sampling key inside it would reach the wire).
+                    'enable_thinking': self.quality_judge_thinking_var.get(),
                 },
             },
             'prompts': {
@@ -2376,6 +2463,12 @@ class ConfigEditor(tk.Toplevel):
                 'max_tokens_answer': int(self.max_tokens_answer_var.get()),
                 'max_tokens_user_reply': int(self.max_tokens_user_reply_var.get()),
                 'enable_thinking': self.enable_thinking_mode_var.get(),
+                # v13.0.4: the two fixers' thinking modes. SIBLING keys, never entries in
+                # slop_fixer_params / anti_slop_params -- those dicts are read with an
+                # all-or-nothing `params or main_sampler_settings` fallback, so a lone extra key
+                # inside one would make it truthy and stop it inheriting the main defaults.
+                'slop_fixer_enable_thinking': self.slop_fixer_thinking_var.get(),
+                'anti_slop_fixer_enable_thinking': self.anti_slop_fixer_thinking_var.get(),
                 'logit_bias': self.logit_bias_text.get("1.0", tk.END).strip(),
                 # v11.1 bad_words: preserve leading whitespace on every line exactly as typed
                 # (only skip truly-empty lines after stripping the trailing newline); the
@@ -2992,6 +3085,13 @@ class ConfigEditor(tk.Toplevel):
             self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
             self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
             self.quality_api_slot_var.set(str(quality_conf.get('scoring_api', {}).get('slot_idx', 6)))
+            # v13.0.4: the judge's thinking mode. Absent (or an unrecognised value) means
+            # 'inherit', which follows the main Samplers-tab setting -- the v13.0.3 behaviour
+            # once the main setting is honoured.
+            judge_thinking_loaded = str(quality_conf.get('scoring_api', {})
+                                        .get('enable_thinking', 'inherit')).strip().lower()
+            self.quality_judge_thinking_var.set(
+                judge_thinking_loaded if judge_thinking_loaded in THINKING_MODE_CHOICES else 'inherit')
             self.output_format_var.set(gen_config.get('output_format', 'sharegpt'))
 
             prompts_config = config.get('prompts', {})
@@ -3308,6 +3408,9 @@ class ConfigEditor(tk.Toplevel):
             self.slop_fixer_max_tokens_var.set(str(slop_fixer_sampler_conf.get('max_tokens', '')))
             self.slop_fixer_top_k_var.set(str(slop_fixer_sampler_conf.get('top_k', '')))
             self.slop_fixer_repetition_penalty_var.set(str(slop_fixer_sampler_conf.get('repetition_penalty', '')))
+            slop_fixer_thinking_loaded = str(samplers_config_load.get('slop_fixer_enable_thinking', 'inherit')).strip().lower()
+            self.slop_fixer_thinking_var.set(
+                slop_fixer_thinking_loaded if slop_fixer_thinking_loaded in THINKING_MODE_CHOICES else 'inherit')
 
             # --- NEW: Load Anti-Slop Sampler Config ---
             anti_slop_fixer_sampler_conf = samplers_config_load.get('anti_slop_params', {})
@@ -3317,6 +3420,9 @@ class ConfigEditor(tk.Toplevel):
             self.anti_slop_fixer_max_tokens_var.set(str(anti_slop_fixer_sampler_conf.get('max_tokens', '')))
             self.anti_slop_fixer_top_k_var.set(str(anti_slop_fixer_sampler_conf.get('top_k', '')))
             self.anti_slop_fixer_repetition_penalty_var.set(str(anti_slop_fixer_sampler_conf.get('repetition_penalty', '')))
+            anti_slop_thinking_loaded = str(samplers_config_load.get('anti_slop_fixer_enable_thinking', 'inherit')).strip().lower()
+            self.anti_slop_fixer_thinking_var.set(
+                anti_slop_thinking_loaded if anti_slop_thinking_loaded in THINKING_MODE_CHOICES else 'inherit')
 
             self.status.config(text="Config loaded from self.global_config.", foreground="blue")
             log_message("Configuration loaded into editor.", "INFO")

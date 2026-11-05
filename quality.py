@@ -48,6 +48,7 @@ from api_handler import (
     api_response_times_per_slot,
     api_response_times_lock,
     MAX_RESPONSE_TIMES_TO_TRACK,
+    apply_thinking_mode,
 )
 from app_state import (
     global_config,
@@ -1317,6 +1318,27 @@ JUDGE_PRIORITY_MIN = -10
 JUDGE_PRIORITY_MAX = 10
 
 
+def judge_thinking_mode(config=None):
+    """The judge's RAW thinking-mode setting (v13.0.4).
+
+    ``quality.scoring_api.enable_thinking``: ``inherit`` (the shipped default, which follows
+    the main ``samplers.enable_thinking``), ``default`` (send nothing), ``enable`` or
+    ``disable``. Returned unnormalised -- ``api_handler.resolve_thinking_mode()`` is the one
+    place that decides what a value means, so a typo cannot silently turn thinking back on.
+
+    A sibling key of ``sampler_settings`` on purpose: that dict is the sampler override handed
+    to the payload builder, so a non-sampling key inside it would reach the wire.
+    """
+    cfg = global_config if config is None else config
+    try:
+        scoring_api = cfg.get('quality.scoring_api', {}) or {}
+    except AttributeError:
+        return "inherit"
+    if not isinstance(scoring_api, dict):
+        return "inherit"
+    return scoring_api.get('enable_thinking', 'inherit')
+
+
 def judge_priority_enabled(config=None):
     """Whether the judge request should carry a vLLM ``priority`` field.
 
@@ -1898,6 +1920,17 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
     # including the format-repair and response_format-fallback requests, so a retried judge
     # request keeps its place in the queue. Absent entirely when the toggle is off.
     payload_dict.update(_judge_priority_field())
+    # v13.0.4 thinking mode. The judge answers with a small JSON object; a reasoning
+    # model that thinks first spends far more tokens and wall-clock time for the same
+    # verdict (this was the 500%-class slowdown on local vLLM).
+    # ``quality.scoring_api.enable_thinking`` decides; ``inherit`` (the shipped default)
+    # follows the Samplers tab's main setting. Before this the judge sent no
+    # chat_template_kwargs at all, so the server default (thinking ON) always applied.
+    # A SIBLING key, not an entry in sampler_settings: that dict is handed to the
+    # payload builder as the sampler override, and adding a non-sampling key to it would
+    # put an unknown field on the wire. See api_handler.apply_thinking_mode.
+    payload_dict = apply_thinking_mode(
+        payload_dict, judge_thinking_mode(), global_config.get('samplers', {}))
 
     headers = {'Content-Type': 'application/json'}
     if api_key:

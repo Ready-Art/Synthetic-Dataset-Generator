@@ -175,6 +175,14 @@ counter, a lock or a timestamp key.
   `detection.DEFAULT_REGEX_WATCH_PATTERNS` must stay identical, and
   `style_metrics.TRAILER_PATTERN` is the one definition of the absolute-trailer
   construction (see `docs/agents/detection.md`).
+- **Every request builder that sends `messages` must call
+  `api_handler.apply_thinking_mode()`** (v13.0.4): the fixers, the judge and the Regex Watch
+  rewrite used to send no `chat_template_kwargs`, so a reasoning model thought on every one of
+  them regardless of the Samplers tab. `inherit` is the default for the auxiliary three and must
+  stay so. The keys are SIBLINGS of `slop_fixer_params` / `anti_slop_params` /
+  `sampler_settings`, never entries in them (those dicts use an all-or-nothing
+  `params or main_sampler_settings` fallback). See `docs/agents/core-modules.md` and
+  `tests/test_thinking_mode.py`.
 - **A config-editor text field must be `normal` before you write into it** — this Tk
   build drops `delete`/`insert` on a disabled Text widget silently
   (see `docs/agents/config-editor.md`).

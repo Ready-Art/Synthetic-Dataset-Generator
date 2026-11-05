@@ -38,6 +38,7 @@ from logging_config import log_message, LOG_FILE_PATH
 from api_handler import (
     RateLimiter, global_rate_limiter, get_cached_response, set_cached_response,
     api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK,
+    apply_thinking_mode, SLOP_FIXER_THINKING_KEY, ANTI_SLOP_FIXER_THINKING_KEY,
 )
 from app_state import (
     API_CIRCUIT_BREAKER, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES,
@@ -4165,6 +4166,10 @@ def rewrite_regex_watch_text(text, pattern, matched_text,
                 "max_tokens": max(256, len(text.split()) * 3 + 128),
                 "stream": False,
             }
+            # v13.0.4 thinking mode: a Regex Watch rewrite is a short, mechanical edit, so it
+            # follows the main Samplers-tab setting like the fixers do. It runs on the main API
+            # and receives the main sampler settings, so there is no separate override.
+            payload_dict = apply_thinking_mode(payload_dict, sampler_settings.get('enable_thinking'))
             payload_dict = apply_bad_words_to_payload(payload_dict, thread_id)
             payload_dict = sanitize_payload_for_endpoint(payload_dict, api_config.get('url'), api_slot_idx)
             headers = {'Content-Type': 'application/json'}
@@ -4411,6 +4416,17 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 **final_slop_fixer_params,
                 "stream": False
             }
+            # v13.0.4 thinking mode: the Slop Fixer is a short rewrite job, so a reasoning
+            # model must not think on it. `samplers.slop_fixer_enable_thinking` decides; ``inherit``
+            # (the default) follows the Samplers tab's main enable_thinking setting. Before this,
+            # the fixer sent no chat_template_kwargs at all and the server default applied.
+            # The setting is a SIBLING key, not an entry in slop_fixer_params: that dict is read
+            # with an all-or-nothing `or main_sampler_settings` fallback, so a lone
+            # enable_thinking entry would make it truthy and stop it inheriting the main defaults.
+            payload_data = apply_thinking_mode(
+                payload_data,
+                global_config.get(SLOP_FIXER_THINKING_KEY),
+                main_sampler_settings)
             # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
             # and the Slop Fixer (slot 5)
             payload_data = apply_bad_words_to_payload(payload_data, thread_id)
@@ -4664,6 +4680,12 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 **final_anti_slop_params,
                 "stream": False
             }
+            # v13.0.4 thinking mode: same rule and the same sibling-key reason as the Slop
+            # Fixer. See api_handler.apply_thinking_mode.
+            payload_data = apply_thinking_mode(
+                payload_data,
+                global_config.get(ANTI_SLOP_FIXER_THINKING_KEY),
+                main_sampler_settings)
             # v11.1 bad_words toggle (Samplers tab): applies uniformly to every main-API request
             # and the Anti-Slop Fixer (slot 6)
             payload_data = apply_bad_words_to_payload(payload_data, thread_id)
