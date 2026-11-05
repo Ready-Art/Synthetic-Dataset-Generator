@@ -68,6 +68,7 @@ If you are editing the control layer rather than using it, the topic file is
 | [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, table styles, the Review tab or the Regex Watch tab. |
 | [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the editor, or fixing editor layout/readability. |
 | [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
+| [`docs/agents/vllm-metrics.md`](docs/agents/vllm-metrics.md) | you are touching `vllm_metrics.py`, the 📊 Metrics tab, the per-endpoint vLLM graph, or the per-slot token accounting that feeds it. |
 | [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, prompts, cast/arc helpers, metadata or output writing. |
 | [`docs/agents/generation-retries.md`](docs/agents/generation-retries.md) | you are adding or moving a check that can resend an answer (it records the retry ORDER). |
 | [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check, or the v12.7.6 slop/anti-slop default-off gate ([`slop-antislop-default-off.md`](docs/agents/slop-antislop-default-off.md)). |

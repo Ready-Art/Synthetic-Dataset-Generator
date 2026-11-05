@@ -42,6 +42,7 @@ from threading import Lock
 import app_state
 import text_utils
 import style_metrics
+import vllm_metrics
 from logging_config import log_message
 from api_handler import (
     global_rate_limiter,
@@ -2007,6 +2008,11 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
                 f"Thread {thread_id}: Quality scoring API returned an unreadable envelope for "
                 f"{task_id}.", "WARNING")
             return {}, ["llm_bad_envelope"], False, {}
+
+        # v13.1.0: the judge is its own API slot (index 6 unless configured otherwise), so its
+        # own throughput belongs on its own row of the 📊 Metrics tab like any other slot.
+        vllm_metrics.note_slot_usage(scoring_api_slot, response_data.get('usage') or {},
+                                     api_response_time)
 
         try:
             choices = response_data.get('choices') or []

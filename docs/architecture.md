@@ -84,6 +84,7 @@ The application is organized into focused modules with one-way dependencies to p
 | `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |
 | `config_editor.py` | Configuration editor GUI (tabbed interface, validation, search) | `api_profiles`, `config_loader`, `logging_config`, `api_handler` |
 | `dashboard.py` | Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview) | `app_state`, `api_handler`, `logging_config` |
+| `vllm_metrics.py` | v13.1.0: vLLM `/metrics` reader for the 📊 Metrics tab (per-endpoint speeds, load, poller) | stdlib + `requests` (no Tk, no project modules) |
 | `detection.py` | Issue detection (refusals, user speaking, slop, anti-slop, incomplete quotes, non-Latin script) | `app_state` (for timestamps, issue tracking) |
 | `text_utils.py` | Text post-processing (quote normalization, reasoning removal, markdown stripping, always-on repeated-word collapse) | None (stdlib only) |
 | `config_loader.py` | Configuration management, profiles, YAML load/save | `logging_config` |
@@ -117,9 +118,10 @@ The developer cheat sheet is split so a modest-context model can follow it in on
 | [`task-index.md`](agents/task-index.md) | "how do I add X?" → the files to edit |
 | [`config.md`](agents/config.md) | `config/config.yml`, `config/api_profiles.yml`, dependency pins |
 | [`core-modules.md`](agents/core-modules.md) | `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py`, `style_metrics.py`, the state/lock inventory and the config paths |
-| [`generate-ui.md`](agents/generate-ui.md) | `generate.py` — tabs, metric cards, issue panels, worker launch, table styles, Review tab, Regex Watch tab |
+| [`generate-ui.md`](agents/generate-ui.md) | `generate.py` — tabs, metric cards, issue panels, worker launch, table styles, Review tab, Regex Watch tab, Metrics tab |
 | [`config-editor.md`](agents/config-editor.md) | `config_editor.py` — editor fields, label wrapping, spinbox styling, panel pitfalls |
 | [`dashboard.md`](agents/dashboard.md) | `dashboard.py` — metric cards, issue panels, issue-graph series |
+| [`vllm-metrics.md`](agents/vllm-metrics.md) | `vllm_metrics.py` — the 📊 Metrics tab, per-endpoint vLLM speeds and load, per-slot token accounting |
 | [`generation.md`](agents/generation.md) | `generation.py` — worker loop, retries, prompts, cast/arc helpers, metadata, output writing |
 | [`detection.md`](agents/detection.md) | `detection.py` — refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity checks |
 | [`quality.md`](agents/quality.md) | `quality.py` — scoring dimensions, the judge request/JSON ladder, the drop policy |
