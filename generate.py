@@ -87,7 +87,7 @@ import run_config
 import vllm_metrics
 from dataset_tasks import configure_queue_datasets
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
-from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
+from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state, flush_generation_state
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
                         DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
                         opening_mode_conflict, opening_mode_mismatch,
@@ -1836,6 +1836,13 @@ def start_processing():
     log_message(f"Quality scoring: enabled={app_state.quality_enabled}, output_filter={app_state.quality_output_filter}", "INFO")
     log_message(f"Conversation history for fixers: enabled={app_state.use_conversation_history_for_fixers}", "INFO")
     log_message(f"Output metadata block: enabled={include_metadata}, style_metrics={include_style_metrics}", "INFO")
+    # v13.1.1: the per-request prompt traces are opt-in (config: generation.debug_prompt_log).
+    # Applying it here, at the top of a run, means the toggle can never be left on from a
+    # previous debugging session without the config saying so -- and a default run writes no
+    # trace files at all.
+    logging_config.DEBUG_PROMPT_LOGGING_ENABLED = bool(
+        global_config.get('generation.debug_prompt_log', False))
+    log_message(f"Prompt trace logging: {'enabled' if logging_config.DEBUG_PROMPT_LOGGING_ENABLED else 'disabled'}", "INFO")
     if current_lore:
         log_message(f"Lore loaded ({len(current_lore)} chars).", "INFO")
     else:
@@ -2689,7 +2696,7 @@ def start_processing():
                         if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
                             app_state.task_queue.overall_percent_label.config(text="100%", foreground='#51cf66')
                         app_state.task_queue.overall_time_label.config(text="Time Remaining: Done!")
-            save_generation_state()
+            flush_generation_state()
 
     if app_state.root.winfo_exists(): 
         app_state.root.after(100, update_gui_progress) # Start the GUI update loop
@@ -2973,7 +2980,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.1.0",
+    text="v13.1.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -3329,6 +3336,22 @@ config_button = ttk.Button(button_frame, text="⚙️ Edit Config", command=open
 
 
 debug_log_check = ttk.Checkbutton(maintenance_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
+
+# v13.1.1: per-request prompt traces are opt-in (config: generation.debug_prompt_log).
+# The checkbox is a convenience mirror of that key for the current run; the config value is
+# what a fresh run reads, so a trace left on here does not persist into the next run.
+debug_prompt_log_var = tk.BooleanVar(value=bool(global_config.get('generation.debug_prompt_log', False)))
+
+
+def toggle_debug_prompt_logging():
+    logging_config.DEBUG_PROMPT_LOGGING_ENABLED = debug_prompt_log_var.get()
+    log_message(f"Prompt trace logging {'enabled' if debug_prompt_log_var.get() else 'disabled'}. "
+                "(config: generation.debug_prompt_log)", "INFO")
+
+
+debug_prompt_log_check = ttk.Checkbutton(
+    maintenance_frame, text="📝 Prompt Trace", variable=debug_prompt_log_var,
+    command=toggle_debug_prompt_logging)
 primary_actions_layout = ResponsiveGrid(button_frame,
     [start_button, pause_button, stop_clear_button, config_button],
     min_width=170, max_columns=4, pady=4)
@@ -3439,7 +3462,7 @@ def quit_application():
         app_state.processing_active = False # Mark processing as fully stopped
 
         log_message("Quit: Saving generation state before exiting...", "INFO")
-        save_generation_state() # Save final progress
+        flush_generation_state() # Save final progress
 
         # v13.0: stop listening before the window goes away, so a terminal cannot
         # reach a half-destroyed controller.
@@ -3511,7 +3534,8 @@ recovery_button = ttk.Button(maintenance_frame, text="🔄 Force Recovery", comm
 clear_dash_btn = ttk.Button(maintenance_frame, text="🧹 Clear Dashboard", command=clear_dashboard)
 maintenance_layout = ResponsiveGrid(maintenance_frame,
     [export_button, clear_db_button, recovery_button, clear_dash_btn,
-     quit_button, debug_log_check, pause_updates_check], min_width=190, max_columns=3)
+     quit_button, debug_log_check, debug_prompt_log_check, pause_updates_check],
+    min_width=190, max_columns=3)
 
 # Narrow windows use a view selector so every page remains reachable.
 dashboard_navigator = NotebookNavigator(dashboard_outer_frame, app_state.dashboard_notebook)
@@ -4261,6 +4285,6 @@ if __name__ == "__main__":
                     except: pass # Ignore errors here, best effort to stop threads
         
         log_message("Main finally block attempting to save state.", "INFO")
-        save_generation_state() # Final attempt to save state
+        flush_generation_state() # Final attempt to save state
         time.sleep(0.1) # Brief pause to allow file operations
         log_message("Main finally block executed. Process should exit if not already via sys.exit().", "INFO")

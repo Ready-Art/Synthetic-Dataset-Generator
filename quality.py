@@ -43,6 +43,7 @@ import app_state
 import text_utils
 import style_metrics
 import vllm_metrics
+import logging_config
 from logging_config import log_message
 from api_handler import (
     global_rate_limiter,
@@ -1944,11 +1945,13 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
     if response_format and format_cache_key in _JUDGE_NO_RESPONSE_FORMAT:
         response_format = None
 
-    # Debug log (request)
-    try:
-        current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{scoring_api_slot}.jsonl"
-        with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-            debug_log.write(json.dumps({
+    # Debug log (request). Opt-in since v13.1.1: the judge pool runs ``judge_concurrency``
+    # threads wide and every one of them appended a full conversation copy here on every
+    # attempt. See logging_config.debug_prompt_logging_enabled.
+    if logging_config.debug_prompt_logging_enabled():
+        logging_config.write_debug_prompt(
+            BASE_DEBUG_LOG_PATH + f"_api_slot_{scoring_api_slot}.jsonl",
+            {
                 "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
                 "thread_id": thread_id,
                 "type": "quality_scoring_request",
@@ -1956,9 +1959,7 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
                 "task_id": task_id,
                 "source_file": file_name,
                 "messages": messages,
-            }) + '\n')
-    except Exception:
-        pass
+            })
 
     # Rate limit. This used to swallow every exception, which hid the fact that the judge's slot
     # (index 6 by default) was outside the limiter's range and therefore never throttled at all.
@@ -2037,11 +2038,12 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
             content = "".join(parts)
         content = (content or "").strip()
 
-        # Debug log (response) -- the raw judge reply is what makes a JSON failure diagnosable
-        try:
-            current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{scoring_api_slot}.jsonl"
-            with open(current_debug_log_path, 'a', encoding='utf-8') as debug_log:
-                debug_log.write(json.dumps({
+        # Debug log (response) -- the raw judge reply is what makes a JSON failure
+        # diagnosable. Opt-in since v13.1.1, for the same reason as the request trace above.
+        if logging_config.debug_prompt_logging_enabled():
+            logging_config.write_debug_prompt(
+                BASE_DEBUG_LOG_PATH + f"_api_slot_{scoring_api_slot}.jsonl",
+                {
                     "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
                     "thread_id": thread_id,
                     "type": "quality_scoring_response",
@@ -2050,9 +2052,7 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
                     "source_file": file_name,
                     "finish_reason": finish_reason,
                     "content": content,
-                }) + '\n')
-        except Exception:
-            pass
+                })
 
         if not content:
             if finish_reason == 'length':
