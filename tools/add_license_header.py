@@ -32,6 +32,7 @@ Deliberately skipped:
   (a user on Discord), not by this repository. Stamping this project's license on
   someone else's script would be a misattribution (see AGENTS.md).
 * binary assets, and generated/ignored output (``output/``, ``layout-check/``).
+* ``metrics.txt`` — a captured vLLM ``/metrics`` dump kept as test data, not source.
 """
 
 import argparse
@@ -69,6 +70,10 @@ SKIP_PATHS = {
     # Third-party script: written by Karki (Discord), not by this repository.
     "gemma4_thought_fix.py",
     "tools/gemma4_thought_fix.py",
+    # A captured Prometheus /metrics dump, not repository text: it is somebody's
+    # vLLM output pasted in as data. Stamping a licence block on it would edit
+    # the evidence, and the tab's parser is tested against its exact shape.
+    "metrics.txt",
 }
 
 SKIP_DIRECTORIES = {".git", "__pycache__", ".pytest_cache", "output", "layout-check"}

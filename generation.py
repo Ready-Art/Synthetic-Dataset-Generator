@@ -29,6 +29,7 @@ import detection
 import text_utils
 import quality
 import style_metrics
+import vllm_metrics
 from dataset_tasks import (
     bind_task_datasets, render_question_task, render_task_inputs, validate_task_templates,
 )
@@ -3309,6 +3310,10 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 usage = response_data.get('usage', {})
                 input_tokens = usage.get('prompt_tokens', 0)
                 output_tokens = usage.get('completion_tokens', 0)
+                # v13.1.0: this slot's own throughput for the 📊 Metrics tab. The server's
+                # /metrics has no caller label, so a per-slot figure can only come from the
+                # usage each slot's own responses report.
+                vllm_metrics.note_slot_usage(api_slot_idx, usage, api_response_time)
 
                 # Update global counters with timeout
                 lock_acquired_tokens = app_state.stats_lock.acquire(timeout=7.0)
@@ -3625,7 +3630,11 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
             if response.status_code == 200:
                 # --- FIX START: Handle None content ---
                 record_api_success(api_slot_idx)
-                content = response.json()['choices'][0]['message'].get('content')
+                response_data = response.json()
+                content = response_data['choices'][0]['message'].get('content')
+                # v13.1.0: per-slot throughput for the 📊 Metrics tab (see the question path).
+                vllm_metrics.note_slot_usage(api_slot_idx, response_data.get('usage') or {},
+                                             api_response_time)
                 if content is None:
                     log_message(f"Thread {thread_id}: API returned None for user continuation content (API Slot {api_slot_idx+1}, Attempt {attempt_num+1})", "WARNING")
                     sleep_dur = random.uniform(0.5, 1.5)
@@ -3936,8 +3945,9 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
             api_call_start_time = time.time()
             response = requests.post(api_url_local, headers=headers, data=json.dumps(payload_dict),
                                      timeout=(api_request_timeout_param, api_request_timeout_param))
+            api_call_elapsed = time.time() - api_call_start_time
             with api_response_times_lock:
-                api_response_times_per_slot[api_slot_idx].append(time.time() - api_call_start_time)
+                api_response_times_per_slot[api_slot_idx].append(api_call_elapsed)
                 if len(api_response_times_per_slot[api_slot_idx]) > MAX_RESPONSE_TIMES_TO_TRACK:
                     api_response_times_per_slot[api_slot_idx] = api_response_times_per_slot[api_slot_idx][-MAX_RESPONSE_TIMES_TO_TRACK:]
 
@@ -3950,6 +3960,8 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
             record_api_success(api_slot_idx)
             response_data = response.json()
             usage = response_data.get('usage') or {}
+            # v13.1.0: per-slot throughput for the 📊 Metrics tab.
+            vllm_metrics.note_slot_usage(api_slot_idx, usage, api_call_elapsed)
             with app_state.stats_lock:
                 app_state.total_input_tokens += usage.get('prompt_tokens', 0)
                 app_state.total_output_tokens += usage.get('completion_tokens', 0)
@@ -4175,9 +4187,11 @@ def rewrite_regex_watch_text(text, pattern, matched_text,
                             % (thread_id, api_slot_idx + 1), "DEBUG")
                 return None
 
+            api_call_start_time = time.time()
             response = requests.post(api_config['url'], headers=headers,
                                      data=json.dumps(payload_dict),
                                      timeout=(api_request_timeout_param, api_request_timeout_param))
+            api_call_elapsed = time.time() - api_call_start_time
             if response.status_code != 200:
                 record_api_failure(api_slot_idx)
                 log_message("Thread %s: Regex rewrite failed (API Slot %d, status %s)."
@@ -4189,6 +4203,9 @@ def rewrite_regex_watch_text(text, pattern, matched_text,
             record_api_success(api_slot_idx)
             response_data = response.json()
             usage = response_data.get('usage') or {}
+            # v13.1.0: a Regex Watch rewrite is a main-slot request, so it counts toward that
+            # slot's own throughput on the 📊 Metrics tab.
+            vllm_metrics.note_slot_usage(api_slot_idx, usage, api_call_elapsed)
             with app_state.system_prompt_lock:
                 app_state.total_input_tokens += usage.get('prompt_tokens', 0)
                 app_state.total_output_tokens += usage.get('completion_tokens', 0)
@@ -4461,6 +4478,8 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 usage = response_data.get('usage', {})
                 input_tokens = usage.get('prompt_tokens', 0)
                 output_tokens = usage.get('completion_tokens', 0)
+                # v13.1.0: per-slot throughput for the 📊 Metrics tab.
+                vllm_metrics.note_slot_usage(api_slot_idx_slop_fixer, usage, api_response_time)
 
                 # Update global counters safely using the lock
                 with app_state.system_prompt_lock:
@@ -4712,6 +4731,8 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                 usage = response_data.get('usage', {})
                 input_tokens = usage.get('prompt_tokens', 0)
                 output_tokens = usage.get('completion_tokens', 0)
+                # v13.1.0: per-slot throughput for the 📊 Metrics tab.
+                vllm_metrics.note_slot_usage(api_slot_idx_anti_slop, usage, api_response_time)
 
                 lock_acquired_tokens = app_state.system_prompt_lock.acquire(timeout=0.05)
                 if lock_acquired_tokens:
@@ -5080,6 +5101,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         usage = response_data.get('usage', {})
                         input_tokens = usage.get('prompt_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0)
+                        # v13.1.0: per-slot throughput for the 📊 Metrics tab.
+                        vllm_metrics.note_slot_usage(api_slot_idx, usage, api_response_time)
 
                         lock_acquired_tokens = app_state.system_prompt_lock.acquire(timeout=0.05)
                         if lock_acquired_tokens:

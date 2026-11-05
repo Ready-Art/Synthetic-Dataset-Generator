@@ -404,6 +404,194 @@ def update_issue_graph(canvas_widget):
     canvas_widget.graph_canvas.draw()
 
 
+# ---------------------------------------------------------------------------
+# vLLM Metrics tab (v13.1.0)
+#
+# One line per API slot that has a vLLM backend. Deliberately NOT aggregated: the tab exists so a
+# user can see WHICH endpoint is slow or saturated, so every slot keeps its own colour and its own
+# line, and a slot whose server is unreachable simply has a gap.
+#
+# Two panels share the time axis:
+#   top    -- tokens/second (solid = token generation, dashed = prompt processing)
+#   bottom -- the server's KV-cache load percentage, i.e. how full that endpoint is
+# ---------------------------------------------------------------------------
+
+# One colour per API slot index (0-6), matching the slot colours used elsewhere in the UI.
+_VLLM_SERIES_COLORS = ('#4dabf7', '#51cf66', '#ffd43b', '#ff922b',
+                       '#b197fc', '#f783ac', '#20c997')
+
+# Redrawing both panels is the expensive part, and a poll only lands every 10 s, so a
+# redraw per poll is enough; this keeps a 500 ms UI tick from re-rasterising the same data.
+_vllm_graph_last_draw = {"t": 0.0, "sig": None}
+_VLLM_GRAPH_REDRAW_MIN_INTERVAL = 5.0
+
+
+def _vllm_series(rows):
+    """``[(label, colour, history), ...]`` for the rows that have any samples yet."""
+    series = []
+    for row in rows or []:
+        history = row.get('history') or []
+        if not history:
+            continue
+        slot_idx = row.get('slot_idx', 0)
+        colour = _VLLM_SERIES_COLORS[slot_idx % len(_VLLM_SERIES_COLORS)]
+        series.append((row.get('label') or 'API', colour, history))
+    return series
+
+
+def _vllm_graph_signature(rows):
+    """A cheap fingerprint of the plotted data, so an unchanged poll does not redraw."""
+    return tuple(
+        (row.get('slot_idx'), len(row.get('history') or []),
+         (row.get('history') or [{}])[-1].get('time'))
+        for row in rows or []
+    )
+
+
+def draw_vllm_metrics_graph(canvas_widget, height=420):
+    """Create the per-endpoint vLLM graph (speeds on top, KV-cache load below).
+
+    Called once when the 📊 Metrics tab is built; ``update_vllm_metrics_graph()`` refreshes the
+    same figure in place afterwards. An empty dataset still draws the axes and a hint, so the tab
+    explains itself before the first poll rather than showing a blank rectangle.
+    """
+    canvas_widget.delete("all")
+
+    fig = Figure(figsize=(7.5, max(300, min(height, 460)) / 100), dpi=100, facecolor='#1e1e24')
+    fig.patch.set_facecolor('#1e1e24')
+    speed_ax = fig.add_subplot(211)
+    load_ax = fig.add_subplot(212, sharex=speed_ax)
+    for ax in (speed_ax, load_ax):
+        ax.set_facecolor('#2a2a35')
+        ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#555555')
+        ax.spines['left'].set_color('#555555')
+        ax.tick_params(axis='both', colors='#c0c0c0')
+
+    canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    canvas_widget.update_idletasks()
+    canvas_widget.graph_canvas = canvas
+    canvas_widget.graph_fig = fig
+    canvas_widget.graph_speed_ax = speed_ax
+    canvas_widget.graph_load_ax = load_ax
+    canvas_widget._graph_resize_after = None
+
+    def fit_after_resize():
+        canvas_widget._graph_resize_after = None
+        if canvas_widget.winfo_exists():
+            _fit_issue_graph(fig, speed_ax)
+            _fit_issue_graph(fig, load_ax)
+            canvas.draw_idle()
+
+    def schedule_fit(_event):
+        if canvas_widget._graph_resize_after is not None:
+            canvas_widget.after_cancel(canvas_widget._graph_resize_after)
+        canvas_widget._graph_resize_after = canvas_widget.after(150, fit_after_resize)
+
+    def cancel_fit(event):
+        if event.widget == canvas_widget and canvas_widget._graph_resize_after is not None:
+            canvas_widget.after_cancel(canvas_widget._graph_resize_after)
+            canvas_widget._graph_resize_after = None
+
+    canvas.get_tk_widget().bind("<Configure>", schedule_fit, add="+")
+    canvas_widget.bind("<Destroy>", cancel_fit, add="+")
+    fit_after_resize()
+    # Draw the empty state immediately, so the tab explains itself before the first poll
+    # instead of showing a blank pair of axes.
+    update_vllm_metrics_graph(canvas_widget, [], force=True)
+    return canvas_widget
+
+
+def update_vllm_metrics_graph(canvas_widget, rows, force=False):
+    """Refresh the per-endpoint vLLM graph from ``vllm_metrics.endpoint_rows()``.
+
+    Throttled on both the interval and a data fingerprint: the tab's 500 ms tick must not
+    re-rasterise an unchanged figure (each matplotlib redraw allocates X server resources, and
+    doing that continuously over a long run drops the X connection).
+    """
+    if not hasattr(canvas_widget, 'graph_canvas'):
+        draw_vllm_metrics_graph(canvas_widget)
+        if not hasattr(canvas_widget, 'graph_speed_ax'):
+            return
+
+    speed_ax = getattr(canvas_widget, 'graph_speed_ax', None)
+    load_ax = getattr(canvas_widget, 'graph_load_ax', None)
+    if speed_ax is None or load_ax is None:
+        return
+
+    signature = _vllm_graph_signature(rows)
+    now = time.time()
+    if (not force and _vllm_graph_last_draw["sig"] == signature
+            and now - _vllm_graph_last_draw["t"] < _VLLM_GRAPH_REDRAW_MIN_INTERVAL):
+        return
+    _vllm_graph_last_draw["sig"] = signature
+    _vllm_graph_last_draw["t"] = now
+
+    series = _vllm_series(rows)
+    speed_ax.clear()
+    load_ax.clear()
+
+    if not series:
+        for ax, title in ((speed_ax, 'Tokens per Second (per API endpoint)'),
+                           (load_ax, 'Endpoint Load — KV Cache Used')):
+            ax.set_facecolor('#2a2a35')
+            ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_color('#555555')
+            ax.spines['left'].set_color('#555555')
+            ax.tick_params(axis='both', colors='#c0c0c0')
+            ax.set_title(title, fontsize=12, fontweight='bold', color='#ffffff', pad=8)
+            ax.set_yticks([])
+            ax.text(0.5, 0.5, 'No vLLM metrics yet.\nConfigure an API slot that points at a vLLM '
+                              'server; the tab polls its /metrics endpoint every 10 seconds.',
+                    transform=ax.transAxes, ha='center', va='center', fontsize=10,
+                    color='#8b949e', multialignment='center')
+        canvas_widget.graph_fig.tight_layout(pad=1.0)
+        canvas_widget.graph_canvas.draw_idle()
+        return
+
+    # A common time axis in seconds relative to the newest sample keeps the x labels readable
+    # without depending on the machine's locale formatting.
+    newest = max(sample['time'] for _label, _colour, history in series for sample in history)
+
+    for label, colour, history in series:
+        times = [(sample['time'] - newest) for sample in history]
+        generation = [sample.get('generation_tps') for sample in history]
+        prompt = [sample.get('prompt_tps') for sample in history]
+        load = [sample.get('load_percent') for sample in history]
+
+        speed_ax.plot(times, generation, color=colour, linewidth=1.8, marker='o', markersize=3,
+                      label='%s — generation' % label)
+        speed_ax.plot(times, prompt, color=colour, linewidth=1.4, linestyle='--', marker='s',
+                      markersize=2.5, label='%s — prompt' % label)
+        load_ax.plot(times, load, color=colour, linewidth=1.8, marker='o', markersize=3,
+                     label=label)
+
+    for ax, title in ((speed_ax, 'Tokens per Second (per API endpoint)'),
+                      (load_ax, 'Endpoint Load — KV Cache Used (per API endpoint)')):
+        ax.set_facecolor('#2a2a35')
+        ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#555555')
+        ax.spines['left'].set_color('#555555')
+        ax.tick_params(axis='both', colors='#c0c0c0')
+        ax.set_title(title, fontsize=12, fontweight='bold', color='#ffffff', pad=8)
+        ax.legend(loc='upper left', fontsize=8, framealpha=0.85, facecolor='#2a2a35',
+                  edgecolor='#444444', labelcolor='#e0e0e0', ncol=2)
+
+    load_ax.set_ylim(0, 105)
+    load_ax.set_xlabel('Seconds Ago', fontsize=10, fontweight='bold', color='#e0e0e0')
+    _fit_issue_graph(canvas_widget.graph_fig, speed_ax)
+    _fit_issue_graph(canvas_widget.graph_fig, load_ax)
+    canvas_widget.graph_canvas.draw_idle()
+
+
 def update_dashboard():
     """Updates the dashboard labels and text areas with current statistics and recent issues."""
 

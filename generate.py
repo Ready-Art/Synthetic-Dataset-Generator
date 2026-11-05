@@ -82,6 +82,9 @@ import app_state
 # not bind the name `generation`, so referring to generation.<attr> raised NameError.
 import generation
 import run_config
+# v13.1.0: the 📊 Metrics tab reads vLLM's /metrics through this module. Imported as a
+# module object so the tab's refresher can call several of its helpers.
+import vllm_metrics
 from dataset_tasks import configure_queue_datasets
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
@@ -90,7 +93,7 @@ from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DE
                         opening_mode_conflict, opening_mode_mismatch,
                         DEFAULT_NOTE_PLACEMENT, note_placement, placement_cache_warning,
                         FIRST_REPLY_OPENER_MAX_RETRIES)
-from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display
+from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, draw_vllm_metrics_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display, update_vllm_metrics_graph
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
@@ -337,6 +340,12 @@ def reset_all_stats_and_history():
     with api_response_times_lock:
         for i in range(len(api_response_times_per_slot)):
             api_response_times_per_slot[i] = []
+
+    # v13.1.0: the 📊 Metrics tab's per-slot throughput is per-run, like every other
+    # counter here, and the endpoint history starts from a fresh baseline so a speed
+    # computed across the gap between two runs is never shown.
+    vllm_metrics.reset_slot_usage()
+    vllm_metrics.reset_endpoints()
 
     app_state.total_attempts_global = 0
     app_state.refusal_count_total = 0
@@ -1310,6 +1319,122 @@ def _update_regex_watch_tab(force=False):
     children = hit_tree.get_children()
     if children:
         hit_tree.see(children[-1])
+
+
+def _poll_metrics_now():
+    """Force one vLLM /metrics poll from the Refresh button (v13.1.0).
+
+    Runs on a daemon thread: a poll can wait up to ``vllm_metrics.REQUEST_TIMEOUT_SECONDS`` on an
+    unreachable host, and the Tk main loop must never block on that. The tab picks the result up on
+    its next refresh tick (and the button also forces one immediately after this returns).
+    """
+    def run():
+        try:
+            vllm_metrics.poll_once()
+        except Exception as e:
+            log_message(f"Manual vLLM metrics poll failed: {e}", "WARNING")
+        finally:
+            # Re-render on the Tk thread once the poll has actually landed, so the button's
+            # refresh is not wasted on the pre-poll state.
+            try:
+                if app_state.root is not None and app_state.root.winfo_exists():
+                    app_state.root.after(0, lambda: _update_metrics_tab(force=True))
+            except Exception:
+                pass
+
+    threading.Thread(target=run, name="vllm-metrics-manual-poll", daemon=True).start()
+
+
+def _update_metrics_tab(force=False):
+    """Populate the 📊 Metrics tab from ``vllm_metrics.endpoint_rows()`` (v13.1.0).
+
+    One row per API slot with a vLLM backend, never one aggregated row: the whole point is to
+    see WHICH endpoint is slow or saturated. The columns are the three figures the tab exists
+    for (prompt speed, token-generation speed, endpoint load) plus the slot's own measured
+    throughput, which is the only per-slot number that exists -- vLLM's /metrics carries no
+    caller label, so its figures are the SERVER's and are identical for two slots on one server.
+
+    Gated to the visible tab and rebuilt only when its content changed, like the Review and
+    Regex Watch refreshers, so a 500 ms tick never clears the user's selection.
+    """
+    tab_name = "📊 Metrics"
+    if tab_name not in app_state.dashboard_notebook.tabs_widgets:
+        return
+    if "Metrics" not in _active_dashboard_tab_text():
+        return
+    widgets = app_state.dashboard_notebook.tabs_widgets[tab_name]
+    tree = widgets.get('metrics_tree')
+    if tree is None or not hasattr(tree, 'winfo_exists') or not tree.winfo_exists():
+        return
+
+    rows = vllm_metrics.endpoint_rows()
+    signature = tuple(
+        (row['slot_idx'], row.get('model'), row.get('error'), row.get('prompt_tps'),
+         row.get('generation_tps'), row.get('load_percent'), row.get('running'),
+         row.get('waiting'), row.get('requests'), row.get('slot_tokens_per_second'))
+        for row in rows
+    )
+    if not force and widgets.get('metrics_signature') == signature:
+        return
+    widgets['metrics_signature'] = signature
+
+    # --- status line: what was polled, and why a row may be empty ---
+    status_label = widgets.get('metrics_status_label')
+    if status_label is not None and status_label.winfo_exists():
+        polled = vllm_metrics.polled_endpoint_count()
+        if not rows:
+            status_label.configure(
+                text="No vLLM backend configured. Add an API URL (API Slots 1-6 or the Quality "
+                     "Judge) that points at a vLLM server; its /metrics endpoint is polled every "
+                     "%d seconds." % int(vllm_metrics.POLL_INTERVAL_SECONDS),
+                foreground="#ffb86b")
+        else:
+            failing = [row['label'] for row in rows if row.get('error')]
+            text = ("Polling %d vLLM endpoint(s) every %d seconds for %d API slot(s). "
+                    "Prompt/Generation speeds come from the server's own prefill/decode timers; "
+                    "Load is that server's KV-cache usage."
+                    % (polled, int(vllm_metrics.POLL_INTERVAL_SECONDS), len(rows)))
+            if failing:
+                text += " Unreachable: %s." % ", ".join(failing)
+            status_label.configure(text=text,
+                                   foreground="#ffb86b" if failing else "lightgray")
+
+    for item in tree.get_children():
+        tree.delete(item)
+
+    # The graph is refreshed for the empty case too, so it draws its own hint rather
+    # than leaving the previous run's lines on screen.
+    graph_canvas = widgets.get('metrics_graph_canvas')
+    if graph_canvas is not None and graph_canvas.winfo_exists():
+        update_vllm_metrics_graph(graph_canvas, rows, force=force)
+
+    if not rows:
+        tree.insert("", tk.END, values=("-", "no vLLM backend", "-", "-", "-", "-", "-", "-"))
+        return
+
+    for row in rows:
+        if row.get('error'):
+            tree.insert("", tk.END, values=(
+                row['label'], "unreachable", "-", "-", "-",
+                "-", vllm_metrics.format_tokens(row.get('prompt_tokens')),
+                vllm_metrics.format_tokens(row.get('generation_tokens')),
+                vllm_metrics.format_count(row.get('requests')),
+                vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
+            ), tags=("unreachable",))
+            continue
+        tree.insert("", tk.END, values=(
+            row['label'],
+            row.get('model') or "-",
+            vllm_metrics.format_speed(row.get('prompt_tps')),
+            vllm_metrics.format_speed(row.get('generation_tps')),
+            vllm_metrics.format_percent(row.get('load_percent')),
+            "%s / %s" % (vllm_metrics.format_count(row.get('running')),
+                          vllm_metrics.format_count(row.get('waiting'))),
+            vllm_metrics.format_tokens(row.get('prompt_tokens')),
+            vllm_metrics.format_tokens(row.get('generation_tokens')),
+            vllm_metrics.format_count(row.get('requests')),
+            vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
+        ), tags=(vllm_metrics.describe_load(row.get('load_percent')),))
 
 
 def update_quality_tab():
@@ -2524,6 +2649,7 @@ def start_processing():
                 _update_review_table()
                 update_quality_tab()
                 _update_regex_watch_tab()
+                _update_metrics_tab()
             except Exception as e_gui:
                 log_message(f"GUI update error: {str(e_gui)}", "ERROR")
             finally:
@@ -2847,7 +2973,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.0.5",
+    text="v13.1.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -3400,7 +3526,7 @@ highlight_colors = {
     "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright red-orange (errors)
 }
 
-tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review", "🔎 Regex Watch"]
+tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review", "🔎 Regex Watch", "📊 Metrics"]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors", "Non-Latin", "Cast Drift"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors", "non_latin", "scene_continuity"] # Keys for accessing data and widgets
 
@@ -3655,7 +3781,7 @@ for tab_name in tab_names:
     app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
 
     # 3. Create Issue Panels (skip for custom tabs)
-    if tab_name not in ("Quality", "🔍 Review", "🔎 Regex Watch"):
+    if tab_name not in ("Quality", "🔍 Review", "🔎 Regex Watch", "📊 Metrics"):
         panels_frame = ttk.Frame(parent_frame)
         panels_frame.grid(row=0, column=0, sticky="ew")
         panels = []
@@ -3856,6 +3982,75 @@ for tab_name in tab_names:
         _grid_scrollable_table(hits_lf, regex_hit_tree)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['regex_hit_tree'] = regex_hit_tree
 
+    elif tab_name == "📊 Metrics":
+        # v13.1.0: a fixed, non-scrolling diagnostics area (like Regex Watch) -- one row per API
+        # slot with a vLLM backend plus a per-endpoint graph. It has no search bar (a metrics
+        # table is not a search target) and no issue panels: it is not an issue view at all.
+        search_frame.grid_remove()
+        page_scroll.grid_remove()
+        metrics_page = ttk.Frame(tab_frame)
+        metrics_page.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        metrics_page.columnconfigure(0, weight=1)
+        metrics_page.rowconfigure(2, weight=1, minsize=120)
+        metrics_page.rowconfigure(4, weight=1, minsize=200)
+        tab_frame.rowconfigure(1, weight=1)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_page'] = metrics_page
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = metrics_page
+
+        metrics_header = ttk.Frame(metrics_page)
+        metrics_header.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 4))
+        metrics_header.columnconfigure(0, weight=1)
+        app_state.metrics_status_label = ttk.Label(
+            metrics_header,
+            text="Waiting for the first vLLM /metrics poll...",
+            style='Small.TLabel', justify="left", wraplength=1)
+        app_state.metrics_status_label.grid(row=0, column=0, sticky="ew")
+        wrap_label(app_state.metrics_status_label, metrics_header)
+        ttk.Button(metrics_header, text="🔄 Refresh Now",
+                   command=_poll_metrics_now).grid(
+            row=0, column=1, padx=(SPACING, 0))
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_status_label'] = \
+            app_state.metrics_status_label
+
+        # --- Per-endpoint table ---
+        # The same dedicated style the Regex Watch tables use: the theme default packs a 10pt font
+        # into a 20px row and clips every cell.
+        metrics_lf = ttk.LabelFrame(
+            metrics_page,
+            text="vLLM Metrics per API Endpoint (never aggregated)")
+        metrics_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, 4))
+        metric_cols = ("API Endpoint", "Model", "Prompt Speed", "Generation Speed",
+                       "Endpoint Load", "Running / Waiting", "Prompt Tokens",
+                       "Generated Tokens", "Requests", "This Slot's Throughput")
+        metrics_tree = ttk.Treeview(metrics_lf, columns=metric_cols, show="headings",
+                                    height=7, selectmode="browse", style=REGEX_TREE_STYLE)
+        _configure_regex_tree_columns(metrics_tree, metric_cols, widths={
+            "API Endpoint": 160, "Model": 230, "Prompt Speed": 130,
+            "Generation Speed": 145, "Endpoint Load": 120, "Running / Waiting": 140,
+            "Prompt Tokens": 125, "Generated Tokens": 135, "Requests": 90,
+            "This Slot's Throughput": 150,
+        }, stretch_columns=("API Endpoint", "Model"))
+        metrics_tree.tag_configure("idle", foreground="#8b949e")
+        metrics_tree.tag_configure("light", foreground="#69f0ae")
+        metrics_tree.tag_configure("busy", foreground="#ffd43b")
+        metrics_tree.tag_configure("saturated", foreground="#ff6b6b")
+        metrics_tree.tag_configure("unreachable", foreground="#ff6b6b")
+        metrics_tree.tag_configure("unknown", foreground="#8b949e")
+        _grid_scrollable_table(metrics_lf, metrics_tree)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_tree'] = metrics_tree
+
+        # --- Per-endpoint graph ---
+        graph_lf = ttk.LabelFrame(
+            metrics_page,
+            text="Per-API vLLM Graph — speeds (top) and endpoint load (bottom)")
+        graph_lf.grid(row=4, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
+        metrics_graph_canvas = tk.Canvas(graph_lf, width=1, height=1, highlightthickness=0,
+                                        bg='#1a1a1a')
+        metrics_graph_canvas.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_graph_canvas'] = \
+            metrics_graph_canvas
+        draw_vllm_metrics_graph(metrics_graph_canvas)
+
 
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)
@@ -3875,6 +4070,7 @@ def _on_dashboard_tab_changed(_event=None):
         _update_review_table()
         update_quality_tab()
         _update_regex_watch_tab(force=True)
+        _update_metrics_tab(force=True)
     except Exception as e:
         log_message(f"Dashboard tab-change refresh error: {e}", "ERROR")
 
@@ -4034,6 +4230,9 @@ def init_database_pool():
 reset_all_stats_and_history() # Initialize stats on startup
 update_dashboard() # Initial dashboard display
 init_database_pool() # <-- NEW: Initialize DB on launch
+# v13.1.0: poll every configured vLLM server's /metrics for the 📊 Metrics tab. A daemon
+# thread, so it dies with the window; it sends no inference request and changes no config.
+vllm_metrics.start_polling()
 update_database_status()  # NEW: Initial status update
 start_control_server_if_enabled()  # v13.0: opt-in terminal control (control.enabled)
 
@@ -4051,6 +4250,8 @@ if __name__ == "__main__":
             traceback.print_exc(file=f_err)
     finally: 
         log_message("Application exiting via main finally block.", "INFO")
+        # v13.1.0: stop the /metrics poller so a long request timeout cannot outlive the window.
+        vllm_metrics.stop_polling()
         if not app_state.stop_processing: # If not already stopped (e.g., by Quit button)
             app_state.stop_processing = True # Signal threads to stop
             if app_state.task_queue and app_state.threads:

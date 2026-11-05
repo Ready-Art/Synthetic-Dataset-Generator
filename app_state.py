@@ -279,6 +279,9 @@ ooc_label = None
 logic_label = None
 regex_watch_label = None
 non_latin_label = None
+# v13.1.0: the 📊 Metrics tab's status line (what was polled, which endpoint is unreachable).
+# The per-slot rows themselves live in the tab's own registry entry.
+metrics_status_label = None
 # ^ dashboard widget handles — assigned in generate.py when the main window is built
 
 
