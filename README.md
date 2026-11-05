@@ -10,24 +10,9 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v12.9.2
+# ReadyArt Synthetic Dataset Generator v13.0.5
 
 A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
-
-**NOTE:** The main branch is a WIP branch which is updated consistently. If you need a stable release, use the v12.8.2-STABLE branch.
-
-> ### ⚠️ Slop and Anti-Slop are DISABLED BY DEFAULT as of v12.7.6
->
-> The built-in Slop and Anti-Slop functions still work, but `detection.slop.enabled` and
-> `detection.anti_slop.enabled` now ship as `false`, because the fixers cost a whole extra LLM
-> call per detected phrase and detection cost scales with phrases × sentences × turns.
->
-> **If you want anti-slop, run it in [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev)
-> — and clone the `dev` branch, not `main`.** `main` is 12 commits behind `dev`, and every one of
-> those commits is a fix (concurrency, hangs, end-of-turn recovery, the banlist builder).
->
-> Full reasoning, all twelve of them: **[Slop & Anti-Slop — Use the Fork](docs/slop-and-antislop.md)**.
-> Still want the built-in path? See [If you still want the built-in functions](docs/slop-and-antislop.md#if-you-still-want-the-built-in-functions).
 
 **LICENSE:** All code in this repository is **AGPLv3**, and has been for some time. Very early versions were MIT by Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that it is unlikely any of that code survived. Unless you have the original MIT-era code to compare against, treat every file here as AGPLv3-only. Every text and code file carries an SPDX header saying so. See [License & Credits](docs/license-and-credits.md).
 
@@ -61,6 +46,7 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 | [Requirements & Installation](docs/installation.md) | Python/PostgreSQL/Valkey requirements, dependency list, first run, `input/` setup |
 | [Configuration](docs/configuration.md) | `config/config.yml`: dataset sources and prompt variables, the 6 API slots and compatibility profiles, generation settings |
 | [Usage](docs/usage.md) | Starting a run, resuming and crash recovery, duplication vs. collaborative mode, dashboards, queue management, prompt preview, connection tests |
+| [Command Line](docs/cli.md) | Headless / CLI control: launch, start, stop, pause, stats (including what is being filtered), save/export, clear, shutdown. JSON output and exit codes for scripts and LLM agents, plus the `control:` config block |
 
 ### Configuration reference
 
@@ -95,7 +81,8 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 | Page | What it covers |
 |------|----------------|
 | [Version History](docs/version-history.md) | Index of the changelogs |
-| [Changelog — v12.x](docs/changelog-v12.md) | Current release notes |
+| [Changelog — v13.x](docs/changelog-v13.md) | Current release notes |
+| [Changelog — v12.x](docs/changelog-v12.md) | v12.x release notes |
 | [Changelog — v11.x and earlier](docs/changelog-v11.md) | The rest of the history |
 | [License & Credits](docs/license-and-credits.md) | AGPLv3, the early MIT provenance, file headers, credits, third-party code |
 
@@ -115,15 +102,27 @@ Deeper, task-specific pages also live in `docs/`:
 
 ## 🏗 At a Glance
 
+Two front ends drive one engine. The window and the terminal are equal
+citizens: `python generate.py` opens the GUI, `python -m cli` drives the same run
+from a shell, and both read the same `config/config.yml` and write the same output.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Tkinter GUI (Main Thread)             │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
-│  │ Controls  │ │ Progress │ │ Dashboard│ │ Config    │  │
-│  │ & Toasts  │ │  Bars    │ │ & Queue  │ │  Editor   │  │
-│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
-└──────────────────────┬──────────────────────────────────┘
-                       │
+┌─────────────────────────────┐   ┌─────────────────────────────┐
+│  Tkinter GUI (Main Thread)   │   │  CLI (cli.py)                │
+│  ┌──────────┐ ┌───────────┐  │   │  launch / start / stop       │
+│  │ Controls  │ │ Dashboard │  │   │  stats / save / clear        │
+│  │ & Toasts  │ │ & Config  │  │   │  JSON + exit codes          │
+│  └──────────┘ └───────────┘  │   └──────────────┬──────────────┘
+└──────────────┬──────────────┘                  │
+               │  control.py: Unix socket, one   │
+               │  JSON object per line          │
+               └───────────────┬─────────────────┘
+                               ▼
+                     ┌───────────────────┐
+                     │  run_config.py    │
+                     │  config -> run    │
+                     └─────────┬─────────┘
+                               ▼
           ┌────────────┼────────────┐
           ▼            ▼            ▼
     ┌──────────┐ ┌──────────┐ ┌──────────┐
@@ -153,7 +152,8 @@ Deeper, task-specific pages also live in `docs/`:
 ```
 
 The full diagram, the module table and the dependency rule are in
-[Architecture & Modules](docs/architecture.md).
+[Architecture & Modules](docs/architecture.md). See
+[Command Line](docs/cli.md) for the terminal front end.
 
 ---
 

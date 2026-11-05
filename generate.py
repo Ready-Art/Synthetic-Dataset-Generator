@@ -81,6 +81,7 @@ import app_state
 # (generation._install_quality_write_handler()); `from generation import x` alone does
 # not bind the name `generation`, so referring to generation.<attr> raised NameError.
 import generation
+import run_config
 from dataset_tasks import configure_queue_datasets
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state
@@ -262,6 +263,15 @@ def load_generation_state():
 
                 # Load state data into global variables
                 app_state.completed_task_ids = set(state_data.get('completed_task_ids', []))
+                # v13.0.5: which tasks' turns are already in processed_tasks_snapshot. Older
+                # state files have no such key; there, every completed task was already counted
+                # by the snapshot, so completed_task_ids is the correct fallback.
+                with app_state.progress_credited_lock:
+                    if 'progress_credited_task_ids' in state_data:
+                        app_state.progress_credited_task_ids = set(
+                            state_data.get('progress_credited_task_ids') or [])
+                    else:
+                        app_state.progress_credited_task_ids = set(app_state.completed_task_ids)
                 app_state.system_prompt_counter = state_data.get('system_prompt_counter', 0)
                 app_state.quality_scores = state_data.get('quality_scores', {})
                 app_state.quality_dropped = state_data.get('quality_dropped', {})
@@ -376,6 +386,9 @@ def reset_all_stats_and_history():
 
     app_state.loaded_api_processed_tasks_snapshot = None # Clear any loaded snapshot
     loaded_processed_tasks_snapshot = None # Clear snapshot for non-duplication
+    # v13.0.5: a reset run has credited nothing yet (see generation._credit_task_progress).
+    with app_state.progress_credited_lock:
+        app_state.progress_credited_task_ids = set()
     with app_state.quality_lock:
         app_state.quality_scores = {}
         app_state.quality_dropped = {}
@@ -446,8 +459,12 @@ def cleanup_old_files_and_backup_output():
 
 
 def clear_database():
-    """Clears all data from the PostgreSQL generated_conversations table."""
+    """Clears all data from the PostgreSQL generated_conversations table.
 
+    v13.0: the work lives in run_config.clear_database() so the CLI can clear the
+    same table. This wrapper owns only what is GUI-specific -- the confirmation
+    dialog and the toast -- so the GUI's behaviour and wording are unchanged.
+    """
     # Confirmation dialog: returns True for "Yes", False for "No"
     if not messagebox.askyesno("Confirm Clear Database", "Are you sure you want to clear the database? This action cannot be undone."):
         return  # User selected "No", so exit without doing anything
@@ -457,43 +474,27 @@ def clear_database():
         log_message("Database pool not initialized.", "ERROR")
         return
 
-    try:
-        conn = app_state.db_pool.getconn()
-        with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE generated_conversations RESTART IDENTITY;")
-            conn.commit()
-        app_state.db_pool.putconn(conn)
+    ok, message = run_config.clear_database()
+    if ok:
         toast.show("Database cleared successfully!", "success")
-        log_message("Database cleared successfully.", "INFO")
-    except Exception as e:
-        log_message(f"Failed to clear database: {e}", "ERROR")
-        toast.show(f"Failed to clear database: {e}", "error")
-        if conn:
-            app_state.db_pool.putconn(conn)
+    else:
+        toast.show(message, "error")
 
 # --- Core Worker Logic ---
 
 def export_db_to_jsonl(output_path):
+    """Streams the conversations table to `output_path`. Returns True on success.
+
+    v13.0: the streaming loop lives in run_config.export_db_to_jsonl() so the CLI
+    exports the identical bytes. The pool-missing message stays here because it is
+    a toast, not a log line.
+    """
     if not app_state.db_pool:
         toast.show("Export failed: DB pool not initialized.", "error")
         return False
 
-    try:
-        conn = app_state.db_pool.getconn()
-        with conn.cursor(name='export_cursor') as cur: # Server-side cursor for large datasets
-            cur.itersize = 1000
-            cur.execute("SELECT conversation_data FROM generated_conversations ORDER BY created_at")
-
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for row in cur:
-                    f.write(json.dumps(row[0]) + '\n')
-        conn.commit()
-        app_state.db_pool.putconn(conn)
-        return True
-    except Exception as e:
-        log_message(f"Export failed: {e}", "ERROR")
-        if conn: app_state.db_pool.putconn(conn)
-        return False
+    ok, _message, _rows = run_config.export_db_to_jsonl(output_path)
+    return ok
 
 # --- Tkinter UI Update and Control Functions ---
 
@@ -2036,7 +2037,18 @@ def start_processing():
     app_state.processing_active = True 
     update_dashboard() 
 
-    log_message(f"Start processing: {app_state.num_threads} threads. Output: {current_output_format}. Turns: {current_num_turns}. Remove Reasoning: {current_remove_reasoning}. Gender: {active_gender}. Use QFile: {current_use_questions_file}. Use VarSys: {current_use_variable_system}", "INFO")
+    # The run's worker total is the sum over the API slots that will do work -- never the
+    # legacy `api.threads` scalar, which is only a fallback for when the per-slot counts are
+    # absent. Computed here (before the "Start processing" line) so the number the user reads
+    # is the number of threads this run actually launches, and reused by the launch loop below.
+    total_threads = run_config.count_worker_threads(
+        all_api_configs_runtime, active_enabled_api_configs_for_worker_list,
+        master_duplication_enabled)
+    # Publish the resolved total so the control server's status payloads report the run's
+    # real worker count instead of the legacy scalar.
+    app_state.num_threads = total_threads
+
+    log_message(f"Start processing: {total_threads} threads. Output: {current_output_format}. Turns: {current_num_turns}. Remove Reasoning: {current_remove_reasoning}. Gender: {active_gender}. Use QFile: {current_use_questions_file}. Use VarSys: {current_use_variable_system}", "INFO")
     if should_resume: log_message(f"Resuming with {len(app_state.completed_task_ids)} previously completed unique tasks.", "INFO")
 
     for widget in progress_frame.winfo_children(): 
@@ -2278,13 +2290,26 @@ def start_processing():
         app_state.task_queue.overall_progress_bar = overall_progress_bar
         app_state.task_queue.overall_time_label = overall_time_label
         app_state.task_queue.overall_percent_label = overall_percent_label
-        # Initialize processed_tasks (turns)
+        # Initialize processed_tasks (turns). v13.0.5: the saved snapshot is the single source
+        # of truth, and every task it already counts is seeded into progress_credited_task_ids
+        # below -- otherwise the worker's "skip an already completed task" path credited those
+        # turns a second time on every resume.
         if should_resume and loaded_processed_tasks_snapshot is not None:
             app_state.task_queue.processed_tasks = loaded_processed_tasks_snapshot
         elif should_resume:
             app_state.task_queue.processed_tasks = len(app_state.completed_task_ids) * current_num_turns
         else:
             app_state.task_queue.processed_tasks = 0
+
+        # v13.0.5: whatever is already counted is already credited, so a resume must not
+        # re-credit it. load_generation_state() seeds this from the state file when it has the
+        # key (old files fall back to completed_task_ids); this covers the fallback branch
+        # above and makes a fresh run start with an empty credited set.
+        with app_state.progress_credited_lock:
+            if should_resume:
+                app_state.progress_credited_task_ids |= set(app_state.completed_task_ids)
+            else:
+                app_state.progress_credited_task_ids = set()
         
         app_state.task_queue.start_times_list = [] 
         if app_state.task_queue.total_tasks_for_progress > 0: 
@@ -2305,22 +2330,9 @@ def start_processing():
     # interleave with one (v12.8.2).
     output_data_lock = app_state.output_data_lock
     
-    # Determine total number of threads based on API configurations
-    total_threads = 0
-    if master_duplication_enabled:
-        # In duplication mode, use the sum of threads from all enabled APIs
-        for api_idx, api_conf in enumerate(all_api_configs_runtime):
-            if api_idx < 4 and api_conf.get('enabled', False) and api_conf.get('url'):
-                total_threads += api_conf.get('threads', 10)
-    else:
-        # In non-duplication mode, use threads from each API for distribution
-        for api_config in active_enabled_api_configs_for_worker_list:
-            total_threads += api_config['config'].get('threads', 10)
-    
-    # Ensure at least one thread
-    if total_threads <= 0:
-        total_threads = 10
-        log_message(f"Warning: No valid thread count found in API configs. Using default of {total_threads}.", "WARNING")
+    # total_threads was resolved above, before the "Start processing" line, from the same
+    # run_config.count_worker_threads() the CLI uses -- one definition, so the logged count
+    # and the number of threads started here can never disagree.
     
     # v11.2: Initialize the quality scoring queue system before starting worker threads
     # This ensures quality scoring requests are processed asynchronously without blocking workers
@@ -2332,8 +2344,9 @@ def start_processing():
         if quality.judge_async_enabled():
             generation._install_quality_write_handler()
             log_message(
-                "Quality async scoring ON: the judge scores and writes rows; "
-                "generation does not wait for verdicts.", "INFO")
+                "Quality async scoring ON: workers hand the queue a write job and move on; "
+                "the judge scores it and a processor thread writes the row. "
+                "Generation does not wait for verdicts.", "INFO")
         quality.initialize_quality_queue()
         log_message("Quality scoring queue system initialized.", "INFO")
     
@@ -2834,7 +2847,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v12.9.2",
+    text="v13.0.5",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -3194,6 +3207,63 @@ primary_actions_layout = ResponsiveGrid(button_frame,
     [start_button, pause_button, stop_clear_button, config_button],
     min_width=170, max_columns=4, pady=4)
 
+def start_control_server_if_enabled():
+    """Serves terminal commands for this window when ``control.enabled`` is true (v13.0).
+
+    The GUI is the process that owns a run, so a terminal can only drive it if the GUI
+    listens. This is opt-in and off by default, which is what keeps `python generate.py`
+    byte-identical to v12.9.2 for anyone who does not ask for it.
+
+    Every failure here is swallowed to a log line: a control interface that cannot start
+    (port taken, read-only directory) must never stop the GUI from opening. Being unable to
+    drive the generator from a terminal is an inconvenience; refusing to start is a
+    regression.
+    """
+    try:
+        import control
+    except Exception as exc:
+        log_message(f"Control interface unavailable (import failed): {exc}", "WARNING")
+        return None
+
+    try:
+        cfg = app_state.global_config
+        if not cfg.get('control.enabled', False):
+            log_message("Control interface disabled (control.enabled is false).", "INFO")
+            return None
+        socket_path = cfg.get('control.socket_path', '') or control.default_socket_path()
+        # HeadlessController resolves its own config from config/config.yml; the server
+        # owns the listening address, so the two are constructed separately.
+        server = control.ControlServer(
+            controller=control.HeadlessController(),
+            socket_path=socket_path,
+            tcp_host=cfg.get('control.tcp_host', '') or None,
+            tcp_port=cfg.get('control.tcp_port', 8765),
+            allow_remote=cfg.get('control.allow_remote', False),
+        )
+        server.start()
+        app_state.control_server = server
+        log_message(f"Control interface listening on {socket_path}.", "INFO")
+        return server
+    except Exception as exc:
+        log_message(f"Control interface failed to start: {exc}", "WARNING")
+        app_state.control_server = None
+        return None
+
+
+def stop_control_server():
+    """Stops the control server if one is running. Safe to call unconditionally."""
+    server = getattr(app_state, 'control_server', None)
+    if server is None:
+        return
+    try:
+        server.stop()
+        log_message("Control interface stopped.", "INFO")
+    except Exception as exc:
+        log_message(f"Error stopping control interface: {exc}", "WARNING")
+    finally:
+        app_state.control_server = None
+
+
 def quit_application():
     """Handles graceful shutdown of the application when Quit button or window X is clicked."""
     if messagebox.askokcancel("Quit", "Are you sure you want to quit? This will stop any ongoing generation and save progress."):
@@ -3244,6 +3314,10 @@ def quit_application():
 
         log_message("Quit: Saving generation state before exiting...", "INFO")
         save_generation_state() # Save final progress
+
+        # v13.0: stop listening before the window goes away, so a terminal cannot
+        # reach a half-destroyed controller.
+        stop_control_server()
 
         log_message("Quit: Destroying Tkinter root window...", "INFO")
         if app_state.root and hasattr(app_state.root, 'winfo_exists') and app_state.root.winfo_exists():
@@ -3936,37 +4010,32 @@ dashboard_navigator.refresh()
 ConfigEditor.update_dashboard_safe = update_dashboard_safe # Make it accessible from ConfigEditor instance
 
 def init_database_pool():
-    """Initializes PostgreSQL connection pool at app startup."""
+    """Initializes the PostgreSQL connection pool at app startup.
+
+    v13.0: the pool construction lives in run_config.init_db_pool() so the CLI
+    builds the identical pool from the identical keys. This wrapper owns only the
+    startup log wording and the status-icon refresh, so the GUI is unchanged.
+    """
     if global_config.get('database.enabled', False):
-        try:
-            from psycopg2 import pool
-            app_state.db_pool = pool.ThreadedConnectionPool(
-                minconn=2, maxconn=global_config.get('database.pool_size', 10),
-                connect_timeout=5,
-                host=global_config.get('database.host'), port=global_config.get('database.port'),
-                dbname=global_config.get('database.dbname'), user=global_config.get('database.user'),
-                password=global_config.get('database.password')
-            )
+        pool = run_config.init_db_pool(global_config)
+        if pool is not None:
             log_message("PostgreSQL connection pool initialized at startup.", "INFO")
-            # Update status after initialization
-            if app_state.root.winfo_exists():
-                app_state.root.after(100, update_database_status)
-        except Exception as e:
-            log_message(f"Failed to init DB pool at startup: {e}", "ERROR")
-            app_state.db_pool = None
-            # Update status to show disconnected
-            if app_state.root.winfo_exists():
-                app_state.root.after(100, update_database_status)
+        else:
+            log_message("Failed to init DB pool at startup.", "ERROR")
     else:
         app_state.db_pool = None
         log_message("PostgreSQL database disabled in config.", "INFO")
-        if app_state.root.winfo_exists():
-            app_state.root.after(100, update_database_status)
+    # Refresh the status icons once, whether or not the pool opened: both the
+    # success and failure paths used to do this, and a failed connect must show
+    # as disconnected rather than as stale.
+    if app_state.root is not None and app_state.root.winfo_exists():
+        app_state.root.after(100, update_database_status)
 
 reset_all_stats_and_history() # Initialize stats on startup
 update_dashboard() # Initial dashboard display
 init_database_pool() # <-- NEW: Initialize DB on launch
 update_database_status()  # NEW: Initial status update
+start_control_server_if_enabled()  # v13.0: opt-in terminal control (control.enabled)
 
 app_state.root.after(1000, update_thread_status_display)
 

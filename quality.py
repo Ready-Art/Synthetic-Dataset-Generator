@@ -48,6 +48,7 @@ from api_handler import (
     api_response_times_per_slot,
     api_response_times_lock,
     MAX_RESPONSE_TIMES_TO_TRACK,
+    apply_thinking_mode,
 )
 from app_state import (
     global_config,
@@ -146,8 +147,10 @@ JUDGE_CONCURRENCY_MAX = 32
 # --- Async scoring (v12.9) ------------------------------------------------------------
 # By default the judge is a GATE: the worker blocks until the verdict arrives, because a row
 # it rejects must never reach the dataset. ``quality.async_scoring`` flips that: the worker hands
-# the judge a complete write job and moves on, and the judge scores the conversation and writes
-# the row itself. Two things follow that the gate cannot offer:
+# the queue a complete write job and moves on, and a PROCESSOR THREAD scores the conversation and
+# then writes the row. THE JUDGE ITSELF NEVER WRITES A ROW -- it is an HTTP scorer that returns a
+# verdict and nothing else; every append still goes through generation.write_conversation().
+# Two things follow that the gate cannot offer:
 #   * a slow judge no longer holds up generation, and
 #   * NOTHING IS LOST TO A TIMEOUT -- there is no wait to time out of. A queued job stays
 #     queued until it is scored, and the run does not end until the queue is drained.
@@ -1315,6 +1318,27 @@ JUDGE_PRIORITY_MIN = -10
 JUDGE_PRIORITY_MAX = 10
 
 
+def judge_thinking_mode(config=None):
+    """The judge's RAW thinking-mode setting (v13.0.4).
+
+    ``quality.scoring_api.enable_thinking``: ``inherit`` (the shipped default, which follows
+    the main ``samplers.enable_thinking``), ``default`` (send nothing), ``enable`` or
+    ``disable``. Returned unnormalised -- ``api_handler.resolve_thinking_mode()`` is the one
+    place that decides what a value means, so a typo cannot silently turn thinking back on.
+
+    A sibling key of ``sampler_settings`` on purpose: that dict is the sampler override handed
+    to the payload builder, so a non-sampling key inside it would reach the wire.
+    """
+    cfg = global_config if config is None else config
+    try:
+        scoring_api = cfg.get('quality.scoring_api', {}) or {}
+    except AttributeError:
+        return "inherit"
+    if not isinstance(scoring_api, dict):
+        return "inherit"
+    return scoring_api.get('enable_thinking', 'inherit')
+
+
 def judge_priority_enabled(config=None):
     """Whether the judge request should carry a vLLM ``priority`` field.
 
@@ -1896,6 +1920,17 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
     # including the format-repair and response_format-fallback requests, so a retried judge
     # request keeps its place in the queue. Absent entirely when the toggle is off.
     payload_dict.update(_judge_priority_field())
+    # v13.0.4 thinking mode. The judge answers with a small JSON object; a reasoning
+    # model that thinks first spends far more tokens and wall-clock time for the same
+    # verdict (this was the 500%-class slowdown on local vLLM).
+    # ``quality.scoring_api.enable_thinking`` decides; ``inherit`` (the shipped default)
+    # follows the Samplers tab's main setting. Before this the judge sent no
+    # chat_template_kwargs at all, so the server default (thinking ON) always applied.
+    # A SIBLING key, not an entry in sampler_settings: that dict is handed to the
+    # payload builder as the sampler override, and adding a non-sampling key to it would
+    # put an unknown field on the wire. See api_handler.apply_thinking_mode.
+    payload_dict = apply_thinking_mode(
+        payload_dict, judge_thinking_mode(), global_config.get('samplers', {}))
 
     headers = {'Content-Type': 'application/json'}
     if api_key:
@@ -2357,12 +2392,12 @@ def get_quality_stats():
 #     (v11.4). The wait is bounded by ``quality.result_timeout``, which is why a slow
 #     judge DROPS rows.
 #
-#   QUEUE -- the worker hands over a COMPLETE write job and returns immediately; the
-#     processor scores it and calls the injected writer itself. There is no wait, so there
-#     is no timeout to lose work to: a job stays queued until it is scored, and the run
-#     does not end until the queue is drained (``wait_for_quality_queue``). The row is
-#     written only after its verdict, so a written row is complete and a rejected
-#     conversation never appears at all.
+#   QUEUE -- the worker hands over a COMPLETE write job and returns immediately; a processor
+#     thread scores it and calls the injected writer itself. The JUDGE only ever produces a
+#     verdict -- it never writes a row. There is no wait, so there is no timeout to lose work to:
+#     a job stays queued until it is scored, and the run does not end until the queue is drained
+#     (``wait_for_quality_queue``). The row is written only after its verdict, so a written row is
+#     complete and a rejected conversation never appears at all.
 # =============================================================================
 
 # Quality scoring queue: holds tuples of (conversation_history, task_id, thread_id,
@@ -2447,7 +2482,7 @@ def initialize_quality_queue():
         log_message(
             f"Quality scoring queue started with {workers} processor thread(s) "
             f"(quality.judge_concurrency)"
-            f"{' [async: the judge writes the rows]' if judge_async_enabled() else ''}.",
+            f"{' [async: the PROCESSOR writes the rows after scoring; the judge only scores]' if judge_async_enabled() else ''}.",
             "INFO")
 
 
@@ -2604,10 +2639,16 @@ def _enqueue_quality_write(write_job, conversation_history, task_id, thread_id,
                              api_slot_idx, file_name, character_profile_text,
                              scene_characters, logic_findings, cast_schedule,
                              cast_events):
-    """Queue a write job for the judge to score and write (QUEUE mode, v12.9).
+    """Queue a write job for a processor thread to score and write (QUEUE mode, v12.9).
 
     Returns ``None``: the caller must NOT write the row itself, the processor owns it. The
     verdict therefore cannot delay generation and there is no timeout to lose it to.
+
+    Naming note: the JUDGE does not write the row -- it returns a verdict. The queue PROCESSOR
+    thread scores the conversation (asking the judge) and then appends the row itself. Every
+    mention of "the judge writes" in older comments meant "the processor writes, once the judge
+    has spoken"; the two are kept apart here because only the processor is a writer, and only
+    writers take ``app_state.output_data_lock``.
 
     The queue is unbounded, so a job is never refused. If the processors are not running the
     job is scored and written inline instead, so a run without the queue (tests) still produces
@@ -2650,6 +2691,10 @@ def _enqueue_quality_write(write_job, conversation_history, task_id, thread_id,
 
 def _score_and_write_job(item):
     """Score one queued job and write its row (QUEUE mode). Never raises.
+
+    This runs on a queue PROCESSOR thread. It is the only async-path writer: it asks the judge
+    for a verdict, then calls the injected writer (``generation.write_conversation``, which takes
+    ``app_state.output_data_lock``). The judge is never given write access and never writes a row.
 
     The row is written ONLY after a verdict, so a written row is always scored and a
     rejected conversation never appears in the dataset. A job that cannot be written is reported

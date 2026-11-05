@@ -398,6 +398,68 @@ def test_gate_semaphore_is_separate_from_the_queue():
         quality._judge_gate_semaphore_size = 0
 
 
+def test_async_writer_takes_the_output_lock():
+    print("(10) the async writer takes app_state.output_data_lock, like every worker")
+    # v13.0.3 regression. ``write_conversation()`` appends with a bare
+    # ``open(..., 'a')``/``write()`` and holds NO lock of its own -- every caller is
+    # responsible for one. Every worker call site holds ``app_state.output_data_lock``
+    # and so does the duplication-mode async job, but the non-duplication async job
+    # (``_make_quality_write_job``) did not, so a processor thread could interleave an
+    # append with a worker's and split a line. The old "the judge writes the rows"
+    # phrasing is what hid it: a judge needs no lock, a writer does.
+    #
+    # Parsed with ``ast`` rather than imported: this file is headless by contract, and
+    # importing generation.py needs Tk.
+    import ast
+    source = open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generation.py"),
+        encoding="utf-8").read()
+    tree = ast.parse(source, filename="generation.py")
+
+    def _find(name):
+        matches = [n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == name]
+        return matches[0] if len(matches) == 1 else None
+
+    def _locks_around_write(fn):
+        """True when every ``write_conversation(...)`` call sits inside a ``with`` whose
+        context expression mentions ``output_data_lock``."""
+        calls = []
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call):
+                target = node.func
+                name = getattr(target, "id", None) or getattr(target, "attr", None)
+                if name == "write_conversation":
+                    calls.append(node)
+        if not calls:
+            return False
+        for call in calls:
+            guarded = False
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.With):
+                    continue
+                guarded_by_lock = any(
+                    "output_data_lock" in ast.unparse(item.context_expr)
+                    for item in node.items)
+                if not guarded_by_lock:
+                    continue
+                if any(inner is call for inner in ast.walk(node)):
+                    guarded = True
+                    break
+            if not guarded:
+                return False
+        return True
+
+    async_job = _find("_make_quality_write_job")
+    check("_make_quality_write_job exists", async_job is not None)
+    check("the async write job appends under output_data_lock",
+          async_job is not None and _locks_around_write(async_job))
+
+    dup_job = _find("_make_duplication_turn_write_jobs")
+    check("the duplication write jobs append under output_data_lock",
+          dup_job is not None and _locks_around_write(dup_job))
+
+
 def main():
     test_async_flag_defaults_off()
     test_generation_does_not_wait_for_a_slow_judge()
@@ -408,6 +470,7 @@ def main():
     test_gate_mode_still_blocks_and_returns_a_verdict()
     test_per_turn_gate_is_not_queued_behind_conversation_scoring()
     test_gate_semaphore_is_separate_from_the_queue()
+    test_async_writer_takes_the_output_lock()
     print()
     if FAILURES:
         print("{} async queue test(s) failed".format(len(FAILURES)))

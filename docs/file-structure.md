@@ -27,6 +27,9 @@ readyart-dataset-generator/
 ├── logging_config.py        # Centralized logging with colorama (colored console + file output)
 ├── config_editor.py         # Configuration editor GUI (tabbed interface with search, validation)
 ├── dashboard.py             # Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview)
+├── cli.py                   # v13.0: argparse surface + client + daemon launcher (GUI-free)
+├── control.py               # v13.0: control protocol, socket server, HeadlessController (GUI-free)
+├── run_config.py            # v13.0: config -> run resolution, output/DB/JSONL plumbing (GUI-free)
 ├── app_state.py             # Shared runtime state (counters, locks, task queue, quality scores, circuit breaker)
 ├── tests/                   # Test scripts (run from the repository root: python -B tests/<name>.py)
 │   ├── test_api_profiles.py # Unit tests for API compatibility profiles
@@ -43,13 +46,15 @@ readyart-dataset-generator/
 │   ├── slop-and-antislop.md       # Why slop/anti-slop ship off (v12.7.6) + use the fork's dev branch
 │   ├── samplers-and-infrastructure.md  # Sampler params, DB/cache, budget, circuit breaker, rate limits
 │   ├── usage.md             # Running a job, dashboards, queue, recovery
+│   ├── cli.md               # Headless / CLI control (v13.0): verbs, JSON, exit codes
 │   ├── output-formats.md    # ShareGPT rows + the record metadata block
 │   ├── how-it-works.md      # Pipelines and fix/fallback flows
 │   ├── troubleshooting.md   # Symptom -> fix table, GUI layout testing, env vars, logging
 │   ├── performance.md       # Throughput and cost tuning
 │   ├── key-configuration-details.md  # Injection formats and storage details
 │   ├── version-history.md   # Index of the changelogs
-│   ├── changelog-v12.md     # Current release notes
+│   ├── changelog-v13.md     # Current release notes
+│   ├── changelog-v12.md     # v12.x release notes
 │   ├── changelog-v11.md     # v11.x and earlier
 │   ├── license-and-credits.md  # AGPLv3, provenance, credits
 │   ├── input-folder.md      # The input/ folder format
@@ -63,6 +68,7 @@ readyart-dataset-generator/
 │   └── agents/              # Developer docs TOPIC FILES (read the one for your area)
 │       ├── task-index.md    # "how do I add X?" -> files to edit
 │       ├── generate-ui.md   # generate.py (tabs, worker launch, table styles)
+│       ├── cli.md          # cli.py / control.py / run_config.py (headless control)
 │       ├── config-editor.md # config_editor.py (editor fields, layout, readability)
 │       ├── dashboard.md     # dashboard.py (metric cards, panels, issue graph)
 │       ├── generation.md    # generation.py (worker loop, retries, metadata)

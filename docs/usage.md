@@ -132,6 +132,8 @@ Progress bars use color-coded styles that change based on completion percentage:
 
 When a milestone (25%, 50%, 75%, 90%, 100%) is crossed, the progress bar briefly pulses to a brighter color before reverting. Error states are shown in red.
 
+**What the bar counts:** turns belonging to **completed tasks**, not turns in progress. A task's turns are credited once, when its row is actually written — including under **Quality → Async scoring**, where the row is written by a queue processor after the worker has already moved on. A conversation the quality judge **rejects** still credits, because the work is finished even though the row is not kept, so the bar can always reach 100%. A task that is retried or abandoned credits nothing until it finally succeeds, so the number never goes backwards.
+
 ## Live Prompt Preview
 
 A dedicated **🔍 Prompt Viewer** tab in the dashboard shows the exact messages being sent to the API in real-time, with rich formatting and utility controls:

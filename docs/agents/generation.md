@@ -24,6 +24,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `tests/test_opening_mode.py`
 - `tests/test_persona_arc.py`
 - `tests/test_random_settings.py`
+- `tests/test_progress_accounting.py`
 - `tests/test_scene_cast.py`
 - Tasks that touch these files
 
@@ -45,6 +46,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - Opening mode → `generate_greeting()`, `generate_first_line()`, `enqueue_opening_tasks()`
 - Quality scoring → `quality.score_conversation()` call (via `_score_and_store_quality()`) after conversation complete, passing `character_profile_text=character_injection` and `scene_characters=scene_character_names`
 - **Judge gatekeeper (v11.4)** → `_score_and_store_quality()` returns the judge verdict (never `None`) and `_quality_dropped(verdict)` tells the write paths to skip the row. `quality_dropped_this_task` (set per task) suppresses the non-duplication final write, the duplication per-turn write and `completed_task_ids.add()`; the row is dropped, not requeued and not flagged. `quality_dropped` is persisted in `save_generation_state()`
+- **Progress accounting (v13.0.5) → `_credit_task_progress(task_id, turns=None, queue=None)`** — `processed_tasks` is **task-level, not per-turn**, and this is its ONLY writer: one task's turns, capped, **idempotent** via `app_state.progress_credited_task_ids` (persisted in the state file), **never refunded**. The old per-turn credit + epilogue refund netted zero for every async task, so the bar sat at turns in flight and oscillated. Call sites: the sync write path, `_mark_task_written()`, both judge-drop branches. `turns` defaults to `app_state.current_num_turns_for_progress`, set by `worker()`. **Never re-add a per-turn credit or a refund**; the ETA's `start_times_list` append stays where the increment block was
 - Turn completion check → `conversation_is_complete()`
 - Conversation context for fixers → `call_slop_fixer_llm()` and `call_anti_slop_llm()` now accept `conversation_history` parameter to provide full conversation context for coherent rephrasing
 - Character prompt injection → character profile block built in `worker()` (personality/traits are conditionally injected lines in the profile; `persona` = inner personality is deliberately EXCLUDED from the profile and re-injected later as an INNER PERSONA BREAKTHROUGH block once the scene reaches the configured slot). Setting resolution → a `settings_for_selected[]` array is computed per task before the profile loop: each selected character keeps its own non-empty `setting`, else samples from the `random_settings` pool (if enabled) or the `A standard indoor environment.` default; when >1 character is selected the ensemble is unified to one shared setting picked from the distinct candidate settings (order-preserving dedupe), which becomes both the injected `Setting:` line for every character and `meta_setting`
@@ -75,6 +77,9 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ---
 
+### `tests/test_progress_accounting.py` [45]
+**Purpose:** Headless regression test for the v13.0.5 progress accounting fix
+
 ### `tests/test_scene_cast.py` [44]
 **Purpose:** Headless guard for the v12.0 Scene Cast feature — schedule invariants (no exit below `min_present`, every character exactly once, no character both joins and leaves, slots in range, exit after enter, minimal = at most one of each), the state machine (defer/force/cancel, the deliberate asymmetry asserted explicitly, no illegal state ever produced, deferrals live on the state not the plan), cast-note cache stability (two static slots are BYTE-IDENTICAL, no `None`, no per-reply counter), the detector (speaker prefix, name-adjacent quotes, `"Where is Melody?"` does not flag, narration actions, possessives, names ending in punctuation, accents, `expected_missing` is soft, timestamps only on hard hits), metadata v7 (`cast_schedule` / `cast_events` / `quality_cast_continuity`, identical key sets), the dimension gating (LLM-only, never heuristic, driven through the real `global_config` ConfigLoader) and the shipped config being inert
 **Edit for:** Add cases when the schedule, the state machine, the note or the detector changes
@@ -85,6 +90,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 | Task | Files to edit |
 |------|---------------|
+| Progress accounting: the bar stalls or oscillates (v13.0.5) | `generation.py` (`_credit_task_progress()`, both completion sites, both drop branches, the skip-completed branch, `save_generation_state()`), `app_state.py` (credited set + lock), `generate.py` + `control.py` (resume seeding), `tests/test_progress_accounting.py` |
 | Add/modify scene cast (v12.0) | `generation.py` (`_scene_cast_feasible()` / `_build_scene_cast_plan()` / `_cast_state_from_plan()` / `_cast_slot_transitions()` / `_cast_names_for_slot()` / `_advance_cast_state()` / `_cast_presence_note()` — keep them PURE and keep the exit-cancelled / arrival-forced asymmetry), `detection.py` (`check_scene_continuity()` + the attribution helpers), `generation.py` (`generate_answer_with_retries()` branch after OOC, `slot_notes()`, `write_conversation()` cast args, `_build_record_metadata()` + `_METADATA_SCHEMA_VERSION`, `placement_cache_warning()`), `generate.py` (config read + the five worker kwargs + metric card + issue panel + color_map), `config/config.yml` (`prompts.scene_cast.*`, `detection.scene_continuity.*`, `quality.cast_continuity`), `config_editor.py` (three panels + save/load/toggle/validate), `quality.py` (`CAST_SCORING_DIMENSIONS` / `CAST_LLM_DIMENSIONS` / `is_cast_scoring_enabled()` + the judge block + the `item[:10]` queue unpack), `app_state.py` (counters, recent lists, `cast_events_log`, `record_cast_events()`, the `scene_continuity` timestamp key), `dashboard.py` (four dicts + signature + panels + clear), `tests/test_scene_cast.py`, `docs/scene-cast.md` — keep the feature OFF by default so the default run stays byte-identical to v11.10.0 |
 | Modify output format | `generation.py` (`write_conversation()`); its per-turn text pipeline order is load-bearing — see [`core-modules.md`](core-modules.md) |
 | Modify retry logic, Regex Watch rewriting, the non-Latin / scene-continuity / missing-quotation / repeated-opener branches | **see [`generation-retries.md`](generation-retries.md)** — one row per check, with the retry ORDER |

@@ -30,7 +30,7 @@ from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DE
                         DEFAULT_GREETING_PROMPT, DEFAULT_NOTE_PLACEMENT, NOTE_PLACEMENTS, note_placement,
                         placement_cache_warning)
 from logging_config import log_message
-from api_handler import global_rate_limiter
+from api_handler import global_rate_limiter, THINKING_MODES
 from datasets_panel import DatasetsPanel
 from dataset_settings import DatasetSettingsError
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
@@ -38,6 +38,11 @@ from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
                        bind_scroll_wheel, fit_window, scroll_to_widget, wrap_label)
 
 SPACING = 8  # UI padding constant (mirrors generate.py)
+# v13.0.4: the choices offered by every Thinking Mode dropdown. ``inherit`` only makes
+# sense for the auxiliary requests (fixers, judge) and is listed first because it is the
+# shipped default; the main Samplers-tab dropdown offers the other three only.
+THINKING_MODE_CHOICES = ("inherit", "default", "enable", "disable")
+assert THINKING_MODE_CHOICES == THINKING_MODES, "Thinking Mode choices must match api_handler.THINKING_MODES"
 QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate.py (UI label only)
 
 # ttk.Spinbox needs an explicit field colour on the 'superhero' theme. The theme configures the
@@ -356,6 +361,52 @@ class ConfigEditor(tk.Toplevel):
         self.valkey_password_var = tk.StringVar()
         ttk.Entry(valkey_frame, width=30, textvariable=self.valkey_password_var, show="*").grid(row=4, column=1, padx=SPACING, pady=SPACING, sticky="w")
 
+        # v13.0: Control Interface (docs/cli.md). Off by default, so a default run is
+        # unchanged; the CLI's own `launch` serves regardless, because serving is that
+        # command's whole job. This group exists so the GUI can also be driven from a
+        # terminal without editing YAML by hand.
+        control_frame = ttk.LabelFrame(self.api_content_frame, text="Control Interface (CLI)")
+        control_frame.columnconfigure(1, weight=1)
+        control_frame.grid(row=6, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+
+        self.control_enabled_var = tk.BooleanVar()
+        wrapped_checkbutton(
+            control_frame,
+            text="Serve control commands (lets `generator stats/stop` reach this window)",
+            variable=self.control_enabled_var,
+            command=self._toggle_control_fields
+        ).grid(row=0, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+
+        ttk.Label(control_frame, text="Socket Path:").grid(row=1, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        self.control_socket_path_var = tk.StringVar()
+        self.control_socket_path_entry = ttk.Entry(control_frame, width=40, textvariable=self.control_socket_path_var)
+        self.control_socket_path_entry.grid(row=1, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+        ttk.Label(control_frame, text="(empty = output/generator-control.sock)").grid(row=2, column=1, padx=SPACING, pady=(0, SPACING), sticky="w")
+
+        ttk.Label(control_frame, text="TCP Host (optional):").grid(row=3, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        self.control_tcp_host_var = tk.StringVar()
+        self.control_tcp_host_entry = ttk.Entry(control_frame, width=40, textvariable=self.control_tcp_host_var)
+        self.control_tcp_host_entry.grid(row=3, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+        ttk.Label(control_frame, text="(empty = unix socket only; 127.0.0.1 to add TCP)").grid(row=4, column=1, padx=SPACING, pady=(0, SPACING), sticky="w")
+
+        ttk.Label(control_frame, text="TCP Port:").grid(row=5, column=0, padx=SPACING, pady=SPACING, sticky="e")
+        self.control_tcp_port_var = tk.StringVar()
+        self.control_tcp_port_entry = ttk.Entry(control_frame, width=10, textvariable=self.control_tcp_port_var)
+        self.control_tcp_port_entry.grid(row=5, column=1, padx=SPACING, pady=SPACING, sticky="w")
+
+        # A real checkbox, not a value silently copied from the loaded config: the
+        # editor must round-trip every key it writes, or a save quietly changes a
+        # setting the user cannot see. This one is a safety limit, so it is worth
+        # showing explicitly.
+        self.control_allow_remote_var = tk.BooleanVar()
+        wrapped_checkbutton(
+            control_frame,
+            text="Allow a non-loopback TCP bind (exposes the control channel)",
+            variable=self.control_allow_remote_var
+        ).grid(row=6, column=0, columnspan=2, padx=SPACING, pady=SPACING, sticky="ew")
+
         self.master_duplication_mode_var_editor = tk.BooleanVar(self)
         self.master_duplication_mode_var_editor.set(self.master_duplication_enabled_var.get())
         master_duplication_check = wrapped_checkbutton(self.api_content_frame, text="Enable Master Duplication Mode (for enabled APIs 1-4)", variable=self.master_duplication_mode_var_editor, command=self._sync_global_duplication_var_from_editor)
@@ -601,12 +652,13 @@ class ConfigEditor(tk.Toplevel):
                         "(How many judge requests may be in flight at once, 1-32. Match the judge server's real parallel capacity -- a local vLLM that slows down past 2-3 concurrent requests wants 2 or 3, not 8. Default 1)")
         # v12.9: async mode. Off (default) = the worker waits for the verdict, so a slow judge
         # can drop rows on the result timeout. On = the worker hands the judge a complete write job
-        # and moves on; the judge scores it and writes the row itself, so generation never waits,
+        # and moves on; a processor thread scores it and writes the row once the judge has spoken,
+        # so generation never waits,
         # nothing is lost to a timeout, and the run ends only once the queue is drained.
         self.quality_async_scoring_var = tk.BooleanVar()
         wrapped_checkbutton(
             gen_settings_frame,
-            text="Async Scoring (judge queues and writes rows; generation never waits, nothing is lost to a timeout)",
+            text="Async Scoring (the judge queues verdicts and a processor thread writes the rows; generation never waits, nothing is lost to a timeout)",
             variable=self.quality_async_scoring_var,
         ).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx += 1
         # v11.5 JSON robustness: small local judges usually get the evaluation right but wrap it
@@ -692,6 +744,32 @@ class ConfigEditor(tk.Toplevel):
         # the judge share that slot's rate limit instead.
         add_gen_setting("Quality Scoring API Slot (1-7):", 'quality_api_slot_var',
                         "(Which rate-limiter slot the judge's requests count against. 7 (index 6) is the judge's own slot; pick a generation slot to share its rate limit)")
+
+        # v13.0.4: the judge never sent chat_template_kwargs, so a reasoning model thought on
+        # every score request even with the Samplers tab set to disable. That chain of thought
+        # is pure cost for a small JSON verdict; on local vLLM it dominated scoring time.
+        self.quality_judge_thinking_var = tk.StringVar(value="inherit")
+        judge_thinking_field = ttk.Frame(gen_settings_frame)
+        judge_thinking_field.grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        judge_thinking_field.columnconfigure(0, weight=1)
+        judge_thinking_label = ttk.Label(judge_thinking_field, text="Judge Thinking Mode:", justify="left", wraplength=1)
+        judge_thinking_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(judge_thinking_label, judge_thinking_field, padding=180)
+        ttk.Combobox(
+            judge_thinking_field,
+            textvariable=self.quality_judge_thinking_var,
+            values=list(THINKING_MODE_CHOICES),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e")
+        judge_thinking_help = ttk.Label(
+            judge_thinking_field, style='Small.TLabel', justify="left", wraplength=1,
+            text="(inherit = follow the Samplers tab's main Thinking Mode. disable = no chain of thought for score/judge "
+                 "requests, which is much faster on a reasoning model and is what the judge wants anyway -- it answers "
+                 "with a small JSON object)")
+        judge_thinking_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(judge_thinking_help, judge_thinking_field)
+        row_idx += 1
         
         self.remove_reasoning_var_editor = tk.BooleanVar() # Editor's local var for this setting
         wrapped_checkbutton(gen_settings_frame, text="Remove Reasoning (Strip ... tags from LLM output)", variable=self.remove_reasoning_var_editor).grid(row=row_idx, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew"); row_idx+=1
@@ -1658,6 +1736,30 @@ class ConfigEditor(tk.Toplevel):
         add_slop_fixer_param("Max Tokens (Slop Fixer):", 'slop_fixer_max_tokens_var', "(Auto-calculated if blank, e.g. 200)")
         add_slop_fixer_param("Top K (Slop Fixer):", 'slop_fixer_top_k_var', "(E.g., 40, uses main if blank)")
         add_slop_fixer_param("Repetition Penalty (Slop Fixer):", 'slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
+        # v13.0.4: the fixers and the judge got no chat_template_kwargs at all before this,
+        # so a reasoning model thought on every rewrite/score request no matter what the
+        # main Thinking Mode said. Each auxiliary request now has its own mode; 'inherit'
+        # (the shipped default) follows the main Thinking Mode above.
+        self.slop_fixer_thinking_var = tk.StringVar(value="inherit")
+        sf_thinking_field = ttk.Frame(slop_fixer_sampler_lf)
+        sf_thinking_field.grid(row=sf_sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        sf_thinking_field.columnconfigure(0, weight=1)
+        sf_thinking_label = ttk.Label(sf_thinking_field, text="Thinking Mode (Slop Fixer):", justify="left", wraplength=1)
+        sf_thinking_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(sf_thinking_label, sf_thinking_field, padding=180)
+        ttk.Combobox(
+            sf_thinking_field,
+            textvariable=self.slop_fixer_thinking_var,
+            values=list(THINKING_MODE_CHOICES),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e")
+        sf_thinking_help = ttk.Label(
+            sf_thinking_field, style='Small.TLabel', justify="left", wraplength=1,
+            text="(inherit = follow the main Thinking Mode; disable = no chain of thought for this rewrite)")
+        sf_thinking_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(sf_thinking_help, sf_thinking_field)
+        sf_sampler_row += 1
         # --- NEW: Anti-Slop Fixer Sampler Settings ---
         ttk.Label(
             sampler_params_frame,
@@ -1693,6 +1795,26 @@ class ConfigEditor(tk.Toplevel):
         add_anti_slop_fixer_param("Max Tokens (Anti-Slop):", 'anti_slop_fixer_max_tokens_var', "(Auto-calculated if blank, e.g. 200)")
         add_anti_slop_fixer_param("Top K (Anti-Slop):", 'anti_slop_fixer_top_k_var', "(E.g., 40, uses main if blank)")
         add_anti_slop_fixer_param("Repetition Penalty (Anti-Slop):", 'anti_slop_fixer_repetition_penalty_var', "(E.g., 1.1, uses main if blank)")
+        self.anti_slop_fixer_thinking_var = tk.StringVar(value="inherit")
+        asf_thinking_field = ttk.Frame(anti_slop_fixer_sampler_lf)
+        asf_thinking_field.grid(row=asf_sampler_row, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        asf_thinking_field.columnconfigure(0, weight=1)
+        asf_thinking_label = ttk.Label(asf_thinking_field, text="Thinking Mode (Anti-Slop):", justify="left", wraplength=1)
+        asf_thinking_label.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
+        wrap_label(asf_thinking_label, asf_thinking_field, padding=180)
+        ttk.Combobox(
+            asf_thinking_field,
+            textvariable=self.anti_slop_fixer_thinking_var,
+            values=list(THINKING_MODE_CHOICES),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e")
+        asf_thinking_help = ttk.Label(
+            asf_thinking_field, style='Small.TLabel', justify="left", wraplength=1,
+            text="(inherit = follow the main Thinking Mode; disable = no chain of thought for this rewrite)")
+        asf_thinking_help.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        wrap_label(asf_thinking_help, asf_thinking_field)
+        asf_sampler_row += 1
         ttk.Label(sampler_params_frame, text="Thinking Mode:").grid(row=sampler_row, column=0, padx=SPACING, pady=SPACING, sticky="e")
         enable_thinking_combo = ttk.Combobox(
             sampler_params_frame,
@@ -1702,7 +1824,15 @@ class ConfigEditor(tk.Toplevel):
             width=20
         )
         enable_thinking_combo.grid(row=sampler_row, column=1, padx=SPACING, pady=SPACING, sticky="w")
-        ttk.Label(sampler_params_frame, text="(Controls chat_template_kwargs enable_thinking)").grid(row=sampler_row + 1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="w")
+        thinking_help = ttk.Label(
+            sampler_params_frame,
+            text="(Controls chat_template_kwargs enable_thinking for question / answer / user-continuation / opening-mode "
+                 "requests. The Slop Fixer, Anti-Slop Fixer and Quality Judge follow it unless their own Thinking Mode "
+                 "override is set.)",
+            style='Small.TLabel', justify="left", wraplength=1,
+        )
+        thinking_help.grid(row=sampler_row + 1, column=0, columnspan=3, padx=SPACING, pady=SPACING, sticky="ew")
+        wrap_label(thinking_help, sampler_params_frame)
         sampler_row += 1
 
 
@@ -2087,6 +2217,13 @@ class ConfigEditor(tk.Toplevel):
                 'password': self.valkey_password_var.get() if self.valkey_password_var.get() else None,
                 'enabled': self.valkey_enabled_var.get()
             },
+            'control': {
+                'enabled': self.control_enabled_var.get(),
+                'socket_path': sanitize_input(self.control_socket_path_var.get() or ''),
+                'tcp_host': sanitize_input(self.control_tcp_host_var.get() or ''),
+                'tcp_port': int(self.control_tcp_port_var.get() or 8765),
+                'allow_remote': bool(self.control_allow_remote_var.get())
+            },
             'database': {
                 'enabled': self.db_enabled_var.get(),
                 'host': sanitize_input(self.db_host_var.get() or 'localhost'),
@@ -2162,6 +2299,10 @@ class ConfigEditor(tk.Toplevel):
                     'model': sanitize_input(self.quality_api_model_var.get()),
                     'key': self.quality_api_key_var.get(),
                     'slot_idx': max(0, min(6, int(self.quality_api_slot_var.get() or 6))),
+                    # v13.0.4: the judge's own thinking mode, a SIBLING of sampler_settings
+                    # (that dict is the sampler override handed to the payload builder, so a
+                    # non-sampling key inside it would reach the wire).
+                    'enable_thinking': self.quality_judge_thinking_var.get(),
                 },
             },
             'prompts': {
@@ -2322,6 +2463,12 @@ class ConfigEditor(tk.Toplevel):
                 'max_tokens_answer': int(self.max_tokens_answer_var.get()),
                 'max_tokens_user_reply': int(self.max_tokens_user_reply_var.get()),
                 'enable_thinking': self.enable_thinking_mode_var.get(),
+                # v13.0.4: the two fixers' thinking modes. SIBLING keys, never entries in
+                # slop_fixer_params / anti_slop_params -- those dicts are read with an
+                # all-or-nothing `params or main_sampler_settings` fallback, so a lone extra key
+                # inside one would make it truthy and stop it inheriting the main defaults.
+                'slop_fixer_enable_thinking': self.slop_fixer_thinking_var.get(),
+                'anti_slop_fixer_enable_thinking': self.anti_slop_fixer_thinking_var.get(),
                 'logit_bias': self.logit_bias_text.get("1.0", tk.END).strip(),
                 # v11.1 bad_words: preserve leading whitespace on every line exactly as typed
                 # (only skip truly-empty lines after stripping the trailing newline); the
@@ -2599,6 +2746,24 @@ class ConfigEditor(tk.Toplevel):
             warning = ""
         self.placement_cache_warning_label.config(text=warning)
 
+    def _toggle_control_fields(self):
+        """Enable the Control Interface entries only while the checkbox is on.
+
+        A disabled entry cannot be typed into, and this Tk build drops writes to a
+        disabled Text widget silently, so the path/port entries are `normal` whenever
+        they are meant to be editable.
+        """
+        state = tk.NORMAL if getattr(self, 'control_enabled_var', None) and \
+            self.control_enabled_var.get() else tk.DISABLED
+        for attr in ('control_socket_path_entry', 'control_tcp_host_entry',
+                     'control_tcp_port_entry'):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                try:
+                    widget.config(state=state)
+                except tk.TclError:
+                    pass
+
     def _toggle_bad_words_fields(self):
         """v11.1: enable/disable the bad-words text field based on the toggle's state."""
         is_enabled = self.use_bad_words_var_editor.get()
@@ -2802,6 +2967,14 @@ class ConfigEditor(tk.Toplevel):
             self.db_password_var.set(db_config.get('password', ''))
             self.db_pool_size_var.set(str(db_config.get('pool_size', 10)))
 
+            control_config = config.get('control', {}) or {}
+            self.control_enabled_var.set(bool(control_config.get('enabled', False)))
+            self.control_socket_path_var.set(str(control_config.get('socket_path', '') or ''))
+            self.control_tcp_host_var.set(str(control_config.get('tcp_host', '') or ''))
+            self.control_tcp_port_var.set(str(control_config.get('tcp_port', 8765)))
+            self.control_allow_remote_var.set(bool(control_config.get('allow_remote', False)))
+            self._toggle_control_fields()
+
             self.master_duplication_mode_var_editor.set(self.master_duplication_enabled_var.get())
 
             apis_conf_from_yml = api_config_main.get('apis', [])
@@ -2912,6 +3085,13 @@ class ConfigEditor(tk.Toplevel):
             self.quality_api_model_var.set(quality_conf.get('scoring_api', {}).get('model', ''))
             self.quality_api_key_var.set(quality_conf.get('scoring_api', {}).get('key', ''))
             self.quality_api_slot_var.set(str(quality_conf.get('scoring_api', {}).get('slot_idx', 6)))
+            # v13.0.4: the judge's thinking mode. Absent (or an unrecognised value) means
+            # 'inherit', which follows the main Samplers-tab setting -- the v13.0.3 behaviour
+            # once the main setting is honoured.
+            judge_thinking_loaded = str(quality_conf.get('scoring_api', {})
+                                        .get('enable_thinking', 'inherit')).strip().lower()
+            self.quality_judge_thinking_var.set(
+                judge_thinking_loaded if judge_thinking_loaded in THINKING_MODE_CHOICES else 'inherit')
             self.output_format_var.set(gen_config.get('output_format', 'sharegpt'))
 
             prompts_config = config.get('prompts', {})
@@ -3228,6 +3408,9 @@ class ConfigEditor(tk.Toplevel):
             self.slop_fixer_max_tokens_var.set(str(slop_fixer_sampler_conf.get('max_tokens', '')))
             self.slop_fixer_top_k_var.set(str(slop_fixer_sampler_conf.get('top_k', '')))
             self.slop_fixer_repetition_penalty_var.set(str(slop_fixer_sampler_conf.get('repetition_penalty', '')))
+            slop_fixer_thinking_loaded = str(samplers_config_load.get('slop_fixer_enable_thinking', 'inherit')).strip().lower()
+            self.slop_fixer_thinking_var.set(
+                slop_fixer_thinking_loaded if slop_fixer_thinking_loaded in THINKING_MODE_CHOICES else 'inherit')
 
             # --- NEW: Load Anti-Slop Sampler Config ---
             anti_slop_fixer_sampler_conf = samplers_config_load.get('anti_slop_params', {})
@@ -3237,6 +3420,9 @@ class ConfigEditor(tk.Toplevel):
             self.anti_slop_fixer_max_tokens_var.set(str(anti_slop_fixer_sampler_conf.get('max_tokens', '')))
             self.anti_slop_fixer_top_k_var.set(str(anti_slop_fixer_sampler_conf.get('top_k', '')))
             self.anti_slop_fixer_repetition_penalty_var.set(str(anti_slop_fixer_sampler_conf.get('repetition_penalty', '')))
+            anti_slop_thinking_loaded = str(samplers_config_load.get('anti_slop_fixer_enable_thinking', 'inherit')).strip().lower()
+            self.anti_slop_fixer_thinking_var.set(
+                anti_slop_thinking_loaded if anti_slop_thinking_loaded in THINKING_MODE_CHOICES else 'inherit')
 
             self.status.config(text="Config loaded from self.global_config.", foreground="blue")
             log_message("Configuration loaded into editor.", "INFO")
@@ -3255,6 +3441,8 @@ class ConfigEditor(tk.Toplevel):
             int(self.subject_size_var.get()); int(self.context_size_var.get()); int(self.max_attempts_var.get())
             int(self.db_port_var.get())
             int(self.db_pool_size_var.get())
+            control_port_val = int(self.control_tcp_port_var.get() or 8765)
+            assert 1 <= control_port_val <= 65535, "Control TCP port must be between 1 and 65535"
             num_turns_val = int(self.num_turns_var.get()); assert num_turns_val > 0, "Number of turns must be > 0"
             placeholder_share_val = float(self.placeholder_share_var.get() or 0); assert 0 <= placeholder_share_val <= 1, "Placeholder share must be between 0 and 1"
             int(self.history_size_var.get()); int(self.max_slop_sentence_fix_iterations_var.get())

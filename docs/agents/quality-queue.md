@@ -78,7 +78,14 @@ reach the dataset (v11.4). The wait is bounded by `quality.result_timeout` (600 
 slow judge DROPS rows as `judge_failed`. `_process_gate_job()` serves this mode.
 
 **QUEUE (`true`).** The worker hands over a COMPLETE write job and returns immediately;
-`_score_and_write_job()` scores it and calls the injected writer itself. Consequences:
+a queue PROCESSOR thread (`_score_and_write_job()`) scores it and calls the injected writer itself.
+Consequences:
+
+- **The judge never writes a row.** It is an HTTP scorer: it returns a verdict and nothing else. The
+  processor thread is the writer, and the only thing that appends is still
+  `generation.write_conversation()`. Older comments that said "the judge writes the rows" meant
+  "the processor writes, once the judge has spoken" — keep the two apart, because only a writer
+  takes `app_state.output_data_lock`.
 
 - **Generation never waits for a verdict**, so a slow judge cannot hold up generation.
 - **Nothing can be lost to a timeout** — there is no wait to time out of. `quality.result_timeout`
@@ -115,12 +122,28 @@ never binds, and additionally pins this call site, the attribute it names and th
 `generation._make_quality_write_job(write_conversation_kwargs, on_written)` binds everything the
 worker would have passed to `write_conversation` EXCEPT `quality_result`, and the helper fills that in.
 The row is therefore byte-identical to the worker's own write (guarded by
-`tests/test_quality_async_queue.py`). `on_written` marks the task complete **only after the row is on
+`tests/test_quality_async_queue.py`). **The append runs under `app_state.output_data_lock`** — the same
+lock every worker holds while it calls `write_conversation()` and the same lock the Review tab's drop
+rewrite takes. `write_conversation()` takes no lock itself, so a processor thread appending without it
+could interleave its `open(..., 'a')`/`write()` with a worker's and corrupt a line.
+`_make_duplication_turn_write_jobs()` already locked; the non-duplication job did not until it was
+fixed alongside this note, which is exactly the kind of slip the "the judge writes" phrasing hid — a
+judge needs no lock, a writer does. `on_written` marks the task complete **only after the row is on
 disk** — marking it earlier would let an interrupted run skip it on resume with no row to show. It takes
-no arguments, so a call site that wants `_mark_task_written(task_id, thread_id)` must bind them with a
-lambda: v12.9 passed the bare function and every async write raised `TypeError` *after* the row landed,
-which the processor reports as a WRITE FAILED and counts in `quality_write_failures` (a present row
-reported as lost).
+no arguments, so a call site that wants `_mark_task_written(task_id, thread_id, turns, queue)` must
+bind them with a lambda: v12.9 passed the bare function and every async write raised `TypeError` *after*
+the row landed, which the processor reports as a WRITE FAILED and counts in `quality_write_failures` (a
+present row reported as lost).
+
+**Async completion is what credits progress (v13.0.5).** `_mark_task_written()` is the ONLY place an
+async-scored task's turns reach the bar, because the worker returns before the row exists: it calls
+`generation._credit_task_progress(task_id, turns, queue)` after adding the id to `completed_task_ids`,
+and skips the credit when the id was already there. Before this the worker credited a turn as its
+answer arrived and **refunded** it in its epilogue whenever the task was not yet complete — which
+under `async_scoring` is always — so a completed async task netted **zero** and the bar was pinned to
+turns in flight (~60 on 40 threads) and oscillated. The worker passes `current_num_turns` and its own
+`q` through the `on_written` lambda, because a processor thread cannot see a worker local. See
+[`generation.md`](generation.md) for the invariant and `tests/test_progress_accounting.py`.
 
 **Duplication mode needs one job per per-API row.** Duplication writes a row per enabled generation API
 per turn, all carrying that turn's single verdict, so `_make_duplication_turn_write_jobs()` returns

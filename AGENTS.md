@@ -25,6 +25,41 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 4. If a topic file is still long, read it in sections — its `## Contents` list is the map.
 5. Only open a second topic file when a change genuinely spans two areas.
 
+## Running the generator (read this before using it, not before editing it)
+
+The topic files below are for CHANGING the code. To actually RUN a generation from a
+terminal — launch it, start and stop generation, read the statistics, export or clear the
+dataset — read **[`docs/cli.md`](docs/cli.md)**, the user page for the terminal front end.
+
+The whole loop, with no display and no GUI:
+
+```sh
+python -m cli launch              # start the background controller
+python -m cli start --dry-run       # validate config/config.yml, send nothing
+python -m cli start                 # generate
+python -m cli stats --filters-only  # what is being filtered, and why
+python -m cli stop                  # stop, keep the dataset
+python -m cli save --output out.jsonl # write the dataset to one file
+python -m cli shutdown              # stop the run and exit the controller
+```
+
+Three things worth knowing before you type a verb:
+
+- **JSON is the default when stdout is not a terminal**, so parse it directly; `--text`
+  gives the human table and `--json` forces JSON on a terminal. The global flags
+  (`--json`, `--text`, `--config`, `--socket`) work before OR after the verb.
+- **The exit code is the contract**, not the wording: `0` ok, `1` failed, `2` usage,
+  `3` nothing to talk to, `4` already running, `5` refused, `6` timeout. Branch on it.
+- **`stats` reports "filtering" in two senses.** `detected` means caught and handled (the
+  row is still written); `filtered` means dropped and never written; `detection_config`
+  means which checks are armed. Do not conflate them.
+
+`python generate.py` still opens the ordinary Tk window, and `control.enabled` is `false`
+by default, so nothing above changes a default GUI run.
+
+If you are editing the control layer rather than using it, the topic file is
+[`docs/agents/cli.md`](docs/agents/cli.md) — the row in the table below.
+
 | Topic file | Read it when |
 |------------|--------------|
 | [`docs/agents/task-index.md`](docs/agents/task-index.md) | you know WHAT you want to change and need the list of files to edit. |
@@ -39,6 +74,7 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 | [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
 | [`docs/agents/quality-queue.md`](docs/agents/quality-queue.md) | you are touching the scoring queue, the judge's concurrency (`quality.judge_concurrency`), its rate-limit slot (`quality.scoring_api.slot_idx`) or the cost of one judge conversation. |
 | [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. |
+| [`docs/agents/cli.md`](docs/agents/cli.md) | you are touching `cli.py`, `control.py`, `run_config.py`, the control socket/protocol, the `control:` config block, or the GUI's control-server hook. |
 | [`docs/agents/tools-and-docs.md`](docs/agents/tools-and-docs.md) | you are touching `tools/*.py`, `docs/gemma4-chat-template.md` or `docs/scene-cast.md`. |
 
 Cross-cutting tasks (a new detection type, a new quality dimension, scene cast) are
@@ -89,6 +125,7 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
   the app, the tests or the dependency graph, and do not "fix" its output format to match `write_conversation()`.
 - `tests/test_quality_judge_policy.py` is headless: it stubs `requests.post` and never touches the network.
 - `tests/test_quality_json_robustness.py` is headless too: it stubs `requests.post` and covers the judge's JSON extraction/repair ladder, the format-repair round, truncation retry and the `response_format` fallback.
+- `tests/test_progress_accounting.py` is headless and runs the real worker against a fake main-API server with a stubbed judge: it pins the v13.0.5 rule that `processed_tasks` is credited once per COMPLETED TASK, idempotently, and never refunded (see `docs/agents/generation.md`).
 - `tests/test_undefined_globals.py` is headless and imports nothing: it parses the application modules with `symtable` and fails on any global a function references but its module never binds (the v12.9.1 `NameError` class). Add a new top-level module to its `CHECKED_MODULES`.
 
 ## Boundaries
@@ -139,6 +176,14 @@ counter, a lock or a timestamp key.
   `detection.DEFAULT_REGEX_WATCH_PATTERNS` must stay identical, and
   `style_metrics.TRAILER_PATTERN` is the one definition of the absolute-trailer
   construction (see `docs/agents/detection.md`).
+- **Every request builder that sends `messages` must call
+  `api_handler.apply_thinking_mode()`** (v13.0.4): the fixers, the judge and the Regex Watch
+  rewrite used to send no `chat_template_kwargs`, so a reasoning model thought on every one of
+  them regardless of the Samplers tab. `inherit` is the default for the auxiliary three and must
+  stay so. The keys are SIBLINGS of `slop_fixer_params` / `anti_slop_params` /
+  `sampler_settings`, never entries in them (those dicts use an all-or-nothing
+  `params or main_sampler_settings` fallback). See `docs/agents/core-modules.md` and
+  `tests/test_thinking_mode.py`.
 - **A config-editor text field must be `normal` before you write into it** — this Tk
   build drops `delete`/`insert` on a disabled Text widget silently
   (see `docs/agents/config-editor.md`).

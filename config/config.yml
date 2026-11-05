@@ -1,3 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+# it is unlikely any of that code survives. Unless you have the original MIT-era code to
+# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+
 api:
   master_duplication_mode: false
   apis:
@@ -118,7 +128,8 @@ quality:
   judge_concurrency: 1
   # v12.9: run the judge as a QUEUE instead of a GATE. Off (default) = the worker waits for
   # the verdict, so a slow judge drops rows on `result_timeout`. On = the worker hands the judge a
-  # complete write job and moves on; the judge scores it and writes the row itself. Generation
+  # complete write job and moves on; a processor thread scores it and writes the row once the
+  # judge has returned a verdict (the judge itself never writes). Generation
   # never waits, nothing is lost to a timeout, and the run does not end until the queue is drained.
   async_scoring: false
   judge_json_repair_attempts: 1
@@ -134,6 +145,13 @@ quality:
     # v12.9: the rate-limiter slot the judge's requests are counted against (0-6; index 6 is the
     # judge's own logical slot). Set this to a generation slot to share its rate limit.
     slot_idx: 6
+    # v13.0.4: the judge's thinking mode: "inherit" (follow samplers.enable_thinking),
+    # "default" (send nothing), "enable" or "disable". "disable" is worth trying first on a
+    # reasoning model -- the judge replies with a small JSON object, so its chain of thought is
+    # pure cost, and on local vLLM it was the largest single cost in scoring.
+    # A SIBLING key of sampler_settings, not an entry in it: sampler_settings is handed to
+    # the payload builder as the sampler override, so a non-sampling key would reach the wire.
+    enable_thinking: inherit
 prompts:
   system:
     base: You are an excellent role-player.
@@ -1430,12 +1448,38 @@ samplers:
   max_tokens_question: 1024
   max_tokens_answer: 1024
   max_tokens_user_reply: 1024
+  # v13.0.4: "default" | "enable" | "disable". Applies to the question / answer /
+  # user-continuation / opening-mode requests, and is the fallback for the Slop Fixer,
+  # Anti-Slop Fixer and Quality Judge (see their own enable_thinking keys below).
   enable_thinking: default
   logit_bias: ''
   use_bad_words: false
   bad_words: []
+  # v13.0.4: thinking mode for the two fixers. "inherit" (default) follows the
+  # samplers.enable_thinking above; "default" sends nothing; "enable"/"disable" force it.
+  # The fixers used to send no chat_template_kwargs at all, so a reasoning model thought on
+  # every rewrite regardless of the main setting -- on local vLLM that dominated their runtime.
+  # These are SIBLING keys, not entries in slop_fixer_params / anti_slop_params: those dicts
+  # are read with an all-or-nothing `params or main_sampler_settings` fallback, so a single
+  # extra key inside one would make it truthy and stop it inheriting the main sampler defaults.
+  slop_fixer_enable_thinking: inherit
+  anti_slop_fixer_enable_thinking: inherit
   slop_fixer_params: {}
   anti_slop_params: {}
 gender: female
 datasets:
   sources: []
+control:
+  # v13.0: the local control interface (docs/cli.md). Off by default, so
+  # `python generate.py` behaves exactly as before. Set enabled: true to also
+  # drive a RUNNING GUI from the terminal; `python -m cli launch` always serves,
+  # because serving is that command's whole job.
+  enabled: false
+  # '' -> output/generator-control.sock (output/ is gitignored).
+  socket_path: ''
+  # '' -> TCP disabled. A loopback address here adds a TCP listener beside the
+  # unix socket, for a container that cannot mount the socket.
+  tcp_host: ''
+  tcp_port: 8765
+  # Refuse a non-loopback TCP client even when tcp_host is set.
+  allow_remote: false
