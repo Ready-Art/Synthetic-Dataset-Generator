@@ -47,11 +47,11 @@ scanning the source with `ast`.
 
 ### `run_config.py`
 **Purpose:** Resolve `config/config.yml` into a run, and own the output/DB/JSONL plumbing
-**Key:** `build_run_settings()`, `RunSettings`, `validate_run_shape()`, `total_threads_for_run()`, `populate_task_queue()`, `jsonl_output_files()`, `consolidate_jsonl()`, `clear_jsonl()`, `clear_database()`, `export_db_to_jsonl()`, `init_db_pool()`
+**Key:** `build_run_settings()`, `RunSettings`, `validate_run_shape()`, `count_worker_threads()`, `total_threads_for_run()`, `populate_task_queue()`, `jsonl_output_files()`, `consolidate_jsonl()`, `clear_jsonl()`, `clear_database()`, `export_db_to_jsonl()`, `init_db_pool()`
 **Edit for:**
 - **A new worker option** → add a field to `RunSettings` and a read in `build_run_settings()`, then add the name to `WORKER_POSITIONAL_FIELDS` or `WORKER_KEYWORD_FIELDS`. Nothing else. `tests/test_cli_control.py::test_run_settings_expose_every_field_the_worker_launch_needs` fails if a declared field is never assigned.
 - **A new output file kind** → add its prefix to `DERIVED_OUTPUT_PREFIXES`. That one tuple is used by BOTH `save` and `clear`, so they cannot disagree about which files are derived output. A derived file that is missing from it gets swept back in as source data and doubles the row count on every save.
-- **Thread counting** → `total_threads_for_run()` sums the per-API `threads` of the *active* entries. `api.threads` is legacy and is not the total.
+- **Thread counting** → `count_worker_threads(api_configs, active_api_configs, master_duplication_enabled)` is THE one definition: it sums the per-API `threads` of the entries that will do work, and `total_threads_for_run(settings)` is a thin wrapper over it. `api.threads` is legacy and is **not** the total — it is only the fallback for when the per-slot counts are absent, so never report it as a run's worker count. Every caller that shows or uses a thread total (the GUI's `Start processing:` line and its launch loop, the CLI's `start` plan, `control.reported_thread_count()` in the status/stats payloads) must go through this helper, or the number shown stops matching the number started (that was the v13.0.2 bug: 30 threads launched, "12 threads" logged).
 - **Config reads** → `build_run_settings()` reads `app_state.global_config`, which is a cache. A caller must `app_state.global_config.load()` first (the CLI's `cmd_start` does) or it reads whatever was loaded last.
 
 ### `control.py`

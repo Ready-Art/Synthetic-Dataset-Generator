@@ -89,7 +89,7 @@ api:
 - **`model`**: Model identifier for the API
 - **`key`**: API key (can also be set via environment variables `API_KEY_1` through `API_KEY_6`)
 - **`enabled`**: Whether this slot is active for generation (slots 1-4 only)
-- **`threads`**: Number of worker threads dedicated to this API (all slots)
+- **`threads`**: Number of worker threads dedicated to this API (all slots). **A run's total worker count is the sum of these over the slots that will do work** — set 30 on API 1 and the run starts 30 threads. The `api.threads` key further up is legacy: it is only a fallback for when the per-slot counts are absent, so editing it does not change how many threads a run starts
 - **`rate_limit_rpm`**: Requests per minute limit for rate limiting (all slots)
 - **`api_profile`**: API compatibility profile for this slot (default `openai_compatible`; see below)
 - **`custom_allowed_params`**: list of body params to send — only used when `api_profile: custom`
