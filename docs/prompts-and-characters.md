@@ -28,7 +28,14 @@ prompts:
     - "an action with a line of dialogue"
     - "a short reply"
     - "a question to the character"
-  # The three prompts above are the ones shipped in config/config.yml. Each names the blocks
+  style:                          # {style} for EVERY prompt (see "{style}: one style per conversation")
+    enabled: true                 # false = the pre-v13.2.0 prompts, with {style} resolving to nothing
+    styles:                       # Dealt WITHOUT replacement across the run; empty = the built-in list
+      - "open on a sound or a noise before anything else"
+      - "open mid-action, with something already in motion"
+      - "open on a small physical detail of the setting"
+      # ... 16 entries ship in config/config.yml
+  # The prompts above are the ones shipped in config/config.yml. Each names the blocks
   # the worker actually attaches (see "What the shipped prompts refer to" below).
 
   system:
@@ -160,7 +167,7 @@ prompts:
 - `{last_assistant_message}` — The assistant's previous response (for continuations). **Since v12.7 her reply is sent to that request exactly ONCE:** the history already ends with it, so the trailing assistant message is dropped from the history when the template names this variable, and kept when it does not (so an existing config's requests are unchanged)
 - `{speaker}` — Greeting prompt: who the greeting is written as (see below)
 - `{chunk}` — Greeting context: the book chunk
-- `{style}` — First-line prompt: one of `first_line_styles`, picked at random
+- `{style}` — **The conversation's style**, available in the question, answer, user continuation, greeting and first-line prompts (v13.2.0). One value is dealt per **conversation** and every prompt in it fills the same value, so a conversation keeps one style from the greeting to the last reply. With `prompts.style.enabled: false` it resolves to nothing and the prompts read as they did before v13.2.0; the first-line prompt then falls back to `first_line_styles`, drawn at random per first line as it always was
 
 An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the same as in the question prompt, so a prompt reading "... of the woman, {subject}" never ends on a dangling comma. The three character variables fall back to `N/A` the same way, so `her, {character_name}.` never reads `her, .`. In the question prompt, `{subject}` and `{context}` are the task's two chunks from the source file; both are also available in the answer prompt since v12.5.
 
@@ -172,13 +179,36 @@ An empty `{subject}` or `{context}` in the answer prompt fills as `N/A`, the sam
 
 | Prompt | Blocks it names |
 |--------|-----------------|
-| `question` | the passage in `{context}`; `USER EMOTIONAL STATE` (when `prompts.user_emotional_states` is on, appended to that request only); the user's seat (the user is someone who meets the characters in their world, not one of the characters — the worker also appends its own `QUESTION_USER_SIDE` line to the question's system prompt); `{recent_questions}` |
-| `answer` | `CHARACTER PROFILE` (every field, with `Gender` called out as authoritative, and distinct voices in a multi-character scene); `EMOTIONAL STATE` including the `A -> B -> C` progression and the per-character scope of a per-character run; `INNER PERSONA BREAKTHROUGH`; `SCENE CAST` (`PRESENT` / `NOT IN THE SCENE`, and narrating a scheduled entrance or exit) |
-| `user_continuation_prompt` | the character profile so the user replies to who the characters actually are; `USER EMOTIONAL STATE`; `SCENE CAST` so the user does not address a character who is not in the scene |
-| `greeting` | `{speaker}` and `{context}`; the user is addressed directly as "you" and is already present when the message begins |
+| `question` | the passage in `{context}`; `USER EMOTIONAL STATE` (when `prompts.user_emotional_states` is on, appended to that request only); the user's seat (the user is someone who meets the characters in their world, not one of the characters — the worker also appends its own `QUESTION_USER_SIDE` line to the question's system prompt); `{recent_questions}`; `{style}` |
+| `answer` | `CHARACTER PROFILE` (every field, with `Gender` called out as authoritative, and distinct voices in a multi-character scene); `EMOTIONAL STATE` including the `A -> B -> C` progression and the per-character scope of a per-character run; `INNER PERSONA BREAKTHROUGH`; `SCENE CAST` (`PRESENT` / `NOT IN THE SCENE`, and narrating a scheduled entrance or exit); `{style}` |
+| `user_continuation_prompt` | the character profile so the user replies to who the characters actually are; `USER EMOTIONAL STATE`; `SCENE CAST` so the user does not address a character who is not in the scene; `{style}` |
+| `greeting` | `{speaker}`, `{context}` and `{style}`; the user is addressed directly as "you" and is already present when the message begins |
 | `first_line` | `{style}`; the message it receives is the character's opening greeting, not a running scene |
 
 `SCENE CAST` only appears when `prompts.scene_cast.enabled` is on and the scene has 2+ characters, and the `EMOTIONAL STATE` / `INNER PERSONA BREAKTHROUGH` blocks only when their features are on, so a default run sees none of them. The prompts say "if a ... block is present" rather than assuming it, which keeps one shipped prompt valid for every feature combination. **The same rule governs gender and character count:** the shipped prompts say "every character" / "them" rather than "her", because `prompts.character.num_characters` supports 1–10 and a profile's `Gender` field is authoritative, so a prompt written around one female character would misdescribe every other configuration.
+
+**`{style}`: one style per conversation (v13.2.0).** A generated dataset used to open on the same three or four words in about one row in five. The cause is not a bad prompt but a **constant** one: every request carried the same instruction, so the model's most probable opening was the same one every time — and the repeated-opener and repeated-reply guards could not see it, because both compare a reply with **its own conversation**, never with the run.
+
+`{style}` fixes that by naming a style per conversation. Three rules make it work, and all three matter:
+
+1. **One style per conversation, never per turn.** The style is dealt once when a task starts and every prompt in that task fills the same value. A style that changed between turns would read as two scenes stitched together.
+2. **Dealt WITHOUT replacement across the run.** The list is shuffled into a deck and consumed in order, and a fresh pass is shuffled only when it runs out. Independent random draws **redraw with replacement**, so over a few thousand rows a 12-entry list leaves some entries dealt four times more often than others — and those are exactly the rows that still share an opening. Walking the deck gives every entry the same share: 1,200 deals over a 12-entry list give each entry **exactly 100**.
+3. **The entries describe how a message BEGINS, not a mood or a genre.** Two rows can both be "tense" and still open on the same words; one opening on a sound and one mid-action cannot. That is why the shipped list is written as "open on …" rather than "a tense scene".
+
+```yaml
+prompts:
+  style:
+    enabled: true        # false = the pre-v13.2.0 prompts, {style} resolves to nothing
+    styles:              # one per line; empty = generation.DEFAULT_STYLE_VARIANTS
+      - "open on a sound or a noise before anything else"
+      - "open mid-action, with something already in motion"
+```
+
+Size the list to the number of conversations you intend to generate, the same way `random_names` is sized: the deck spreads the list rather than redrawing it, so a short list is walked round many times over a long run. A **larger** list is what gives a long run more distinct openings — 16 entries over 1,000 conversations means each style is used about 63 times, so the entries should differ from each other in a way that matters to the opening, not just in wording.
+
+The variable is available in **all five authored prompts**, so a config can name it wherever it wants the opening shaped. `{style}` is filled **last** in every formatter, so a style entry that happens to contain another token is inserted literally instead of being substituted again. An empty or absent style resolves to **nothing**, never the literal `{style}`, so a config written for this feature and run with it off sends a prompt with the slot blank rather than an instruction to write "{style}".
+
+`prompts.first_line_styles` is unchanged and still applies when the style block is off. With the block on, the dealt style **wins** in the first-line prompt, so the greeting, the first line and every reply share one style.
 
 **Opening Mode:** With `opening_mode: true`, each sample opens the way a SillyTavern chat does, with the character's greeting:
 

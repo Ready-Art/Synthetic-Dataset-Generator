@@ -46,6 +46,7 @@ from generation import (
     DEFAULT_FIRST_LINE_PROMPT,
     DEFAULT_FIRST_LINE_STYLES,
     DEFAULT_GREETING_CONTEXT,
+    DEFAULT_STYLE_VARIANTS,
     DEFAULT_GREETING_PROMPT,
     FIRST_REPLY_OPENER_MAX_RETRIES,
     DEFAULT_NOTE_PLACEMENT,
@@ -61,12 +62,12 @@ QUESTIONS_FILE_PATH = os.path.join(INPUT_DIR, 'questions.txt')
 
 DEFAULT_QUESTION_PROMPT = (
     "Generate a question based on the provided text. Recent questions to avoid: "
-    "{recent_questions}\n\nSubject: {subject}\n\nContext: {context}"
+    "{recent_questions}\n\nBegin as follows: {style}\n\nSubject: {subject}\n\nContext: {context}"
 )
-DEFAULT_ANSWER_PROMPT = "Provide an answer to the last question."
+DEFAULT_ANSWER_PROMPT = "Provide an answer to the last question. Begin as follows: {style}"
 DEFAULT_USER_CONTINUATION_PROMPT = (
     "Continue the conversation naturally based on the assistant's last response: "
-    "{last_assistant_message}"
+    "{last_assistant_message}. Begin as follows: {style}"
 )
 
 # The database table every write/export/clear goes through (see
@@ -158,7 +159,8 @@ class RunSettings:
 
     WORKER_KEYWORD_FIELDS = (
         'opening_mode', 'greeting_prompt', 'first_line_prompt', 'placeholder_share',
-        'greeting_context', 'first_line_styles', 'persona_breakthrough_turn',
+        'greeting_context', 'first_line_styles', 'style_enabled', 'style_list',
+        'persona_breakthrough_turn',
         'persona_placement', 'emotion_placement', 'ooc_phrases', 'ooc_fixes',
         'ooc_enabled', 'per_turn_logic_check', 'per_turn_logic_max_rewrites',
         'user_emotional_states_enabled', 'user_emotional_states',
@@ -199,6 +201,8 @@ class RunSettings:
         self.first_line_prompt = DEFAULT_FIRST_LINE_PROMPT
         self.greeting_context = DEFAULT_GREETING_CONTEXT
         self.first_line_styles = list(DEFAULT_FIRST_LINE_STYLES)
+        self.style_enabled = True
+        self.style_list = list(DEFAULT_STYLE_VARIANTS)
         self.placeholder_share = 0.0
 
         # --- generation ---
@@ -388,6 +392,17 @@ def build_run_settings(config=None, master_duplication_enabled=None):
         if settings.opening_mode:
             log_message("First line styles were empty in config. Using defaults.", "WARNING")
     settings.first_line_styles = styles
+    # {style} (v13.2.0): the run-wide style pool. Defaults to ON with the built-in list, because
+    # the repetition this feature removes is a defect of the shipped prompts, not of an opt-in extra;
+    # setting `prompts.style.enabled: false` restores the pre-v13.2.0 behaviour exactly.
+    settings.style_enabled = bool(cfg.get('prompts.style.enabled', True))
+    style_variants = _clean_str_list(
+        cfg.get('prompts.style.styles', list(DEFAULT_STYLE_VARIANTS)))
+    if not style_variants:
+        style_variants = list(DEFAULT_STYLE_VARIANTS)
+        if settings.style_enabled:
+            log_message("Style variants were empty in config. Using the built-in list.", "WARNING")
+    settings.style_list = style_variants
     settings.placeholder_share = _clamped_share(
         cfg, 'generation.placeholder_share', 0.0)
 

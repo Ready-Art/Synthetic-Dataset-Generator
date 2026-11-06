@@ -89,7 +89,7 @@ from dataset_tasks import configure_queue_datasets
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from generation import worker, check_budget_limit, estimate_time_remaining, save_generation_state, flush_generation_state
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
-                        DEFAULT_GREETING_PROMPT, enqueue_opening_tasks,
+                        DEFAULT_GREETING_PROMPT, DEFAULT_STYLE_VARIANTS, enqueue_opening_tasks,
                         opening_mode_conflict, opening_mode_mismatch,
                         DEFAULT_NOTE_PLACEMENT, note_placement, placement_cache_warning,
                         FIRST_REPLY_OPENER_MAX_RETRIES)
@@ -334,6 +334,10 @@ def reset_all_stats_and_history():
     # instead of continuing the deck the previous run left behind.
     app_state.random_name_deck = []
     app_state.random_names_pool_key = None
+    # v13.2.0: a new run deals the style pool from the top again, so a re-run spreads the whole
+    # list instead of continuing the pass the previous run left half-consumed.
+    app_state.style_deck = []
+    app_state.styles_pool_key = None
     # The first-reply opener caps measure shares over THIS run's first replies.
     app_state.reset_first_reply_openers()
 
@@ -1802,6 +1806,17 @@ def start_processing():
     if not current_first_line_styles:
         current_first_line_styles = list(DEFAULT_FIRST_LINE_STYLES)
         if current_opening_mode: log_message("First line styles were empty in config. Using defaults.", "WARNING")
+    # {style} (v13.2.0): the run-wide style pool, one entry dealt per conversation. Off by default
+    # when the key is absent, so an older config sends exactly what it always did.
+    current_style_enabled = bool(global_config.get('prompts.style.enabled', False))
+    current_style_list = global_config.get('prompts.style.styles', list(DEFAULT_STYLE_VARIANTS))
+    if isinstance(current_style_list, str):
+        current_style_list = [current_style_list]
+    current_style_list = [str(s).strip() for s in (current_style_list or []) if str(s).strip()]
+    if not current_style_list:
+        current_style_list = list(DEFAULT_STYLE_VARIANTS)
+        if current_style_enabled:
+            log_message("prompts.style.styles was empty. Using the built-in style variants.", "WARNING")
     try:
         current_placeholder_share = min(1.0, max(0.0, float(global_config.get('generation.placeholder_share', 0.0) or 0.0)))
     except (TypeError, ValueError):
@@ -2535,6 +2550,8 @@ def start_processing():
             'placeholder_share_local': current_placeholder_share,
             'greeting_context_local': current_greeting_context,
             'first_line_styles_local': current_first_line_styles,
+            'style_enabled_local': current_style_enabled,
+            'style_list_local': current_style_list,
             'persona_breakthrough_turn_local': persona_breakthrough_turn,
             'persona_placement_local': persona_placement,
             'emotion_placement_local': emotion_placement,
@@ -2980,7 +2997,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.1.1",
+    text="v13.2.1",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

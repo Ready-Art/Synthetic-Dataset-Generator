@@ -88,7 +88,12 @@ def test_plan():
                                    {"enabled": True, "shape": "none"})["members"] == [])
 
     for names, slots in ((["A", "B", "C"], 6), (["A", "B", "C", "D"], 8),
-                         (["A", "B", "C", "D", "E"], 10), (["A", "B", "C"], 4)):
+                         (["A", "B", "C", "D", "E"], 10), (["A", "B", "C"], 4),
+                         # 12 slots is the shipped num_turns default and the shape that exposed the
+                         # vacuous check below: the old exit formula landed so late that the
+                         # post-exit replies were never reached.
+                         (["A", "B", "C"], 12), (["A", "B", "C", "D"], 12),
+                         (["A", "B", "C", "D", "E"], 12)):
         plan = g._build_scene_cast_plan(names, slots, cfg)
         members = plan["members"]
         if not members:
@@ -109,12 +114,20 @@ def test_plan():
               sum(1 for m in members if m["enter_slot"] > 0) <= 1
               and sum(1 for m in members if m["exit_slot"] is not None) <= 1)
 
-        # min_present must hold at every slot
+        # min_present must hold at every slot.
+        #
+        # The state MUST be advanced between slots. Checking every slot against the INITIAL state is
+        # vacuous: an exit scheduled for slot N never takes effect, so no post-exit slot is ever
+        # examined and a schedule that drops the scene to one character passes silently. This is
+        # exactly how a 12-slot plan with an exit at slot 9 and an arrival at slot 11 shipped with
+        # one character present for a whole reply.
         state = g._cast_state_from_plan(plan)
         worst = slots + 1
         for slot in range(1, slots + 1):
             present = g._cast_names_for_slot(plan, state, slot)[2]
             worst = min(worst, len(present))
+            state, _events = g._advance_cast_state(
+                plan, state, slot, "", max_deferrals=1)
         check("%d characters / %d slots: never fewer than min_present present" % (len(names), slots),
               worst >= plan["min_present"], "min present %d < %d" % (worst, plan["min_present"]))
 
@@ -126,8 +139,28 @@ def test_plan():
     for slot in range(1, 11):
         present = g._cast_names_for_slot(plan, state, slot)[2]
         worst = min(worst, len(present))
+        state, _events = g._advance_cast_state(plan, state, slot, "", max_deferrals=1)
     check("churn: never fewer than min_present present", worst >= plan["min_present"],
           "min present %d < %d" % (worst, plan["min_present"]))
+
+    # --- timing: both beats must be visible in the transcript ----------------------------
+    # A join on the last reply, or a leave on the last reply, is a beat no reader ever sees.
+    print("timing: entrances and exits land early enough to matter:")
+    for slots in (6, 8, 10, 12):
+        plan = g._build_scene_cast_plan(["A", "B", "C"], slots, cfg)
+        members = plan["members"]
+        if not members:
+            continue
+        joins = [m["enter_slot"] for m in members if m["enter_slot"] > 0]
+        exits = [m["exit_slot"] for m in members if m["exit_slot"] is not None]
+        for slot in joins:
+            # At least two replies must remain for the newcomer to be present in.
+            check("%d slots: arrival at %d leaves room to be present" % (slots, slot),
+                  slots - slot >= 1, "only %d reply(s) left" % (slots - slot))
+        for slot in exits:
+            # At least two replies must remain after the exit beat for the aftermath.
+            check("%d slots: exit at %d leaves an aftermath" % (slots, slot),
+                  slots - slot >= 1, "only %d reply(s) after the exit" % (slots - slot))
 
     check("a plan is deterministic for the same input",
           g._build_scene_cast_plan(["A", "B", "C"], 6, cfg) ==

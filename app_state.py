@@ -202,6 +202,20 @@ def reset_first_reply_openers():
         first_reply_first_word_counts.clear()
         first_reply_frame_counts.clear()
         first_reply_total = 0
+
+
+# Run-wide style deck (prompts.style), dealt by generation.deal_style(). The v13.2.0 answer to the
+# repeated first 3-4 words: every prompt can name {style}, and the value is one entry of the
+# configured list dealt WITHOUT REPLACEMENT, so a long run walks the whole list before any entry
+# comes round again instead of redrawing with replacement (which is what let 18% of rows open on the
+# same three or four words). Like the random-name deck it is module-level RUN state on purpose: a
+# per-worker deck would restart the shuffle on every thread and hand neighbouring rows the same
+# style. Guarded by style_deck_lock. `styles_pool_key` is the fingerprint of the list the deck was
+# built from, so editing the list (or toggling the feature) starts a fresh deck rather than dealing
+# from a pool the operator has replaced.
+style_deck = []            # Remaining styles to deal, in shuffled order
+style_deck_lock = Lock()   # Thread-safe access to the deck
+styles_pool_key = None     # Fingerprint of the pool the current deck was built from
 pending_task_ids = set()
 failed_task_ids = set()
 purged_task_ids = set()

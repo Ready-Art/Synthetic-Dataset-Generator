@@ -27,8 +27,8 @@ from tkinter import ttk, scrolledtext, messagebox
 import api_profiles
 from config_loader import sanitize_input
 from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DEFAULT_GREETING_CONTEXT,
-                        DEFAULT_GREETING_PROMPT, DEFAULT_NOTE_PLACEMENT, NOTE_PLACEMENTS, note_placement,
-                        placement_cache_warning)
+                        DEFAULT_GREETING_PROMPT, DEFAULT_NOTE_PLACEMENT, DEFAULT_STYLE_VARIANTS,
+                        NOTE_PLACEMENTS, note_placement, placement_cache_warning)
 from logging_config import log_message
 from api_handler import global_rate_limiter, THINKING_MODES
 from datasets_panel import DatasetsPanel
@@ -923,6 +923,18 @@ class ConfigEditor(tk.Toplevel):
         add_prompt_text_area("Greeting Context (opening mode; fills the greeting prompt's {context} when there is a book chunk, use {chunk} for the chunk; saved exactly as typed):", 'greeting_context_text', height=8)
         add_prompt_text_area("First Line Prompt (opening mode; system prompt for the user's first line, use {style}; saved exactly as typed):", 'first_line_prompt_text', height=8)
         add_prompt_text_area("First Line Styles (opening mode; one per line, one is picked at random for {style}):", 'first_line_styles_text', height=6)
+
+        # --- {style} (v13.2.0) ---
+        # ONE style per conversation, named by every prompt that carries {style}. The list is dealt
+        # WITHOUT replacement across the run, so a long run walks the whole list before any entry comes
+        # round again -- which is what stops the rows from opening on the same few words.
+        self.style_enabled_var_editor = tk.BooleanVar(value=True)
+        wrapped_checkbutton(
+            self.prompts_content_frame,
+            text="{style} (one style per conversation, dealt without replacement across the run; fills {style} in the question, answer, continuation, greeting and first-line prompts)",
+            variable=self.style_enabled_var_editor).grid(row=prompts_row_idx, column=0, columnspan=1, padx=SPACING, pady=SPACING, sticky="ew")
+        prompts_row_idx += 1
+        add_prompt_text_area("Style Variants (one per line; each describes HOW a message begins -- a sound, a gesture, mid-action -- not a mood or a genre. Empty = the built-in list):", 'style_list_text', height=10)
 
         # --- Questions-file dataset variables (v11.9.0) ---
         # The questions-file counterpart of the Datasets tab: instead of writing {{ds:alias}}
@@ -2327,6 +2339,12 @@ class ConfigEditor(tk.Toplevel):
                 'greeting_context': self.greeting_context_text.get("1.0", "end-1c"),
                 'first_line': self.first_line_prompt_text.get("1.0", "end-1c"),
                 'first_line_styles': [line.strip() for line in self.first_line_styles_text.get("1.0", "end-1c").split('\n') if line.strip()],
+                # v13.2.0: {style}. Entries are saved as typed (they are prompt fragments, so
+                # quotes and punctuation are legitimate), one per line, blank lines dropped.
+                'style': {
+                    'enabled': self.style_enabled_var_editor.get(),
+                    'styles': [line.strip() for line in self.style_list_text.get("1.0", "end-1c").split('\n') if line.strip()],
+                },
                 # v11.9.0: the questions-file dataset variables. The alias is stored bare (no
                 # braces, no ds:); the separator is stored with real characters so the worker can
                 # join with it directly. An empty alias means "placeholders only, append nothing".
@@ -3118,6 +3136,17 @@ class ConfigEditor(tk.Toplevel):
             self.first_line_prompt_text.delete(1.0, tk.END); self.first_line_prompt_text.insert(tk.END, prompts_config.get('first_line', DEFAULT_FIRST_LINE_PROMPT))
             styles_conf = prompts_config.get('first_line_styles', list(DEFAULT_FIRST_LINE_STYLES))
             self.first_line_styles_text.delete(1.0, tk.END); self.first_line_styles_text.insert(tk.END, "\n".join(styles_conf if isinstance(styles_conf, list) else [str(styles_conf)]))
+            # v13.2.0: {style}. A config saved before this release has no style block, so the
+            # checkbox follows the shipped default and the Text shows the built-in list rather than
+            # an empty box that would read as "no styles configured".
+            style_conf = prompts_config.get('style', {}) or {}
+            self.style_enabled_var_editor.set(bool(style_conf.get('enabled', True)))
+            style_entries = style_conf.get('styles', list(DEFAULT_STYLE_VARIANTS))
+            if not isinstance(style_entries, list):
+                style_entries = [str(style_entries)]
+            if not style_entries:
+                style_entries = list(DEFAULT_STYLE_VARIANTS)
+            self.style_list_text.delete(1.0, tk.END); self.style_list_text.insert(tk.END, "\n".join(style_entries))
 
             # v11.9.0: questions-file dataset variables. The separator is shown escaped so a
             # newline separator is visible (and editable) in a single-line Entry.

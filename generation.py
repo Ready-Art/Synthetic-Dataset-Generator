@@ -148,7 +148,7 @@ SCENE_CONTINUITY_MAX_ROUNDS = 2
 # made SAFE to use inline -- see `_clean_chunk_for_inline()`. Removing them would break every prompt
 # that already relies on them, and the docs describe them as the passage.
 ANSWER_PROMPT_NATIVE_VARIABLES = ("{subject}", "{context}", "{character_name}",
-                                  "{character_names}", "{character_profile}")
+                                  "{character_names}", "{character_profile}", "{style}")
 
 # Trailing punctuation a source chunk can end on that would collide with the prompt's own following
 # punctuation: "... into her guts." + ", in an intense roleplay" reads "guts.,".
@@ -176,7 +176,7 @@ def _clean_chunk_for_inline(text):
 
 
 def fill_answer_prompt(answer_prompt_template, subject, context, dataset_values=None,
-                      character_names=None, character_profile=""):
+                      character_names=None, character_profile="", style=""):
     """Fill the native template variables of the answer prompt for one task.
 
     Mirrors ``generate_question()``: with dataset values attached the substitution goes through
@@ -192,8 +192,11 @@ def fill_answer_prompt(answer_prompt_template, subject, context, dataset_values=
     ``{character_profile}`` the whole profile block -- the variables a prompt that wants to say WHO she
     is should name.
 
-    A prompt that names none of the variables comes back byte-identical, which is what keeps a
-    default run unchanged (the shipped answer prompt has no variables at all).
+    A prompt that names none of the variables comes back byte-identical, so a config that uses none of
+    them sends exactly what it always did.
+
+    ``{style}`` (v13.2.0) is the conversation's style for this task, applied LAST so a style entry
+    that names another token is inserted literally instead of being substituted again.
     """
     if not answer_prompt_template:
         return answer_prompt_template
@@ -206,6 +209,8 @@ def fill_answer_prompt(answer_prompt_template, subject, context, dataset_values=
         ("{character_names}", ", ".join(names) if names else "N/A"),
         ("{character_name}", names[0] if names else "N/A"),
         ("{character_profile}", character_profile if character_profile else "N/A"),
+        # v13.2.0: the conversation's style, applied last.
+        ("{style}", style or ""),
     )
     if dataset_values is None:
         filled = answer_prompt_template
@@ -992,17 +997,32 @@ def _build_scene_cast_plan(names, total_slots, config):
     else:  # churn
         max_joins = max_leaves = max(max_churn, 1)
 
+    # --- TIMING ---------------------------------------------------------------------
+    # Both transitions are scheduled against the ASSISTANT SLOT COUNT, and both are placed early
+    # enough that the change is actually visible in the transcript:
+    #
+    #   * a join must land with at least one reply left for the newcomer to speak in, or the
+    #     arrival is a beat nobody sees (an arrival on the final reply is exactly that);
+    #   * a leave must land with replies left after it, or the scene simply ends with the
+    #     character present and the exit never pays off.
+    #
+    # The join is anchored around the FIRST THIRD and the leave around the HALFWAY point, so both
+    # beats are legible and each gets a real share of the conversation afterwards. The old formulas
+    # were the bug: a join at total_slots - 1 put the arrival on the last reply (a beat nobody sees),
+    # and a leave at max(2, total_slots*3//4) put the exit so late that the aftermath was two replies.
+    join_slot = min(max(2, total_slots // 3), total_slots - 1)
+    # One reply is spent on the exit beat itself; the departure is complete the reply after it.
+    leave_slot = max(join_slot + 2, total_slots // 2)
+    leave_slot = min(leave_slot, total_slots - 1)
+
     # --- JOINS FIRST ----------------------------------------------------------------
     # The LAST characters start outside the scene, so the opening cast stays the core group.
-    # Arrivals are spread over the early-middle of the conversation, leaving at least one reply
-    # for the newcomer to be present in.
     join_count = min(max_joins, spare) if can_join else 0
     join_count = min(join_count, max(0, total_slots - 1))
     joiners = members[len(members) - join_count:] if join_count else []
     if joiners:
         latest_ok = total_slots - 1  # an arrival on the last reply has nothing left to do
-        step = max(1, latest_ok // len(joiners))
-        slot = step
+        slot = min(join_slot, latest_ok)
         for member in joiners:
             if slot > latest_ok:
                 slot = latest_ok
@@ -1011,7 +1031,7 @@ def _build_scene_cast_plan(names, total_slots, config):
             if slot > latest_ok:
                 break
             member["enter_slot"] = slot
-            slot += step
+            slot += 1
 
     # --- LEAVES ---------------------------------------------------------------------
     # Only characters present from the opening may leave (a joiner stays for its cameo), and the
@@ -1021,18 +1041,33 @@ def _build_scene_cast_plan(names, total_slots, config):
         leave_count = min(max_leaves, spare, max(0, len(leavable) - 1))
         leavers = list(reversed(leavable))[:leave_count]
         if leavers:
-            first_exit_slot = max(2, (total_slots * 3) // 4)
-            step = max(1, total_slots // max(2, len(leavers) + 1))
-            slot = first_exit_slot
+            slot = leave_slot
             for member in leavers:
-                if slot > total_slots:
-                    slot = total_slots
+                if slot > total_slots - 1:
+                    slot = total_slots - 1
                 while any(m["exit_slot"] == slot for m in members if m is not member):
                     slot += 1
-                if slot > total_slots:
+                if slot > total_slots - 1:
                     break
                 member["exit_slot"] = slot
-                slot += step
+                slot += 1
+
+    # --- NEVER SCHEDULE A LEAVE WHILE SOMEONE IS STILL ABSENT -------------------------
+    # A join and a leave each cost one present character, and both draw on the SAME pool of spare
+    # characters. With one spare (3 characters, min_present 2) the scene can afford the newcomer OR
+    # the departure, not both at once: scheduling the leave before the arrival lands leaves the scene
+    # one character short of min_present for every reply in between. Pushing the exit to the arrival
+    # reply hands the spare character over instead of doubling up on it.
+    if any(m["enter_slot"] > 0 for m in members):
+        first_join = min(m["enter_slot"] for m in members if m["enter_slot"] > 0)
+        for member in members:
+            if member["exit_slot"] is not None and member["exit_slot"] < first_join:
+                member["exit_slot"] = first_join
+
+    # Keep the departure inside the conversation: an exit on the final reply has no aftermath.
+    for member in members:
+        if member["exit_slot"] is not None and member["exit_slot"] > total_slots - 1:
+            member["exit_slot"] = total_slots - 1 if total_slots > 1 else None
 
     # A member cannot leave on or before the reply they arrive in.
     for member in members:
@@ -1603,6 +1638,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            first_reply_first_word_cap_local=0.0,
            first_reply_opener_cap_local=0.0,
            first_reply_opener_max_retries=FIRST_REPLY_OPENER_MAX_RETRIES,
+           style_enabled_local=False,
+           style_list_local=(),
            ):  # v11.7: keyword-only tail -- appended AFTER the star so no positional slot shifts
     """
     The main function executed by each worker thread.
@@ -1658,6 +1695,9 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         (enable_character_engine_local and enable_setting_selection_local and enable_random_settings_local,
          random_settings_list_local),
         (opening_mode_local, first_line_styles_local),
+        # v13.2.0: the style pool is authored input too, so a {{ds:alias}} written into an
+        # entry is rendered like any other authored field.
+        (style_enabled_local, style_list_local),
     )
 
     # Resilience: in non-duplication mode each worker is pinned to one API slot
@@ -1769,6 +1809,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # selection rules and all refinement/retry loops remain upstream's.
             task_dataset_values = None
             task_has_user_continuation = bool(current_user_continuation_prompt)
+            # These come out of the dataset render below. Default them to the authored inputs
+            # first: with no dataset bound (datasets.sources: []) that block never runs, and
+            # `style_list_for_task` was then referenced unbound on the {style} line below.
+            style_list_for_task = style_list_local
             dataset_binding = bind_task_datasets(
                 q, task, app_state.task_metadata, app_state.task_queue_ui_lock)
             if dataset_binding is not None:
@@ -1795,9 +1839,27 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                  current_lore, character_list, emotional_states_list_local,
                  user_emotional_states_list_local,
                  random_names_list_local, random_settings_list_local,
-                 first_line_styles_local) = tuple(
+                 first_line_styles_local, style_list_for_task) = tuple(
                     render_task_inputs(value, task_dataset_values) if enabled else value
                     for enabled, value in dataset_authored_inputs)
+
+            # --- {style} (v13.2.0): ONE style per conversation ---------------------------
+            # Dealt once per TASK, never per turn. Every prompt in the task (greeting, first line,
+            # question, answer, continuation) fills its `{style}` from this one value, so a
+            # conversation keeps a single style all the way through instead of changing voice
+            # between turns.
+            #
+            # The deck is dealt WITHOUT replacement across the run (see deal_style()), which is the
+            # whole point: independent draws redraw with replacement, so over a few thousand rows
+            # some entries get dealt several times more often than others -- and those are the rows
+            # that still share their opening. Walking the deck gives every entry the same share.
+            #
+            # Off leaves `task_style` empty, so `{style}` resolves to nothing and the prompt reads
+            # exactly as it did before the feature existed.
+            task_style = ""
+            if style_enabled_local and style_list_for_task:
+                task_style = deal_style(style_list_for_task)
+                log_message(f"Thread {thread_id}, Task {task_id}: style = {task_style!r}", "DEBUG")
 
             # Determine system prompt for this task
             current_system_prompt_for_task = ""
@@ -2273,6 +2335,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         regex_patterns_local=current_regex_patterns,
                         regex_watch_enabled_local=current_regex_watch_enabled,
                         non_latin_enabled_local=current_non_latin_enabled,
+                        style=task_style,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if greeting_text:
@@ -2294,6 +2357,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         regex_patterns_local=current_regex_patterns,
                         regex_watch_enabled_local=current_regex_watch_enabled,
                         non_latin_enabled_local=current_non_latin_enabled,
+                        style=task_style,
                     )
                     if app_state.stop_processing: q.task_done(); continue
                 if not greeting_text or not initial_user_question:
@@ -2355,6 +2419,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     regex_watch_enabled_local=current_regex_watch_enabled,
                     non_latin_enabled_local=current_non_latin_enabled,
                     character_names=scene_character_names,
+                    style=task_style,
                 )
             
             if not initial_user_question:
@@ -2396,7 +2461,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     task[4] if len(task) > 4 else "",
                     task_dataset_values,
                     character_names=scene_character_names,
-                    character_profile=character_injection) + turn_note
+                    character_profile=character_injection,
+                    style=task_style) + turn_note
                 # v12.5: the conversation's own earlier assistant replies, for the repeated-opener
                 # guard. Read straight from the history the request is about to send, so it can never
                 # drift from it; a first assistant turn yields an empty list and the guard never fires.
@@ -2808,6 +2874,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             q.start_times_list.append(api_task_duration)
                             if len(q.start_times_list) > 50: q.start_times_list.pop(0)
 
+                        # v13.2.1: drop a leaked `{style}` instruction from the front of the reply.
+                        # Some models echo "Begin this message as follows: open on a ..." back as the
+                        # first line instead of writing prose. Guarded on a style actually being in
+                        # play, so a style-free run is byte-identical to before this existed.
+                        if task_style:
+                            cleaned_answer = text_utils.strip_style_instruction_leak(assistant_answer)
+                            if cleaned_answer != assistant_answer:
+                                log_message(
+                                    f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: removed a "
+                                    "leaked style instruction from the start of the reply.", "DEBUG")
+                                assistant_answer = cleaned_answer
+
                         # In non-duplication, add the assistant's answer to the main conversation history for output
                         conversation_history_for_output.append({"role": "assistant", "content": assistant_answer})
 
@@ -2879,6 +2957,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     regex_watch_enabled_local=current_regex_watch_enabled,
                     non_latin_enabled_local=current_non_latin_enabled,
                     character_names=scene_character_names,
+                    style=task_style,
                 )
 
                 if not user_continuation_reply:
@@ -3227,6 +3306,108 @@ def deal_random_names(names, count, avoid=()):
     return chosen
 
 
+# --- {style}: the run-wide style deck (v13.2.0) ------------------------------------------------
+# WHY THIS EXISTS. A generated dataset's rows were opening on the same few words: measured on the
+# operator's data, about 18% of saved rows shared their first three or four words with another row.
+# The cause is not a bad prompt, it is a prompt that is CONSTANT: every request carried the same
+# instruction, so the model's most probable opening was the same one every time. Naming a style in
+# the prompt per conversation is what breaks the tie, and dealing it WITHOUT replacement is what
+# stops the tie from simply moving to the next most probable opening.
+#
+# {style} is a NATIVE variable of EVERY authored prompt, not just the first line's: question,
+# answer, user continuation, greeting and first line each fill it from the same per-task value, so
+# one conversation keeps one style all the way through instead of drifting between them mid-scene.
+#
+# The deck is dealt once per TASK (conversation), never per turn: a conversation whose style changed
+# between turns would read as two different scenes stitched together, and the style is part of what the
+# row's first line was told to be.
+
+def _styles_pool_key(styles):
+    """Identify a configured style pool so a stale deck is never dealt from a replaced list.
+
+    The same contract as `_random_names_pool_key()`: identity, length and a content fingerprint, so
+    reordering, editing an entry, adding entries or swapping the feature off all start a fresh deck.
+    """
+    return (id(styles), len(styles), hash(tuple(styles)))
+
+
+def _shuffled_style_deck(styles):
+    """One freshly shuffled pass over the style pool."""
+    deck = list(styles)
+    random.shuffle(deck)
+    return deck
+
+
+def deal_style(styles, avoid=()):
+    """Deal ONE style for a conversation from the run-wide deck.
+
+    Deals WITHOUT replacement across the run: the pool is shuffled into a deck and consumed in order,
+    and a fresh pass is shuffled only once the deck runs out. Independent `random.choice` draws would
+    redraw with replacement, which is exactly the collapse this feature exists to remove -- over 1,000
+    rows a 12-entry pool leaves some entries dealt four times more often than others, and those are the
+    rows that still share an opening. Walking the deck instead gives every entry the same share.
+
+    `avoid` holds styles this conversation must not take (a caller that has already committed one, e.g.
+    a retry). An entry in `avoid` is skipped if the pass still has another; if it does not, the pass is
+    reshuffled rather than returning a style the caller rejected. A pool entirely inside `avoid` falls
+    back to the first entry, because a repeat is better than a blank style.
+
+    Returns the style string, or "" when the pool is empty (which makes `{style}` resolve to nothing
+    and a style-free prompt behave exactly as it did before this feature existed).
+    """
+    pool = [str(style) for style in (styles or ()) if str(style).strip()]
+    if not pool:
+        return ""
+
+    avoid = set(avoid or ())
+    key = _styles_pool_key(styles)
+
+    with app_state.style_deck_lock:
+        if app_state.styles_pool_key != key:
+            app_state.styles_pool_key = key
+            app_state.style_deck = _shuffled_style_deck(pool)
+
+        # Preferred: still on this pass and not an avoided style.
+        preferred = [style for style in app_state.style_deck if style not in avoid]
+        if not preferred and any(style not in avoid for style in pool):
+            # The pass has run down to a tail of avoided entries. Reshuffle rather than hand back a
+            # style the caller asked us to skip.
+            app_state.style_deck = _shuffled_style_deck(pool)
+            preferred = [style for style in app_state.style_deck if style not in avoid]
+        if not preferred:
+            # Every entry is avoided, so a repeat is unavoidable. Take the head of the pass.
+            preferred = list(app_state.style_deck) or list(pool)
+
+        style = preferred[0]
+        # Remove exactly one occurrence: `remove()` on a value the pass no longer holds (a stale pass
+        # rebuilt above) must not raise.
+        if style in app_state.style_deck:
+            app_state.style_deck.remove(style)
+        return style
+
+
+def fill_style_variable(template, style, dataset_values=None):
+    """Substitute {style} in an authored prompt.
+
+    The one definition of what the variable means, shared by every prompt that names it, so the
+    question, answer, continuation, greeting and first line cannot disagree about it.
+
+    An empty `style` resolves the token to an empty string rather than leaving the literal `{style}` in
+    the request: a config written for this feature but run with the pool empty (or with the feature off)
+    then sends a prompt with the placeholder's slot blank, never a prompt telling the model to write
+    "{style}".
+
+    With dataset values attached the substitution goes through `render_with_native_placeholders()` so an
+    authored `{{ds:alias}}` keeps its single-pass guarantee.
+    """
+    if not template or "{style}" not in template:
+        return template
+    replacement = (("{style}", style or ""),)
+    if dataset_values is None:
+        return template.replace("{style}", style or "")
+    return render_with_native_placeholders(template, dataset_values, replacement)
+
+
 def generate_question(system_prompt, question_prompt_template, subject, context, thread_id,
                       sampler_settings_local, api_url_local, model_name_local, api_key_local,
                       history_size_local_param,
@@ -3234,7 +3415,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                       api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
                       user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
-                      non_latin_enabled_local=False, character_names=None):
+                      non_latin_enabled_local=False, character_names=None, style=""):
     """Generates an initial question using the LLM, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for the
@@ -3247,6 +3428,9 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
     the answer prompt's set. `{subject}`/`{context}` stay the SOURCE PASSAGE they have always
     been -- a prompt that used `{subject}` where it wanted a name was writing the passage into a name
     slot, which is the confusion the new variables exist to end.
+
+    `style` (v13.2.0) fills `{style}`, the conversation's style for this task. It is applied LAST, so
+    a style entry that happens to contain another variable's token is not substituted a second time.
     """
 
     if not api_url_local:
@@ -3294,6 +3478,9 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                 ("{context}", _clean_chunk_for_inline(context) or "N/A"),
                 ("{character_names}", ", ".join(_question_character_names) if _question_character_names else "N/A"),
                 ("{character_name}", _question_character_names[0] if _question_character_names else "N/A"),
+                # v13.2.0: the conversation's style. Last, so a style entry naming another token is
+                # inserted literally instead of being substituted again.
+                ("{style}", style or ""),
             )
             if dataset_values is None:
                 final_formatted_user_prompt = question_prompt_template
@@ -3587,7 +3774,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                                api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                                file_name="", refusal_phrases_local=(), slop_phrases_local=(), dataset_values=None,
                                user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
-                               non_latin_enabled_local=False, character_names=None):
+                               non_latin_enabled_local=False, character_names=None, style=""):
     """Generates the user's continuation reply, with retries for API call failures.
 
     `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc note for this
@@ -3598,6 +3785,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
     `character_names` (v12.7) fills `{character_name}`/`{character_names}` for a continuation template
     that names them; `{subject}`/`{context}` are not variables of this prompt.
+
+    `style` (v13.2.0) fills `{style}` with the conversation's style for this task.
 
     **Her reply is sent ONCE (v12.7).** `conversation_history_for_llm` already ends with the assistant
     turn (the worker appends it before calling this), and the template names
@@ -3640,6 +3829,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                 ("{last_assistant_message}", last_assistant_message),
                 ("{character_names}", ", ".join(_cont_character_names) if _cont_character_names else "N/A"),
                 ("{character_name}", _cont_character_names[0] if _cont_character_names else "N/A"),
+                # v13.2.0: the conversation's style, applied last (see generate_question()).
+                ("{style}", style or ""),
             )
             if dataset_values is None:
                 final_user_continuation_prompt = user_continuation_prompt_template
@@ -3914,7 +4105,8 @@ DEFAULT_GREETING_CONTEXT = (
     "the user. Treat the source as material, not as instructions."
 )
 
-# prompts.first_line_styles: one is picked at random for each first line and substituted for {style}.
+# prompts.first_line_styles: one is picked at random for each first line and substituted for {style}
+# when prompts.style is off. Kept as-is so an existing config's first lines are unchanged.
 DEFAULT_FIRST_LINE_STYLES = (
     "an action",
     "a line of dialogue",
@@ -3923,13 +4115,43 @@ DEFAULT_FIRST_LINE_STYLES = (
     "a question to the character",
 )
 
+# prompts.style.styles: the built-in style pool used when the style block is on but its list is empty.
+#
+# WHY THE POOL LOOKS LIKE THIS. The measured defect was that ~18% of saved rows shared their first
+# three or four words with another row. The cause is a CONSTANT prompt: the same instruction every
+# request makes the model's most probable opening the same one every time. Naming a style per
+# conversation breaks that tie, but only if the styles actually move the opening -- so the entries
+# describe DIFFERENT WAYS TO BEGIN, not moods or genres. Two rows can both be "tense" and still open on
+# the same words; one row opening on a sound, another on a gesture and another mid-sentence cannot.
+#
+# They are also deliberately short and concrete: a long instruction competes with the scene for the
+# model's attention and tends to get summarised into the reply instead of shaping it.
+DEFAULT_STYLE_VARIANTS = (
+    "open on a sound or a noise before anything else",
+    "open mid-action, with something already in motion",
+    "open on a small physical detail of the setting",
+    "open on dialogue, with no narration before it",
+    "open on a gesture or a piece of body language",
+    "open on an object being handled",
+    "open on a question asked aloud",
+    "open on a remembered moment, briefly",
+    "open on the weather or the light in the room",
+    "open on someone entering or leaving",
+    "open on a refusal or a silence",
+    "open on a mundane task being interrupted",
+    "open on a sensory detail, a smell or a taste",
+    "open by addressing the other person directly",
+    "open in the middle of a thought, not at its start",
+    "open on a disagreement already under way",
+)
+
 DEFAULT_GREETING_PROMPT = (
     "Write the opening message of this roleplay as {speaker}, the way the first message of a character card "
     "reads: a few paragraphs of narration and dialogue that set the place and the moment, show the character "
     "doing something, and end on a line or a moment addressed to the user, not to another character, that the "
     "user can answer. Address the user directly as \"you\". Do not write the user's actions, words, thoughts "
     "or feelings. The user is already present when the message begins: do not describe the user arriving, "
-    "approaching, entering or moving.\n"
+    "approaching, entering or moving. Begin the message as follows: {style}.\n"
     "{context}"
 )
 
@@ -4117,7 +4339,8 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
     return None
 
 
-def fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text="", context_template="", dataset_values=None):
+def fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text="", context_template="", dataset_values=None,
+                         style=None):
     """Fill {speaker} and {context}. With a book chunk, {context} is the context template (default
     DEFAULT_GREETING_CONTEXT) with the chunk in {chunk}; without one, {context} is empty."""
     if dataset_values is not None:
@@ -4129,9 +4352,14 @@ def fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text="", conte
                 selected_context_template, dataset_values, (("{chunk}", chunk_text),))
         return render_with_native_placeholders(
             greeting_prompt_template, dataset_values,
-            (("{speaker}", speaker), ("{context}", context_block))).rstrip()
+            (("{speaker}", speaker), ("{context}", context_block),
+             # v13.2.0: {style} is applied last, after {context}, so a style entry is never
+             # re-scanned for another variable.
+             ("{style}", style or ""))).rstrip()
     context_block = (context_template or DEFAULT_GREETING_CONTEXT).replace("{chunk}", chunk_text) if chunk_text else ""
-    return greeting_prompt_template.replace("{speaker}", speaker).replace("{context}", context_block).rstrip()
+    return (greeting_prompt_template.replace("{speaker}", speaker)
+            .replace("{context}", context_block)
+            .replace("{style}", style or "")).rstrip()
 
 
 def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_text, thread_id,
@@ -4140,18 +4368,18 @@ def generate_greeting(scene_prompt, greeting_prompt_template, speaker, chunk_tex
                       file_name="", refusal_phrases_local=(), slop_phrases_local=(),
                       user_speaking_phrases_local=(), no_user_impersonation_local=False, context_template="",
                       dataset_values=None, turn_note="", regex_patterns_local=(),
-                      regex_watch_enabled_local=False, non_latin_enabled_local=False):
+                      regex_watch_enabled_local=False, non_latin_enabled_local=False, style=None):
     """Write the character's opening message: [system: scene prompt, user: filled greeting prompt
     + turn note].
 
     Uses max_tokens_answer and the user-speaking check, as an answer does. The book chunk, when the
     task has one, goes only into this request. `turn_note` is slot 1's persona and emotional-state
-    note. Returns the greeting, or None.
+    note. `style` (v13.2.0) fills the greeting prompt's `{style}`. Returns the greeting, or None.
     """
     messages = [
         {"role": "system", "content": scene_prompt},
         {"role": "user", "content": fill_greeting_prompt(greeting_prompt_template, speaker, chunk_text, context_template,
-                                                         dataset_values=dataset_values)
+                                                         dataset_values=dataset_values, style=style)
                                     + turn_note},
     ]
     return _request_opening_message(
@@ -4168,19 +4396,18 @@ def generate_first_line(greeting, first_line_prompt_template, thread_id,
                         api_slot_idx, current_max_attempts_param, api_request_timeout_param,
                         file_name="", refusal_phrases_local=(), slop_phrases_local=(), styles=(), dataset_values=None,
                         user_turn_note="", regex_patterns_local=(), regex_watch_enabled_local=False,
-                        non_latin_enabled_local=False):
+                        non_latin_enabled_local=False, style=None):
     """Write the user's first line from the user's seat: [system: first-line prompt, user: greeting
     + turn note].
 
-    The scene prompt is not sent; the greeting is the other party's turn. One style from `styles`
-    (default DEFAULT_FIRST_LINE_STYLES) fills {style}. Uses max_tokens_user_reply and no user-speaking check
-    (the line is the user's). `user_turn_note` (NEW in v10.6.0) is the simulated user's emotional-state/arc
-    note for the opening message; appended to this request only and never stored in history. Returns the line, or None.
+    The scene prompt is not sent; the greeting is the other party's turn. `style` (v13.2.0) is the
+    conversation's style from `prompts.style`, dealt by the worker; when it is None or empty the legacy
+    behaviour applies and one entry of `styles` (default DEFAULT_FIRST_LINE_STYLES) is drawn at random
+    instead, so a config without the style block sends exactly what it always did.
     """
-    style = random.choice(tuple(styles) or DEFAULT_FIRST_LINE_STYLES)
-    first_line_instruction = (first_line_prompt_template.replace("{style}", style)
-        if dataset_values is None else render_with_native_placeholders(
-            first_line_prompt_template, dataset_values, (("{style}", style),)))
+    chosen_style = style or random.choice(tuple(styles) or DEFAULT_FIRST_LINE_STYLES)
+    first_line_instruction = fill_style_variable(
+        first_line_prompt_template, chosen_style, dataset_values=dataset_values)
     messages = [
         {"role": "system", "content": first_line_instruction},
         {"role": "user", "content": greeting + user_turn_note},
