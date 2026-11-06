@@ -291,8 +291,24 @@ def test_async_completion_credits_once():
     _reset_quality_queue()
     real_async, real_score = g.quality.judge_async_enabled, g.quality.score_conversation
     app_state.quality_enabled = True
+    # The judge must NOT be allowed to finish before the worker's epilogue runs.
+    #
+    # This test asserts the ASYNC HANDOFF (the worker returns without marking the task complete or
+    # crediting it, and the processor does both afterwards). With an unguarded stub judge that
+    # handoff is a race: the processor thread can score, write, mark complete and credit while the
+    # worker is still in its epilogue, so both checks below read the POST-processor state and fail
+    # intermittently (measured: 2 of 6 runs) while the product is behaving correctly. Holding the
+    # judge on an event makes the ordering the test is about deterministic instead of probable.
+    started = threading.Event()
+    release = threading.Event()
+
+    def held_score(conv, *a, **k):
+        started.set()
+        release.wait(timeout=20)
+        return dict(GOOD_VERDICT)
+
     try:
-        _install_async_judge(lambda conv, *a, **k: dict(GOOD_VERDICT))
+        _install_async_judge(held_score)
         g.quality.initialize_quality_queue()
         q = make_queue()
         run_worker(chunk_task(), q=q)
@@ -300,6 +316,7 @@ def test_async_completion_credits_once():
               "book.txt_chunk_at_0" not in app_state.completed_task_ids)
         check("nothing is credited before the row exists", q.processed_tasks == 0)
 
+        release.set()
         g.quality.wait_for_quality_queue(quiet=True)
         check("the task is marked complete by the processor",
               "book.txt_chunk_at_0" in app_state.completed_task_ids)
