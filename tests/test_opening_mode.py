@@ -911,7 +911,9 @@ def test_generate_wiring():
                      "repeat_reply_max_retries",
                      # first-reply opener caps (run-wide share of first replies)
                      "first_reply_first_word_cap_local", "first_reply_opener_cap_local",
-                     "first_reply_opener_max_retries"})
+                     "first_reply_opener_max_retries",
+                     # v13.2.0: the {style} pool, plumbed config -> start_processing -> worker kwargs
+                     "style_enabled_local", "style_list_local"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
