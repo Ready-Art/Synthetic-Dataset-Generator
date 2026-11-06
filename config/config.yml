@@ -177,6 +177,9 @@ prompts:
 
     Recent openings to avoid repeating: {recent_questions}
 
+    Begin this message as follows: {style}. Let it shape how the message opens,
+    not what it is about.
+
     {context}'
   answer: 'Write your next message in the roleplay. Write only the message itself,
     as the character or characters in the scene, and never the words, actions, thoughts
@@ -203,7 +206,11 @@ prompts:
     reply. Only the characters listed under PRESENT may speak, act or be seen; a character
     listed under NOT IN THE SCENE is elsewhere, so do not give them dialogue, actions,
     thoughts or feelings. When the block says a character leaves or arrives in this
-    reply, write that entrance or exit as part of the scene.'
+    reply, write that entrance or exit as part of the scene.
+
+    STYLE: begin this reply as follows: {style}. It shapes how the reply opens,
+    not what happens in the scene, and the scene continues from what is already
+    on the page.'
   user_continuation_prompt: 'Write the user''s next message. Write only as the user,
     not as any other character, and do not write any character''s words, actions,
     thoughts or feelings.
@@ -214,7 +221,9 @@ prompts:
     for this message, so let it shape the user''s tone and word choice rather than
     stating it outright. If a SCENE CAST block is present, the user speaks only to
     the characters listed under PRESENT and does not address a character who is not
-    in the scene.'
+    in the scene.
+
+    Begin this message as follows: {style}.'
   use_questions_file: false
   opening_mode: false
   greeting: 'Write the opening message of this roleplay as {speaker}, the way the
@@ -224,6 +233,7 @@ prompts:
     user can answer. Address the user directly as "you". Do not write the user''s
     actions, words, thoughts or feelings. The user is already present when the message
     begins: do not describe the user arriving, approaching, entering or moving.
+    Begin the message as follows: {style}.
 
     {context}'
   greeting_context: 'Source material for the setting. Take from it only the kind of
@@ -252,6 +262,46 @@ prompts:
   - an action with a line of dialogue
   - a short reply
   - a question to the character
+  # {style} (v13.2.0): ONE style per conversation, named by every prompt that
+  # carries the variable -- the question, answer, user continuation, greeting and
+  # first line. A generated dataset used to open on the same three or four words
+  # in about 18% of its rows, because every request carried the same instruction
+  # and so the model's most probable opening was the same one every time. Naming a
+  # style per conversation breaks that tie.
+  #
+  # The entries are dealt WITHOUT replacement across the run: the list is shuffled
+  # into a deck and consumed in order, and a fresh pass is shuffled only when it
+  # runs out. Independent random draws would redraw with replacement, so over a few
+  # thousand rows some entries would be dealt several times more often than others
+  # -- and those are the rows that still share an opening. Walking the deck gives
+  # every entry the same share.
+  #
+  # Write entries as instructions for HOW THE MESSAGE BEGINS, not as moods or
+  # genres: two rows can both be "tense" and still open on the same words, while
+  # one opening on a sound and one mid-action cannot. Keep them short -- a long
+  # instruction competes with the scene for the model's attention.
+  #
+  # `enabled: false` sends the prompts exactly as they were before v13.2.0, with
+  # {style} resolving to nothing. The built-in list is used when `styles` is empty.
+  style:
+    enabled: true
+    styles:
+    - open on a sound or a noise before anything else
+    - open mid-action, with something already in motion
+    - open on a small physical detail of the setting
+    - open on dialogue, with no narration before it
+    - open on a gesture or a piece of body language
+    - open on an object being handled
+    - open on a question asked aloud
+    - open on a remembered moment, briefly
+    - open on the weather or the light in the room
+    - open on someone entering or leaving
+    - open on a refusal or a silence
+    - open on a mundane task being interrupted
+    - open on a sensory detail, a smell or a taste
+    - open by addressing the other person directly
+    - open in the middle of a thought, not at its start
+    - open on a disagreement already under way
   questions_dataset:
     append_alias: ''
     append_separator: '

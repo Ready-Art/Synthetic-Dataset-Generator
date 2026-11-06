@@ -852,6 +852,8 @@ class HeadlessController:
             'placeholder_share_local': settings.placeholder_share,
             'greeting_context_local': settings.greeting_context,
             'first_line_styles_local': settings.first_line_styles,
+            'style_enabled_local': settings.style_enabled,
+            'style_list_local': settings.style_list,
             'persona_breakthrough_turn_local': settings.persona_breakthrough_turn,
             'persona_placement_local': settings.persona_placement,
             'emotion_placement_local': settings.emotion_placement,
@@ -979,6 +981,9 @@ class HeadlessController:
         app_state.question_history = []
         app_state.random_name_deck = []
         app_state.random_names_pool_key = None
+        # v13.2.0: a new run deals the style pool from the top again.
+        app_state.style_deck = []
+        app_state.styles_pool_key = None
         app_state.reset_first_reply_openers()
         app_state.total_attempts_global = 0
         app_state.refusal_count_total = 0
@@ -1622,4 +1627,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.1.1"
+GENERATOR_VERSION = "13.2.0"
