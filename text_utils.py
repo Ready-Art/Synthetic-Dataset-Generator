@@ -135,6 +135,75 @@ def remove_markdown(text):
 
     return text.strip()
 
+# --- {style} instruction leak (v13.2.1) ------------------------------------
+#
+# `prompts.style` hands the model one style per conversation and every prompt that names it
+# interpolates it as "Begin this message as follows: {style}". Some models echo that clause back
+# as the first line of the reply instead of writing prose, and because the style strings are
+# imperatives ("open on a sound...") the echo reads like a stage direction at the top of the
+# message:
+#
+#     open on someone entering the shop, the bell's chime cutting through the silence.
+#
+#     "You actually remembered," she whispers...
+#
+# The leak is never an EXACT copy of the pool entry -- the model paraphrases it ("someone
+# entering the shop" rather than "someone entering or leaving"). Matching the configured strings
+# therefore cannot work, so this matches the imperative VERB the style always starts with: a short
+# first line whose first word is one of those verbs and whose first clause ends in a period.
+# Ordinary prose is unaffected because "open" is not used as a sentence-initial bare imperative
+# in the middle of a roleplay reply.
+STYLE_LEAD_VERBS = (
+    "open", "begin", "start", "frame", "kick", "launch", "commence", "lead",
+)
+# A leaked instruction line: the verb, then at most ~14 words, then the end of its clause.
+_STYLE_INSTRUCTION_LINE_PATTERN = re.compile(
+    r"^\s*(?:" + "|".join(STYLE_LEAD_VERBS) + r")\b[^.\n]{0,120}\.\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_style_instruction_leak(text):
+    """Remove a leaked ``{style}`` instruction from the start of a generated message.
+
+    Only the leading instruction is touched: the first non-empty line is dropped when it reads as an
+    imperative directive, together with the blank lines that followed it. Everything after the first
+    real line of prose is left exactly as generated, so a character who legitimately says "Open the
+    door." later in the message is untouched.
+
+    A message whose FIRST line is the only line, or whose first line does not match, is returned
+    unchanged -- the guard is deliberately conservative, because deleting a real opening sentence
+    would be a worse failure than leaving one ugly instruction in place.
+    """
+    if not text:
+        return text
+
+    lines = text.split("\n")
+
+    # Find the first non-empty line; anything above it is leading whitespace we keep as-is.
+    first = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first is None:
+        return text
+
+    # The first line must be the ONLY content of its paragraph -- a leaked instruction sits on its own
+    # line, so a line that continues into prose is not one.
+    if not _STYLE_INSTRUCTION_LINE_PATTERN.match(lines[first]):
+        return text
+
+    # Refuse to strip when doing so would leave nothing behind: a message that is nothing but the
+    # instruction is a failed generation, not a leak with prose after it.
+    remaining = [line for line in lines[first + 1:] if line.strip()]
+    if not remaining:
+        return text
+
+    # Drop the instruction and the blank lines that separated it from the prose, keeping any
+    # leading whitespace that preceded it.
+    keep_from = first + 1
+    while keep_from < len(lines) and not lines[keep_from].strip():
+        keep_from += 1
+    return "\n".join(lines[:first] + lines[keep_from:])
+
+
 def normalize_quotes(text):
     if not text:
         return text

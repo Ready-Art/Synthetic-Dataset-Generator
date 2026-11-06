@@ -997,17 +997,32 @@ def _build_scene_cast_plan(names, total_slots, config):
     else:  # churn
         max_joins = max_leaves = max(max_churn, 1)
 
+    # --- TIMING ---------------------------------------------------------------------
+    # Both transitions are scheduled against the ASSISTANT SLOT COUNT, and both are placed early
+    # enough that the change is actually visible in the transcript:
+    #
+    #   * a join must land with at least one reply left for the newcomer to speak in, or the
+    #     arrival is a beat nobody sees (an arrival on the final reply is exactly that);
+    #   * a leave must land with replies left after it, or the scene simply ends with the
+    #     character present and the exit never pays off.
+    #
+    # The join is anchored around the FIRST THIRD and the leave around the HALFWAY point, so both
+    # beats are legible and each gets a real share of the conversation afterwards. The old formulas
+    # were the bug: a join at total_slots - 1 put the arrival on the last reply (a beat nobody sees),
+    # and a leave at max(2, total_slots*3//4) put the exit so late that the aftermath was two replies.
+    join_slot = min(max(2, total_slots // 3), total_slots - 1)
+    # One reply is spent on the exit beat itself; the departure is complete the reply after it.
+    leave_slot = max(join_slot + 2, total_slots // 2)
+    leave_slot = min(leave_slot, total_slots - 1)
+
     # --- JOINS FIRST ----------------------------------------------------------------
     # The LAST characters start outside the scene, so the opening cast stays the core group.
-    # Arrivals are spread over the early-middle of the conversation, leaving at least one reply
-    # for the newcomer to be present in.
     join_count = min(max_joins, spare) if can_join else 0
     join_count = min(join_count, max(0, total_slots - 1))
     joiners = members[len(members) - join_count:] if join_count else []
     if joiners:
         latest_ok = total_slots - 1  # an arrival on the last reply has nothing left to do
-        step = max(1, latest_ok // len(joiners))
-        slot = step
+        slot = min(join_slot, latest_ok)
         for member in joiners:
             if slot > latest_ok:
                 slot = latest_ok
@@ -1016,7 +1031,7 @@ def _build_scene_cast_plan(names, total_slots, config):
             if slot > latest_ok:
                 break
             member["enter_slot"] = slot
-            slot += step
+            slot += 1
 
     # --- LEAVES ---------------------------------------------------------------------
     # Only characters present from the opening may leave (a joiner stays for its cameo), and the
@@ -1026,18 +1041,33 @@ def _build_scene_cast_plan(names, total_slots, config):
         leave_count = min(max_leaves, spare, max(0, len(leavable) - 1))
         leavers = list(reversed(leavable))[:leave_count]
         if leavers:
-            first_exit_slot = max(2, (total_slots * 3) // 4)
-            step = max(1, total_slots // max(2, len(leavers) + 1))
-            slot = first_exit_slot
+            slot = leave_slot
             for member in leavers:
-                if slot > total_slots:
-                    slot = total_slots
+                if slot > total_slots - 1:
+                    slot = total_slots - 1
                 while any(m["exit_slot"] == slot for m in members if m is not member):
                     slot += 1
-                if slot > total_slots:
+                if slot > total_slots - 1:
                     break
                 member["exit_slot"] = slot
-                slot += step
+                slot += 1
+
+    # --- NEVER SCHEDULE A LEAVE WHILE SOMEONE IS STILL ABSENT -------------------------
+    # A join and a leave each cost one present character, and both draw on the SAME pool of spare
+    # characters. With one spare (3 characters, min_present 2) the scene can afford the newcomer OR
+    # the departure, not both at once: scheduling the leave before the arrival lands leaves the scene
+    # one character short of min_present for every reply in between. Pushing the exit to the arrival
+    # reply hands the spare character over instead of doubling up on it.
+    if any(m["enter_slot"] > 0 for m in members):
+        first_join = min(m["enter_slot"] for m in members if m["enter_slot"] > 0)
+        for member in members:
+            if member["exit_slot"] is not None and member["exit_slot"] < first_join:
+                member["exit_slot"] = first_join
+
+    # Keep the departure inside the conversation: an exit on the final reply has no aftermath.
+    for member in members:
+        if member["exit_slot"] is not None and member["exit_slot"] > total_slots - 1:
+            member["exit_slot"] = total_slots - 1 if total_slots > 1 else None
 
     # A member cannot leave on or before the reply they arrive in.
     for member in members:
@@ -1779,6 +1809,10 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
             # selection rules and all refinement/retry loops remain upstream's.
             task_dataset_values = None
             task_has_user_continuation = bool(current_user_continuation_prompt)
+            # These come out of the dataset render below. Default them to the authored inputs
+            # first: with no dataset bound (datasets.sources: []) that block never runs, and
+            # `style_list_for_task` was then referenced unbound on the {style} line below.
+            style_list_for_task = style_list_local
             dataset_binding = bind_task_datasets(
                 q, task, app_state.task_metadata, app_state.task_queue_ui_lock)
             if dataset_binding is not None:
@@ -2839,6 +2873,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             if not hasattr(q, 'start_times_list'): q.start_times_list = []
                             q.start_times_list.append(api_task_duration)
                             if len(q.start_times_list) > 50: q.start_times_list.pop(0)
+
+                        # v13.2.1: drop a leaked `{style}` instruction from the front of the reply.
+                        # Some models echo "Begin this message as follows: open on a ..." back as the
+                        # first line instead of writing prose. Guarded on a style actually being in
+                        # play, so a style-free run is byte-identical to before this existed.
+                        if task_style:
+                            cleaned_answer = text_utils.strip_style_instruction_leak(assistant_answer)
+                            if cleaned_answer != assistant_answer:
+                                log_message(
+                                    f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: removed a "
+                                    "leaked style instruction from the start of the reply.", "DEBUG")
+                                assistant_answer = cleaned_answer
 
                         # In non-duplication, add the assistant's answer to the main conversation history for output
                         conversation_history_for_output.append({"role": "assistant", "content": assistant_answer})
