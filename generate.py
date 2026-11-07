@@ -1633,6 +1633,12 @@ def _update_metrics_tab(force=False):
 
     Gated to the visible tab and rebuilt only when its content changed, like the Review and
     Regex Watch refreshers, so a 500 ms tick never clears the user's selection.
+
+    v13.5.0: the GATE is on the redraw, not on the collection.  ``vllm_metrics`` polls and
+    saves on its own daemon thread whether or not this tab is visible, so switching to it now
+    shows the history that accumulated while you were elsewhere instead of an empty canvas
+    waiting for the next poll.  Skipping the redraw while hidden is still right: it is the
+    expensive part, and ``_on_dashboard_tab_changed()`` forces one on the way in.
     """
     tab_name = "📊 Metrics"
     if tab_name not in app_state.dashboard_notebook.tabs_widgets:
@@ -1681,15 +1687,19 @@ def _update_metrics_tab(force=False):
             status_label.configure(
                 text="No vLLM backend configured. Add an API URL (API Slots 1-6 or the Quality "
                      "Judge) that points at a vLLM server; its /metrics endpoint is polled every "
-                     "%d seconds." % int(vllm_metrics.POLL_INTERVAL_SECONDS),
+                     "%.1f seconds." % vllm_metrics.POLL_INTERVAL_SECONDS,
                 foreground="#ffb86b")
         else:
             failing = [row['label'] for row in rows if row.get('error')]
             proxied = [row['label'] for row in rows if row.get('is_antislop')]
-            text = ("Polling %d vLLM endpoint(s) every %d seconds for %d API slot(s). "
+            text = ("Polling %d vLLM endpoint(s) every %.1f seconds for %d API slot(s). "
                     "Prompt/Generation speeds come from the server's own prefill/decode timers; "
                     "Load is that server's KV-cache usage."
-                    % (polled, int(vllm_metrics.POLL_INTERVAL_SECONDS), len(rows)))
+                    % (polled, vllm_metrics.POLL_INTERVAL_SECONDS, len(rows)))
+            # v13.5.0: say where the history is being written, so a user can find it.
+            if vllm_metrics.save_history_enabled():
+                text += (" History is saved to %s."
+                         % vllm_metrics.history_path())
             if proxied:
                 text += (" antislop-vllm-fork proxy metrics are shown for: %s."
                          % ", ".join(proxied))
@@ -3273,7 +3283,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.4.0",
+    text="v13.5.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )

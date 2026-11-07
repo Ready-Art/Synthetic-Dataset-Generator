@@ -420,10 +420,15 @@ def update_issue_graph(canvas_widget):
 _VLLM_SERIES_COLORS = ('#4dabf7', '#51cf66', '#ffd43b', '#ff922b',
                        '#b197fc', '#f783ac', '#20c997')
 
-# Redrawing both panels is the expensive part, and a poll only lands every 10 s, so a
-# redraw per poll is enough; this keeps a 500 ms UI tick from re-rasterising the same data.
+# Redrawing both panels is the expensive part, so a redraw per poll is enough; this keeps a
+# 500 ms UI tick from re-rasterising the same data.
+#
+# v13.5.0: 1.0 s, down from 5.0 s.  The poller now runs every 2 s, and a 5 s floor meant the
+# graph skipped every other sample -- the panel lagged the table by up to 5 s and a short burst
+# was drawn as a straight line between two points that were not adjacent.  The floor only has to
+# be long enough to absorb the UI tick, not the poll interval.
 _vllm_graph_last_draw = {"t": 0.0, "sig": None}
-_VLLM_GRAPH_REDRAW_MIN_INTERVAL = 5.0
+_VLLM_GRAPH_REDRAW_MIN_INTERVAL = 1.0
 
 
 def _vllm_series(rows):
