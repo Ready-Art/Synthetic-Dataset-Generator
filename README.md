@@ -12,7 +12,17 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 # ReadyArt Synthetic Dataset Generator v13.2.1
 
-A powerful, multi-threaded GUI application for generating high-quality synthetic conversational datasets using LLM APIs. Built with Python and Tkinter, it supports multi-API orchestration, automated quality control, character engines, real-time monitoring dashboards, and a hybrid quality scoring system.
+A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs, driven either by a Tkinter GUI (`python generate.py`) or by a headless CLI (`python -m cli`) that speaks JSON and exit codes over a local control socket. Both front ends run the same engine against the same `config/config.yml` and write the same output.
+
+The engine orchestrates up to six API slots — four generation slots plus a dedicated Slop Fixer and Anti-Slop Fixer, with an optional seventh for the quality judge — in **duplication mode** (the same conversation generated across several models, for dataset diversity) or **collaborative mode** (one shared queue, for throughput). Each slot carries its own thread count, rate limit and payload compatibility profile, behind a circuit breaker, budget enforcement and Valkey/Redis response caching.
+
+Around that engine sit three layers:
+
+- **Detection & repair** — out-of-character replies and scene-continuity violations are caught and regenerated out of the box; refusal, user-impersonation, non-Latin-script, Regex Watch, slop and anti-slop checks are configurable and ship off or with empty phrase lists. Unbalanced quotes are repaired deterministically, and the slop and anti-slop fixers can rewrite a flagged reply through their own API slots.
+- **A character engine** — multi-character scenes with a generator-owned cast schedule (characters join and leave on a plan the model only narrates), emotional states and multi-turn arcs, persona breakthrough, lore, and a run-wide `{style}` deck dealt without replacement so openings stop repeating across rows.
+- **A hybrid quality scorer** — heuristic measurements plus an optional LLM judge over seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical), with opt-in roleplay, tic-density and cast-continuity dimensions; below-threshold conversations are flagged in a Review tab or dropped from the dataset.
+
+Inputs come from `input/*.txt` or from bound dataset sources (CSV, TSV, JSON, JSONL, Parquet, Hugging Face) mapped to prompt variables. Output is trainer-safe ShareGPT JSONL with a flat provenance-and-quality `metadata` block, optionally mirrored to PostgreSQL. Real-time dashboards cover throughput, cost, issues, quality scores and per-endpoint vLLM metrics, and the run survives a crash through state save/resume.
 
 **LICENSE:** All code in this repository is **AGPLv3**, and has been for some time. Very early versions were MIT by Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that it is unlikely any of that code survived. Unless you have the original MIT-era code to compare against, treat every file here as AGPLv3-only. Every text and code file carries an SPDX header saying so. See [License & Credits](docs/license-and-credits.md).
 
