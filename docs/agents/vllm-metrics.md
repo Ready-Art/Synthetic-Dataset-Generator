@@ -53,6 +53,31 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - **The per-slot throughput ring is separate from the per-URL history.** `record_slot_history()` / `slot_history()` / `reset_slot_history()` keep one ring per slot, because two slots can share one URL and would otherwise overwrite each other's line in the slot graph. `poll_once()` calls `record_slot_history()` after polling (it is per-slot, and `poll_endpoint()` is per-URL). `generate.reset_all_stats_and_history()` calls `reset_slot_history()` with the other two resets.
 - **The graph panels are in `dashboard.py`.** `update_vllm_slot_graph()`, `update_vllm_proxy_graph()` and `update_vllm_queue_graph()` each build their figure lazily via `_metric_panel()` and cache it on the canvas widget (`<attr>_fig` / `<attr>_axes` / `<attr>_canvas`), so a refresh reuses it instead of allocating a new matplotlib figure every poll — that churn is what drops the X connection over a long run. They place their axes with explicit rectangles, so they must **not** call `_fit_issue_graph()` (which runs `tight_layout()` and warns on explicitly-placed axes). Each keeps its own throttle dict, like `_vllm_graph_last_draw`.
 - **`_rate_history()` turns a cumulative counter into a per-minute rate.** Used for the proxy's request counter. A negative delta yields `None` for that sample, so a restarted proxy draws a gap rather than a spike.
+- **Poll cadence and concurrency (v13.5.0).** `POLL_INTERVAL_SECONDS` is **2 s** and
+  `REQUEST_TIMEOUT_SECONDS` is **1.5 s** — the timeout MUST stay below the interval, or one dead host
+  delays the next cycle as well as this one. `HISTORY_LENGTH` is **300** (10 minutes at 2 s).
+  `poll_once()` fetches every endpoint **concurrently**, one short-lived thread each, then joins them:
+  serially, a single slow host cost every later endpoint its sample for that cycle, and that skew is what
+  made the rates wrong (a rate is a delta over an interval). **Do not make this serial again** —
+  `test_one_slow_endpoint_does_not_delay_the_others` fails on a serial implementation, deliberately.
+- **The history is saved (v13.5.0).** `save_snapshot()` writes `output/metrics_history.json` (path from
+  `history_path()`, which reads `app_state.OUTPUT_DIR`), `load_snapshot()` restores it, and
+  `start_polling()` calls `load_snapshot()` so the graphs open with the previous run's samples.
+  **On by default** (`metrics.save_history`, `save_history_enabled()`): it writes gitignored local run
+  data and changes no request, prompt or output row, so the "a default run stays byte-identical" rule is
+  not in play. The write is **atomic** (temp file + `os.replace`) and **throttled** to
+  `SAVE_INTERVAL_SECONDS` (30 s) — a few hundred KB every 2 s is pointless churn on an SD card — and
+  `stop_polling()` forces a final one so closing the window loses nothing. `_round_floats(...)` rounds
+  every float to 3 decimals and drops `null` keys, which halves the file; a dropped key reads back as
+  `None`, so "this endpoint does not report that figure" stays distinguishable from "it reported zero".
+  `load_snapshot()` returns 0 for a missing, corrupt or wrong-version file — a stale snapshot must never
+  stop the app from starting.
+- **The tab's refresh is gated on visibility; the COLLECTION is not.** `vllm_metrics` polls and saves on
+  its own daemon thread whatever tab is on screen. Only the redraw is skipped while hidden (it is the
+  expensive part) and `_on_dashboard_tab_changed()` forces one on the way in, so switching to the tab
+  shows the history that accumulated while you were elsewhere. Do not move the gate onto the poll.
+- **The graph redraw floor must stay below the poll interval.** `dashboard._VLLM_GRAPH_REDRAW_MIN_INTERVAL`
+  is 1.0 s; at 5 s against a 2 s poll the graphs would drop two samples in three.
 - **Formatting units.** `format_duration()`, `format_rate_per_minute()` and `format_ratio()` live in `vllm_metrics.py` with the other `format_*()` helpers. `format_ratio()` returns `-` for a zero denominator: "nothing has fired yet" is not "0%".
 
 ### The four `note_slot_usage()` call sites
@@ -80,6 +105,16 @@ The `api_response_time` passed to each call is the SAME duration the response-ti
 **Run:** `xvfb-run python -B tests/test_metrics_tab_ui.py` (or `DISPLAY=:99` with `Xvnc :99`)
 **Edit for:** Add tab-behaviour cases; keep it free of source data, generation runs, network and model APIs
 
+**v13.5.0 additions:** the poll interval is short enough to be usable and the timeout stays below
+it; the history window is dense enough to read a trend; **one slow endpoint does not delay the
+others** (fails on a serial `poll_once()`); saving is on by default and can be switched off; a poll
+cycle writes the file; the history restores after a restart; a missing figure stays missing rather
+than becoming zero; saving is throttled but can be forced; a corrupt or wrong-version file does not
+stop startup; the document is rounded and drops nulls; `stop_polling()` writes a final snapshot; the
+path follows `output/`; and `start_polling()` loads the saved history. The UI test adds: the poller
+collects while the tab is closed, the status line names the save file and shows the real interval,
+and the graph redraw floor is shorter than the poll interval.
+
 **v13.4.0 additions:** the four KPI cards exist and are populated from the polled figures; they do **not** double-count two slots on one proxy; the antislop columns show themselves for a proxied slot even with the key off, and stay hidden for a plain vLLM; the table's two scrollbars are at least 16px wide (the theme's ~6px thumb is unusable); the graph stack's scrollbar is a real `tk.Scrollbar` at least 16px wide and the stack actually overflows with every panel laid out inside it; all four graph panels exist; and the slot / proxy / queue panels each draw the right number of lines.
 
 ---
@@ -95,3 +130,5 @@ The `api_response_time` passed to each call is the SAME duration the response-ti
 | Add a metric from the antislop-vllm-fork proxy | the fork's `api_server/metrics.py` + `GET /metrics` first, then `vllm_metrics.py` (`summarise_antislop()`, `endpoint_rows()`), `generate.py` (`METRICS_ANTISLOP_COLUMNS`, `_apply_metrics_columns()`, the `values=` tuples), `config/config.yml` (`metrics.antislop_columns`), `tests/test_vllm_metrics.py` + `tests/test_metrics_tab_ui.py` |
 | Add a graph panel to the 📊 Metrics tab | `dashboard.py` (`_metric_panel()`, a new `update_vllm_*_graph()` with its own throttle dict), `generate.py` (`_refresh_metrics_graphs()`, `_add_graph_panel()` in the tab build), `tests/test_metrics_tab_ui.py` |
 | Add a figure to the KPI strip | `generate.py` (`_metrics_totals()`, `_update_metrics_summary()`, `kpi_specs`), `vllm_metrics.py` (`summarise_antislop()` + a `format_*()` helper), `tests/test_vllm_metrics.py` + `tests/test_metrics_tab_ui.py` |
+| Change the poll cadence, the timeout or the history length | `vllm_metrics.py` (`POLL_INTERVAL_SECONDS`, `REQUEST_TIMEOUT_SECONDS`, `HISTORY_LENGTH`, `SAVE_INTERVAL_SECONDS`), `dashboard.py` (`_VLLM_GRAPH_REDRAW_MIN_INTERVAL` must stay below the interval), `tests/test_vllm_metrics.py` + `tests/test_metrics_tab_ui.py` |
+| Change what the saved history file contains | `vllm_metrics.py` (`_history_document()`, `_round_floats()`, `save_snapshot()`, `load_snapshot()`, and bump the document's `version`), `tests/test_vllm_metrics.py` |

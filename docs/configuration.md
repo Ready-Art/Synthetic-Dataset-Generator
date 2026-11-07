@@ -246,6 +246,22 @@ frame, so set the first-word cap well above the frame cap.
 ```yaml
 metrics:
   antislop_columns: false   # show the antislop-vllm-fork proxy's own columns on the 📊 Metrics tab
+  save_history: true        # write the polled history to output/metrics_history.json
+```
+
+`metrics.save_history` (v13.5.0) writes the 📊 Metrics tab's history to
+`output/metrics_history.json` every 30 seconds, so the figures survive the window closing. It ships
+**`true`**: the file is gitignored local run data and it changes no request, prompt or output row. The
+write is atomic (a temp file swapped in with `os.replace`), so a crash or a kill mid-write leaves the
+previous good file rather than a truncated one, and a final snapshot is written on shutdown. Set it to
+`false` on a read-only or network filesystem.
+
+The file is a plain JSON document holding each endpoint's history ring, each slot's throughput ring and
+the per-slot token totals, so it can be read with `jq` or a notebook:
+
+```sh
+jq '.endpoints | to_entries[] | {url: .key, samples: (.value.history | length)}' \
+   output/metrics_history.json
 ```
 
 `metrics.antislop_columns` (v13.3.0) adds the proxy's own columns to the 📊 Metrics tab: **Proxy Requests**,

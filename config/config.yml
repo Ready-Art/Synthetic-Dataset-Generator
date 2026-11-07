@@ -1536,6 +1536,11 @@ metrics:
   # whenever a slot is actually serving `antislop:` metrics, because a shipped config.yml does not
   # gain a new key automatically. This key still decides for a plain vLLM.
   antislop_columns: false
+  # v13.5.0: write the polled history to output/metrics_history.json every poll cycle, so the
+  # figures survive the window closing and a crash loses at most one interval. ON by default:
+  # it is gitignored local run data, and it changes no request, prompt or output row. Set it to
+  # false on a read-only or network filesystem.
+  save_history: true
 datasets:
   sources: []
 control:
