@@ -390,9 +390,28 @@ prompts:
     max_churn: 2
     max_deferrals: 1
     placement: depth0
+    # v13.5.1: cut-aways are OFF by default. They produced disconnected filler -- a reply opening
+    # on a stray dog barking or a stranger asleep in another building -- rather than a scene. The
+    # join/leave feature works without them (see docs/scene-cast.md).
     allow_cutaway: false
-    exit_guidance: []
-    arrival_guidance: []
+    # v13.5.1: authored, deliberately DIFFERENT guidance per transition, so two rows do not share
+    # their exit or arrival beat. Leave a list empty to fall back to the built-in defaults.
+    exit_guidance:
+    - has somewhere to be and says so plainly before going
+    - leaves without explanation, and the silence afterwards says it for them
+    - is called away by someone at the door and does not come back
+    - gets what she came for and simply stops being interested
+    - is sent away by one of the others, not by the user
+    - leaves in anger and slams something on the way out
+    - finishes what she was doing, tidies up, and walks out mid-sentence
+    - is already halfway out when the reply begins, and does not turn around
+    arrival_guidance:
+    - comes in from the street and does not apologise for it
+    - was already in the building and finally shows up
+    - is brought in by one of the characters already present
+    - arrives late and has to explain herself
+    - lets herself in and waits to be noticed
+    - interrupts something already in progress
     cutaway_note: ''
   emotional_states:
     enabled: true

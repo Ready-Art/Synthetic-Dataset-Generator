@@ -38,6 +38,16 @@ builds the entire Tk UI at module scope, so importing it from the control layer 
 headless verb require a display. The one exception is `cli._launch_gui()`, which imports `generate`
 for its side effect because opening the window is that command's entire job.
 `tests/test_cli_control.py::test_control_layer_never_imports_the_gui_module` enforces this by
+
+**Consequence: `control.py` must wire up the `detection` module globals itself (v13.5.1).**
+`detection.issue_timestamps` and `detection.issue_timestamps_lock` are module globals initialised to
+`None` and set by **`generate.py` at module scope** — which the control layer cannot import. Before
+v13.5.1 the headless path never set them, so any refusal-phrase hit died inside
+`detection.is_refusal()` with `'NoneType' object does not support the context manager protocol` and
+killed the turn. `control.py` now does the same two assignments at module scope, right after its
+imports, from the same `app_state` the controller already owns. **If you add another module global
+that `generate.py` wires up for `detection`, wire it in `control.py` too** — the headless path is not
+allowed to import the GUI entry point to get it.
 scanning the source with `ast`.
 
 `generation.py` is already GUI-free (it never imports `generate.py`); its only GUI callback is
