@@ -1222,7 +1222,7 @@ def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
     return state, events
 
 
-def _cast_presence_note(plan, state, slot_no, config=None):
+def _cast_presence_note(plan, state, slot_no, config=None, transitions=True):
     """The per-reply cast note: who is in the scene and what changes this reply.
 
     Stability matters. A slot with no transition produces a note that depends only on the SET of
@@ -1233,6 +1233,14 @@ def _cast_presence_note(plan, state, slot_no, config=None):
     ``config['guidance_offset']`` (v13.5.1) shifts which entry of ``exit_guidance`` /
     ``arrival_guidance`` a transition uses. It is constant for a whole task, so it does not break
     the stability above; it only stops two tasks with the same slot count from sharing a beat.
+
+    ``transitions=False`` (v13.5.2) emits ONLY the PRESENT / NOT IN THE SCENE lines and drops
+    every LEAVES / ARRIVES / CUT-AWAY directive. This is what the MAN's messages get: he must
+    know who is in the room, but he must not be told to narrate the beat, because the assistant
+    reply for the same slot is given that same directive and both sides would then perform it.
+    That double-narration was D9 -- the man wrote "I forgot the delivery window, I have to go!"
+    and the assistant's next reply repeated it almost verbatim. Presence-only is also stable by
+    construction, so it cannot break the prefix cache.
     """
     config = config or {}
     members = (plan or {}).get("members") or []
@@ -1262,6 +1270,12 @@ def _cast_presence_note(plan, state, slot_no, config=None):
         lines.append(
             "Do not give the absent characters dialogue, actions, thoughts or feelings. "
             "They are not here.")
+
+    # v13.5.2 (D9): the man's messages carry presence only -- no LEAVES / ARRIVES / CUT-AWAY.
+    # The assistant reply for the same slot gets those directives; handing them to the man as well
+    # made both sides narrate the same departure, back to back.
+    if not transitions:
+        return "\n\n" + "\n".join(lines) + "\n"
 
     exit_guidance = [str(g).strip() for g in (config.get("exit_guidance") or []) if str(g).strip()]
     arrival_guidance = [str(g).strip() for g in (config.get("arrival_guidance") or []) if str(g).strip()]
@@ -2429,8 +2443,12 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # ARRIVES directive, and scene_cast_state is still the initial state here.
                 _opening_cast_note = ""
                 if scene_cast_plan["members"]:
+                    # v13.5.2 (D9): presence only. Slot 1 never emits a transition anyway
+                    # (_build_scene_cast_plan clamps join_slot to >= 2), so this is belt and
+                    # braces -- but it keeps the man's note shape identical on both paths.
                     _opening_cast_note = _cast_presence_note(
-                        scene_cast_plan, scene_cast_state, 1, scene_cast_note_config)
+                        scene_cast_plan, scene_cast_state, 1, scene_cast_note_config,
+                        transitions=False)
 
                 question_system_prompt = current_system_prompt_for_task + (QUESTION_USER_SIDE if character_injection else "")
                 initial_user_question = generate_question(
@@ -2993,9 +3011,15 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # the model reads is who may speak.
                 _cont_cast_note = ""
                 if scene_cast_plan["members"]:
+                    # v13.5.2 (D9): presence only, NOT the transition note. The answer reply for
+                    # this same slot is built from slot_notes(turn_num + 1 + greeting_offset) and
+                    # carries the LEAVES / ARRIVES directive; giving the man the same directive
+                    # made both sides narrate the same beat (D9). He still learns who is present
+                    # and who is not, which is what D4 needed.
                     _cont_cast_note = _cast_presence_note(
                         scene_cast_plan, scene_cast_state,
-                        turn_num + 2 + greeting_offset, scene_cast_note_config)
+                        turn_num + 2 + greeting_offset, scene_cast_note_config,
+                        transitions=False)
                 user_continuation_reply = generate_user_continuation(
                     system_prompt=current_system_prompt_for_turn,
                     conversation_history_for_llm=list(current_llm_conversation_context),
