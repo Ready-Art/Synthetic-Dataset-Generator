@@ -1522,6 +1522,25 @@ samplers:
   slop_fixer_params: {}
   anti_slop_params: {}
 gender: female
+metrics:
+  # v13.3.0: show the antislop-vllm-fork proxy's OWN metrics as extra columns on the
+  # 📊 Metrics tab (Proxy Requests / Bans (fixed/total) / Proxy Errors / Proxy Gen Speed,
+  # plus the rest of the fork's counters since v13.4.0).
+  #
+  # OFF by default: a plain vLLM serves no `antislop:` metrics, so the columns would be empty
+  # dashes for everyone not running the fork. The vLLM columns are unaffected either way.
+  # The fork's GET /metrics serves its own counters alongside the upstream vLLM body, so this
+  # needs no second URL -- point the API slot at the fork and both sets arrive.
+  #
+  # v13.4.0: you do NOT need to set this to see them. The tab shows the proxy columns
+  # whenever a slot is actually serving `antislop:` metrics, because a shipped config.yml does not
+  # gain a new key automatically. This key still decides for a plain vLLM.
+  antislop_columns: false
+  # v13.5.0: write the polled history to output/metrics_history.json every poll cycle, so the
+  # figures survive the window closing and a crash loses at most one interval. ON by default:
+  # it is gitignored local run data, and it changes no request, prompt or output row. Set it to
+  # false on a read-only or network filesystem.
+  save_history: true
 datasets:
   sources: []
 control:

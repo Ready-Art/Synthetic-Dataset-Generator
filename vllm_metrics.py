@@ -49,7 +49,15 @@ Two important rules
 The poller is a daemon thread started by ``start_polling()`` from ``generate.py`` once the main
 window exists. It never runs in a test, the CLI or a headless run unless something calls it, and it
 only issues a GET against ``/metrics`` -- it sends no inference request and changes no config.
+
+**It polls whether or not the Metrics tab is open** (v13.5.0). The tab is a *view* of the history,
+not the thing that collects it: gating the poll on the visible tab meant the graphs were empty for
+the first 10 s after every tab switch and the history had holes wherever the user was looking at
+something else. The history is also written to ``output/metrics_history.json`` (every ``SAVE_INTERVAL_SECONDS``,
+plus once on shutdown), so it survives the window closing.
 """
+import json
+import os
 import threading
 import time
 from urllib.parse import urlsplit
@@ -57,18 +65,37 @@ from urllib.parse import urlsplit
 import requests
 
 # --- tuning ------------------------------------------------------------------
-# 10 s is one refresh of the tab and keeps the deltas large enough for a stable rate.
-POLL_INTERVAL_SECONDS = 10.0
+# v13.5.0: 2 s, down from 10 s.  At 10 s the tab was visibly stale and the graphs were
+# coarse: a 40-thread run finishes several requests between two polls, so a burst of bans
+# landed as one tall spike and a short stall vanished between samples entirely.  /metrics is a
+# cheap local GET (a few KB of text), so 2 s costs nothing measurable and makes the rates
+# trustworthy -- a rate is a delta over the interval, and a shorter interval means less
+# averaging over work that happened at a different moment.
+POLL_INTERVAL_SECONDS = 2.0
 # /metrics is a cheap local endpoint; a short timeout keeps a dead host from stalling a poll.
-REQUEST_TIMEOUT_SECONDS = 3.0
-# 120 samples at 10 s = 20 minutes of graph history, matching the graph's window.
-HISTORY_LENGTH = 120
+# It must stay BELOW the poll interval, or one dead host would push every other endpoint's
+# samples apart and make their rates wrong too.
+REQUEST_TIMEOUT_SECONDS = 1.5
+# 300 samples at 2 s = 10 minutes of graph history.  The old 120 samples was 20 minutes at
+# 10 s, so the window is shorter but far denser: the graph is now smooth enough to read a
+# trend from instead of joining a handful of points with straight lines.
+HISTORY_LENGTH = 300
+# How often the history is written to disk.  Deliberately SLOWER than the poll interval: the
+# document is a few hundred KB, and rewriting it every 2 s is pointless churn on an SD card for
+# telemetry that only needs to survive a restart.  A crash loses at most this much history.
+SAVE_INTERVAL_SECONDS = 30.0
 
 # --- per-slot own measurement -------------------------------------------------
 # {slot_idx: {"prompt_tokens": int, "completion_tokens": int, "requests": int,
 #             "seconds": float, "first_at": float|None, "last_at": float|None}}
 _slot_usage = {}
 _slot_usage_lock = threading.Lock()
+
+# --- per-slot throughput history (v13.4.0) ------------------------------------
+# {slot_idx: [{"time": float, "tokens_per_second": float|None}, ...]}
+# Kept apart from the per-URL history because two slots can share one URL.
+_slot_history = {}
+_slot_history_lock = threading.Lock()
 
 # --- endpoint state ----------------------------------------------------------
 # {metrics_url: {"counters": {...}|None, "sample_at": float|None,
@@ -244,6 +271,42 @@ def _first_value(samples, name, label_filter=None, default=None):
     return default
 
 
+def _series_by_label(samples, name, label_name):
+    """``{label_value: summed_value}`` for one metric, grouped by a single label.
+
+    Used for the proxy's per-status request counts and its per-validator ban counts, which are
+    naturally several series of one metric rather than several metrics.  An empty dict means the metric
+    is absent, so a caller can tell "no such metric" from "every series is zero".
+    """
+    entries = samples.get(name)
+    if not entries:
+        return {}
+    grouped = {}
+    for labels, value in entries:
+        key = labels.get(label_name) or ""
+        grouped[key] = grouped.get(key, 0.0) + value
+    return grouped
+
+
+def _bans_by_validator(samples):
+    """``{validator: {"total": n, "fixed": n}}`` from ``antislop:ban_events_total``.
+
+    The pair is what a ban-list tuner needs: a validator with a large ``total`` and a small ``fixed``
+    is firing on things the model cannot avoid, so the list (not the model) is what to change.
+    """
+    entries = samples.get("antislop:ban_events_total")
+    if not entries:
+        return {}
+    grouped = {}
+    for labels, value in entries:
+        validator = labels.get("validator") or "unknown"
+        bucket = grouped.setdefault(validator, {"total": 0.0, "fixed": 0.0})
+        bucket["total"] += value
+        if labels.get("fixed") == "true":
+            bucket["fixed"] += value
+    return grouped
+
+
 def _model_name(samples):
     """The model a vLLM exposes, read from any sample's ``model_name`` label."""
     for entries in samples.values():
@@ -257,6 +320,111 @@ def _model_name(samples):
 def is_vllm_metrics(samples):
     """True when a parsed body really came from vLLM (any ``vllm:`` metric present)."""
     return any(name.startswith("vllm:") for name in samples)
+
+
+def is_antislop_metrics(samples):
+    """True when the body carries the antislop-vllm-fork proxy's own ``antislop:`` metrics (v13.3.0).
+
+    The fork's ``GET /metrics`` concatenates the upstream vLLM body with its own counters, so a slot
+    pointed at the fork usually has BOTH prefixes.  A body with only ``antislop:`` is a fork whose
+    upstream vLLM is down: it is still a REACHABLE endpoint, which is why this is a separate test
+    from :func:`is_vllm_metrics` rather than folded into it.
+    """
+    return any(name.startswith("antislop:") for name in samples)
+
+
+def summarise_antislop(samples):
+    """Reduce the fork's ``antislop:`` metrics to the figures the tab can show (v13.3.0).
+
+    Every value is ``None`` when the metric is absent, so a plain vLLM body (which has no
+    ``antislop:`` metric at all) yields an all-``None`` summary rather than a page of zeroes that
+    would read as "this proxy did nothing".
+
+    ``ban_fixed`` is the subset of ``ban_events`` whose back-track succeeded, which is the number to
+    watch when tuning a ban list: a large ``ban_events`` with a small ``ban_fixed`` means the list is
+    firing on things the model cannot avoid.
+    """
+    ban_total = _sum_series(samples, "antislop:ban_events_total")
+    ban_fixed = _sum_series(samples, "antislop:ban_events_total", {"fixed": "true"})
+    by_status = _series_by_label(samples, "antislop:requests_total", "status")
+    by_finish = _series_by_label(samples, "antislop:generations_total", "finish_reason")
+    by_stream = _series_by_label(samples, "antislop:streaming_requests_total", "stream")
+    duration_sum = _sum_series(samples, "antislop:request_duration_seconds_sum")
+    duration_count = _sum_series(samples, "antislop:request_duration_seconds_count")
+    return {
+        "requests": _sum_series(samples, "antislop:requests_total"),
+        "requests_by_status": by_status or None,
+        "requests_failed": (sum(value for status, value in by_status.items()
+                                if not status.startswith("2")) if by_status else None),
+        "in_flight": _first_value(samples, "antislop:requests_in_flight"),
+        "duration_seconds": duration_sum,
+        "duration_count": duration_count,
+        "streaming": _sum_series(samples, "antislop:streaming_requests_total"),
+        "streaming_by_stream": by_stream or None,
+        "generations": _sum_series(samples, "antislop:generations_total"),
+        "generations_by_finish": by_finish or None,
+        "generation_tokens": _sum_series(samples, "antislop:generation_tokens_total"),
+        "prompt_tokens": _sum_series(samples, "antislop:prompt_tokens_total"),
+        "ban_events": ban_total,
+        "ban_fixed": ban_fixed,
+        "bans_by_validator": _bans_by_validator(samples) or None,
+        "backtracks": _sum_series(samples, "antislop:backtracks_total"),
+        "upstream_errors": _sum_series(samples, "antislop:upstream_errors_total"),
+        "scrape_errors": _sum_series(
+            samples, "antislop:upstream_metrics_scrape_total", {"result": "error"}),
+        "scrape_ok": _sum_series(
+            samples, "antislop:upstream_metrics_scrape_total", {"result": "ok"}),
+        "last_scrape_at": _first_value(
+            samples, "antislop:upstream_metrics_last_scrape_timestamp_seconds"),
+    }
+
+
+def compute_antislop_rates(current, previous, elapsed_seconds):
+    """The proxy's own token-generation speed between two ``summarise_antislop()`` snapshots.
+
+    This is deliberately NOT the same figure as :func:`compute_rates`' ``generation_tps``.  vLLM's
+    figure divides by the server's own decode timer, so it measures the GPU.  This one divides by the
+    **wall clock** between two polls, so it measures what the client actually received end to end --
+    the gap between the two is the proxy's own overhead, which is the whole reason to show both.
+
+    A single snapshot reports ``None`` rather than a guess, and a negative delta (a restarted proxy
+    zeroed its counters) drops the sample instead of drawing a spike.
+    """
+    rates = {"generation_tps": None, "ban_rate": None, "backtrack_rate": None,
+             "avg_request_seconds": None}
+    if previous is None or elapsed_seconds is None or elapsed_seconds <= 0:
+        return rates
+    tokens = _delta(current.get("generation_tokens"), previous.get("generation_tokens"))
+    if tokens is not None and tokens > 0:
+        rates["generation_tps"] = tokens / elapsed_seconds
+    bans = _delta(current.get("ban_events"), previous.get("ban_events"))
+    if bans is not None and bans > 0:
+        rates["ban_rate"] = bans / elapsed_seconds
+    backtracks = _delta(current.get("backtracks"), previous.get("backtracks"))
+    if backtracks is not None and backtracks > 0:
+        rates["backtrack_rate"] = backtracks / elapsed_seconds
+    # The mean time one request spent inside the proxy, from the summary's own sum/count pair.
+    # A DELTA of both keeps it a window figure rather than a lifetime average.
+    duration_sum = _delta(current.get("duration_seconds"), previous.get("duration_seconds"))
+    duration_count = _delta(current.get("duration_count"), previous.get("duration_count"))
+    if duration_sum is not None and duration_count is not None and duration_count > 0:
+        rates["avg_request_seconds"] = duration_sum / duration_count
+    return rates
+
+
+def antislop_columns_enabled(config=None):
+    """Whether the 📊 Metrics tab shows the proxy's own columns (``metrics.antislop_columns``).
+
+    **Off by default.**  A plain vLLM serves no ``antislop:`` metrics, so a default run's tab must be
+    exactly what it was before v13.3.0 (see the "features opt-in by default" rule in AGENTS.md).
+
+    ``config=None`` reads ``app_state.global_config``, the same fallback :func:`_slot_urls` uses, so the
+    UI can call this with no argument and a test can pass a plain dict.
+    """
+    if config is None:
+        import app_state
+        config = app_state.global_config
+    return bool(_config_get(config, "metrics.antislop_columns", False))
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +584,37 @@ def slot_usage_rows():
     return [(idx, slot_usage(idx)) for idx in indices]
 
 
+def record_slot_history(config=None):
+    """Append one throughput sample per configured slot, for the per-slot graph (v13.4.0).
+
+    Called once per poll cycle.  A slot's own throughput is measured from its responses, not from
+    the server, so it needs its own ring: the per-URL history cannot hold it, because two slots may
+    share one URL and would then overwrite each other's line.
+    """
+    now = time.time()
+    for slot_idx, _api_url in _slot_urls(config):
+        usage = slot_usage(slot_idx) or {}
+        with _slot_history_lock:
+            ring = _slot_history.setdefault(slot_idx, [])
+            ring.append({"time": now,
+                         "tokens_per_second": usage.get("tokens_per_second")})
+            overflow = len(ring) - HISTORY_LENGTH
+            if overflow > 0:
+                del ring[:overflow]
+
+
+def slot_history(slot_idx):
+    """A copy of one slot's throughput ring, oldest first (empty before its first poll)."""
+    with _slot_history_lock:
+        return list(_slot_history.get(int(slot_idx), ()))
+
+
+def reset_slot_history():
+    """Forget every slot's throughput ring (a new run starts from a clean baseline)."""
+    with _slot_history_lock:
+        _slot_history.clear()
+
+
 # ---------------------------------------------------------------------------
 # Polling
 # ---------------------------------------------------------------------------
@@ -489,7 +688,7 @@ def poll_endpoint(metrics_url, now=None):
     text, error = _fetch_metrics(metrics_url)
     with _endpoints_lock:
         state = _endpoints.setdefault(metrics_url, {
-            "counters": None, "sample_at": None, "model": "",
+            "counters": None, "antislop_counters": None, "sample_at": None, "model": "",
             "error": None, "history": [], "last": {},
         })
 
@@ -499,15 +698,23 @@ def poll_endpoint(metrics_url, now=None):
         return state
 
     samples = parse_prometheus_text(text)
-    if not is_vllm_metrics(samples):
+    # v13.3.0: the antislop-vllm-fork's /metrics carries its own antislop: metrics alongside the
+    # upstream vllm: ones, and a fork whose upstream vLLM is DOWN still answers with only the
+    # antislop: half.  That is a REACHABLE endpoint, not an error, so either prefix is enough.
+    has_vllm = is_vllm_metrics(samples)
+    has_antislop = is_antislop_metrics(samples)
+    if not (has_vllm or has_antislop):
         with _endpoints_lock:
             state["error"] = "not a vLLM endpoint (no vllm: metrics)"
         return state
 
     current = summarise(samples)
+    antislop_current = summarise_antislop(samples)
     previous = state["counters"]
+    antislop_previous = state.get("antislop_counters")
     elapsed = None if state["sample_at"] is None else now - state["sample_at"]
     rates = compute_rates(current, previous, elapsed)
+    antislop_rates = compute_antislop_rates(antislop_current, antislop_previous, elapsed)
 
     sample = {
         "time": now,
@@ -516,15 +723,29 @@ def poll_endpoint(metrics_url, now=None):
         "load_percent": current["load_percent"],
         "running": current["running"],
         "waiting": current["waiting"],
+        "antislop_generation_tps": antislop_rates["generation_tps"],
+        "antislop_ban_events": antislop_current["ban_events"],
+        # v13.4.0: the rest of the proxy's figures, so the new graph panels have a history to
+        # draw.  ``None`` for a plain vLLM, which draws a gap rather than a zero line.
+        "antislop_ban_rate": antislop_rates["ban_rate"],
+        "antislop_backtrack_rate": antislop_rates["backtrack_rate"],
+        "antislop_in_flight": antislop_current["in_flight"],
+        "antislop_avg_request_seconds": antislop_rates["avg_request_seconds"],
+        "antislop_upstream_errors": antislop_current["upstream_errors"],
+        "antislop_requests": antislop_current["requests"],
     }
     # ``last`` is what the table reads: the gauges from this snapshot plus the rates derived
     # from it, so one dict holds everything one row needs.
     latest = dict(current)
     latest.update(rates)
     latest["sample_at"] = now
+    latest["antislop"] = antislop_current
+    latest["antislop_rates"] = antislop_rates
+    latest["is_antislop"] = has_antislop
 
     with _endpoints_lock:
         state["counters"] = current
+        state["antislop_counters"] = antislop_current
         state["sample_at"] = now
         state["model"] = current["model"] or state["model"]
         state["error"] = None
@@ -542,14 +763,37 @@ def poll_once(config=None):
 
     The same URL is fetched ONCE per cycle however many slots use it (two slots on one server
     must not double the request rate), then every slot builds its own row from that one result.
+
+    v13.5.0: the endpoints are fetched **concurrently**, one short-lived thread each.  Serially, a
+    single dead or slow host cost every later endpoint its sample for that cycle -- with a 1.5 s
+    timeout and four endpoints that is up to 6 s of skew, which is exactly what made the figures
+    look "missing" and the rates unreliable.  Now the cycle takes as long as the SLOWEST endpoint,
+    not the sum of all of them, so one bad host cannot starve the others.
     """
     metrics_urls = []
     for _slot_idx, api_url in _slot_urls(config):
         metrics_url = metrics_url_for_api_url(api_url)
         if metrics_url and metrics_url not in metrics_urls:
             metrics_urls.append(metrics_url)
+    if not metrics_urls:
+        return metrics_urls
+
+    # One thread per endpoint, joined before returning so a caller still sees a complete cycle.
+    # ``poll_endpoint()`` never raises, so a thread cannot leak an exception.
+    threads = []
     for metrics_url in metrics_urls:
-        poll_endpoint(metrics_url)
+        thread = threading.Thread(target=poll_endpoint, args=(metrics_url,),
+                                  name="vllm-metrics-fetch", daemon=True)
+        thread.start()
+        threads.append(thread)
+    for thread in threads:
+        thread.join(timeout=REQUEST_TIMEOUT_SECONDS + 1.0)
+
+    # v13.4.0: one throughput sample per slot for the per-slot graph.  Done here rather than in
+    # poll_endpoint() because that function is per-URL, and a slot is not a URL.
+    record_slot_history(config)
+    # v13.5.0: persist the cycle, so the history survives the window closing.
+    save_snapshot(config)
     return metrics_urls
 
 
@@ -571,10 +815,14 @@ def start_polling(interval=POLL_INTERVAL_SECONDS):
 
     Called from ``generate.py`` once the main window exists. It is deliberately NOT started by
     import: a test, the CLI and a headless run must not poll anything.
+
+    v13.5.0: the previous run's saved history is loaded first, so the graphs open with real samples
+    instead of an empty canvas.  A missing or unreadable snapshot is ignored.
     """
     global _poller_thread
     if _poller_thread is not None and _poller_thread.is_alive():
         return _poller_thread
+    load_snapshot()
     _poller_stop.clear()
     _poller_thread = threading.Thread(
         target=_poller_loop, args=(interval,), name="vllm-metrics-poller", daemon=True)
@@ -583,19 +831,238 @@ def start_polling(interval=POLL_INTERVAL_SECONDS):
 
 
 def stop_polling():
-    """Ask the background poller to exit (used on window close and by the tests)."""
+    """Ask the background poller to exit (used on window close and by the tests).
+
+    v13.5.0: writes a FINAL snapshot before returning, so the last interval before the window
+    closed is not lost to the save throttle.  ``force=True`` because the throttle would otherwise
+    skip it whenever the window is closed within ``SAVE_INTERVAL_SECONDS`` of the last write.
+    """
     global _poller_thread
     _poller_stop.set()
     thread = _poller_thread
     if thread is not None and thread.is_alive():
         thread.join(timeout=REQUEST_TIMEOUT_SECONDS + 1)
     _poller_thread = None
+    save_snapshot(force=True)
 
 
 def reset_endpoints():
     """Forget every endpoint and its history (a new run starts from a clean baseline)."""
     with _endpoints_lock:
         _endpoints.clear()
+
+
+# ---------------------------------------------------------------------------
+# Persistence (v13.5.0)
+#
+# The poller runs whether or not the Metrics tab is open, and the history is written to
+# ``output/metrics_history.json`` every cycle.  Two reasons:
+#
+# 1. **The figures outlive the window.**  Before this, closing the generator threw away every
+#    sample, so a user who wanted to know why a run slowed down had to have had the tab open at
+#    the time.  The file is a plain JSON document, readable with ``jq`` or a notebook.
+# 2. **A crash loses at most one interval.**  The write is atomic (temp file + ``os.replace``),
+#    so a kill mid-write cannot leave a truncated file that fails to parse on the next start.
+#
+# It is deliberately NOT a growing log: the same bounded ring the graphs draw is what is saved, so
+# the file stays a few hundred KB however long the run is.  ``metrics.save_history: false`` turns
+# it off for a user who does not want the writes.
+# ---------------------------------------------------------------------------
+
+# ``output/`` is the same directory the dataset, the log and the run state use (app_state.OUTPUT_DIR).
+METRICS_HISTORY_FILENAME = "metrics_history.json"
+
+_save_lock = threading.Lock()
+_last_save_at = 0.0
+
+
+def _round_floats(value, digits=3, drop_none=False):
+    """Round every float in a nested document, so the JSON is not 17 digits per sample.
+
+    A ``repr(float)`` of a rate is ~18 characters; three decimals is far more precision than a
+    graph can show.  ``drop_none`` also omits ``null`` values, which is what makes a plain-vLLM
+    sample half the size: it carries seven ``antislop_*`` keys that are all ``None``, and a missing
+    key already reads back as ``None`` (see ``load_snapshot()``).  Nothing is turned into ``0.0``, so
+    "this endpoint does not report that figure" stays distinguishable from "it reported zero".
+    """
+    if isinstance(value, float):
+        return round(value, digits)
+    if isinstance(value, dict):
+        return {key: _round_floats(item, digits, drop_none)
+                for key, item in value.items()
+                if not (drop_none and item is None)}
+    if isinstance(value, list):
+        return [_round_floats(item, digits, drop_none) for item in value]
+    return value
+
+
+def history_path(config=None):
+    """Where the metrics history is written: ``<output>/metrics_history.json``.
+
+    Read from ``app_state.OUTPUT_DIR`` so it follows the same directory as every other output
+    file.  Falls back to ``output/`` when ``app_state`` is not importable (a bare script), so a
+    caller never has to care which it is.
+    """
+    try:
+        import app_state
+        output_dir = getattr(app_state, "OUTPUT_DIR", "output")
+    except Exception:
+        output_dir = "output"
+    return os.path.join(output_dir, METRICS_HISTORY_FILENAME)
+
+
+def save_history_enabled(config=None):
+    """Whether the poller writes ``output/metrics_history.json`` (``metrics.save_history``).
+
+    **On by default** (v13.5.0).  Unlike the antislop COLUMNS, this writes a file in ``output/``,
+    which is gitignored local run data -- it changes no request, no prompt and no output row, so
+    the "a default run stays byte-identical" rule is not in play.  The key exists so a user on a
+    read-only or network filesystem can turn it off.
+    """
+    if config is None:
+        try:
+            import app_state
+            config = app_state.global_config
+        except Exception:
+            return True
+    return bool(_config_get(config, "metrics.save_history", True))
+
+
+def _generator_version():
+    """The generator's version string, or ``""`` when it cannot be read.
+
+    Read lazily from ``control.GENERATOR_VERSION`` (the one place the version is declared) rather
+    than imported at module scope: ``control`` pulls in the control socket, and this module must
+    stay importable headlessly with no side effects.
+    """
+    try:
+        import control
+        return str(getattr(control, "GENERATOR_VERSION", "") or "")
+    except Exception:
+        return ""
+
+
+def _history_document(config=None):
+    """The serialisable snapshot of every endpoint and every slot.
+
+    Built under the locks so a concurrent poll cannot produce a half-updated document.  ``last`` is
+    dropped: it is the derived per-row view, and re-deriving it from ``counters`` on load is both
+    smaller and impossible to get out of step with the history.
+    """
+    now = time.time()
+    with _endpoints_lock:
+        endpoints = {}
+        for url, state in _endpoints.items():
+            endpoints[url] = {
+                "model": state.get("model") or "",
+                "error": state.get("error"),
+                "sample_at": state.get("sample_at"),
+                "counters": state.get("counters"),
+                "antislop_counters": state.get("antislop_counters"),
+                "history": list(state.get("history") or []),
+            }
+    with _slot_history_lock:
+        slots = {str(idx): list(ring) for idx, ring in _slot_history.items()}
+    with _slot_usage_lock:
+        usage = {str(idx): dict(entry) for idx, entry in _slot_usage.items()}
+    return {
+        "version": 1,
+        "generator_version": _generator_version(),
+        "saved_at": now,
+        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
+        "history_length": HISTORY_LENGTH,
+        "endpoints": endpoints,
+        "slots": slots,
+        "slot_usage": usage,
+    }
+
+
+def save_snapshot(config=None, force=False):
+    """Write the metrics history to ``output/metrics_history.json``.  Never raises.
+
+    Throttled to ``SAVE_INTERVAL_SECONDS`` unless ``force`` is set: the document is a few hundred
+    KB and rewriting it on every 2 s poll is pointless churn on an SD card.  ``force=True`` is what
+    shutdown uses, so the last interval is never lost.
+
+    Atomic: the document goes to a temp file in the same directory, then ``os.replace()`` swaps it
+    in, so a crash or a kill mid-write leaves the previous good file rather than a truncated one.
+    A failure is swallowed -- losing a telemetry snapshot must never fail a generation request or
+    kill the poller thread.
+    """
+    global _last_save_at
+    if not save_history_enabled(config):
+        return None
+    now = time.time()
+    if not force and (now - _last_save_at) < SAVE_INTERVAL_SECONDS:
+        return None
+    path = history_path(config)
+    try:
+        document = _round_floats(_history_document(config), drop_none=True)
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        with _save_lock:
+            temp_path = path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(document, handle, separators=(",", ":"))
+            os.replace(temp_path, path)
+        _last_save_at = now
+        return path
+    except Exception:
+        return None
+
+
+def load_snapshot(config=None):
+    """Restore a saved history document, returning how many endpoints were loaded.
+
+    Called once at startup so the graphs open with the previous run's samples rather than an empty
+    canvas.  A missing, unreadable or newer-versioned file is ignored (returns 0) -- a stale
+    snapshot must never stop the app from starting.
+    """
+    path = history_path(config)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except Exception:
+        return 0
+    if not isinstance(document, dict) or document.get("version") != 1:
+        return 0
+
+    loaded = 0
+    with _endpoints_lock:
+        for url, saved in (document.get("endpoints") or {}).items():
+            if not isinstance(saved, dict):
+                continue
+            history = [sample for sample in (saved.get("history") or [])
+                       if isinstance(sample, dict) and "time" in sample]
+            _endpoints[url] = {
+                "counters": saved.get("counters"),
+                "antislop_counters": saved.get("antislop_counters"),
+                "sample_at": saved.get("sample_at"),
+                "model": saved.get("model") or "",
+                "error": saved.get("error"),
+                "history": history[-HISTORY_LENGTH:],
+                "last": {},
+            }
+            loaded += 1
+    with _slot_history_lock:
+        for key, ring in (document.get("slots") or {}).items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(ring, list):
+                _slot_history[idx] = [
+                    sample for sample in ring
+                    if isinstance(sample, dict) and "time" in sample][-HISTORY_LENGTH:]
+    with _slot_usage_lock:
+        for key, entry in (document.get("slot_usage") or {}).items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(entry, dict):
+                _slot_usage[idx] = dict(entry)
+    return loaded
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +1103,8 @@ def endpoint_rows(config=None):
         state = state_snapshot.get(metrics_url)
         own = slot_usage(slot_idx) or {}
         last = (state or {}).get("last") or {}
+        antislop = last.get("antislop") or {}
+        antislop_rates = last.get("antislop_rates") or {}
         rows.append({
             "slot_idx": slot_idx,
             "label": SLOT_LABELS.get(slot_idx, "API {}".format(slot_idx + 1)),
@@ -652,6 +1121,33 @@ def endpoint_rows(config=None):
             "generation_tokens": own.get("completion_tokens"),
             "requests": own.get("requests"),
             "slot_tokens_per_second": own.get("tokens_per_second"),
+            # v13.3.0: the antislop-vllm-fork proxy's own figures.  ``None`` for a plain vLLM
+            # (which serves no antislop: metrics), so the columns render "-" and nothing is invented.
+            "is_antislop": bool(last.get("is_antislop")),
+            "antislop_requests": antislop.get("requests"),
+            "antislop_ban_events": antislop.get("ban_events"),
+            "antislop_ban_fixed": antislop.get("ban_fixed"),
+            "antislop_upstream_errors": antislop.get("upstream_errors"),
+            "antislop_scrape_errors": antislop.get("scrape_errors"),
+            "antislop_in_flight": antislop.get("in_flight"),
+            "antislop_generation_tps": antislop_rates.get("generation_tps"),
+            # v13.4.0: the rest of the proxy's figures, so the tab can show all twelve metrics
+            # the fork emits rather than four of them.
+            "antislop_prompt_tokens": antislop.get("prompt_tokens"),
+            "antislop_generation_tokens": antislop.get("generation_tokens"),
+            "antislop_generations": antislop.get("generations"),
+            "antislop_streaming": antislop.get("streaming"),
+            "antislop_backtracks": antislop.get("backtracks"),
+            "antislop_requests_failed": antislop.get("requests_failed"),
+            "antislop_scrape_ok": antislop.get("scrape_ok"),
+            "antislop_last_scrape_at": antislop.get("last_scrape_at"),
+            "antislop_avg_request_seconds": antislop_rates.get("avg_request_seconds"),
+            "antislop_ban_rate": antislop_rates.get("ban_rate"),
+            "antislop_backtrack_rate": antislop_rates.get("backtrack_rate"),
+            "antislop_bans_by_validator": antislop.get("bans_by_validator"),
+            "antislop_generations_by_finish": antislop.get("generations_by_finish"),
+            "antislop_requests_by_status": antislop.get("requests_by_status"),
+            "slot_history": slot_history(slot_idx),
             "history": (state or {}).get("history") or [],
         })
     return rows
@@ -711,6 +1207,54 @@ def format_tokens(tokens):
         return "{:,}".format(int(tokens))
     except (TypeError, ValueError):
         return "-"
+
+
+def format_duration(seconds):
+    """A duration the way the table shows it: ``820 ms``, ``2.4 s``, ``1m 12s``, or ``-``."""
+    if seconds is None:
+        return "-"
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "-"
+    if value < 0:
+        return "-"
+    if value < 1:
+        return "{:.0f} ms".format(value * 1000.0)
+    if value < 60:
+        return "{:.1f} s".format(value)
+    minutes, rest = divmod(value, 60.0)
+    return "{:.0f}m {:.0f}s".format(minutes, rest)
+
+
+def format_rate_per_minute(per_second):
+    """A per-second rate shown per minute: ``18.0/min``, or ``-``.
+
+    Bans and back-tracks are rare enough that a per-second figure is always a small fraction;
+    per minute is the unit a user can actually read.
+    """
+    if per_second is None:
+        return "-"
+    try:
+        value = float(per_second) * 60.0
+    except (TypeError, ValueError):
+        return "-"
+    if value >= 100:
+        return "{:,.0f}/min".format(value)
+    return "{:.1f}/min".format(value)
+
+
+def format_ratio(numerator, denominator):
+    """``numerator / denominator`` as a percentage: ``62%``, or ``-`` when it cannot be told."""
+    if numerator is None or denominator is None:
+        return "-"
+    try:
+        top, bottom = float(numerator), float(denominator)
+    except (TypeError, ValueError):
+        return "-"
+    if bottom <= 0:
+        return "-"
+    return "{:.0f}%".format(100.0 * top / bottom)
 
 
 def describe_load(load_percent):

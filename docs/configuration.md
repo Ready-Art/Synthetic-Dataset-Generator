@@ -240,3 +240,58 @@ frame, so set the first-word cap well above the frame cap.
 > path is [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) — the **`dev` branch,
 > not `main`** — which filters at the token level during generation and removes the fixer round trips
 > entirely. Full reasoning in [Slop & Anti-Slop](slop-and-antislop.md).
+
+## Metrics Tab Settings
+
+```yaml
+metrics:
+  antislop_columns: false   # show the antislop-vllm-fork proxy's own columns on the 📊 Metrics tab
+  save_history: true        # write the polled history to output/metrics_history.json
+```
+
+`metrics.save_history` (v13.5.0) writes the 📊 Metrics tab's history to
+`output/metrics_history.json` every 30 seconds, so the figures survive the window closing. It ships
+**`true`**: the file is gitignored local run data and it changes no request, prompt or output row. The
+write is atomic (a temp file swapped in with `os.replace`), so a crash or a kill mid-write leaves the
+previous good file rather than a truncated one, and a final snapshot is written on shutdown. Set it to
+`false` on a read-only or network filesystem.
+
+The file is a plain JSON document holding each endpoint's history ring, each slot's throughput ring and
+the per-slot token totals, so it can be read with `jq` or a notebook:
+
+```sh
+jq '.endpoints | to_entries[] | {url: .key, samples: (.value.history | length)}' \
+   output/metrics_history.json
+```
+
+`metrics.antislop_columns` (v13.3.0) adds the proxy's own columns to the 📊 Metrics tab: **Proxy Requests**,
+**Bans (fixed/total)**, **Proxy Errors** and **Proxy Gen Speed**, plus (v13.4.0) **Proxy Failed**,
+**In Flight**, **Avg Proxy Time**, **Proxy Prompt Tok**, **Proxy Gen Tok**, **Ban Rate**, **Backtracks** and
+**Upstream Scrapes**. They are read from the
+[AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) proxy's own `GET /metrics`
+endpoint, which serves its `antislop:` counters alongside the upstream vLLM body — so pointing an API slot
+at the fork gives you both sets of figures from the one URL. No second URL is needed.
+
+It ships **`false`** because a plain vLLM serves no `antislop:` metrics, so the columns would be empty
+dashes for anyone not running the fork. The vLLM columns (prompt speed, generation speed, endpoint load)
+are unaffected either way: they come from the upstream body the fork passes through verbatim.
+
+**You do not have to set this key to see the columns.** From v13.4.0 the tab shows them whenever a slot is
+actually serving `antislop:` metrics, whether or not the key is set — a shipped `config.yml` does not gain a new
+key automatically, so requiring the key meant a fork user saw an empty-looking tab and concluded the feature was
+broken. The key still decides for a **plain vLLM**, which is why a default run's tab is unchanged.
+
+**Bans (fixed/total)** is the one to watch when tuning a ban list. A large total with a small fixed count
+means the list is firing on things the model cannot avoid, which costs a back-track and a restart for every
+hit and rarely produces a better answer. **Ban Rate** and **Backtracks** show the same thing as a rate, which is
+what you actually feel while a run is going: a ban every few seconds is a different problem from a ban every
+few minutes.
+
+**Avg Proxy Time** is the mean wall-clock time one request spent inside the proxy, from the proxy's own
+duration summary. Compare it with the vLLM **Generation Speed** column: a large average with a healthy generation
+speed means the proxy, not the GPU, is the bottleneck.
+
+**Proxy Gen Speed** is deliberately *not* the same figure as the vLLM **Generation Speed** column. vLLM's
+figure divides generation tokens by the server's own decode timer, so it measures the GPU. The proxy's figure
+divides by the wall clock between two polls, so it measures what the client actually received end to end. The
+gap between the two columns is the proxy's own overhead.

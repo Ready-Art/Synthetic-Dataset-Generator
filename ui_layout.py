@@ -192,8 +192,14 @@ def bind_scroll_wheel(canvas):
 
 
 class ScrollableFrame(ttk.Frame):
-    """An expanding viewport containing a vertically scrollable .content frame."""
-    def __init__(self, parent, horizontal=False, **kwargs):
+    """An expanding viewport containing a vertically scrollable .content frame.
+
+    ``wide_scrollbar`` swaps the theme's hairline ttk scrollbar for an explicit ``tk.Scrollbar``
+    with a real grab width.  The superhero theme draws a ~6px thumb, which is unusable with a
+    mouse on a long page -- the 📊 Metrics tab's graph stack is 1450px tall, so dragging the
+    thumb is the only practical way to move through it.
+    """
+    def __init__(self, parent, horizontal=False, wide_scrollbar=False, **kwargs):
         super().__init__(parent, **kwargs)
         self.horizontal = horizontal
         self.columnconfigure(0, weight=1)
@@ -202,11 +208,23 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.content = ttk.Frame(self.canvas)
         self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        if wide_scrollbar:
+            scale = self.winfo_fpixels("1i") / 96.0
+            options = dict(width=max(16, round(20 * scale)), background="#7a7a9a",
+                           troughcolor="#16161c", activebackground="#b0b0d0",
+                           highlightthickness=0, borderwidth=0, relief="flat")
+            scrollbar = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview,
+                                    **options)
+        else:
+            options = None
+            scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.scrollbar = scrollbar
         if horizontal:
-            bar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+            bar = (tk.Scrollbar(self, orient="horizontal", command=self.canvas.xview,
+                                **options) if options is not None
+                   else ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview))
             bar.grid(row=1, column=0, sticky="ew")
             self.canvas.configure(xscrollcommand=bar.set)
         self.content.bind("<Configure>", self._content_changed, add="+")

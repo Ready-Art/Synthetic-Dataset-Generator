@@ -38,7 +38,11 @@ What this file pins
 """
 
 import io
+import json as _json
 import os
+import shutil as _shutil
+import tempfile as _tempfile
+import time as _time
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -104,6 +108,116 @@ NOT_VLLM = """\
 http_requests_total{handler="/v1/models",method="GET",status="2xx"} 26.0
 """
 
+# --- antislop-vllm-fork bodies (v13.3.0) -------------------------------------
+# The fork's GET /metrics concatenates the upstream vLLM body with its own antislop: metrics, so a
+# slot pointed at the fork produces BOTH prefixes in one body.  This fixture is the two halves of
+# FIRST_POLL/SECOND_POLL plus the proxy counters, i.e. what the fork actually serves.
+ANTISLOP_FIRST = FIRST_POLL + """\
+# HELP antislop:requests_total Chat completion requests handled by this proxy, by endpoint and HTTP status.
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 40.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 2.0
+# TYPE antislop:generations_total counter
+antislop:generations_total{finish_reason="stop"} 38.0
+antislop:generations_total{finish_reason="length"} 2.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 9000.0
+# TYPE antislop:prompt_tokens_total counter
+antislop:prompt_tokens_total 95000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 30.0
+antislop:ban_events_total{validator="regex",fixed="false"} 5.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 1.0
+# TYPE antislop:upstream_metrics_scrape_total counter
+antislop:upstream_metrics_scrape_total{result="ok"} 1.0
+"""
+
+ANTISLOP_SECOND = SECOND_POLL + """\
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 60.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 1.0
+# TYPE antislop:generations_total counter
+antislop:generations_total{finish_reason="stop"} 58.0
+antislop:generations_total{finish_reason="length"} 2.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 11000.0
+# TYPE antislop:prompt_tokens_total counter
+antislop:prompt_tokens_total 125000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 50.0
+antislop:ban_events_total{validator="regex",fixed="false"} 7.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 2.0
+"""
+
+# A fork whose upstream vLLM is DOWN: only the antislop: half is served, and the scrape counter
+# says so.  This is a REACHABLE endpoint, not an error.
+ANTISLOP_ONLY = """\
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 12.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 0.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 3000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 9.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 4.0
+# TYPE antislop:upstream_metrics_scrape_total counter
+antislop:upstream_metrics_scrape_total{result="error"} 12.0
+"""
+
+
+# v13.4.0: the FULL proxy metric set, including the per-label series (status, validator,
+# finish_reason, stream) and the summary pair that v13.3.0 did not read.  Two snapshots so a
+# rate can be computed.
+FULL_FIRST = """\
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 100.0
+antislop:requests_total{endpoint="/v1/chat/completions",status="500"} 4.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 3.0
+# TYPE antislop:request_duration_seconds summary
+antislop:request_duration_seconds_sum 200.0
+antislop:request_duration_seconds_count 104.0
+# TYPE antislop:streaming_requests_total counter
+antislop:streaming_requests_total{stream="true"} 80.0
+antislop:streaming_requests_total{stream="false"} 24.0
+# TYPE antislop:generations_total counter
+antislop:generations_total{finish_reason="stop"} 100.0
+# TYPE antislop:prompt_tokens_total counter
+antislop:prompt_tokens_total 50000.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 8000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 20.0
+antislop:ban_events_total{validator="slop_phrase",fixed="false"} 5.0
+antislop:ban_events_total{validator="regex",fixed="true"} 10.0
+# TYPE antislop:backtracks_total counter
+antislop:backtracks_total 30.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 2.0
+# TYPE antislop:upstream_metrics_scrape_total counter
+antislop:upstream_metrics_scrape_total{result="ok"} 50.0
+antislop:upstream_metrics_scrape_total{result="error"} 1.0
+# TYPE antislop:upstream_metrics_last_scrape_timestamp_seconds gauge
+antislop:upstream_metrics_last_scrape_timestamp_seconds 1770000000.0
+"""
+
+FULL_SECOND = FULL_FIRST.replace("antislop:requests_total{endpoint=\"/v1/chat/completions\",status=\"200\"} 100.0",
+                                 "antislop:requests_total{endpoint=\"/v1/chat/completions\",status=\"200\"} 160.0") \
+    .replace("antislop:generation_tokens_total 8000.0", "antislop:generation_tokens_total 11000.0") \
+    .replace("antislop:backtracks_total 30.0", "antislop:backtracks_total 50.0") \
+    .replace("antislop:request_duration_seconds_sum 200.0",
+             "antislop:request_duration_seconds_sum 260.0") \
+    .replace("antislop:request_duration_seconds_count 104.0",
+             "antislop:request_duration_seconds_count 164.0") \
+    .replace("antislop:ban_events_total{validator=\"slop_phrase\",fixed=\"true\"} 20.0",
+             "antislop:ban_events_total{validator=\"slop_phrase\",fixed=\"true\"} 30.0")
+
 
 class _StubResponse:
     def __init__(self, text, status_code=200):
@@ -151,6 +265,7 @@ def _with_stub(stub):
 def _reset():
     vm.reset_endpoints()
     vm.reset_slot_usage()
+    vm.reset_slot_history()
 
 
 # --- 1. URL derivation -------------------------------------------------------
@@ -389,7 +504,263 @@ def test_the_judge_slot_is_its_own_row():
     assert rows[1]["label"] == "Judge (Quality)", rows[1]
 
 
-# --- 6. Formatting ---------------------------------------------------------
+# --- 6. The antislop-vllm-fork's own metrics (v13.3.0) ----------------------
+# The fork's GET /metrics concatenates the upstream vLLM body with its own antislop: metrics.
+# These checks pin the OPTIONAL half: a plain vLLM body must behave exactly as before.
+
+def test_an_antislop_body_is_recognised():
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(ANTISLOP_FIRST)) is True
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(ANTISLOP_ONLY)) is True
+    # A plain vLLM body has no antislop: metric, and must not be mistaken for one.
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(FIRST_POLL)) is False
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(NOT_VLLM)) is False
+
+
+def test_the_antislop_summary_reads_the_proxy_counters():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    assert summary["requests"] == 40.0, summary
+    assert summary["in_flight"] == 2.0, summary
+    assert summary["generations"] == 40.0, summary
+    assert summary["generation_tokens"] == 9000.0, summary
+    assert summary["prompt_tokens"] == 95000.0, summary
+    # Bans are split by outcome, so a list that fires but never fixes is visible.
+    assert summary["ban_events"] == 35.0, summary
+    assert summary["ban_fixed"] == 30.0, summary
+    assert summary["upstream_errors"] == 1.0, summary
+    # No result="error" sample in this body, so the figure is ABSENT, not zero: a zero would
+    # read as "scrapes are failing zero times", which is a different claim.
+    assert summary["scrape_errors"] is None, summary
+
+
+def test_the_antislop_summary_is_none_for_a_plain_vllm_body():
+    """Backwards compatibility: a vLLM-only body must yield no antislop figures at all."""
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FIRST_POLL))
+    assert summary["requests"] is None, summary
+    assert summary["ban_events"] is None, summary
+    assert summary["generation_tokens"] is None, summary
+
+
+def test_the_antislop_scrape_errors_are_counted():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_ONLY))
+    assert summary["scrape_errors"] == 12.0, summary
+    assert summary["upstream_errors"] == 4.0, summary
+
+
+def test_the_proxy_generation_speed_comes_from_two_snapshots():
+    first = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    second = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_SECOND))
+    rates = vm.compute_antislop_rates(second, first, 10.0)
+    # 2000 more generation tokens over 10 s of wall clock.
+    assert abs(rates["generation_tps"] - 200.0) < 1e-6, rates
+
+
+def test_a_single_antislop_snapshot_reports_no_speed():
+    current = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    rates = vm.compute_antislop_rates(current, None, None)
+    assert rates["generation_tps"] is None, rates
+
+
+def test_a_restarted_proxy_drops_the_antislop_sample():
+    first = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    restarted = dict(first)
+    restarted["generation_tokens"] = 5.0
+    rates = vm.compute_antislop_rates(restarted, first, 10.0)
+    assert rates["generation_tps"] is None, rates
+
+
+def test_a_fork_with_a_dead_upstream_is_reachable_not_an_error():
+    """The whole point: the proxy answers, so the row must not read "unreachable"."""
+    _reset()
+    stub = _StubRequests({"http://h:8000/metrics": ANTISLOP_ONLY})
+    with _with_stub(stub):
+        state = vm.poll_endpoint("http://h:8000/metrics", now=1000.0)
+    assert state["error"] is None, state
+    assert state["last"]["antislop"]["requests"] == 12.0, state["last"]
+    # The vLLM figures are absent, not invented.
+    assert state["last"]["generation_tps"] is None, state["last"]
+
+
+def test_a_body_with_neither_prefix_is_still_an_error():
+    _reset()
+    stub = _StubRequests({"http://h:8000/metrics": NOT_VLLM})
+    with _with_stub(stub):
+        state = vm.poll_endpoint("http://h:8000/metrics", now=1000.0)
+    assert "not a vLLM" in (state["error"] or ""), state
+
+
+def test_a_fork_row_carries_both_sets_of_figures():
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": [ANTISLOP_FIRST, ANTISLOP_SECOND]})
+    with _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    row = rows[0]
+    assert row["is_antislop"] is True, row
+    # The vLLM figures still arrive, unchanged (backwards compatibility).
+    assert row["generation_tps"] is not None, row
+    assert row["load_percent"] is not None, row
+    # ... and so do the proxy's own.
+    assert row["antislop_requests"] == 60.0, row
+    assert row["antislop_ban_events"] == 57.0, row
+    assert row["antislop_ban_fixed"] == 50.0, row
+    assert row["antislop_upstream_errors"] == 2.0, row
+    assert row["antislop_generation_tps"] is not None, row
+
+
+def test_a_plain_vllm_row_has_no_antislop_figures():
+    """Backwards compatibility: a vLLM-only server's row is exactly what it was."""
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_stub(stub):
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    row = rows[0]
+    assert row["is_antislop"] is False, row
+    assert row["antislop_requests"] is None, row
+    assert row["antislop_ban_events"] is None, row
+    assert row["antislop_generation_tps"] is None, row
+
+
+def test_the_antislop_columns_are_off_by_default():
+    """A default run must stay byte-identical, so the columns ship hidden."""
+    assert vm.antislop_columns_enabled({}) is False
+    assert vm.antislop_columns_enabled({"metrics": {}}) is False
+    assert vm.antislop_columns_enabled({"metrics": {"antislop_columns": False}}) is False
+
+
+def test_the_antislop_columns_can_be_switched_on():
+    assert vm.antislop_columns_enabled({"metrics": {"antislop_columns": True}}) is True
+
+
+# --- 6b. v13.4.0: the FULL proxy metric set ----------------------------------
+
+def test_the_summary_reads_every_proxy_metric_the_fork_emits():
+    """v13.3.0 read four of the fork's twelve metrics; the rest must not be dropped."""
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    assert summary["requests"] == 104.0, summary
+    assert summary["requests_failed"] == 4.0, summary
+    assert summary["in_flight"] == 3.0, summary
+    assert summary["duration_seconds"] == 200.0, summary
+    assert summary["duration_count"] == 104.0, summary
+    assert summary["streaming"] == 104.0, summary
+    assert summary["generations"] == 100.0, summary
+    assert summary["prompt_tokens"] == 50000.0, summary
+    assert summary["generation_tokens"] == 8000.0, summary
+    assert summary["backtracks"] == 30.0, summary
+    assert summary["upstream_errors"] == 2.0, summary
+    assert summary["scrape_ok"] == 50.0, summary
+    assert summary["scrape_errors"] == 1.0, summary
+    assert summary["last_scrape_at"] == 1770000000.0, summary
+
+
+def test_the_summary_keeps_the_per_label_series():
+    """Per-status, per-validator and per-finish-reason counts are what a user tunes against."""
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    assert summary["requests_by_status"] == {"200": 100.0, "500": 4.0}, summary
+    assert summary["generations_by_finish"] == {"stop": 100.0}, summary
+    assert summary["streaming_by_stream"] == {"true": 80.0, "false": 24.0}, summary
+    bans = summary["bans_by_validator"]
+    assert bans["slop_phrase"] == {"total": 25.0, "fixed": 20.0}, bans
+    assert bans["regex"] == {"total": 10.0, "fixed": 10.0}, bans
+
+
+def test_a_failed_request_is_one_that_is_not_2xx():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    # 4 of the 104 requests answered 500, so 4 failed -- not 104, and not 0.
+    assert summary["requests_failed"] == 4.0, summary
+
+
+def test_the_per_label_series_are_none_for_a_plain_vllm_body():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FIRST_POLL))
+    assert summary["requests_by_status"] is None, summary
+    assert summary["bans_by_validator"] is None, summary
+    assert summary["backtracks"] is None, summary
+
+
+def test_the_ban_and_backtrack_rates_come_from_two_snapshots():
+    first = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    second = vm.summarise_antislop(vm.parse_prometheus_text(FULL_SECOND))
+    rates = vm.compute_antislop_rates(second, first, 10.0)
+    # 10 more fixed bans over 10 s.
+    assert abs(rates["ban_rate"] - 1.0) < 1e-6, rates
+    # 20 more back-tracks over 10 s.
+    assert abs(rates["backtrack_rate"] - 2.0) < 1e-6, rates
+    # 60 s of request time over 60 requests.
+    assert abs(rates["avg_request_seconds"] - 1.0) < 1e-6, rates
+
+
+def test_the_rates_are_none_for_a_single_snapshot():
+    current = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    rates = vm.compute_antislop_rates(current, None, None)
+    assert rates["ban_rate"] is None, rates
+    assert rates["backtrack_rate"] is None, rates
+    assert rates["avg_request_seconds"] is None, rates
+
+
+def test_a_row_carries_the_full_proxy_metric_set():
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": [FULL_FIRST, FULL_SECOND]})
+    with _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    row = rows[0]
+    for key in ("antislop_requests", "antislop_requests_failed", "antislop_in_flight",
+                "antislop_prompt_tokens", "antislop_generation_tokens",
+                "antislop_generations", "antislop_streaming", "antislop_backtracks",
+                "antislop_upstream_errors", "antislop_scrape_ok", "antislop_scrape_errors",
+                "antislop_last_scrape_at", "antislop_avg_request_seconds",
+                "antislop_ban_rate", "antislop_backtrack_rate",
+                "antislop_bans_by_validator", "antislop_generations_by_finish",
+                "antislop_requests_by_status"):
+        assert key in row, "row is missing %r" % key
+        assert row[key] is not None, "%r is None for a full proxy body" % key
+    assert row["antislop_requests_failed"] == 4.0, row
+    assert row["antislop_backtracks"] == 50.0, row
+
+
+# --- 6c. v13.4.0: the per-slot throughput history --------------------------
+
+def test_each_slot_keeps_its_own_throughput_history():
+    """Two slots on ONE server must not overwrite each other's line."""
+    _reset()
+    config = _config({0: "http://h:8000/v1", 1: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_stub(stub):
+        vm.note_slot_usage(0, {"prompt_tokens": 100, "completion_tokens": 300}, 2.0)
+        vm.note_slot_usage(1, {"prompt_tokens": 100, "completion_tokens": 100}, 4.0)
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    histories = {row["slot_idx"]: row["slot_history"] for row in rows}
+    assert len(histories[0]) == 1, histories
+    assert len(histories[1]) == 1, histories
+    # 400 tokens / 2 s versus 200 tokens / 4 s: different slots, different lines.
+    assert abs(histories[0][0]["tokens_per_second"] - 200.0) < 1e-6, histories
+    assert abs(histories[1][0]["tokens_per_second"] - 50.0) < 1e-6, histories
+
+
+def test_the_slot_history_is_bounded_and_resettable():
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_stub(stub):
+        for _ in range(vm.HISTORY_LENGTH + 5):
+            vm.poll_once(config)
+        assert len(vm.slot_history(0)) == vm.HISTORY_LENGTH, len(vm.slot_history(0))
+    vm.reset_slot_history()
+    assert vm.slot_history(0) == [], vm.slot_history(0)
+
+
+def test_the_slot_history_is_empty_before_the_first_poll():
+    _reset()
+    assert vm.slot_history(0) == [], vm.slot_history(0)
+
+
+# --- 7. Formatting ---------------------------------------------------------
 
 def test_formatting_is_human_readable():
     assert vm.format_speed(1234.5) == "1,234 tok/s"
@@ -401,6 +772,21 @@ def test_formatting_is_human_readable():
     assert vm.format_count(38.0) == "38"
     assert vm.format_tokens(1234567) == "1,234,567"
     assert vm.format_tokens(None) == "-"
+
+
+def test_duration_and_rate_formatting():
+    """v13.4.0 units: a proxy duration and a per-minute rate."""
+    assert vm.format_duration(0.82) == "820 ms"
+    assert vm.format_duration(2.44) == "2.4 s"
+    assert vm.format_duration(72.0) == "1m 12s"
+    assert vm.format_duration(None) == "-"
+    assert vm.format_duration(-1.0) == "-"
+    assert vm.format_rate_per_minute(0.3) == "18.0/min"
+    assert vm.format_rate_per_minute(None) == "-"
+    assert vm.format_ratio(21, 28) == "75%"
+    # A zero denominator is "cannot tell", not "0%": nothing has fired yet.
+    assert vm.format_ratio(0, 0) == "-"
+    assert vm.format_ratio(None, 28) == "-"
 
 
 def test_load_reading_reflects_saturation():
@@ -425,6 +811,249 @@ def test_start_and_stop_polling_are_safe():
     assert vm.start_polling(interval=0.05) is thread, "start_polling must be idempotent"
     vm.stop_polling()
     assert vm._poller_thread is None
+
+
+# --- 8. v13.5.0: the poll cadence and the saved history ----------------------
+
+def _scratch_config(extra_metrics=None):
+    """A config dict pointed at a throwaway output directory, for the persistence tests."""
+    metrics = {"save_history": True}
+    metrics.update(extra_metrics or {})
+    return {"api": {"apis": [{"url": "http://h:8000/v1"}] + [{"url": ""}] * 5},
+            "quality": {"scoring_api": {"url": ""}},
+            "metrics": metrics}
+
+
+def _with_scratch_output():
+    """Point ``vllm_metrics.history_path()`` at a temp dir for the duration of a ``with`` block."""
+    class _Ctx:
+        def __enter__(self):
+            self._saved = vm.history_path
+            self.dir = _tempfile.mkdtemp(prefix="sdg-metrics-hist-")
+            vm.history_path = lambda config=None: os.path.join(
+                self.dir, vm.METRICS_HISTORY_FILENAME)
+            return self.dir
+
+        def __exit__(self, *exc):
+            vm.history_path = self._saved
+            _shutil.rmtree(self.dir, ignore_errors=True)
+            return False
+    return _Ctx()
+
+
+def test_the_poll_interval_is_short_enough_to_be_usable():
+    """v13.5.0: 10 s made the tab stale and the graphs coarse; 2 s is the fix."""
+    assert vm.POLL_INTERVAL_SECONDS <= 3.0, vm.POLL_INTERVAL_SECONDS
+    # The timeout must stay BELOW the interval, or one dead host delays every other endpoint's
+    # sample and skews their rates too.
+    assert vm.REQUEST_TIMEOUT_SECONDS < vm.POLL_INTERVAL_SECONDS, (
+        vm.REQUEST_TIMEOUT_SECONDS, vm.POLL_INTERVAL_SECONDS)
+
+
+def test_the_history_window_is_dense_enough_to_read_a_trend():
+    """300 samples at 2 s is 10 minutes; 120 at 10 s was 20 minutes but only 120 points."""
+    assert vm.HISTORY_LENGTH >= 240, vm.HISTORY_LENGTH
+    window_seconds = vm.HISTORY_LENGTH * vm.POLL_INTERVAL_SECONDS
+    assert window_seconds >= 300, window_seconds
+
+
+def test_one_slow_endpoint_does_not_delay_the_others():
+    """The v13.5.0 fix: endpoints are fetched CONCURRENTLY, not one after another.
+
+    Serially, a 1.2 s hang on the first host cost every later host its sample for that cycle.
+    """
+    _reset()
+    config = {"api": {"apis": [{"url": "http://slow:8000/v1"},
+                               {"url": "http://fast1:8000/v1"},
+                               {"url": "http://fast2:8000/v1"}] + [{"url": ""}] * 3},
+              "quality": {"scoring_api": {"url": ""}},
+              "metrics": {"save_history": False}}
+
+    # EVERY host is slow, so a serial fetch pays the delay three times and a concurrent one pays it
+    # once.  A single slow host would not distinguish the two: serially it is still only one sleep.
+    delay = 0.5
+
+    class _SlowStub:
+        def get(self, url, timeout=None):
+            _time.sleep(delay)
+            return _StubResponse(FIRST_POLL)
+
+    with _with_stub(_SlowStub()):
+        started = _time.time()
+        vm.poll_once(config)
+        elapsed = _time.time() - started
+
+    # Concurrent: ~0.5 s.  Serial: ~1.5 s.  The midpoint separates them with room for scheduler
+    # noise in either direction.
+    serial_floor = delay * 2
+    assert elapsed < serial_floor, (
+        "poll_once took %.2fs for 3 hosts that each take %.2fs: the endpoints were fetched "
+        "serially, so one slow host delays every other one" % (elapsed, delay))
+    assert vm.polled_endpoint_count() == 3, vm.polled_endpoint_count()
+
+
+def test_the_history_is_saved_by_default():
+    """v13.5.0: the figures must survive the window closing, so saving is ON by default."""
+    assert vm.save_history_enabled({}) is True
+    assert vm.save_history_enabled({"metrics": {}}) is True
+    assert vm.save_history_enabled({"metrics": {"save_history": True}}) is True
+    assert vm.save_history_enabled({"metrics": {"save_history": False}}) is False
+
+
+def test_a_poll_cycle_writes_the_history_file():
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        path = os.path.join(directory, vm.METRICS_HISTORY_FILENAME)
+        assert os.path.exists(path), "no history file was written"
+        with io.open(path, encoding="utf-8") as handle:
+            document = _json.load(handle)
+    assert document["version"] == 1, document
+    assert document["poll_interval_seconds"] == vm.POLL_INTERVAL_SECONDS, document
+    assert "http://h:8000/metrics" in document["endpoints"], document
+
+
+def test_the_saved_history_restores_after_a_restart():
+    """The whole point: closing the window must not throw the samples away."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": [FIRST_POLL, SECOND_POLL]})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        before = [len(row["history"]) for row in vm.endpoint_rows(config)]
+
+        # Simulate a restart: everything in memory is gone, the file is not.
+        vm.reset_endpoints()
+        vm.reset_slot_usage()
+        vm.reset_slot_history()
+        assert vm.polled_endpoint_count() == 0, "the reset did not clear the endpoints"
+
+        loaded = vm.load_snapshot(config)
+        after = [len(row["history"]) for row in vm.endpoint_rows(config)]
+    assert loaded == 1, loaded
+    assert after == before, (before, after)
+
+
+def test_the_saved_history_keeps_a_missing_figure_missing():
+    """A plain-vLLM sample drops its ``None`` keys; they must read back as ``None``, not ``0``."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        vm.reset_endpoints()
+        vm.load_snapshot(config)
+        rows = vm.endpoint_rows(config)
+    sample = rows[0]["history"][-1]
+    assert sample.get("antislop_ban_events") is None, sample
+    assert sample.get("load_percent") is not None, sample
+
+
+def test_saving_is_throttled_but_can_be_forced():
+    """A few hundred KB every 2 s is pointless churn on an SD card."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        first = vm.save_snapshot(config, force=True)
+        assert first is not None, "a forced save must always write"
+        # Immediately after, a non-forced save is inside the interval and must be skipped.
+        assert vm.save_snapshot(config) is None, "the save throttle did not skip"
+        # ... and forcing still writes.
+        assert vm.save_snapshot(config, force=True) is not None
+
+
+def test_saving_can_be_switched_off():
+    _reset()
+    config = _scratch_config({"save_history": False})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        assert vm.save_snapshot(config, force=True) is None
+        assert not os.path.exists(os.path.join(directory, vm.METRICS_HISTORY_FILENAME))
+
+
+def test_a_corrupt_history_file_does_not_stop_startup():
+    """A stale or truncated snapshot must never stop the app from starting."""
+    _reset()
+    config = _scratch_config()
+    with _with_scratch_output() as directory:
+        path = os.path.join(directory, vm.METRICS_HISTORY_FILENAME)
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        assert vm.load_snapshot(config) == 0
+        # A well-formed document of the wrong version is ignored too.
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"version": 99, "endpoints": {}}')
+        assert vm.load_snapshot(config) == 0
+
+
+def test_a_missing_history_file_loads_nothing():
+    _reset()
+    with _with_scratch_output():
+        assert vm.load_snapshot(_scratch_config()) == 0
+
+
+def test_the_saved_document_is_rounded_and_drops_nulls():
+    """The file is written every 30 s; 17 digits per float and a null per absent metric is waste."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": [FIRST_POLL, SECOND_POLL]})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        with io.open(os.path.join(directory, vm.METRICS_HISTORY_FILENAME),
+                     encoding="utf-8") as handle:
+            document = _json.load(handle)
+    sample = document["endpoints"]["http://h:8000/metrics"]["history"][-1]
+    # A plain-vLLM sample has no antislop figures, so those keys are absent, not null.
+    assert "antislop_ban_events" not in sample, sample
+    for value in sample.values():
+        if isinstance(value, float):
+            assert value == round(value, 3), value
+
+
+def test_stopping_the_poller_writes_a_final_snapshot():
+    """Closing the window must not lose the last interval to the save throttle."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)   # start the throttle window
+        vm.stop_polling()
+        assert os.path.exists(os.path.join(directory, vm.METRICS_HISTORY_FILENAME))
+
+
+def test_the_history_path_follows_the_output_directory():
+    path = vm.history_path({})
+    assert path.endswith(vm.METRICS_HISTORY_FILENAME), path
+    assert "output" in path.replace("\\", "/"), path
+
+
+def test_start_polling_loads_the_saved_history():
+    """The graphs must open with the previous run's samples, not an empty canvas."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        vm.reset_endpoints()
+        assert vm.polled_endpoint_count() == 0
+        vm.start_polling(interval=0.05)
+        try:
+            assert vm.polled_endpoint_count() == 1, "start_polling did not load the snapshot"
+        finally:
+            vm.stop_polling()
 
 
 # --- the module is in the undefined-globals sweep -----------------------------
