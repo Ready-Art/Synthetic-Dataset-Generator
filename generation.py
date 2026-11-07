@@ -1229,6 +1229,10 @@ def _cast_presence_note(plan, state, slot_no, config=None):
     present/absent names, so two consecutive static slots produce BYTE-IDENTICAL text and a
     'system' placement does not invalidate the prefix cache. A transition slot adds one
     directive; a cut-away slot adds one more.
+
+    ``config['guidance_offset']`` (v13.5.1) shifts which entry of ``exit_guidance`` /
+    ``arrival_guidance`` a transition uses. It is constant for a whole task, so it does not break
+    the stability above; it only stops two tasks with the same slot count from sharing a beat.
     """
     config = config or {}
     members = (plan or {}).get("members") or []
@@ -1261,18 +1265,27 @@ def _cast_presence_note(plan, state, slot_no, config=None):
 
     exit_guidance = [str(g).strip() for g in (config.get("exit_guidance") or []) if str(g).strip()]
     arrival_guidance = [str(g).strip() for g in (config.get("arrival_guidance") or []) if str(g).strip()]
+    # v13.5.1: a per-TASK offset into the guidance lists. Indexing by slot alone made every row of
+    # a run pick the same entry, because every row has the same `num_turns` and so the exit lands on
+    # the same slot number -- every row's exit was the same beat. The offset is constant for the
+    # whole task, so two static slots still produce byte-identical notes and the prefix cache is
+    # unaffected; it only varies BETWEEN tasks.
+    try:
+        guidance_offset = int(config.get("guidance_offset") or 0)
+    except (TypeError, ValueError):
+        guidance_offset = 0
 
     for member in exiting:
-        guidance = (exit_guidance[(slot_no - 1) % len(exit_guidance)] if exit_guidance
-                    else DEFAULT_EXIT_GUIDANCE[(slot_no - 1) % len(DEFAULT_EXIT_GUIDANCE)])
+        guidance = (exit_guidance[(slot_no - 1 + guidance_offset) % len(exit_guidance)] if exit_guidance
+                    else DEFAULT_EXIT_GUIDANCE[(slot_no - 1 + guidance_offset) % len(DEFAULT_EXIT_GUIDANCE)])
         lines.append(
             "%s LEAVES the scene in this reply. Have %s exit naturally -- %s. After this "
             "reply %s is gone: do not write %s again."
             % (member["name"], member["name"], guidance, member["name"], member["name"]))
 
     for member in arriving:
-        guidance = (arrival_guidance[(slot_no - 1) % len(arrival_guidance)] if arrival_guidance
-                    else DEFAULT_ARRIVAL_GUIDANCE[(slot_no - 1) % len(DEFAULT_ARRIVAL_GUIDANCE)])
+        guidance = (arrival_guidance[(slot_no - 1 + guidance_offset) % len(arrival_guidance)] if arrival_guidance
+                    else DEFAULT_ARRIVAL_GUIDANCE[(slot_no - 1 + guidance_offset) % len(DEFAULT_ARRIVAL_GUIDANCE)])
         lines.append(
             "%s ARRIVES in this reply. Bring %s into the scene with a natural entrance -- %s."
             % (member["name"], member["name"], guidance))
@@ -2116,6 +2129,14 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 current_num_turns + (1 if opening_mode_local else 0)) if scene_cast_plan["members"] else 0
             scene_cast_note_config = dict(scene_cast_config_local)
             scene_cast_note_config["total_slots"] = scene_cast_total_slots_for_note
+            # v13.5.1: vary which guidance entry a task uses. Every row of a run has the same
+            # `num_turns`, so the exit always lands on the same slot number and indexing the
+            # guidance by slot alone gave every row the SAME exit beat ("checks her phone, gets a
+            # work call, leaves"). The offset is derived from the task id, so it is stable for a
+            # task (the note stays cache-safe within it) and differs between tasks.
+            scene_cast_note_config["guidance_offset"] = (
+                int(hashlib.sha1(str(task_id).encode("utf-8")).hexdigest()[:8], 16)
+                if scene_cast_plan["members"] else 0)
             # Every cast transition applied across this task, recorded on the output metadata so a
             # run can be audited after the fact ("exit_cancelled" means the model never narrated
             # a scheduled departure, so the character legitimately stayed).
@@ -2398,6 +2419,18 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 _opening_user_state = _user_emotional_slot_state(1)
                 opening_user_turn_note = (_user_emotional_state_injection(_opening_user_state, user_arc_stages)
                                           if _opening_user_state else "")
+                # v13.5.1: the man's opening message is generated with NO cast note, so he writes every
+                # character as present -- and the first answer then has to narrate an arrival for
+                # someone he has already been touching. Give the question prompt the SLOT-1 cast note so
+                # his opening message only involves the characters present at slot 1. Built directly
+                # rather than through slot_notes(1), which also carries the persona and the woman's
+                # emotional state; neither belongs on the man's message. Safe at slot 1:
+                # _build_scene_cast_plan clamps join_slot to at least 2, so slot 1 never emits an
+                # ARRIVES directive, and scene_cast_state is still the initial state here.
+                _opening_cast_note = ""
+                if scene_cast_plan["members"]:
+                    _opening_cast_note = _cast_presence_note(
+                        scene_cast_plan, scene_cast_state, 1, scene_cast_note_config)
 
                 question_system_prompt = current_system_prompt_for_task + (QUESTION_USER_SIDE if character_injection else "")
                 initial_user_question = generate_question(
@@ -2414,13 +2447,25 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     file_name=file_name,
                     refusal_phrases_local=current_refusal_phrases,
                     slop_phrases_local=current_slop_phrases,
-                    user_turn_note=opening_user_turn_note,
+                    user_turn_note=opening_user_turn_note + _opening_cast_note,
                     regex_patterns_local=current_regex_patterns,
                     regex_watch_enabled_local=current_regex_watch_enabled,
                     non_latin_enabled_local=current_non_latin_enabled,
                     character_names=scene_character_names,
                     style=task_style,
                 )
+
+                # v13.5.1: drop a leaked SCENE CAST note from the front of the man's opening message.
+                # Some models echo the note back as the first line instead of writing prose, and the echo
+                # is stale (it is the note for THIS reply, repeated verbatim on every later turn).
+                # Guarded on a cast actually being in play, so a cast-free run is byte-identical.
+                if scene_cast_plan["members"] and initial_user_question:
+                    cleaned_question = text_utils.strip_scene_cast_leak(initial_user_question)
+                    if cleaned_question != initial_user_question:
+                        log_message(
+                            f"Thread {thread_id}, Task {task_id}: removed a leaked SCENE CAST note "
+                            "from the start of the opening message.", "DEBUG")
+                        initial_user_question = cleaned_question
             
             if not initial_user_question:
                 log_message(f"Thread {thread_id}: Failed to generate initial question for task {task_id}. Skipping.", "ERROR")
@@ -2462,7 +2507,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     task_dataset_values,
                     character_names=scene_character_names,
                     character_profile=character_injection,
-                    style=task_style) + turn_note
+                    # v13.5.1: the style opener is for the FIRST assistant reply only. The answer
+                    # prompt's OPENING clause was being obeyed on every turn, producing a string of
+                    # filler openers that read the same across rows (and the occasional incoherent
+                    # cutaway). An empty style already resolves to nothing.
+                    style=task_style if turn_num == 0 else "") + turn_note
                 # v12.5: the conversation's own earlier assistant replies, for the repeated-opener
                 # guard. Read straight from the history the request is about to send, so it can never
                 # drift from it; a first assistant turn yields an empty list and the guard never fires.
@@ -2936,6 +2985,17 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 _cont_user_state = _user_emotional_slot_state(turn_num + 2)
                 cont_user_turn_note = (_user_emotional_state_injection(_cont_user_state, user_arc_stages)
                                        if _cont_user_state else "")
+                # v13.5.1: the man's later messages carried only USER EMOTIONAL STATE, so he never saw
+                # the cast note and could address a character who had already left. Append the note for
+                # the NEXT assistant slot: the answer just produced advanced the state for slot
+                # turn_num + 1 + greeting_offset, so the next slot is turn_num + 2 + greeting_offset.
+                # Kept LAST in the concatenation, matching slot_notes()'s ordering -- the final thing
+                # the model reads is who may speak.
+                _cont_cast_note = ""
+                if scene_cast_plan["members"]:
+                    _cont_cast_note = _cast_presence_note(
+                        scene_cast_plan, scene_cast_state,
+                        turn_num + 2 + greeting_offset, scene_cast_note_config)
                 user_continuation_reply = generate_user_continuation(
                     system_prompt=current_system_prompt_for_turn,
                     conversation_history_for_llm=list(current_llm_conversation_context),
@@ -2952,13 +3012,25 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     file_name=file_name,
                     refusal_phrases_local=current_refusal_phrases,
                     slop_phrases_local=current_slop_phrases,
-                    user_turn_note=cont_user_turn_note,
+                    user_turn_note=cont_user_turn_note + _cont_cast_note,
                     regex_patterns_local=current_regex_patterns,
                     regex_watch_enabled_local=current_regex_watch_enabled,
                     non_latin_enabled_local=current_non_latin_enabled,
                     character_names=scene_character_names,
-                    style=task_style,
+                    # v13.5.1: the man's opening message is the QUESTION prompt, so his continuation
+                    # never carries a style -- only his first message does.
+                    style="",
                 )
+
+                # v13.5.1: drop a leaked SCENE CAST note from the front of the man's message. Same
+                # guard as the opening message; gated so a cast-free run is byte-identical.
+                if scene_cast_plan["members"] and user_continuation_reply:
+                    cleaned_continuation = text_utils.strip_scene_cast_leak(user_continuation_reply)
+                    if cleaned_continuation != user_continuation_reply:
+                        log_message(
+                            f"Thread {thread_id}, Task {task_id}, Turn {turn_num+1}: removed a "
+                            "leaked SCENE CAST note from the start of the user continuation.", "DEBUG")
+                        user_continuation_reply = cleaned_continuation
 
                 if not user_continuation_reply:
                     log_message(f"Thread {thread_id}: Failed to get user continuation for turn {turn_num + 1} of task {task_id}. Ending this conversation.", "ERROR")

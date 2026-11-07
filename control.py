@@ -53,6 +53,15 @@ import run_config
 import logging_config
 from logging_config import log_message
 
+# v13.5.1: share the issue-timestamp registry with detection.py, exactly as generate.py does at
+# module scope. `detection.issue_timestamps` and `detection.issue_timestamps_lock` are module
+# globals initialised to None and wired up only by the GUI entry point, so a headless run that
+# hit a refusal phrase died inside `detection.is_refusal()` with "'NoneType' object does not
+# support the context manager protocol". The controller owns the same app_state, so it can wire
+# them up the same way.
+detection.issue_timestamps = app_state.issue_timestamps
+detection.issue_timestamps_lock = app_state.issue_timestamps_lock
+
 PROTOCOL_VERSION = 1
 
 # The control socket lives inside output/ because that directory is already gitignored and
@@ -1627,4 +1636,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.5.0"
+GENERATOR_VERSION = "13.5.1"

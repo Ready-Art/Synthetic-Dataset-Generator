@@ -220,8 +220,22 @@ prompts:
     max_churn: 2              # only used by shape: churn
     max_deferrals: 1          # replies an un-narrated exit may slip before cancelling
     placement: depth0          # depth0 (cache-friendly) | system
-    exit_guidance: []         # one per line; empty = built-in defaults
-    arrival_guidance: []
+    exit_guidance:            # one per line; empty = built-in defaults
+    - has somewhere to be and says so plainly before going
+    - leaves without explanation, and the silence afterwards says it for them
+    - is called away by someone at the door and does not come back
+    - gets what she came for and simply stops being interested
+    - is sent away by one of the others, not by the user
+    - leaves in anger and slams something on the way out
+    - finishes what she was doing, tidies up, and walks out mid-sentence
+    - is already halfway out when the reply begins, and does not turn around
+    arrival_guidance:
+    - comes in from the street and does not apologise for it
+    - was already in the building and finally shows up
+    - is brought in by one of the characters already present
+    - arrives late and has to explain herself
+    - lets herself in and waits to be noticed
+    - interrupts something already in progress
     allow_cutaway: false      # a short moment elsewhere, rejoining the main thread
     cutaway_note: ''
 ```
@@ -263,8 +277,20 @@ least 3, so the newcomer has a reply to be present in.
 
 ### `exit_guidance` / `arrival_guidance`
 
-One instruction per line. The worker rotates through them so consecutive exits do not read the same. Empty
-means the built-in defaults are used, so you can switch the feature on without authoring anything.
+One instruction per line. Empty means the built-in defaults are used, so you can switch the feature
+on without authoring anything.
+
+**Since v13.5.1 the shipped config populates both lists**, and the worker picks the entry by
+`(slot number - 1 + a per-task offset)`, so two rows of the same run do not share their exit or
+arrival beat. Before the offset existed the entry was chosen by slot number alone, and because every
+row of a run has the same `num_turns` the exit landed on the same slot number in every row — every
+row's exit was the same beat (the character checks her phone, takes a work call, and leaves). The
+offset is derived from the task id and is constant for the whole task, so it costs no prefix-cache
+reuse within a row.
+
+**Write the entries so they differ in KIND, not just in wording.** Six ways of saying "she has an
+errand" still read as the same exit. The shipped list deliberately mixes a stated reason, a silent
+exit, an interruption from outside, a goal met, a third party sending her away, and an angry exit.
 
 The guidance is saved **verbatim** — quotes, apostrophes and backslashes are preserved exactly as typed.
 
@@ -287,8 +313,11 @@ present. Keep it short, keep it to the characters who are actually there, and re
 main thread before the reply ends.
 ```
 
-This is a prompt-level nudge, not a new generation path. If it proves hard to steer, leave it off —
-the join/leave feature works without it.
+This is a prompt-level nudge, not a new generation path. **It ships `false` and should usually stay
+that way:** in practice it produced disconnected filler rather than a scene — replies opening on a stray
+dog barking at a truck, a stray cat in a courtyard, or a stranger asleep in a basement suite —
+because the model treats "a brief moment elsewhere" as licence to cut away entirely. The join/leave
+feature works without it.
 
 ---
 

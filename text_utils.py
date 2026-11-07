@@ -204,6 +204,85 @@ def strip_style_instruction_leak(text):
     return "\n".join(lines[:first] + lines[keep_from:])
 
 
+# `prompts.scene_cast` appends a per-reply SCENE CAST note to the reply's final user message (or
+# its system prompt, on 'system' placement). Some models echo that note back as the first line of
+# the reply instead of writing prose, so the saved message opens with the schedule itself:
+#
+#     SCENE CAST
+#     Samara: PRESENT
+#     Ashlyn: LEAVES
+#     Sage: PRESENT
+#
+#     I watch Ashlyn stride away ...
+#
+# The echo is also STALE -- it is the note for the reply being written, so a row that kept it
+# repeats "Ashlyn: LEAVES" on every later turn, long after she left. This is the same class of bug
+# as the v13.2.1 `{style}` instruction leak above, and is guarded the same conservative way.
+#
+# Two shapes are shipped (`prompts.scene_cast.shape`), and both must be recognised:
+#   - 'minimal':  NAME: PRESENT / NAME: LEAVES / NAME: ARRIVES, one per line
+#   - 'full':     PRESENT: a, b / NOT IN THE SCENE: c / LEAVES: c / ARRIVES: c
+_SCENE_CAST_HEADER_PATTERN = re.compile(r"^\s*scene\s+cast\s*:?\s*$", re.IGNORECASE)
+# One line of the block, in either shape. Deliberately narrow: a name (or the PRESENT /
+# NOT IN THE SCENE / LEAVES / ARRIVES keyword), a colon, and the rest of the line. A prose line
+# that happens to follow the header would have to look exactly like a cast entry to be eaten.
+_SCENE_CAST_ENTRY_PATTERN = re.compile(
+    r"^\s*(?:"
+    r"(?:present|not\s+in\s+the\s+scene|leaves|arrives)\s*:"
+    r"|[^:\n]{1,60}:\s*(?:present|leaves|arrives)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def strip_scene_cast_leak(text):
+    """Remove a leaked ``SCENE CAST`` note from the start of a generated message.
+
+    Only the leading block is touched: the first non-empty line must be the ``SCENE CAST`` header
+    itself, and the lines that follow it are consumed for as long as they still read as cast entries.
+    The blank lines that separated the block from the prose go with it, and any leading whitespace
+    above the block is preserved. Everything from the first real line of prose onwards is left
+    exactly as generated.
+
+    A message whose first line is not the header, or whose block is the ONLY content, is returned
+    unchanged -- the guard is deliberately conservative. A message that is nothing but the note is a
+    failed generation, not a leak with prose after it, and deleting a real opening sentence would be
+    a worse failure than leaving one ugly note in place.
+    """
+    if not text:
+        return text
+
+    lines = text.split("\n")
+
+    # Find the first non-empty line; anything above it is leading whitespace we keep as-is.
+    first = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first is None:
+        return text
+
+    if not _SCENE_CAST_HEADER_PATTERN.match(lines[first]):
+        return text
+
+    # Consume the block: every following line that still looks like a cast entry. A blank line ends
+    # it, so a note followed by prose is stripped and prose that merely mentions a name is not.
+    end = first + 1
+    while end < len(lines) and lines[end].strip() and _SCENE_CAST_ENTRY_PATTERN.match(lines[end]):
+        end += 1
+
+    # Refuse to strip when doing so would leave nothing behind: a message that is nothing but the
+    # note is a failed generation, not a leak with prose after it.
+    remaining = [line for line in lines[end:] if line.strip()]
+    if not remaining:
+        return text
+
+    # Drop the block and the blank lines that separated it from the prose, keeping any leading
+    # whitespace that preceded it.
+    keep_from = end
+    while keep_from < len(lines) and not lines[keep_from].strip():
+        keep_from += 1
+    return "\n".join(lines[:first] + lines[keep_from:])
+
+
+
 def normalize_quotes(text):
     if not text:
         return text
