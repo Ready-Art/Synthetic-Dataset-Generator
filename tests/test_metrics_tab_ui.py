@@ -240,6 +240,69 @@ class MetricsTabLayoutTests(unittest.TestCase):
         for heading in ("Prompt Speed", "Generation Speed", "Endpoint Load"):
             self.assertIn(heading, columns)
 
+    # --- v13.3.0: the antislop-vllm-fork's optional columns ------------------
+
+    def test_the_antislop_columns_exist_but_are_hidden_by_default(self):
+        """A default run's tab must be byte-identical, so the columns ship hidden."""
+        tree = self.widgets["metrics_tree"]
+        # Re-apply from the REAL shipped config: another test in this class may have switched the
+        # key on, and `displaycolumns` is tree state that outlives it.
+        import generate as g
+        saved = self.app_state.global_config
+        self.addCleanup(setattr, self.app_state, "global_config", saved)
+        self.app_state.global_config = _ConfigStub(
+            {"api": {"apis": [{"url": "", "model": ""} for _ in range(6)]},
+             "quality": {"scoring_api": {"url": ""}},
+             "metrics": {"antislop_columns": False}})
+        g._apply_metrics_columns(tree)
+        columns = list(tree.cget("columns"))
+        for heading in ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
+                        "Proxy Gen Speed"):
+            self.assertIn(heading, columns, "the column must exist even when hidden")
+        shown = list(tree.cget("displaycolumns"))
+        for heading in ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
+                        "Proxy Gen Speed"):
+            self.assertNotIn(heading, shown, "hidden by default")
+
+    def test_the_antislop_columns_are_shown_when_the_config_key_is_on(self):
+        self._select_tab()
+        import generate as g
+        tree = self.widgets["metrics_tree"]
+        saved = self.app_state.global_config
+        self.addCleanup(setattr, self.app_state, "global_config", saved)
+        self.app_state.global_config = _ConfigStub(
+            {"api": {"apis": [{"url": "", "model": ""} for _ in range(6)]},
+             "quality": {"scoring_api": {"url": ""}},
+             "metrics": {"antislop_columns": True}})
+        g._apply_metrics_columns(tree)
+        shown = list(tree.cget("displaycolumns"))
+        for heading in ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
+                        "Proxy Gen Speed"):
+            self.assertIn(heading, shown)
+        # The vLLM columns are still there: this ADDS, it does not replace.
+        for heading in ("Prompt Speed", "Generation Speed", "Endpoint Load"):
+            self.assertIn(heading, shown)
+
+    def test_every_row_has_a_value_for_every_column(self):
+        """A row shorter than the column list silently shifts every cell after it."""
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1", 1: "http://dead:9000/v1"},
+                         stub_class=self._mixed_stub())
+        tree = self.widgets["metrics_tree"]
+        expected = len(tree.cget("columns"))
+        for item in tree.get_children():
+            self.assertEqual(len(tree.item(item, "values")), expected,
+                             tree.item(item, "values"))
+
+    @staticmethod
+    def _mixed_stub():
+        class _MixedStub:
+            def get(self, url, timeout=None):
+                if "dead" in url:
+                    raise IOError("connection refused")
+                return _StubResponse(VLLM_BODY)
+        return _MixedStub
+
     # --- one row per slot, never aggregated -------------------------------
 
     def test_one_row_per_configured_slot_never_one_aggregate(self):

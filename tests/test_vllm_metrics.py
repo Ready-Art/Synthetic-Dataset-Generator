@@ -104,6 +104,68 @@ NOT_VLLM = """\
 http_requests_total{handler="/v1/models",method="GET",status="2xx"} 26.0
 """
 
+# --- antislop-vllm-fork bodies (v13.3.0) -------------------------------------
+# The fork's GET /metrics concatenates the upstream vLLM body with its own antislop: metrics, so a
+# slot pointed at the fork produces BOTH prefixes in one body.  This fixture is the two halves of
+# FIRST_POLL/SECOND_POLL plus the proxy counters, i.e. what the fork actually serves.
+ANTISLOP_FIRST = FIRST_POLL + """\
+# HELP antislop:requests_total Chat completion requests handled by this proxy, by endpoint and HTTP status.
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 40.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 2.0
+# TYPE antislop:generations_total counter
+antislop:generations_total{finish_reason="stop"} 38.0
+antislop:generations_total{finish_reason="length"} 2.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 9000.0
+# TYPE antislop:prompt_tokens_total counter
+antislop:prompt_tokens_total 95000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 30.0
+antislop:ban_events_total{validator="regex",fixed="false"} 5.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 1.0
+# TYPE antislop:upstream_metrics_scrape_total counter
+antislop:upstream_metrics_scrape_total{result="ok"} 1.0
+"""
+
+ANTISLOP_SECOND = SECOND_POLL + """\
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 60.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 1.0
+# TYPE antislop:generations_total counter
+antislop:generations_total{finish_reason="stop"} 58.0
+antislop:generations_total{finish_reason="length"} 2.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 11000.0
+# TYPE antislop:prompt_tokens_total counter
+antislop:prompt_tokens_total 125000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 50.0
+antislop:ban_events_total{validator="regex",fixed="false"} 7.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 2.0
+"""
+
+# A fork whose upstream vLLM is DOWN: only the antislop: half is served, and the scrape counter
+# says so.  This is a REACHABLE endpoint, not an error.
+ANTISLOP_ONLY = """\
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 12.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 0.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 3000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 9.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 4.0
+# TYPE antislop:upstream_metrics_scrape_total counter
+antislop:upstream_metrics_scrape_total{result="error"} 12.0
+"""
+
 
 class _StubResponse:
     def __init__(self, text, status_code=200):
@@ -389,7 +451,138 @@ def test_the_judge_slot_is_its_own_row():
     assert rows[1]["label"] == "Judge (Quality)", rows[1]
 
 
-# --- 6. Formatting ---------------------------------------------------------
+# --- 6. The antislop-vllm-fork's own metrics (v13.3.0) ----------------------
+# The fork's GET /metrics concatenates the upstream vLLM body with its own antislop: metrics.
+# These checks pin the OPTIONAL half: a plain vLLM body must behave exactly as before.
+
+def test_an_antislop_body_is_recognised():
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(ANTISLOP_FIRST)) is True
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(ANTISLOP_ONLY)) is True
+    # A plain vLLM body has no antislop: metric, and must not be mistaken for one.
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(FIRST_POLL)) is False
+    assert vm.is_antislop_metrics(vm.parse_prometheus_text(NOT_VLLM)) is False
+
+
+def test_the_antislop_summary_reads_the_proxy_counters():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    assert summary["requests"] == 40.0, summary
+    assert summary["in_flight"] == 2.0, summary
+    assert summary["generations"] == 40.0, summary
+    assert summary["generation_tokens"] == 9000.0, summary
+    assert summary["prompt_tokens"] == 95000.0, summary
+    # Bans are split by outcome, so a list that fires but never fixes is visible.
+    assert summary["ban_events"] == 35.0, summary
+    assert summary["ban_fixed"] == 30.0, summary
+    assert summary["upstream_errors"] == 1.0, summary
+    # No result="error" sample in this body, so the figure is ABSENT, not zero: a zero would
+    # read as "scrapes are failing zero times", which is a different claim.
+    assert summary["scrape_errors"] is None, summary
+
+
+def test_the_antislop_summary_is_none_for_a_plain_vllm_body():
+    """Backwards compatibility: a vLLM-only body must yield no antislop figures at all."""
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FIRST_POLL))
+    assert summary["requests"] is None, summary
+    assert summary["ban_events"] is None, summary
+    assert summary["generation_tokens"] is None, summary
+
+
+def test_the_antislop_scrape_errors_are_counted():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_ONLY))
+    assert summary["scrape_errors"] == 12.0, summary
+    assert summary["upstream_errors"] == 4.0, summary
+
+
+def test_the_proxy_generation_speed_comes_from_two_snapshots():
+    first = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    second = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_SECOND))
+    rates = vm.compute_antislop_rates(second, first, 10.0)
+    # 2000 more generation tokens over 10 s of wall clock.
+    assert abs(rates["generation_tps"] - 200.0) < 1e-6, rates
+
+
+def test_a_single_antislop_snapshot_reports_no_speed():
+    current = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    rates = vm.compute_antislop_rates(current, None, None)
+    assert rates["generation_tps"] is None, rates
+
+
+def test_a_restarted_proxy_drops_the_antislop_sample():
+    first = vm.summarise_antislop(vm.parse_prometheus_text(ANTISLOP_FIRST))
+    restarted = dict(first)
+    restarted["generation_tokens"] = 5.0
+    rates = vm.compute_antislop_rates(restarted, first, 10.0)
+    assert rates["generation_tps"] is None, rates
+
+
+def test_a_fork_with_a_dead_upstream_is_reachable_not_an_error():
+    """The whole point: the proxy answers, so the row must not read "unreachable"."""
+    _reset()
+    stub = _StubRequests({"http://h:8000/metrics": ANTISLOP_ONLY})
+    with _with_stub(stub):
+        state = vm.poll_endpoint("http://h:8000/metrics", now=1000.0)
+    assert state["error"] is None, state
+    assert state["last"]["antislop"]["requests"] == 12.0, state["last"]
+    # The vLLM figures are absent, not invented.
+    assert state["last"]["generation_tps"] is None, state["last"]
+
+
+def test_a_body_with_neither_prefix_is_still_an_error():
+    _reset()
+    stub = _StubRequests({"http://h:8000/metrics": NOT_VLLM})
+    with _with_stub(stub):
+        state = vm.poll_endpoint("http://h:8000/metrics", now=1000.0)
+    assert "not a vLLM" in (state["error"] or ""), state
+
+
+def test_a_fork_row_carries_both_sets_of_figures():
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": [ANTISLOP_FIRST, ANTISLOP_SECOND]})
+    with _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    row = rows[0]
+    assert row["is_antislop"] is True, row
+    # The vLLM figures still arrive, unchanged (backwards compatibility).
+    assert row["generation_tps"] is not None, row
+    assert row["load_percent"] is not None, row
+    # ... and so do the proxy's own.
+    assert row["antislop_requests"] == 60.0, row
+    assert row["antislop_ban_events"] == 57.0, row
+    assert row["antislop_ban_fixed"] == 50.0, row
+    assert row["antislop_upstream_errors"] == 2.0, row
+    assert row["antislop_generation_tps"] is not None, row
+
+
+def test_a_plain_vllm_row_has_no_antislop_figures():
+    """Backwards compatibility: a vLLM-only server's row is exactly what it was."""
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_stub(stub):
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    row = rows[0]
+    assert row["is_antislop"] is False, row
+    assert row["antislop_requests"] is None, row
+    assert row["antislop_ban_events"] is None, row
+    assert row["antislop_generation_tps"] is None, row
+
+
+def test_the_antislop_columns_are_off_by_default():
+    """A default run must stay byte-identical, so the columns ship hidden."""
+    assert vm.antislop_columns_enabled({}) is False
+    assert vm.antislop_columns_enabled({"metrics": {}}) is False
+    assert vm.antislop_columns_enabled({"metrics": {"antislop_columns": False}}) is False
+
+
+def test_the_antislop_columns_can_be_switched_on():
+    assert vm.antislop_columns_enabled({"metrics": {"antislop_columns": True}}) is True
+
+
+# --- 7. Formatting ---------------------------------------------------------
 
 def test_formatting_is_human_readable():
     assert vm.format_speed(1234.5) == "1,234 tok/s"
