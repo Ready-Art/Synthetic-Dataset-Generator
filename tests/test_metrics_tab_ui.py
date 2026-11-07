@@ -256,12 +256,10 @@ class MetricsTabLayoutTests(unittest.TestCase):
              "metrics": {"antislop_columns": False}})
         g._apply_metrics_columns(tree)
         columns = list(tree.cget("columns"))
-        for heading in ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
-                        "Proxy Gen Speed"):
+        for heading in g.METRICS_ANTISLOP_COLUMNS:
             self.assertIn(heading, columns, "the column must exist even when hidden")
         shown = list(tree.cget("displaycolumns"))
-        for heading in ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
-                        "Proxy Gen Speed"):
+        for heading in g.METRICS_ANTISLOP_COLUMNS:
             self.assertNotIn(heading, shown, "hidden by default")
 
     def test_the_antislop_columns_are_shown_when_the_config_key_is_on(self):
@@ -276,8 +274,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
              "metrics": {"antislop_columns": True}})
         g._apply_metrics_columns(tree)
         shown = list(tree.cget("displaycolumns"))
-        for heading in ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
-                        "Proxy Gen Speed"):
+        for heading in g.METRICS_ANTISLOP_COLUMNS:
             self.assertIn(heading, shown)
         # The vLLM columns are still there: this ADDS, it does not replace.
         for heading in ("Prompt Speed", "Generation Speed", "Endpoint Load"):
@@ -359,6 +356,159 @@ class MetricsTabLayoutTests(unittest.TestCase):
         self._stub_poll({0: "http://a:8000/v1"})
         text = self.widgets["metrics_status_label"].cget("text")
         self.assertIn(str(int(self.vllm_metrics.POLL_INTERVAL_SECONDS)), text)
+
+    # --- v13.4.0: the overhauled tab -------------------------------------
+
+    def test_the_kpi_cards_exist_and_are_populated(self):
+        """The four cards answer "is this run healthy?" without reading a 22-column row."""
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"})
+        cards = self.widgets["metrics_cards"]
+        details = self.widgets["metrics_cards_detail"]
+        for key in ("throughput", "load", "bans", "errors"):
+            self.assertIn(key, cards, "missing KPI card %r" % key)
+            self.assertTrue(cards[key].winfo_exists())
+            self.assertNotEqual(cards[key].cget("text"), "", "card %r is blank" % key)
+            self.assertNotEqual(details[key].cget("text"), "",
+                                "card %r has no context line" % key)
+
+    def test_the_kpi_cards_read_the_polled_figures(self):
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"}, stub_class=self._fork_stub())
+        cards = self.widgets["metrics_cards"]
+        # 0.72 KV-cache load on the only endpoint.
+        self.assertEqual(cards["load"].cget("text"), "72%")
+        # 30 fixed of 40 total bans.
+        self.assertEqual(cards["bans"].cget("text"), "40")
+        self.assertIn("75%", self.widgets["metrics_cards_detail"]["bans"].cget("text"))
+
+    def test_the_kpi_cards_do_not_double_count_two_slots_on_one_proxy(self):
+        """Two slots on one proxy report the SAME counters; summing per row would double them."""
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1", 1: "http://a:8000/v1"},
+                        stub_class=self._fork_stub())
+        cards = self.widgets["metrics_cards"]
+        self.assertEqual(cards["bans"].cget("text"), "40",
+                         "the proxy's ban total was counted once per slot")
+
+    @staticmethod
+    def _fork_stub():
+        """A fork body: the vLLM half plus the proxy's own counters."""
+        body = VLLM_BODY + (
+            'antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 40.0\n'
+            'antislop:ban_events_total{validator="slop",fixed="true"} 30.0\n'
+            'antislop:ban_events_total{validator="slop",fixed="false"} 10.0\n'
+            'antislop:backtracks_total 12.0\n'
+            'antislop:generation_tokens_total 9000.0\n'
+            'antislop:upstream_errors_total 1.0\n')
+
+        class _ForkStub:
+            def get(self, url, timeout=None):
+                return _StubResponse(body)
+        return _ForkStub
+
+    def test_the_antislop_columns_show_themselves_when_a_slot_serves_them(self):
+        """v13.4.0: "I pointed a slot at the fork and saw nothing" must not happen again."""
+        self._select_tab()
+        tree = self.widgets["metrics_tree"]
+        saved = self.app_state.global_config
+        self.addCleanup(setattr, self.app_state, "global_config", saved)
+        # The key is OFF, and the endpoint IS a fork: the columns must still appear.
+        self.app_state.global_config = _ConfigStub(
+            {"api": {"apis": [{"url": "http://a:8000/v1"}] + [{"url": ""}] * 5},
+             "quality": {"scoring_api": {"url": ""}},
+             "metrics": {"antislop_columns": False}})
+        self._stub_poll({0: "http://a:8000/v1"}, stub_class=self._fork_stub())
+        shown = list(tree.cget("displaycolumns"))
+        self.assertIn("Proxy Requests", shown,
+                      "a proxied slot must show its columns even with the key off")
+
+    def test_a_plain_vllm_slot_keeps_the_columns_hidden(self):
+        """...and a plain vLLM must stay exactly as it was."""
+        self._select_tab()
+        tree = self.widgets["metrics_tree"]
+        saved = self.app_state.global_config
+        self.addCleanup(setattr, self.app_state, "global_config", saved)
+        self.app_state.global_config = _ConfigStub(
+            {"api": {"apis": [{"url": "http://a:8000/v1"}] + [{"url": ""}] * 5},
+             "quality": {"scoring_api": {"url": ""}},
+             "metrics": {"antislop_columns": False}})
+        self._stub_poll({0: "http://a:8000/v1"})
+        shown = list(tree.cget("displaycolumns"))
+        self.assertNotIn("Proxy Requests", shown)
+
+    def test_the_table_scrollbars_are_wide_enough_to_grab(self):
+        """The theme's ~6px thumb is unusable; a real grab width is the whole point."""
+        tree = self.widgets["metrics_tree"]
+        bars = [child for child in tree.master.winfo_children()
+                if child is not tree and child.winfo_class() == "Scrollbar"]
+        self.assertEqual(len(bars), 2, "the table needs both a vertical and a horizontal bar")
+        for bar in bars:
+            self.assertGreaterEqual(int(bar.cget("width")), 16,
+                                    "a %s scrollbar is too narrow to drag" % bar.cget("orient"))
+
+    def test_the_graph_stack_scrollbar_is_wide_enough_to_grab(self):
+        """The graph stack is ~1450px tall, so dragging its thumb is the only practical way."""
+        scroll = self.widgets["metrics_graph_scroll"]
+        self.assertEqual(scroll.scrollbar.winfo_class(), "Scrollbar",
+                         "the graph stack must use an explicit tk.Scrollbar, not the theme's")
+        self.assertGreaterEqual(int(scroll.scrollbar.cget("width")), 16,
+                                "the graph stack's scrollbar is too narrow to drag")
+
+    def test_the_graph_stack_scrolls_to_every_panel(self):
+        """A panel the user cannot reach is a panel that does not exist."""
+        scroll = self.widgets["metrics_graph_scroll"]
+        self.settle()
+        region = scroll.canvas.cget("scrollregion").split()
+        self.assertEqual(len(region), 4, region)
+        content_height = float(region[3])
+        self.assertGreater(content_height, scroll.canvas.winfo_height(),
+                           "the graph stack does not overflow, so nothing scrolls")
+        for key in ("metrics_graph_canvas", "metrics_slot_graph_canvas",
+                    "metrics_proxy_graph_canvas", "metrics_queue_graph_canvas"):
+            self.assertTrue(self.widgets[key].winfo_ismapped(),
+                            "%r is not laid out inside the scroll region" % key)
+
+    def test_all_four_graph_panels_exist(self):
+        for key in ("metrics_graph_canvas", "metrics_slot_graph_canvas",
+                    "metrics_proxy_graph_canvas", "metrics_queue_graph_canvas"):
+            self.assertIn(key, self.widgets, "missing graph panel %r" % key)
+            self.assertTrue(self.widgets[key].winfo_exists(), key)
+
+    def test_the_slot_graph_draws_one_line_per_slot(self):
+        """Per-slot throughput is OUR measurement, so two slots on one server still differ."""
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1", 1: "http://a:8000/v1"})
+        self.vllm_metrics.note_slot_usage(0, {"prompt_tokens": 100,
+                                              "completion_tokens": 300}, 2.0)
+        self.vllm_metrics.note_slot_usage(1, {"prompt_tokens": 100,
+                                              "completion_tokens": 100}, 4.0)
+        self.vllm_metrics.poll_once()
+        import generate as g
+        g._update_metrics_tab(force=True)
+        self.settle()
+        ax = self.widgets["metrics_slot_graph_canvas"].slot_graph_axes["throughput"]
+        self.assertEqual(len(ax.get_lines()), 2, "one line per slot, never one combined line")
+
+    def test_the_proxy_graph_draws_the_request_rate(self):
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"}, stub_class=self._fork_stub())
+        self.vllm_metrics.poll_once()
+        import generate as g
+        g._update_metrics_tab(force=True)
+        self.settle()
+        axes = self.widgets["metrics_proxy_graph_canvas"].proxy_graph_axes
+        self.assertEqual(len(axes["requests"].get_lines()), 1, "no request-rate line")
+
+    def test_the_queue_graph_draws_running_and_waiting(self):
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"})
+        self.vllm_metrics.poll_once()
+        import generate as g
+        g._update_metrics_tab(force=True)
+        self.settle()
+        ax = self.widgets["metrics_queue_graph_canvas"].queue_graph_axes["queue"]
+        self.assertEqual(len(ax.get_lines()), 2, "running and waiting are two lines")
 
     # --- the graph -------------------------------------------------------
 

@@ -167,6 +167,54 @@ antislop:upstream_metrics_scrape_total{result="error"} 12.0
 """
 
 
+# v13.4.0: the FULL proxy metric set, including the per-label series (status, validator,
+# finish_reason, stream) and the summary pair that v13.3.0 did not read.  Two snapshots so a
+# rate can be computed.
+FULL_FIRST = """\
+# TYPE antislop:requests_total counter
+antislop:requests_total{endpoint="/v1/chat/completions",status="200"} 100.0
+antislop:requests_total{endpoint="/v1/chat/completions",status="500"} 4.0
+# TYPE antislop:requests_in_flight gauge
+antislop:requests_in_flight 3.0
+# TYPE antislop:request_duration_seconds summary
+antislop:request_duration_seconds_sum 200.0
+antislop:request_duration_seconds_count 104.0
+# TYPE antislop:streaming_requests_total counter
+antislop:streaming_requests_total{stream="true"} 80.0
+antislop:streaming_requests_total{stream="false"} 24.0
+# TYPE antislop:generations_total counter
+antislop:generations_total{finish_reason="stop"} 100.0
+# TYPE antislop:prompt_tokens_total counter
+antislop:prompt_tokens_total 50000.0
+# TYPE antislop:generation_tokens_total counter
+antislop:generation_tokens_total 8000.0
+# TYPE antislop:ban_events_total counter
+antislop:ban_events_total{validator="slop_phrase",fixed="true"} 20.0
+antislop:ban_events_total{validator="slop_phrase",fixed="false"} 5.0
+antislop:ban_events_total{validator="regex",fixed="true"} 10.0
+# TYPE antislop:backtracks_total counter
+antislop:backtracks_total 30.0
+# TYPE antislop:upstream_errors_total counter
+antislop:upstream_errors_total 2.0
+# TYPE antislop:upstream_metrics_scrape_total counter
+antislop:upstream_metrics_scrape_total{result="ok"} 50.0
+antislop:upstream_metrics_scrape_total{result="error"} 1.0
+# TYPE antislop:upstream_metrics_last_scrape_timestamp_seconds gauge
+antislop:upstream_metrics_last_scrape_timestamp_seconds 1770000000.0
+"""
+
+FULL_SECOND = FULL_FIRST.replace("antislop:requests_total{endpoint=\"/v1/chat/completions\",status=\"200\"} 100.0",
+                                 "antislop:requests_total{endpoint=\"/v1/chat/completions\",status=\"200\"} 160.0") \
+    .replace("antislop:generation_tokens_total 8000.0", "antislop:generation_tokens_total 11000.0") \
+    .replace("antislop:backtracks_total 30.0", "antislop:backtracks_total 50.0") \
+    .replace("antislop:request_duration_seconds_sum 200.0",
+             "antislop:request_duration_seconds_sum 260.0") \
+    .replace("antislop:request_duration_seconds_count 104.0",
+             "antislop:request_duration_seconds_count 164.0") \
+    .replace("antislop:ban_events_total{validator=\"slop_phrase\",fixed=\"true\"} 20.0",
+             "antislop:ban_events_total{validator=\"slop_phrase\",fixed=\"true\"} 30.0")
+
+
 class _StubResponse:
     def __init__(self, text, status_code=200):
         self.text = text
@@ -213,6 +261,7 @@ def _with_stub(stub):
 def _reset():
     vm.reset_endpoints()
     vm.reset_slot_usage()
+    vm.reset_slot_history()
 
 
 # --- 1. URL derivation -------------------------------------------------------
@@ -582,6 +631,131 @@ def test_the_antislop_columns_can_be_switched_on():
     assert vm.antislop_columns_enabled({"metrics": {"antislop_columns": True}}) is True
 
 
+# --- 6b. v13.4.0: the FULL proxy metric set ----------------------------------
+
+def test_the_summary_reads_every_proxy_metric_the_fork_emits():
+    """v13.3.0 read four of the fork's twelve metrics; the rest must not be dropped."""
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    assert summary["requests"] == 104.0, summary
+    assert summary["requests_failed"] == 4.0, summary
+    assert summary["in_flight"] == 3.0, summary
+    assert summary["duration_seconds"] == 200.0, summary
+    assert summary["duration_count"] == 104.0, summary
+    assert summary["streaming"] == 104.0, summary
+    assert summary["generations"] == 100.0, summary
+    assert summary["prompt_tokens"] == 50000.0, summary
+    assert summary["generation_tokens"] == 8000.0, summary
+    assert summary["backtracks"] == 30.0, summary
+    assert summary["upstream_errors"] == 2.0, summary
+    assert summary["scrape_ok"] == 50.0, summary
+    assert summary["scrape_errors"] == 1.0, summary
+    assert summary["last_scrape_at"] == 1770000000.0, summary
+
+
+def test_the_summary_keeps_the_per_label_series():
+    """Per-status, per-validator and per-finish-reason counts are what a user tunes against."""
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    assert summary["requests_by_status"] == {"200": 100.0, "500": 4.0}, summary
+    assert summary["generations_by_finish"] == {"stop": 100.0}, summary
+    assert summary["streaming_by_stream"] == {"true": 80.0, "false": 24.0}, summary
+    bans = summary["bans_by_validator"]
+    assert bans["slop_phrase"] == {"total": 25.0, "fixed": 20.0}, bans
+    assert bans["regex"] == {"total": 10.0, "fixed": 10.0}, bans
+
+
+def test_a_failed_request_is_one_that_is_not_2xx():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    # 4 of the 104 requests answered 500, so 4 failed -- not 104, and not 0.
+    assert summary["requests_failed"] == 4.0, summary
+
+
+def test_the_per_label_series_are_none_for_a_plain_vllm_body():
+    summary = vm.summarise_antislop(vm.parse_prometheus_text(FIRST_POLL))
+    assert summary["requests_by_status"] is None, summary
+    assert summary["bans_by_validator"] is None, summary
+    assert summary["backtracks"] is None, summary
+
+
+def test_the_ban_and_backtrack_rates_come_from_two_snapshots():
+    first = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    second = vm.summarise_antislop(vm.parse_prometheus_text(FULL_SECOND))
+    rates = vm.compute_antislop_rates(second, first, 10.0)
+    # 10 more fixed bans over 10 s.
+    assert abs(rates["ban_rate"] - 1.0) < 1e-6, rates
+    # 20 more back-tracks over 10 s.
+    assert abs(rates["backtrack_rate"] - 2.0) < 1e-6, rates
+    # 60 s of request time over 60 requests.
+    assert abs(rates["avg_request_seconds"] - 1.0) < 1e-6, rates
+
+
+def test_the_rates_are_none_for_a_single_snapshot():
+    current = vm.summarise_antislop(vm.parse_prometheus_text(FULL_FIRST))
+    rates = vm.compute_antislop_rates(current, None, None)
+    assert rates["ban_rate"] is None, rates
+    assert rates["backtrack_rate"] is None, rates
+    assert rates["avg_request_seconds"] is None, rates
+
+
+def test_a_row_carries_the_full_proxy_metric_set():
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": [FULL_FIRST, FULL_SECOND]})
+    with _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    row = rows[0]
+    for key in ("antislop_requests", "antislop_requests_failed", "antislop_in_flight",
+                "antislop_prompt_tokens", "antislop_generation_tokens",
+                "antislop_generations", "antislop_streaming", "antislop_backtracks",
+                "antislop_upstream_errors", "antislop_scrape_ok", "antislop_scrape_errors",
+                "antislop_last_scrape_at", "antislop_avg_request_seconds",
+                "antislop_ban_rate", "antislop_backtrack_rate",
+                "antislop_bans_by_validator", "antislop_generations_by_finish",
+                "antislop_requests_by_status"):
+        assert key in row, "row is missing %r" % key
+        assert row[key] is not None, "%r is None for a full proxy body" % key
+    assert row["antislop_requests_failed"] == 4.0, row
+    assert row["antislop_backtracks"] == 50.0, row
+
+
+# --- 6c. v13.4.0: the per-slot throughput history --------------------------
+
+def test_each_slot_keeps_its_own_throughput_history():
+    """Two slots on ONE server must not overwrite each other's line."""
+    _reset()
+    config = _config({0: "http://h:8000/v1", 1: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_stub(stub):
+        vm.note_slot_usage(0, {"prompt_tokens": 100, "completion_tokens": 300}, 2.0)
+        vm.note_slot_usage(1, {"prompt_tokens": 100, "completion_tokens": 100}, 4.0)
+        vm.poll_once(config)
+        rows = vm.endpoint_rows(config)
+    histories = {row["slot_idx"]: row["slot_history"] for row in rows}
+    assert len(histories[0]) == 1, histories
+    assert len(histories[1]) == 1, histories
+    # 400 tokens / 2 s versus 200 tokens / 4 s: different slots, different lines.
+    assert abs(histories[0][0]["tokens_per_second"] - 200.0) < 1e-6, histories
+    assert abs(histories[1][0]["tokens_per_second"] - 50.0) < 1e-6, histories
+
+
+def test_the_slot_history_is_bounded_and_resettable():
+    _reset()
+    config = _config({0: "http://h:8000/v1"})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_stub(stub):
+        for _ in range(vm.HISTORY_LENGTH + 5):
+            vm.poll_once(config)
+        assert len(vm.slot_history(0)) == vm.HISTORY_LENGTH, len(vm.slot_history(0))
+    vm.reset_slot_history()
+    assert vm.slot_history(0) == [], vm.slot_history(0)
+
+
+def test_the_slot_history_is_empty_before_the_first_poll():
+    _reset()
+    assert vm.slot_history(0) == [], vm.slot_history(0)
+
+
 # --- 7. Formatting ---------------------------------------------------------
 
 def test_formatting_is_human_readable():
@@ -594,6 +768,21 @@ def test_formatting_is_human_readable():
     assert vm.format_count(38.0) == "38"
     assert vm.format_tokens(1234567) == "1,234,567"
     assert vm.format_tokens(None) == "-"
+
+
+def test_duration_and_rate_formatting():
+    """v13.4.0 units: a proxy duration and a per-minute rate."""
+    assert vm.format_duration(0.82) == "820 ms"
+    assert vm.format_duration(2.44) == "2.4 s"
+    assert vm.format_duration(72.0) == "1m 12s"
+    assert vm.format_duration(None) == "-"
+    assert vm.format_duration(-1.0) == "-"
+    assert vm.format_rate_per_minute(0.3) == "18.0/min"
+    assert vm.format_rate_per_minute(None) == "-"
+    assert vm.format_ratio(21, 28) == "75%"
+    # A zero denominator is "cannot tell", not "0%": nothing has fired yet.
+    assert vm.format_ratio(0, 0) == "-"
+    assert vm.format_ratio(None, 28) == "-"
 
 
 def test_load_reading_reflects_saturation():
