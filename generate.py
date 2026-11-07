@@ -1349,6 +1349,49 @@ def _poll_metrics_now():
     threading.Thread(target=run, name="vllm-metrics-manual-poll", daemon=True).start()
 
 
+# --- v13.3.0: the antislop-vllm-fork proxy's own columns ------------------------------
+# The fork's GET /metrics serves its own `antislop:` counters alongside the upstream vLLM body, so a
+# slot pointed at the fork can show what the PROXY is doing.  These columns are OPT-IN
+# (`metrics.antislop_columns`, default false) because a plain vLLM serves none of them: a default
+# run's tab must stay exactly what it was before v13.3.0.
+#
+# They are always CREATED and hidden with `displaycolumns` rather than added and removed, so
+# switching the key on needs no UI rebuild and the tree's column order never shifts.
+METRICS_ANTISLOP_COLUMNS = ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
+                            "Proxy Gen Speed")
+
+
+def _format_ban_counts(fixed, total):
+    """``12/35`` -- bans the back-track fixed out of every ban that fired, or ``-``.
+
+    The pair is the number to watch when tuning a ban list: a large total with a small fixed count
+    means the list is firing on things the model cannot avoid.
+    """
+    if total is None and fixed is None:
+        return "-"
+    return "%s/%s" % (vllm_metrics.format_count(fixed),
+                       vllm_metrics.format_count(total))
+
+
+def _apply_metrics_columns(tree):
+    """Show or hide the antislop-only columns from ``metrics.antislop_columns``.
+
+    ``displaycolumns`` is set to the full column list minus the antislop ones when the feature is
+    off, so the default tab is byte-identical to v13.2.1.  Called on every refresh, so a config
+    reload takes effect without rebuilding the tab.
+    """
+    try:
+        enabled = vllm_metrics.antislop_columns_enabled()
+    except Exception:
+        enabled = False
+    columns = tuple(tree.cget("columns"))
+    if enabled:
+        tree.configure(displaycolumns=columns)
+    else:
+        tree.configure(displaycolumns=tuple(
+            col for col in columns if col not in METRICS_ANTISLOP_COLUMNS))
+
+
 def _update_metrics_tab(force=False):
     """Populate the 📊 Metrics tab from ``vllm_metrics.endpoint_rows()`` (v13.1.0).
 
@@ -1375,12 +1418,19 @@ def _update_metrics_tab(force=False):
     signature = tuple(
         (row['slot_idx'], row.get('model'), row.get('error'), row.get('prompt_tps'),
          row.get('generation_tps'), row.get('load_percent'), row.get('running'),
-         row.get('waiting'), row.get('requests'), row.get('slot_tokens_per_second'))
+         row.get('waiting'), row.get('requests'), row.get('slot_tokens_per_second'),
+         row.get('antislop_requests'), row.get('antislop_ban_events'),
+         row.get('antislop_upstream_errors'), row.get('antislop_generation_tps'))
         for row in rows
     )
     if not force and widgets.get('metrics_signature') == signature:
         return
     widgets['metrics_signature'] = signature
+
+    # v13.3.0: the antislop-vllm-fork's own columns are OPT-IN (metrics.antislop_columns).
+    # They are always CREATED and hidden with `displaycolumns`, so switching the key on needs no UI
+    # rebuild and a plain-vLLM user's tab is exactly what it was before.
+    _apply_metrics_columns(tree)
 
     # --- status line: what was polled, and why a row may be empty ---
     status_label = widgets.get('metrics_status_label')
@@ -1413,7 +1463,8 @@ def _update_metrics_tab(force=False):
         update_vllm_metrics_graph(graph_canvas, rows, force=force)
 
     if not rows:
-        tree.insert("", tk.END, values=("-", "no vLLM backend", "-", "-", "-", "-", "-", "-"))
+        tree.insert("", tk.END, values=("-", "no vLLM backend", "-", "-", "-", "-", "-", "-",
+                                      "-", "-", "-", "-", "-", "-"))
         return
 
     for row in rows:
@@ -1424,6 +1475,7 @@ def _update_metrics_tab(force=False):
                 vllm_metrics.format_tokens(row.get('generation_tokens')),
                 vllm_metrics.format_count(row.get('requests')),
                 vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
+                "-", "-", "-", "-",
             ), tags=("unreachable",))
             continue
         tree.insert("", tk.END, values=(
@@ -1438,6 +1490,10 @@ def _update_metrics_tab(force=False):
             vllm_metrics.format_tokens(row.get('generation_tokens')),
             vllm_metrics.format_count(row.get('requests')),
             vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
+            vllm_metrics.format_count(row.get('antislop_requests')),
+            _format_ban_counts(row.get('antislop_ban_fixed'), row.get('antislop_ban_events')),
+            vllm_metrics.format_count(row.get('antislop_upstream_errors')),
+            vllm_metrics.format_speed(row.get('antislop_generation_tps')),
         ), tags=(vllm_metrics.describe_load(row.get('load_percent')),))
 
 
@@ -2997,7 +3053,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.2.1",
+    text="v13.3.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -4062,7 +4118,9 @@ for tab_name in tab_names:
         metrics_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, 4))
         metric_cols = ("API Endpoint", "Model", "Prompt Speed", "Generation Speed",
                        "Endpoint Load", "Running / Waiting", "Prompt Tokens",
-                       "Generated Tokens", "Requests", "This Slot's Throughput")
+                       "Generated Tokens", "Requests", "This Slot's Throughput",
+                       "Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
+                       "Proxy Gen Speed")
         metrics_tree = ttk.Treeview(metrics_lf, columns=metric_cols, show="headings",
                                     height=7, selectmode="browse", style=REGEX_TREE_STYLE)
         _configure_regex_tree_columns(metrics_tree, metric_cols, widths={
@@ -4070,6 +4128,10 @@ for tab_name in tab_names:
             "Generation Speed": 145, "Endpoint Load": 120, "Running / Waiting": 140,
             "Prompt Tokens": 125, "Generated Tokens": 135, "Requests": 90,
             "This Slot's Throughput": 150,
+            # v13.3.0: hidden unless `metrics.antislop_columns` is on (see
+            # `_apply_metrics_columns()`), but always created so the toggle needs no rebuild.
+            "Proxy Requests": 130, "Bans (fixed/total)": 150, "Proxy Errors": 125,
+            "Proxy Gen Speed": 150,
         }, stretch_columns=("API Endpoint", "Model"))
         metrics_tree.tag_configure("idle", foreground="#8b949e")
         metrics_tree.tag_configure("light", foreground="#69f0ae")
@@ -4078,6 +4140,9 @@ for tab_name in tab_names:
         metrics_tree.tag_configure("unreachable", foreground="#ff6b6b")
         metrics_tree.tag_configure("unknown", foreground="#8b949e")
         _grid_scrollable_table(metrics_lf, metrics_tree)
+        # v13.3.0: hide the antislop-only columns unless the feature is on.  Done once at build
+        # time and re-applied on every refresh, so the default tab is unchanged.
+        _apply_metrics_columns(metrics_tree)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_tree'] = metrics_tree
 
         # --- Per-endpoint graph ---

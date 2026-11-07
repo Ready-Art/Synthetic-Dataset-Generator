@@ -259,6 +259,79 @@ def is_vllm_metrics(samples):
     return any(name.startswith("vllm:") for name in samples)
 
 
+def is_antislop_metrics(samples):
+    """True when the body carries the antislop-vllm-fork proxy's own ``antislop:`` metrics (v13.3.0).
+
+    The fork's ``GET /metrics`` concatenates the upstream vLLM body with its own counters, so a slot
+    pointed at the fork usually has BOTH prefixes.  A body with only ``antislop:`` is a fork whose
+    upstream vLLM is down: it is still a REACHABLE endpoint, which is why this is a separate test
+    from :func:`is_vllm_metrics` rather than folded into it.
+    """
+    return any(name.startswith("antislop:") for name in samples)
+
+
+def summarise_antislop(samples):
+    """Reduce the fork's ``antislop:`` metrics to the figures the tab can show (v13.3.0).
+
+    Every value is ``None`` when the metric is absent, so a plain vLLM body (which has no
+    ``antislop:`` metric at all) yields an all-``None`` summary rather than a page of zeroes that
+    would read as "this proxy did nothing".
+
+    ``ban_fixed`` is the subset of ``ban_events`` whose back-track succeeded, which is the number to
+    watch when tuning a ban list: a large ``ban_events`` with a small ``ban_fixed`` means the list is
+    firing on things the model cannot avoid.
+    """
+    ban_total = _sum_series(samples, "antislop:ban_events_total")
+    ban_fixed = _sum_series(samples, "antislop:ban_events_total", {"fixed": "true"})
+    return {
+        "requests": _sum_series(samples, "antislop:requests_total"),
+        "in_flight": _first_value(samples, "antislop:requests_in_flight"),
+        "generations": _sum_series(samples, "antislop:generations_total"),
+        "generation_tokens": _sum_series(samples, "antislop:generation_tokens_total"),
+        "prompt_tokens": _sum_series(samples, "antislop:prompt_tokens_total"),
+        "ban_events": ban_total,
+        "ban_fixed": ban_fixed,
+        "upstream_errors": _sum_series(samples, "antislop:upstream_errors_total"),
+        "scrape_errors": _sum_series(
+            samples, "antislop:upstream_metrics_scrape_total", {"result": "error"}),
+    }
+
+
+def compute_antislop_rates(current, previous, elapsed_seconds):
+    """The proxy's own token-generation speed between two ``summarise_antislop()`` snapshots.
+
+    This is deliberately NOT the same figure as :func:`compute_rates`' ``generation_tps``.  vLLM's
+    figure divides by the server's own decode timer, so it measures the GPU.  This one divides by the
+    **wall clock** between two polls, so it measures what the client actually received end to end --
+    the gap between the two is the proxy's own overhead, which is the whole reason to show both.
+
+    A single snapshot reports ``None`` rather than a guess, and a negative delta (a restarted proxy
+    zeroed its counters) drops the sample instead of drawing a spike.
+    """
+    rates = {"generation_tps": None}
+    if previous is None or elapsed_seconds is None or elapsed_seconds <= 0:
+        return rates
+    tokens = _delta(current.get("generation_tokens"), previous.get("generation_tokens"))
+    if tokens is not None and tokens > 0:
+        rates["generation_tps"] = tokens / elapsed_seconds
+    return rates
+
+
+def antislop_columns_enabled(config=None):
+    """Whether the 📊 Metrics tab shows the proxy's own columns (``metrics.antislop_columns``).
+
+    **Off by default.**  A plain vLLM serves no ``antislop:`` metrics, so a default run's tab must be
+    exactly what it was before v13.3.0 (see the "features opt-in by default" rule in AGENTS.md).
+
+    ``config=None`` reads ``app_state.global_config``, the same fallback :func:`_slot_urls` uses, so the
+    UI can call this with no argument and a test can pass a plain dict.
+    """
+    if config is None:
+        import app_state
+        config = app_state.global_config
+    return bool(_config_get(config, "metrics.antislop_columns", False))
+
+
 # ---------------------------------------------------------------------------
 # One endpoint snapshot
 # ---------------------------------------------------------------------------
@@ -489,7 +562,7 @@ def poll_endpoint(metrics_url, now=None):
     text, error = _fetch_metrics(metrics_url)
     with _endpoints_lock:
         state = _endpoints.setdefault(metrics_url, {
-            "counters": None, "sample_at": None, "model": "",
+            "counters": None, "antislop_counters": None, "sample_at": None, "model": "",
             "error": None, "history": [], "last": {},
         })
 
@@ -499,15 +572,23 @@ def poll_endpoint(metrics_url, now=None):
         return state
 
     samples = parse_prometheus_text(text)
-    if not is_vllm_metrics(samples):
+    # v13.3.0: the antislop-vllm-fork's /metrics carries its own antislop: metrics alongside the
+    # upstream vllm: ones, and a fork whose upstream vLLM is DOWN still answers with only the
+    # antislop: half.  That is a REACHABLE endpoint, not an error, so either prefix is enough.
+    has_vllm = is_vllm_metrics(samples)
+    has_antislop = is_antislop_metrics(samples)
+    if not (has_vllm or has_antislop):
         with _endpoints_lock:
             state["error"] = "not a vLLM endpoint (no vllm: metrics)"
         return state
 
     current = summarise(samples)
+    antislop_current = summarise_antislop(samples)
     previous = state["counters"]
+    antislop_previous = state.get("antislop_counters")
     elapsed = None if state["sample_at"] is None else now - state["sample_at"]
     rates = compute_rates(current, previous, elapsed)
+    antislop_rates = compute_antislop_rates(antislop_current, antislop_previous, elapsed)
 
     sample = {
         "time": now,
@@ -516,15 +597,21 @@ def poll_endpoint(metrics_url, now=None):
         "load_percent": current["load_percent"],
         "running": current["running"],
         "waiting": current["waiting"],
+        "antislop_generation_tps": antislop_rates["generation_tps"],
+        "antislop_ban_events": antislop_current["ban_events"],
     }
     # ``last`` is what the table reads: the gauges from this snapshot plus the rates derived
     # from it, so one dict holds everything one row needs.
     latest = dict(current)
     latest.update(rates)
     latest["sample_at"] = now
+    latest["antislop"] = antislop_current
+    latest["antislop_rates"] = antislop_rates
+    latest["is_antislop"] = has_antislop
 
     with _endpoints_lock:
         state["counters"] = current
+        state["antislop_counters"] = antislop_current
         state["sample_at"] = now
         state["model"] = current["model"] or state["model"]
         state["error"] = None
@@ -636,6 +723,8 @@ def endpoint_rows(config=None):
         state = state_snapshot.get(metrics_url)
         own = slot_usage(slot_idx) or {}
         last = (state or {}).get("last") or {}
+        antislop = last.get("antislop") or {}
+        antislop_rates = last.get("antislop_rates") or {}
         rows.append({
             "slot_idx": slot_idx,
             "label": SLOT_LABELS.get(slot_idx, "API {}".format(slot_idx + 1)),
@@ -652,6 +741,16 @@ def endpoint_rows(config=None):
             "generation_tokens": own.get("completion_tokens"),
             "requests": own.get("requests"),
             "slot_tokens_per_second": own.get("tokens_per_second"),
+            # v13.3.0: the antislop-vllm-fork proxy's own figures.  ``None`` for a plain vLLM
+            # (which serves no antislop: metrics), so the columns render "-" and nothing is invented.
+            "is_antislop": bool(last.get("is_antislop")),
+            "antislop_requests": antislop.get("requests"),
+            "antislop_ban_events": antislop.get("ban_events"),
+            "antislop_ban_fixed": antislop.get("ban_fixed"),
+            "antislop_upstream_errors": antislop.get("upstream_errors"),
+            "antislop_scrape_errors": antislop.get("scrape_errors"),
+            "antislop_in_flight": antislop.get("in_flight"),
+            "antislop_generation_tps": antislop_rates.get("generation_tps"),
             "history": (state or {}).get("history") or [],
         })
     return rows
