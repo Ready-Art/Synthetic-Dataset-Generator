@@ -240,3 +240,29 @@ frame, so set the first-word cap well above the frame cap.
 > path is [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) — the **`dev` branch,
 > not `main`** — which filters at the token level during generation and removes the fixer round trips
 > entirely. Full reasoning in [Slop & Anti-Slop](slop-and-antislop.md).
+
+## Metrics Tab Settings
+
+```yaml
+metrics:
+  antislop_columns: false   # show the antislop-vllm-fork proxy's own columns on the 📊 Metrics tab
+```
+
+`metrics.antislop_columns` (v13.3.0) adds four columns to the 📊 Metrics tab: **Proxy Requests**,
+**Bans (fixed/total)**, **Proxy Errors** and **Proxy Gen Speed**. They are read from the
+[AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) proxy's own `GET /metrics`
+endpoint, which serves its `antislop:` counters alongside the upstream vLLM body — so pointing an API slot
+at the fork gives you both sets of figures from the one URL. No second URL is needed.
+
+It ships **`false`** because a plain vLLM serves no `antislop:` metrics, so the columns would be empty
+dashes for anyone not running the fork. The vLLM columns (prompt speed, generation speed, endpoint load)
+are unaffected either way: they come from the upstream body the fork passes through verbatim.
+
+**Bans (fixed/total)** is the one to watch when tuning a ban list. A large total with a small fixed count
+means the list is firing on things the model cannot avoid, which costs a back-track and a restart for every
+hit and rarely produces a better answer.
+
+**Proxy Gen Speed** is deliberately *not* the same figure as the vLLM **Generation Speed** column. vLLM's
+figure divides generation tokens by the server's own decode timer, so it measures the GPU. The proxy's figure
+divides by the wall clock between two polls, so it measures what the client actually received end to end. The
+gap between the two columns is the proxy's own overhead.
