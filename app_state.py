@@ -83,6 +83,8 @@ recent_regex_per_api = {i: [] for i in range(7)}
 recent_regex_total = []
 recent_non_latin_per_api = {i: [] for i in range(7)}
 recent_non_latin_total = []
+recent_foreign_word_per_api = {i: [] for i in range(7)}
+recent_foreign_word_total = []
 recent_scene_continuity_per_api = {i: [] for i in range(7)}
 recent_scene_continuity_total = []
 refusal_count_total = 0
@@ -114,6 +116,12 @@ regex_watch_counts_per_api = {i: 0 for i in range(7)}
 # script. Purely character-class based: no LLM call, no phrase list, no network request.
 non_latin_count_total = 0
 non_latin_counts_per_api = {i: 0 for i in range(7)}
+# --- Foreign-word corruption (v13.5.2) ---
+# A word in another LANGUAGE written in Latin letters ("green olhos", "brown ojos") or two words
+# fused with a capital in the middle ("visiblyTrembling"). The non-Latin check above cannot see
+# either, because every character is plain Latin. Word based: no LLM call, no network request.
+foreign_word_count_total = 0
+foreign_word_counts_per_api = {i: 0 for i in range(7)}
 # --- Scene cast continuity (v12.0) ---
 # A character who has LEFT the scene (or has not arrived yet) may not speak or act. The check
 # is code-only (detection.check_scene_continuity): attributed quoted lines plus a curated

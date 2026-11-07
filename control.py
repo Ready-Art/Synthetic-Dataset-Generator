@@ -881,6 +881,8 @@ class HeadlessController:
             'retry_missing_quotations_local': settings.retry_missing_quotations,
             'current_non_latin_enabled': settings.non_latin_enabled,
             'current_non_latin_fixes': settings.non_latin_fixes,
+            'current_foreign_word_enabled': settings.foreign_word_enabled,
+            'current_foreign_word_fixes': settings.foreign_word_fixes,
             'questions_append_alias_local': settings.questions_append_alias,
             'questions_append_separator_local': settings.questions_append_separator,
             'scene_cast_enabled_local': settings.scene_cast_enabled,
@@ -1636,4 +1638,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "13.5.1"
+GENERATOR_VERSION = "13.5.2"

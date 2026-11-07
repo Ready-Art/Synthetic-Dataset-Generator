@@ -2510,6 +2510,20 @@ class ConfigEditor(tk.Toplevel):
         # Preserve pricing settings from the loaded config if they exist
         if 'pricing' in self.global_config.config:
             config_data['pricing'] = self.global_config.config['pricing']
+        # Preserve the metrics block (v13.3.0 / v13.5.0). The editor has no widgets for it, and
+        # this method builds a FRESH dict rather than editing the loaded one, so without this the
+        # whole block would be dropped on every save and the user's antislop_columns /
+        # save_history choice would silently revert to the defaults. Same pattern as 'pricing'.
+        if 'metrics' in self.global_config.config:
+            config_data['metrics'] = self.global_config.config['metrics']
+        # Preserve the quality keys the editor has no widgets for (v13.5.2). Same reason as
+        # 'metrics' above: the quality dict is rebuilt from scratch, so an unmodelled key would be
+        # dropped on every save. These are advanced knobs, so a missing widget is fine -- losing the
+        # user's value silently is not.
+        _loaded_quality = self.global_config.config.get('quality') or {}
+        for _quality_key in ('weights', 'max_profile_chars_for_scoring'):
+            if _quality_key in _loaded_quality:
+                config_data['quality'][_quality_key] = _loaded_quality[_quality_key]
         config_data['datasets'] = self.datasets_panel.get_config()
         return config_data
 

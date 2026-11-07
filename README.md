@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v13.5.1
+# ReadyArt Synthetic Dataset Generator v13.5.2
 
 A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs, driven either by a Tkinter GUI (`python generate.py`) or by a headless CLI (`python -m cli`) that speaks JSON and exit codes over a local control socket. Both front ends run the same engine against the same `config/config.yml` and write the same output.
 
@@ -18,7 +18,7 @@ The engine orchestrates up to six API slots — four generation slots plus a ded
 
 Around that engine sit three layers:
 
-- **Detection & repair** — out-of-character replies and scene-continuity violations are caught and regenerated out of the box; refusal, user-impersonation, non-Latin-script, Regex Watch, slop and anti-slop checks are configurable and ship off or with empty phrase lists. Unbalanced quotes are repaired deterministically, and the slop and anti-slop fixers can rewrite a flagged reply through their own API slots.
+- **Detection & repair** — out-of-character replies and scene-continuity violations are caught and regenerated out of the box; refusal, user-impersonation, non-Latin-script, foreign-word, Regex Watch, slop and anti-slop checks are configurable and ship off or with empty phrase lists. Unbalanced quotes are repaired deterministically, and the slop and anti-slop fixers can rewrite a flagged reply through their own API slots.
 - **A character engine** — multi-character scenes with a generator-owned cast schedule (characters join and leave on a plan the model only narrates), emotional states and multi-turn arcs, persona breakthrough, lore, and a run-wide `{style}` deck dealt without replacement so openings stop repeating across rows.
 - **A hybrid quality scorer** — heuristic measurements plus an optional LLM judge over seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical), with opt-in roleplay, tic-density and cast-continuity dimensions; below-threshold conversations are flagged in a Review tab or dropped from the dataset.
 

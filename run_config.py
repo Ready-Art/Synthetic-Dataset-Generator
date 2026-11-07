@@ -166,7 +166,8 @@ class RunSettings:
         'user_emotional_states_enabled', 'user_emotional_states',
         'per_char_random_emotions', 'regex_patterns', 'regex_watch_enabled',
         'regex_watch_max_rounds', 'include_style_metrics', 'retry_missing_quotations',
-        'non_latin_enabled', 'non_latin_fixes', 'questions_append_alias',
+        'non_latin_enabled', 'non_latin_fixes',
+        'foreign_word_enabled', 'foreign_word_fixes', 'questions_append_alias',
         'questions_append_separator', 'scene_cast_enabled', 'scene_cast_config',
         'scene_continuity_enabled', 'scene_continuity_fixes',
         'scene_continuity_max_rounds', 'repeat_opener_guard', 'repeat_opener_fixes',
@@ -262,6 +263,8 @@ class RunSettings:
         self.regex_watch_max_rounds = 3
         self.non_latin_enabled = False
         self.non_latin_fixes = []
+        self.foreign_word_enabled = False
+        self.foreign_word_fixes = []
         self.scene_cast_enabled = False
         self.scene_cast_config = {}
         self.scene_continuity_enabled = True
@@ -655,6 +658,9 @@ def _build_detection_settings(settings, cfg):
 
     settings.non_latin_enabled = bool(cfg.get('detection.non_latin.enabled', False))
     settings.non_latin_fixes = _clean_fix_list(cfg.get('detection.non_latin.fixes', []))
+
+    settings.foreign_word_enabled = bool(cfg.get('detection.foreign_word.enabled', False))
+    settings.foreign_word_fixes = _clean_fix_list(cfg.get('detection.foreign_word.fixes', []))
 
     cast_config = cfg.get('prompts.scene_cast', {}) or {}
     if not isinstance(cast_config, dict):
