@@ -248,8 +248,10 @@ metrics:
   antislop_columns: false   # show the antislop-vllm-fork proxy's own columns on the 📊 Metrics tab
 ```
 
-`metrics.antislop_columns` (v13.3.0) adds four columns to the 📊 Metrics tab: **Proxy Requests**,
-**Bans (fixed/total)**, **Proxy Errors** and **Proxy Gen Speed**. They are read from the
+`metrics.antislop_columns` (v13.3.0) adds the proxy's own columns to the 📊 Metrics tab: **Proxy Requests**,
+**Bans (fixed/total)**, **Proxy Errors** and **Proxy Gen Speed**, plus (v13.4.0) **Proxy Failed**,
+**In Flight**, **Avg Proxy Time**, **Proxy Prompt Tok**, **Proxy Gen Tok**, **Ban Rate**, **Backtracks** and
+**Upstream Scrapes**. They are read from the
 [AntiSlop-vLLM](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) proxy's own `GET /metrics`
 endpoint, which serves its `antislop:` counters alongside the upstream vLLM body — so pointing an API slot
 at the fork gives you both sets of figures from the one URL. No second URL is needed.
@@ -258,9 +260,20 @@ It ships **`false`** because a plain vLLM serves no `antislop:` metrics, so the 
 dashes for anyone not running the fork. The vLLM columns (prompt speed, generation speed, endpoint load)
 are unaffected either way: they come from the upstream body the fork passes through verbatim.
 
+**You do not have to set this key to see the columns.** From v13.4.0 the tab shows them whenever a slot is
+actually serving `antislop:` metrics, whether or not the key is set — a shipped `config.yml` does not gain a new
+key automatically, so requiring the key meant a fork user saw an empty-looking tab and concluded the feature was
+broken. The key still decides for a **plain vLLM**, which is why a default run's tab is unchanged.
+
 **Bans (fixed/total)** is the one to watch when tuning a ban list. A large total with a small fixed count
 means the list is firing on things the model cannot avoid, which costs a back-track and a restart for every
-hit and rarely produces a better answer.
+hit and rarely produces a better answer. **Ban Rate** and **Backtracks** show the same thing as a rate, which is
+what you actually feel while a run is going: a ban every few seconds is a different problem from a ban every
+few minutes.
+
+**Avg Proxy Time** is the mean wall-clock time one request spent inside the proxy, from the proxy's own
+duration summary. Compare it with the vLLM **Generation Speed** column: a large average with a healthy generation
+speed means the proxy, not the GPU, is the bottleneck.
 
 **Proxy Gen Speed** is deliberately *not* the same figure as the vLLM **Generation Speed** column. vLLM's
 figure divides generation tokens by the server's own decode timer, so it measures the GPU. The proxy's figure
