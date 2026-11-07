@@ -93,7 +93,7 @@ from generation import (DEFAULT_FIRST_LINE_PROMPT, DEFAULT_FIRST_LINE_STYLES, DE
                         opening_mode_conflict, opening_mode_mismatch,
                         DEFAULT_NOTE_PLACEMENT, note_placement, placement_cache_warning,
                         FIRST_REPLY_OPENER_MAX_RETRIES)
-from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, draw_vllm_metrics_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display, update_vllm_metrics_graph
+from dashboard import clear_dashboard, clear_dashboard_search, configure_animated_progress_styles, copy_dashboard_tab, create_modern_issue_panel, draw_issue_graph, draw_vllm_metrics_graph, pulse_progress_bar, search_in_dashboard_tab, update_dashboard, update_dashboard_safe, update_progress_bar_style, update_thread_status_display, update_vllm_metrics_graph, update_vllm_proxy_graph, update_vllm_queue_graph, update_vllm_slot_graph
 from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
@@ -350,6 +350,9 @@ def reset_all_stats_and_history():
     # computed across the gap between two runs is never shown.
     vllm_metrics.reset_slot_usage()
     vllm_metrics.reset_endpoints()
+    # v13.4.0: the per-slot throughput rings are per-run too, or the new slot graph would
+    # draw the previous run's line up to the new run's first sample.
+    vllm_metrics.reset_slot_history()
 
     app_state.total_attempts_global = 0
     app_state.refusal_count_total = 0
@@ -1357,8 +1360,41 @@ def _poll_metrics_now():
 #
 # They are always CREATED and hidden with `displaycolumns` rather than added and removed, so
 # switching the key on needs no UI rebuild and the tree's column order never shifts.
-METRICS_ANTISLOP_COLUMNS = ("Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
-                            "Proxy Gen Speed")
+#
+# v13.4.0: the set grew from four columns to every figure the fork actually emits.  The old four
+# (Proxy Requests / Bans / Proxy Errors / Proxy Gen Speed) are still here under the same headings,
+# so a saved screenshot or a user's muscle memory still finds them.
+METRICS_ANTISLOP_COLUMNS = (
+    "Proxy Requests", "Proxy Failed", "In Flight", "Avg Proxy Time",
+    "Proxy Gen Speed", "Proxy Prompt Tok", "Proxy Gen Tok",
+    "Bans (fixed/total)", "Ban Rate", "Backtracks", "Proxy Errors",
+    "Upstream Scrapes",
+)
+
+# The full column list, in display order.  Grouped so the vLLM server figures come first, then the
+# proxy's traffic, then its ban/back-track loop, then its failures -- reading left to right follows
+# the request's own path through the system.
+METRICS_COLUMNS = (
+    # --- the vLLM server behind the slot ---
+    "API Endpoint", "Model", "Prompt Speed", "Generation Speed", "Endpoint Load",
+    "Running / Waiting", "Prompt Tokens", "Generated Tokens", "Requests",
+    "This Slot's Throughput",
+) + METRICS_ANTISLOP_COLUMNS
+
+# Preferred widths at 96 DPI.  A column is never narrower than its own heading, so these are
+# targets, not limits (see _configure_regex_tree_columns()).
+METRICS_COLUMN_WIDTHS = {
+    "API Endpoint": 170, "Model": 220, "Prompt Speed": 130, "Generation Speed": 145,
+    "Endpoint Load": 120, "Running / Waiting": 140, "Prompt Tokens": 125,
+    "Generated Tokens": 135, "Requests": 90, "This Slot's Throughput": 150,
+    "Proxy Requests": 130, "Proxy Failed": 115, "In Flight": 95, "Avg Proxy Time": 135,
+    "Proxy Gen Speed": 150, "Proxy Prompt Tok": 140, "Proxy Gen Tok": 130,
+    "Bans (fixed/total)": 150, "Ban Rate": 110, "Backtracks": 110, "Proxy Errors": 125,
+    "Upstream Scrapes": 145,
+}
+
+# Columns that hold a 0-100 percentage, so the tree can tag them by severity.
+METRICS_PERCENT_COLUMNS = ("Endpoint Load",)
 
 
 def _format_ban_counts(fixed, total):
@@ -1373,23 +1409,217 @@ def _format_ban_counts(fixed, total):
                        vllm_metrics.format_count(total))
 
 
-def _apply_metrics_columns(tree):
+def _format_upstream_scrapes(row):
+    """``ok/error`` scrape counts, or ``-`` for a plain vLLM (which never scrapes anything)."""
+    ok = row.get('antislop_scrape_ok')
+    errors = row.get('antislop_scrape_errors')
+    if ok is None and errors is None:
+        return "-"
+    return "%s/%s" % (vllm_metrics.format_count(ok), vllm_metrics.format_count(errors))
+
+
+def _metrics_row_values(row):
+    """One table row's cell values, in ``METRICS_COLUMNS`` order.
+
+    Kept as one function so the error branch and the normal branch cannot drift apart: a row shorter
+    than the column list silently shifts every cell after it.
+    """
+    if row.get('error'):
+        return (
+            row['label'], "unreachable", "-", "-", "-", "-",
+            vllm_metrics.format_tokens(row.get('prompt_tokens')),
+            vllm_metrics.format_tokens(row.get('generation_tokens')),
+            vllm_metrics.format_count(row.get('requests')),
+            vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
+            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-",
+        )
+    return (
+        row['label'],
+        row.get('model') or "-",
+        vllm_metrics.format_speed(row.get('prompt_tps')),
+        vllm_metrics.format_speed(row.get('generation_tps')),
+        vllm_metrics.format_percent(row.get('load_percent')),
+        "%s / %s" % (vllm_metrics.format_count(row.get('running')),
+                      vllm_metrics.format_count(row.get('waiting'))),
+        vllm_metrics.format_tokens(row.get('prompt_tokens')),
+        vllm_metrics.format_tokens(row.get('generation_tokens')),
+        vllm_metrics.format_count(row.get('requests')),
+        vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
+        # --- the proxy ---
+        vllm_metrics.format_count(row.get('antislop_requests')),
+        vllm_metrics.format_count(row.get('antislop_requests_failed')),
+        vllm_metrics.format_count(row.get('antislop_in_flight')),
+        vllm_metrics.format_duration(row.get('antislop_avg_request_seconds')),
+        vllm_metrics.format_speed(row.get('antislop_generation_tps')),
+        vllm_metrics.format_tokens(row.get('antislop_prompt_tokens')),
+        vllm_metrics.format_tokens(row.get('antislop_generation_tokens')),
+        _format_ban_counts(row.get('antislop_ban_fixed'), row.get('antislop_ban_events')),
+        vllm_metrics.format_rate_per_minute(row.get('antislop_ban_rate')),
+        vllm_metrics.format_count(row.get('antislop_backtracks')),
+        vllm_metrics.format_count(row.get('antislop_upstream_errors')),
+        _format_upstream_scrapes(row),
+    )
+
+
+def _apply_metrics_columns(tree, rows=None):
     """Show or hide the antislop-only columns from ``metrics.antislop_columns``.
 
     ``displaycolumns`` is set to the full column list minus the antislop ones when the feature is
     off, so the default tab is byte-identical to v13.2.1.  Called on every refresh, so a config
     reload takes effect without rebuilding the tab.
+
+    v13.4.0: a slot that is ACTUALLY serving ``antislop:`` metrics shows them even with the key off.
+    The key stays the default (a plain-vLLM user's tab is unchanged), but "I pointed a slot at the
+    fork and saw nothing" was the single most confusing thing about v13.3.0 -- the data was there and
+    the columns were hidden.  ``rows=None`` means "apply the config only", which is what the build
+    path uses before the first poll.
     """
     try:
         enabled = vllm_metrics.antislop_columns_enabled()
     except Exception:
         enabled = False
+    if not enabled and rows:
+        enabled = any(row.get('is_antislop') for row in rows)
     columns = tuple(tree.cget("columns"))
     if enabled:
         tree.configure(displaycolumns=columns)
     else:
         tree.configure(displaycolumns=tuple(
             col for col in columns if col not in METRICS_ANTISLOP_COLUMNS))
+
+
+def _metrics_totals(rows):
+    """Sum the proxy's counters across every DISTINCT proxy the slots point at (v13.4.0).
+
+    This is the ONE place the tab aggregates, and it aggregates the PROXY's own counters, not the
+    vLLM server figures.  The per-slot rule exists so a user can see which endpoint is slow; a
+    proxy-wide request/ban total answers a different question ("how much work has this run pushed
+    through the proxy?") and has no per-slot meaning.
+
+    **Deduplicated by ``metrics_url``**: two slots on one proxy report the SAME counters, so summing
+    per row would double them.  A figure is ``None`` when no row reports it, so a plain-vLLM tab shows
+    ``-`` rather than a row of zeroes.
+    """
+    def unique_proxy_rows():
+        seen = set()
+        for row in rows:
+            if not row.get('is_antislop'):
+                continue
+            url = row.get('metrics_url') or row.get('slot_idx')
+            if url in seen:
+                continue
+            seen.add(url)
+            yield row
+
+    def total(key):
+        values = [row.get(key) for row in unique_proxy_rows() if row.get(key) is not None]
+        return sum(values) if values else None
+
+    return {
+        "proxied": sum(1 for _row in unique_proxy_rows()),
+        "requests": total('antislop_requests'),
+        "failed": total('antislop_requests_failed'),
+        "in_flight": total('antislop_in_flight'),
+        "bans": total('antislop_ban_events'),
+        "bans_fixed": total('antislop_ban_fixed'),
+        "backtracks": total('antislop_backtracks'),
+        "upstream_errors": total('antislop_upstream_errors'),
+        "generation_tokens": total('antislop_generation_tokens'),
+        "prompt_tokens": total('antislop_prompt_tokens'),
+        "generation_tps": total('antislop_generation_tps'),
+        "loads": [row.get('load_percent') for row in rows
+                  if row.get('load_percent') is not None],
+        "unreachable": [row['label'] for row in rows if row.get('error')],
+    }
+
+
+def _update_metrics_summary(widgets, rows):
+    """Fill the four KPI cards above the table (v13.4.0).
+
+    The table answers "which endpoint?" and is 22 columns wide; these answer "is this run healthy?"
+    without reading a single row.  Each card is a (value, detail) pair so the number and its context
+    stay together -- a bare "62%" means nothing without "of 2 endpoints".
+    """
+    cards = widgets.get('metrics_cards') or {}
+    if not cards:
+        return
+    totals = _metrics_totals(rows)
+
+    def put(key, value, detail, colour=None):
+        label = cards.get(key)
+        if label is None or not label.winfo_exists():
+            return
+        label.configure(text=value)
+        detail_label = widgets.get('metrics_cards_detail', {}).get(key)
+        if detail_label is not None and detail_label.winfo_exists():
+            detail_label.configure(text=detail, foreground=colour or "#8b949e")
+
+    # --- 1. throughput: what the whole proxy is delivering right now ---
+    if totals["generation_tps"] is None:
+        put("throughput", "-", "no proxy generation yet")
+    else:
+        put("throughput", vllm_metrics.format_speed(totals["generation_tps"]),
+            "across %d proxied slot(s)" % totals["proxied"])
+
+    # --- 2. load: the worst endpoint, because that is what throttles the run ---
+    if not totals["loads"]:
+        put("load", "-", "no KV-cache gauge reported")
+    else:
+        worst = max(totals["loads"])
+        put("load", vllm_metrics.format_percent(worst),
+            "busiest of %d endpoint(s)" % len(totals["loads"]),
+            {"saturated": "#ff6b6b", "busy": "#ffd43b",
+             "light": "#69f0ae"}.get(vllm_metrics.describe_load(worst), "#8b949e"))
+
+    # --- 3. bans: the ban-list tuning figure ---
+    if totals["bans"] is None:
+        put("bans", "-", "no proxy ban counters")
+    else:
+        put("bans", vllm_metrics.format_count(totals["bans"]),
+            "%s fixed by back-track" % vllm_metrics.format_ratio(
+                totals["bans_fixed"], totals["bans"]))
+
+    # --- 4. errors: proxy failures and unreachable endpoints together ---
+    problems = []
+    if totals["upstream_errors"]:
+        problems.append("%s upstream" % vllm_metrics.format_count(totals["upstream_errors"]))
+    if totals["failed"]:
+        problems.append("%s failed" % vllm_metrics.format_count(totals["failed"]))
+    if totals["unreachable"]:
+        problems.append("%d unreachable" % len(totals["unreachable"]))
+    if problems:
+        put("errors", vllm_metrics.format_count(
+                (totals["upstream_errors"] or 0) + (totals["failed"] or 0)),
+            ", ".join(problems), "#ff6b6b")
+    else:
+        put("errors", "0", "no proxy failures" if rows else "nothing polled", "#69f0ae")
+
+
+def _refresh_metrics_graphs(widgets, rows, force=False):
+    """Refresh every graph panel on the tab (v13.4.0).
+
+    Four panels, each answering one question, rather than one crowded figure:
+
+    * ``metrics_graph_canvas`` -- speeds and KV-cache load per endpoint (v13.1.0, unchanged);
+    * ``metrics_slot_graph_canvas`` -- each slot's OWN measured throughput;
+    * ``metrics_proxy_graph_canvas`` -- the proxy's request rate and ban/back-track rate;
+    * ``metrics_queue_graph_canvas`` -- requests running vs waiting on each server.
+
+    A missing canvas is skipped rather than raised on, so an older saved layout still refreshes.
+    """
+    for key, updater in (
+        ('metrics_graph_canvas', update_vllm_metrics_graph),
+        ('metrics_slot_graph_canvas', update_vllm_slot_graph),
+        ('metrics_proxy_graph_canvas', update_vllm_proxy_graph),
+        ('metrics_queue_graph_canvas', update_vllm_queue_graph),
+    ):
+        canvas = widgets.get(key)
+        if canvas is None or not hasattr(canvas, 'winfo_exists') or not canvas.winfo_exists():
+            continue
+        try:
+            updater(canvas, rows, force=force)
+        except Exception as e:
+            log_message(f"Metrics graph {key} refresh failed: {e}", "WARNING")
 
 
 def _update_metrics_tab(force=False):
@@ -1419,8 +1649,15 @@ def _update_metrics_tab(force=False):
         (row['slot_idx'], row.get('model'), row.get('error'), row.get('prompt_tps'),
          row.get('generation_tps'), row.get('load_percent'), row.get('running'),
          row.get('waiting'), row.get('requests'), row.get('slot_tokens_per_second'),
-         row.get('antislop_requests'), row.get('antislop_ban_events'),
-         row.get('antislop_upstream_errors'), row.get('antislop_generation_tps'))
+         row.get('antislop_requests'), row.get('antislop_requests_failed'),
+         row.get('antislop_in_flight'), row.get('antislop_avg_request_seconds'),
+         row.get('antislop_ban_events'), row.get('antislop_ban_fixed'),
+         row.get('antislop_ban_rate'), row.get('antislop_backtracks'),
+         row.get('antislop_upstream_errors'), row.get('antislop_scrape_ok'),
+         row.get('antislop_scrape_errors'), row.get('antislop_generation_tps'),
+         row.get('antislop_prompt_tokens'), row.get('antislop_generation_tokens'),
+         row.get('antislop_generations'), row.get('antislop_streaming'),
+         row.get('is_antislop'))
         for row in rows
     )
     if not force and widgets.get('metrics_signature') == signature:
@@ -1429,8 +1666,12 @@ def _update_metrics_tab(force=False):
 
     # v13.3.0: the antislop-vllm-fork's own columns are OPT-IN (metrics.antislop_columns).
     # They are always CREATED and hidden with `displaycolumns`, so switching the key on needs no UI
-    # rebuild and a plain-vLLM user's tab is exactly what it was before.
-    _apply_metrics_columns(tree)
+    # rebuild and a plain-vLLM user's tab is exactly what it was before.  v13.4.0: a slot that is
+    # actually serving antislop: metrics shows them regardless of the key.
+    _apply_metrics_columns(tree, rows)
+
+    # --- the KPI strip: the four figures worth reading at a glance ---
+    _update_metrics_summary(widgets, rows)
 
     # --- status line: what was polled, and why a row may be empty ---
     status_label = widgets.get('metrics_status_label')
@@ -1444,10 +1685,14 @@ def _update_metrics_tab(force=False):
                 foreground="#ffb86b")
         else:
             failing = [row['label'] for row in rows if row.get('error')]
+            proxied = [row['label'] for row in rows if row.get('is_antislop')]
             text = ("Polling %d vLLM endpoint(s) every %d seconds for %d API slot(s). "
                     "Prompt/Generation speeds come from the server's own prefill/decode timers; "
                     "Load is that server's KV-cache usage."
                     % (polled, int(vllm_metrics.POLL_INTERVAL_SECONDS), len(rows)))
+            if proxied:
+                text += (" antislop-vllm-fork proxy metrics are shown for: %s."
+                         % ", ".join(proxied))
             if failing:
                 text += " Unreachable: %s." % ", ".join(failing)
             status_label.configure(text=text,
@@ -1456,45 +1701,20 @@ def _update_metrics_tab(force=False):
     for item in tree.get_children():
         tree.delete(item)
 
-    # The graph is refreshed for the empty case too, so it draws its own hint rather
+    # Every graph is refreshed for the empty case too, so each draws its own hint rather
     # than leaving the previous run's lines on screen.
-    graph_canvas = widgets.get('metrics_graph_canvas')
-    if graph_canvas is not None and graph_canvas.winfo_exists():
-        update_vllm_metrics_graph(graph_canvas, rows, force=force)
+    _refresh_metrics_graphs(widgets, rows, force=force)
 
     if not rows:
-        tree.insert("", tk.END, values=("-", "no vLLM backend", "-", "-", "-", "-", "-", "-",
-                                      "-", "-", "-", "-", "-", "-"))
+        tree.insert("", tk.END, values=("-", "no vLLM backend") + ("-",) * (len(METRICS_COLUMNS) - 2))
         return
 
     for row in rows:
         if row.get('error'):
-            tree.insert("", tk.END, values=(
-                row['label'], "unreachable", "-", "-", "-",
-                "-", vllm_metrics.format_tokens(row.get('prompt_tokens')),
-                vllm_metrics.format_tokens(row.get('generation_tokens')),
-                vllm_metrics.format_count(row.get('requests')),
-                vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
-                "-", "-", "-", "-",
-            ), tags=("unreachable",))
+            tree.insert("", tk.END, values=_metrics_row_values(row), tags=("unreachable",))
             continue
-        tree.insert("", tk.END, values=(
-            row['label'],
-            row.get('model') or "-",
-            vllm_metrics.format_speed(row.get('prompt_tps')),
-            vllm_metrics.format_speed(row.get('generation_tps')),
-            vllm_metrics.format_percent(row.get('load_percent')),
-            "%s / %s" % (vllm_metrics.format_count(row.get('running')),
-                          vllm_metrics.format_count(row.get('waiting'))),
-            vllm_metrics.format_tokens(row.get('prompt_tokens')),
-            vllm_metrics.format_tokens(row.get('generation_tokens')),
-            vllm_metrics.format_count(row.get('requests')),
-            vllm_metrics.format_speed(row.get('slot_tokens_per_second')),
-            vllm_metrics.format_count(row.get('antislop_requests')),
-            _format_ban_counts(row.get('antislop_ban_fixed'), row.get('antislop_ban_events')),
-            vllm_metrics.format_count(row.get('antislop_upstream_errors')),
-            vllm_metrics.format_speed(row.get('antislop_generation_tps')),
-        ), tags=(vllm_metrics.describe_load(row.get('load_percent')),))
+        tree.insert("", tk.END, values=_metrics_row_values(row),
+                    tags=(vllm_metrics.describe_load(row.get('load_percent')),))
 
 
 def update_quality_tab():
@@ -3053,7 +3273,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.3.0",
+    text="v13.4.0",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
@@ -3784,10 +4004,28 @@ prompt_preview_text.insert(tk.END,
 prompt_preview_text.config(state=tk.DISABLED)
 # --- End Rich Prompt Viewer Tab Setup ---
 
-def _grid_scrollable_table(container, tree):
-    """Retain readable columns while allowing either table axis to overflow."""
+def _grid_scrollable_table(container, tree, wide_scrollbars=False):
+    """Retain readable columns while allowing either table axis to overflow.
+
+    ``wide_scrollbars`` swaps the theme's hairline ttk scrollbars for explicit ``tk.Scrollbar``
+    widgets with a real grab width.  The superhero theme draws a ~10px trough with a ~6px thumb,
+    which is unusable with a mouse on a tall table -- the Metrics tab's 14-column table and its
+    long history make that the difference between scrolling and not scrolling at all.
+    """
     container.columnconfigure(0, weight=1)
     container.rowconfigure(0, weight=1)
+    if wide_scrollbars:
+        scale = container.winfo_fpixels("1i") / 96.0
+        options = dict(width=max(16, round(20 * scale)), background="#7a7a9a",
+                       troughcolor="#16161c", activebackground="#b0b0d0",
+                       highlightthickness=0, borderwidth=0, relief="flat")
+        vertical = tk.Scrollbar(container, orient="vertical", command=tree.yview, **options)
+        horizontal = tk.Scrollbar(container, orient="horizontal", command=tree.xview, **options)
+        tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(4, 2), pady=(4, 2))
+        vertical.grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=(4, 2))
+        horizontal.grid(row=1, column=0, sticky="ew", padx=(4, 2), pady=(0, 4))
+        return
     vertical = ttk.Scrollbar(container, orient="vertical", command=tree.yview)
     horizontal = ttk.Scrollbar(container, orient="horizontal", command=tree.xview)
     tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
@@ -4081,19 +4319,31 @@ for tab_name in tab_names:
 
     elif tab_name == "📊 Metrics":
         # v13.1.0: a fixed, non-scrolling diagnostics area (like Regex Watch) -- one row per API
-        # slot with a vLLM backend plus a per-endpoint graph. It has no search bar (a metrics
+        # slot with a vLLM backend plus per-endpoint graphs. It has no search bar (a metrics
         # table is not a search target) and no issue panels: it is not an issue view at all.
+        #
+        # v13.4.0 overhaul. The tab used to be one 14-column table above one two-panel figure,
+        # which meant the only way to answer "is this run healthy?" was to read a 14-column row.
+        # It is now, top to bottom:
+        #   0  status line + Refresh
+        #   1  a four-card KPI strip (throughput / load / bans / errors)
+        #   2  the per-slot table, with wide scrollbars and grouped columns
+        #   3  a scrollable stack of four graph panels, each answering one question
+        # The graphs live in their own ScrollableFrame so a small window scrolls to them instead
+        # of squeezing all four into 200px.
         search_frame.grid_remove()
         page_scroll.grid_remove()
         metrics_page = ttk.Frame(tab_frame)
         metrics_page.grid(row=1, column=0, columnspan=2, sticky="nsew")
         metrics_page.columnconfigure(0, weight=1)
-        metrics_page.rowconfigure(2, weight=1, minsize=120)
-        metrics_page.rowconfigure(4, weight=1, minsize=200)
+        metrics_page.rowconfigure(1, weight=0)   # KPI strip
+        metrics_page.rowconfigure(2, weight=1, minsize=140)   # table
+        metrics_page.rowconfigure(3, weight=3, minsize=300)   # graphs
         tab_frame.rowconfigure(1, weight=1)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_page'] = metrics_page
         app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = metrics_page
 
+        # --- 0. status line ---
         metrics_header = ttk.Frame(metrics_page)
         metrics_header.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(5, 4))
         metrics_header.columnconfigure(0, weight=1)
@@ -4109,53 +4359,99 @@ for tab_name in tab_names:
         app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_status_label'] = \
             app_state.metrics_status_label
 
-        # --- Per-endpoint table ---
+        # --- 1. KPI strip ---
+        # Four cards, each a big number plus one line of context.  The table answers "which
+        # endpoint?"; these answer "is the run healthy?" without reading a row.
+        kpi_frame = ttk.Frame(metrics_page)
+        kpi_frame.grid(row=1, column=0, sticky="ew", padx=SPACING, pady=(0, 4))
+        cards = {}
+        card_details = {}
+        kpi_specs = (
+            ("throughput", "⚡ Proxy Throughput", "-", "waiting for a poll"),
+            ("load", "🔥 Busiest Endpoint", "-", "waiting for a poll"),
+            ("bans", "🛡️ Bans Fired", "-", "waiting for a poll"),
+            ("errors", "⚠️ Errors", "-", "waiting for a poll"),
+        )
+        kpi_cards = []
+        for key, title, value, detail in kpi_specs:
+            card = ttk.Frame(kpi_frame, borderwidth=0, padding=8)
+            ttk.Label(card, text=title, style='Header.TLabel').pack(anchor="w")
+            value_label = ttk.Label(card, text=value, style='MetricValue.TLabel')
+            value_label.pack(anchor="w", fill="x")
+            detail_label = ttk.Label(card, text=detail, foreground="#8b949e",
+                                     font=('Segoe UI', 9))
+            detail_label.pack(anchor="w", fill="x")
+            cards[key] = value_label
+            card_details[key] = detail_label
+            kpi_cards.append(card)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_cards'] = cards
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_cards_detail'] = card_details
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_kpi_layout'] = ResponsiveGrid(
+            kpi_frame, kpi_cards, min_width=170, max_columns=4)
+
+        # --- 2. Per-slot table ---
         # The same dedicated style the Regex Watch tables use: the theme default packs a 10pt font
         # into a 20px row and clips every cell.
         metrics_lf = ttk.LabelFrame(
             metrics_page,
-            text="vLLM Metrics per API Endpoint (never aggregated)")
+            text="Per-API Endpoint Metrics — one row per slot, never aggregated "
+                 "(scroll sideways for the proxy columns)")
         metrics_lf.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(0, 4))
-        metric_cols = ("API Endpoint", "Model", "Prompt Speed", "Generation Speed",
-                       "Endpoint Load", "Running / Waiting", "Prompt Tokens",
-                       "Generated Tokens", "Requests", "This Slot's Throughput",
-                       "Proxy Requests", "Bans (fixed/total)", "Proxy Errors",
-                       "Proxy Gen Speed")
-        metrics_tree = ttk.Treeview(metrics_lf, columns=metric_cols, show="headings",
-                                    height=7, selectmode="browse", style=REGEX_TREE_STYLE)
-        _configure_regex_tree_columns(metrics_tree, metric_cols, widths={
-            "API Endpoint": 160, "Model": 230, "Prompt Speed": 130,
-            "Generation Speed": 145, "Endpoint Load": 120, "Running / Waiting": 140,
-            "Prompt Tokens": 125, "Generated Tokens": 135, "Requests": 90,
-            "This Slot's Throughput": 150,
-            # v13.3.0: hidden unless `metrics.antislop_columns` is on (see
-            # `_apply_metrics_columns()`), but always created so the toggle needs no rebuild.
-            "Proxy Requests": 130, "Bans (fixed/total)": 150, "Proxy Errors": 125,
-            "Proxy Gen Speed": 150,
-        }, stretch_columns=("API Endpoint", "Model"))
+        metrics_tree = ttk.Treeview(metrics_lf, columns=METRICS_COLUMNS, show="headings",
+                                    height=6, selectmode="browse", style=REGEX_TREE_STYLE)
+        _configure_regex_tree_columns(metrics_tree, METRICS_COLUMNS,
+                                      widths=METRICS_COLUMN_WIDTHS,
+                                      stretch_columns=("API Endpoint", "Model"))
         metrics_tree.tag_configure("idle", foreground="#8b949e")
         metrics_tree.tag_configure("light", foreground="#69f0ae")
         metrics_tree.tag_configure("busy", foreground="#ffd43b")
         metrics_tree.tag_configure("saturated", foreground="#ff6b6b")
         metrics_tree.tag_configure("unreachable", foreground="#ff6b6b")
         metrics_tree.tag_configure("unknown", foreground="#8b949e")
-        _grid_scrollable_table(metrics_lf, metrics_tree)
+        # v13.4.0: wide, grabbable scrollbars.  The theme's default is a ~6px thumb, which is
+        # unusable on a 22-column table -- the user could not drag it at all.
+        _grid_scrollable_table(metrics_lf, metrics_tree, wide_scrollbars=True)
         # v13.3.0: hide the antislop-only columns unless the feature is on.  Done once at build
         # time and re-applied on every refresh, so the default tab is unchanged.
         _apply_metrics_columns(metrics_tree)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_tree'] = metrics_tree
 
-        # --- Per-endpoint graph ---
-        graph_lf = ttk.LabelFrame(
-            metrics_page,
-            text="Per-API vLLM Graph — speeds (top) and endpoint load (bottom)")
-        graph_lf.grid(row=4, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
-        metrics_graph_canvas = tk.Canvas(graph_lf, width=1, height=1, highlightthickness=0,
-                                        bg='#1a1a1a')
-        metrics_graph_canvas.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_graph_canvas'] = \
-            metrics_graph_canvas
+        # --- 3. Graph panels, stacked in their own scroll region ---
+        graph_scroll = ScrollableFrame(metrics_page, wide_scrollbar=True)
+        graph_scroll.grid(row=3, column=0, sticky="nsew", padx=SPACING, pady=(0, SPACING))
+        graph_host = graph_scroll.content
+        graph_host.columnconfigure(0, weight=1)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_graph_scroll'] = graph_scroll
+
+        def _add_graph_panel(row, key, title, height):
+            """One titled graph panel; the canvas is registered under ``key``."""
+            frame = ttk.LabelFrame(graph_host, text=title)
+            frame.grid(row=row, column=0, sticky="ew", padx=2, pady=(0, 6))
+            canvas = tk.Canvas(frame, width=1, height=height, highlightthickness=0,
+                               bg='#1a1a1a')
+            canvas.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+            app_state.dashboard_notebook.tabs_widgets[tab_name][key] = canvas
+            return canvas
+
+        metrics_graph_canvas = _add_graph_panel(
+            0, 'metrics_graph_canvas',
+            "Speeds and KV-Cache Load per Endpoint (vLLM server figures)", 320)
         draw_vllm_metrics_graph(metrics_graph_canvas)
+
+        slot_graph_canvas = _add_graph_panel(
+            1, 'metrics_slot_graph_canvas',
+            "This Slot's Achieved Throughput (our own measurement, per slot)", 220)
+        update_vllm_slot_graph(slot_graph_canvas, [])
+
+        proxy_graph_canvas = _add_graph_panel(
+            2, 'metrics_proxy_graph_canvas',
+            "antislop-vllm-fork Proxy Activity (requests, bans, back-tracks per minute)", 300)
+        update_vllm_proxy_graph(proxy_graph_canvas, [])
+
+        queue_graph_canvas = _add_graph_panel(
+            3, 'metrics_queue_graph_canvas',
+            "Requests Running vs Waiting per Server (why a generation is slow)", 220)
+        update_vllm_queue_graph(queue_graph_canvas, [])
 
 
 # --- Queue Management Tab ---

@@ -70,6 +70,12 @@ HISTORY_LENGTH = 120
 _slot_usage = {}
 _slot_usage_lock = threading.Lock()
 
+# --- per-slot throughput history (v13.4.0) ------------------------------------
+# {slot_idx: [{"time": float, "tokens_per_second": float|None}, ...]}
+# Kept apart from the per-URL history because two slots can share one URL.
+_slot_history = {}
+_slot_history_lock = threading.Lock()
+
 # --- endpoint state ----------------------------------------------------------
 # {metrics_url: {"counters": {...}|None, "sample_at": float|None,
 #                "model": str, "error": str|None, "history": [(t, dict), ...],
@@ -244,6 +250,42 @@ def _first_value(samples, name, label_filter=None, default=None):
     return default
 
 
+def _series_by_label(samples, name, label_name):
+    """``{label_value: summed_value}`` for one metric, grouped by a single label.
+
+    Used for the proxy's per-status request counts and its per-validator ban counts, which are
+    naturally several series of one metric rather than several metrics.  An empty dict means the metric
+    is absent, so a caller can tell "no such metric" from "every series is zero".
+    """
+    entries = samples.get(name)
+    if not entries:
+        return {}
+    grouped = {}
+    for labels, value in entries:
+        key = labels.get(label_name) or ""
+        grouped[key] = grouped.get(key, 0.0) + value
+    return grouped
+
+
+def _bans_by_validator(samples):
+    """``{validator: {"total": n, "fixed": n}}`` from ``antislop:ban_events_total``.
+
+    The pair is what a ban-list tuner needs: a validator with a large ``total`` and a small ``fixed``
+    is firing on things the model cannot avoid, so the list (not the model) is what to change.
+    """
+    entries = samples.get("antislop:ban_events_total")
+    if not entries:
+        return {}
+    grouped = {}
+    for labels, value in entries:
+        validator = labels.get("validator") or "unknown"
+        bucket = grouped.setdefault(validator, {"total": 0.0, "fixed": 0.0})
+        bucket["total"] += value
+        if labels.get("fixed") == "true":
+            bucket["fixed"] += value
+    return grouped
+
+
 def _model_name(samples):
     """The model a vLLM exposes, read from any sample's ``model_name`` label."""
     for entries in samples.values():
@@ -283,17 +325,36 @@ def summarise_antislop(samples):
     """
     ban_total = _sum_series(samples, "antislop:ban_events_total")
     ban_fixed = _sum_series(samples, "antislop:ban_events_total", {"fixed": "true"})
+    by_status = _series_by_label(samples, "antislop:requests_total", "status")
+    by_finish = _series_by_label(samples, "antislop:generations_total", "finish_reason")
+    by_stream = _series_by_label(samples, "antislop:streaming_requests_total", "stream")
+    duration_sum = _sum_series(samples, "antislop:request_duration_seconds_sum")
+    duration_count = _sum_series(samples, "antislop:request_duration_seconds_count")
     return {
         "requests": _sum_series(samples, "antislop:requests_total"),
+        "requests_by_status": by_status or None,
+        "requests_failed": (sum(value for status, value in by_status.items()
+                                if not status.startswith("2")) if by_status else None),
         "in_flight": _first_value(samples, "antislop:requests_in_flight"),
+        "duration_seconds": duration_sum,
+        "duration_count": duration_count,
+        "streaming": _sum_series(samples, "antislop:streaming_requests_total"),
+        "streaming_by_stream": by_stream or None,
         "generations": _sum_series(samples, "antislop:generations_total"),
+        "generations_by_finish": by_finish or None,
         "generation_tokens": _sum_series(samples, "antislop:generation_tokens_total"),
         "prompt_tokens": _sum_series(samples, "antislop:prompt_tokens_total"),
         "ban_events": ban_total,
         "ban_fixed": ban_fixed,
+        "bans_by_validator": _bans_by_validator(samples) or None,
+        "backtracks": _sum_series(samples, "antislop:backtracks_total"),
         "upstream_errors": _sum_series(samples, "antislop:upstream_errors_total"),
         "scrape_errors": _sum_series(
             samples, "antislop:upstream_metrics_scrape_total", {"result": "error"}),
+        "scrape_ok": _sum_series(
+            samples, "antislop:upstream_metrics_scrape_total", {"result": "ok"}),
+        "last_scrape_at": _first_value(
+            samples, "antislop:upstream_metrics_last_scrape_timestamp_seconds"),
     }
 
 
@@ -308,12 +369,25 @@ def compute_antislop_rates(current, previous, elapsed_seconds):
     A single snapshot reports ``None`` rather than a guess, and a negative delta (a restarted proxy
     zeroed its counters) drops the sample instead of drawing a spike.
     """
-    rates = {"generation_tps": None}
+    rates = {"generation_tps": None, "ban_rate": None, "backtrack_rate": None,
+             "avg_request_seconds": None}
     if previous is None or elapsed_seconds is None or elapsed_seconds <= 0:
         return rates
     tokens = _delta(current.get("generation_tokens"), previous.get("generation_tokens"))
     if tokens is not None and tokens > 0:
         rates["generation_tps"] = tokens / elapsed_seconds
+    bans = _delta(current.get("ban_events"), previous.get("ban_events"))
+    if bans is not None and bans > 0:
+        rates["ban_rate"] = bans / elapsed_seconds
+    backtracks = _delta(current.get("backtracks"), previous.get("backtracks"))
+    if backtracks is not None and backtracks > 0:
+        rates["backtrack_rate"] = backtracks / elapsed_seconds
+    # The mean time one request spent inside the proxy, from the summary's own sum/count pair.
+    # A DELTA of both keeps it a window figure rather than a lifetime average.
+    duration_sum = _delta(current.get("duration_seconds"), previous.get("duration_seconds"))
+    duration_count = _delta(current.get("duration_count"), previous.get("duration_count"))
+    if duration_sum is not None and duration_count is not None and duration_count > 0:
+        rates["avg_request_seconds"] = duration_sum / duration_count
     return rates
 
 
@@ -489,6 +563,37 @@ def slot_usage_rows():
     return [(idx, slot_usage(idx)) for idx in indices]
 
 
+def record_slot_history(config=None):
+    """Append one throughput sample per configured slot, for the per-slot graph (v13.4.0).
+
+    Called once per poll cycle.  A slot's own throughput is measured from its responses, not from
+    the server, so it needs its own ring: the per-URL history cannot hold it, because two slots may
+    share one URL and would then overwrite each other's line.
+    """
+    now = time.time()
+    for slot_idx, _api_url in _slot_urls(config):
+        usage = slot_usage(slot_idx) or {}
+        with _slot_history_lock:
+            ring = _slot_history.setdefault(slot_idx, [])
+            ring.append({"time": now,
+                         "tokens_per_second": usage.get("tokens_per_second")})
+            overflow = len(ring) - HISTORY_LENGTH
+            if overflow > 0:
+                del ring[:overflow]
+
+
+def slot_history(slot_idx):
+    """A copy of one slot's throughput ring, oldest first (empty before its first poll)."""
+    with _slot_history_lock:
+        return list(_slot_history.get(int(slot_idx), ()))
+
+
+def reset_slot_history():
+    """Forget every slot's throughput ring (a new run starts from a clean baseline)."""
+    with _slot_history_lock:
+        _slot_history.clear()
+
+
 # ---------------------------------------------------------------------------
 # Polling
 # ---------------------------------------------------------------------------
@@ -599,6 +704,14 @@ def poll_endpoint(metrics_url, now=None):
         "waiting": current["waiting"],
         "antislop_generation_tps": antislop_rates["generation_tps"],
         "antislop_ban_events": antislop_current["ban_events"],
+        # v13.4.0: the rest of the proxy's figures, so the new graph panels have a history to
+        # draw.  ``None`` for a plain vLLM, which draws a gap rather than a zero line.
+        "antislop_ban_rate": antislop_rates["ban_rate"],
+        "antislop_backtrack_rate": antislop_rates["backtrack_rate"],
+        "antislop_in_flight": antislop_current["in_flight"],
+        "antislop_avg_request_seconds": antislop_rates["avg_request_seconds"],
+        "antislop_upstream_errors": antislop_current["upstream_errors"],
+        "antislop_requests": antislop_current["requests"],
     }
     # ``last`` is what the table reads: the gauges from this snapshot plus the rates derived
     # from it, so one dict holds everything one row needs.
@@ -637,6 +750,9 @@ def poll_once(config=None):
             metrics_urls.append(metrics_url)
     for metrics_url in metrics_urls:
         poll_endpoint(metrics_url)
+    # v13.4.0: one throughput sample per slot for the per-slot graph.  Done here rather than in
+    # poll_endpoint() because that function is per-URL, and a slot is not a URL.
+    record_slot_history(config)
     return metrics_urls
 
 
@@ -751,6 +867,23 @@ def endpoint_rows(config=None):
             "antislop_scrape_errors": antislop.get("scrape_errors"),
             "antislop_in_flight": antislop.get("in_flight"),
             "antislop_generation_tps": antislop_rates.get("generation_tps"),
+            # v13.4.0: the rest of the proxy's figures, so the tab can show all twelve metrics
+            # the fork emits rather than four of them.
+            "antislop_prompt_tokens": antislop.get("prompt_tokens"),
+            "antislop_generation_tokens": antislop.get("generation_tokens"),
+            "antislop_generations": antislop.get("generations"),
+            "antislop_streaming": antislop.get("streaming"),
+            "antislop_backtracks": antislop.get("backtracks"),
+            "antislop_requests_failed": antislop.get("requests_failed"),
+            "antislop_scrape_ok": antislop.get("scrape_ok"),
+            "antislop_last_scrape_at": antislop.get("last_scrape_at"),
+            "antislop_avg_request_seconds": antislop_rates.get("avg_request_seconds"),
+            "antislop_ban_rate": antislop_rates.get("ban_rate"),
+            "antislop_backtrack_rate": antislop_rates.get("backtrack_rate"),
+            "antislop_bans_by_validator": antislop.get("bans_by_validator"),
+            "antislop_generations_by_finish": antislop.get("generations_by_finish"),
+            "antislop_requests_by_status": antislop.get("requests_by_status"),
+            "slot_history": slot_history(slot_idx),
             "history": (state or {}).get("history") or [],
         })
     return rows
@@ -810,6 +943,54 @@ def format_tokens(tokens):
         return "{:,}".format(int(tokens))
     except (TypeError, ValueError):
         return "-"
+
+
+def format_duration(seconds):
+    """A duration the way the table shows it: ``820 ms``, ``2.4 s``, ``1m 12s``, or ``-``."""
+    if seconds is None:
+        return "-"
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "-"
+    if value < 0:
+        return "-"
+    if value < 1:
+        return "{:.0f} ms".format(value * 1000.0)
+    if value < 60:
+        return "{:.1f} s".format(value)
+    minutes, rest = divmod(value, 60.0)
+    return "{:.0f}m {:.0f}s".format(minutes, rest)
+
+
+def format_rate_per_minute(per_second):
+    """A per-second rate shown per minute: ``18.0/min``, or ``-``.
+
+    Bans and back-tracks are rare enough that a per-second figure is always a small fraction;
+    per minute is the unit a user can actually read.
+    """
+    if per_second is None:
+        return "-"
+    try:
+        value = float(per_second) * 60.0
+    except (TypeError, ValueError):
+        return "-"
+    if value >= 100:
+        return "{:,.0f}/min".format(value)
+    return "{:.1f}/min".format(value)
+
+
+def format_ratio(numerator, denominator):
+    """``numerator / denominator`` as a percentage: ``62%``, or ``-`` when it cannot be told."""
+    if numerator is None or denominator is None:
+        return "-"
+    try:
+        top, bottom = float(numerator), float(denominator)
+    except (TypeError, ValueError):
+        return "-"
+    if bottom <= 0:
+        return "-"
+    return "{:.0f}%".format(100.0 * top / bottom)
 
 
 def describe_load(load_percent):

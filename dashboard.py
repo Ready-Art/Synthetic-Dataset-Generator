@@ -592,6 +592,315 @@ def update_vllm_metrics_graph(canvas_widget, rows, force=False):
     canvas_widget.graph_canvas.draw_idle()
 
 
+# ---------------------------------------------------------------------------
+# v13.4.0: the three extra Metrics-tab graph panels
+#
+# The v13.1.0 figure above answers "which endpoint is slow and how full is its KV cache?".  Three
+# questions it could not answer get their own panel rather than another line on a crowded axis:
+#
+#   slot   -- how much throughput is THIS generator slot actually achieving?
+#   proxy  -- what is the antislop proxy doing (requests/min, bans/min, back-tracks/min)?
+#   queue  -- is a server queueing (running vs waiting), which explains a slow generation?
+#
+# Each panel is built lazily on first refresh and cached on the canvas widget, so the tab builds
+# fast and a hidden panel costs nothing.
+# ---------------------------------------------------------------------------
+
+# Per-slot colours, matching _VLLM_SERIES_COLORS so a slot keeps one colour across every panel.
+_PROXY_SERIES_COLORS = ('#4dabf7', '#51cf66', '#ffd43b', '#ff922b',
+                        '#b197fc', '#f783ac', '#20c997')
+
+
+def _style_metric_axes(ax, title, ylabel=None):
+    """Apply the tab's dark panel styling to one axes."""
+    ax.set_facecolor('#2a2a35')
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#555555')
+    ax.spines['left'].set_color('#555555')
+    ax.tick_params(axis='both', colors='#c0c0c0', labelsize=9)
+    ax.set_title(title, fontsize=11, fontweight='bold', color='#ffffff', pad=6)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=9, color='#c0c0c0')
+
+
+def _draw_metric_hint(ax, message):
+    """The empty state: axes with a centred explanation, never a blank rectangle."""
+    ax.set_yticks([])
+    ax.set_xticks([])
+    ax.text(0.5, 0.5, message, transform=ax.transAxes, ha='center', va='center',
+            fontsize=9, color='#8b949e', multialignment='center')
+
+
+def _metric_panel(canvas_widget, attr, panels):
+    """Create (once) and return ``{name: axes}`` for a canvas, plus its Figure.
+
+    ``panels`` is ``[(name, title, ylabel, height_ratio), ...]``.  The figure is cached on the
+    canvas widget under ``attr`` so a refresh reuses it instead of allocating a new matplotlib
+    figure every poll -- that churn is what drops the X connection over a long run.
+    """
+    figure_attr = attr + '_fig'
+    axes_attr = attr + '_axes'
+    fig = getattr(canvas_widget, figure_attr, None)
+    axes = getattr(canvas_widget, axes_attr, None)
+    if fig is not None and axes is not None:
+        return fig, axes
+
+    canvas_widget.delete("all")
+    fig = Figure(figsize=(7.5, 3.0), dpi=100, facecolor='#1e1e24')
+    fig.patch.set_facecolor('#1e1e24')
+    total = sum(panel[3] for panel in panels)
+    bottom = 0.0
+    axes = {}
+    for name, title, ylabel, ratio in panels:
+        height = ratio / total
+        ax = fig.add_axes((0.09, bottom + 0.06, 0.88, height * 0.86))
+        _style_metric_axes(ax, title, ylabel)
+        axes[name] = ax
+        bottom += height
+
+    canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    canvas_widget.update_idletasks()
+    setattr(canvas_widget, attr + '_canvas', canvas)
+    setattr(canvas_widget, figure_attr, fig)
+    setattr(canvas_widget, axes_attr, axes)
+    return fig, axes
+
+
+def _metric_series_colour(slot_idx):
+    return _PROXY_SERIES_COLORS[int(slot_idx or 0) % len(_PROXY_SERIES_COLORS)]
+
+
+def _relative_times(history):
+    """``[seconds before the newest sample, ...]`` so the x axis reads "seconds ago"."""
+    newest = max(sample['time'] for sample in history)
+    return [(sample['time'] - newest) for sample in history]
+
+
+def _plot_metric_series(ax, history, key, colour, label, linestyle='-', marker='o'):
+    """Plot one key out of a history ring, skipping ``None`` samples as gaps.
+
+    ``None`` means "this endpoint does not report that figure" (a plain vLLM has no proxy
+    counters), which must draw as a gap, not as a line pinned to zero.
+    """
+    if not history:
+        return
+    times = _relative_times(history)
+    values = [sample.get(key) for sample in history]
+    if all(value is None for value in values):
+        return
+    ax.plot(times, values, color=colour, linewidth=1.8, linestyle=linestyle,
+            marker=marker, markersize=3, label=label)
+
+
+def _finish_metric_panel(ax, legend=False, ylim=None):
+    """Common tail: legend, y limits and the x label.
+
+    Deliberately no ``tight_layout()``: these figures place their axes with explicit rectangles
+    (see ``_metric_panel``), which ``tight_layout`` cannot reconcile -- it warns and then moves
+    them anyway.  The rectangles already leave room for the labels.
+    """
+    if legend:
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc='upper left', fontsize=7, framealpha=0.85, facecolor='#2a2a35',
+                      edgecolor='#444444', labelcolor='#e0e0e0', ncol=2)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.set_xlabel('Seconds Ago', fontsize=9, color='#c0c0c0')
+
+
+# --- panel 2: per-slot achieved throughput -----------------------------------
+_slot_graph_last_draw = {"t": 0.0, "sig": None}
+
+
+def update_vllm_slot_graph(canvas_widget, rows, force=False):
+    """Draw each API slot's OWN measured throughput, one line per slot.
+
+    This is the figure the server cannot provide: vLLM's ``/metrics`` has no caller label, so two
+    slots on one server are indistinguishable there.  Here each slot's own responses are counted,
+    which is what that API is actually delivering.
+    """
+    fig, axes = _metric_panel(canvas_widget, 'slot_graph', [
+        ('throughput', 'This Slot\'s Achieved Throughput (prompt + completion tokens ÷ wall clock)',
+         'tok/s', 1.0),
+    ])
+    ax = axes['throughput']
+
+    signature = tuple((row.get('slot_idx'), len(row.get('slot_history') or []))
+                      for row in rows or [])
+    now = time.time()
+    if (not force and _slot_graph_last_draw["sig"] == signature
+            and now - _slot_graph_last_draw["t"] < _VLLM_GRAPH_REDRAW_MIN_INTERVAL):
+        return
+    _slot_graph_last_draw["sig"] = signature
+    _slot_graph_last_draw["t"] = now
+
+    ax.clear()
+    _style_metric_axes(ax, 'This Slot\'s Achieved Throughput '
+                            '(prompt + completion tokens ÷ wall clock)', 'tok/s')
+    drew = False
+    for row in rows or []:
+        history = row.get('slot_history') or []
+        if not history:
+            continue
+        _plot_metric_series(ax, history, 'tokens_per_second',
+                            _metric_series_colour(row.get('slot_idx')),
+                            row.get('label') or 'API')
+        drew = True
+    if not drew:
+        _draw_metric_hint(ax, 'No per-slot throughput yet.\nA slot records its own tokens once it '
+                               'has completed a request.')
+    else:
+        _finish_metric_panel(ax, legend=True)
+    canvas_widget.slot_graph_canvas.draw_idle()
+
+
+# --- panel 3: what the proxy is doing ---------------------------------------
+_proxy_graph_last_draw = {"t": 0.0, "sig": None}
+
+
+def update_vllm_proxy_graph(canvas_widget, rows, force=False):
+    """Draw the antislop proxy's activity: requests, bans and back-tracks per minute.
+
+    Only rows that actually report ``antislop:`` metrics contribute.  A plain-vLLM tab therefore
+    shows the panel's own hint rather than three empty axes, which is the honest reading: there is
+    no proxy here.
+    """
+    fig, axes = _metric_panel(canvas_widget, 'proxy_graph', [
+        ('requests', 'Proxy Requests per Minute', 'req/min', 1.0),
+        ('bans', 'Bans and Back-tracks per Minute', '/min', 1.0),
+    ])
+
+    signature = tuple((row.get('slot_idx'), len(row.get('history') or []))
+                      for row in rows or [])
+    now = time.time()
+    if (not force and _proxy_graph_last_draw["sig"] == signature
+            and now - _proxy_graph_last_draw["t"] < _VLLM_GRAPH_REDRAW_MIN_INTERVAL):
+        return
+    _proxy_graph_last_draw["sig"] = signature
+    _proxy_graph_last_draw["t"] = now
+
+    request_ax = axes['requests']
+    ban_ax = axes['bans']
+    request_ax.clear()
+    ban_ax.clear()
+    _style_metric_axes(request_ax, 'Proxy Requests per Minute', 'req/min')
+    _style_metric_axes(ban_ax, 'Bans and Back-tracks per Minute', '/min')
+
+    drew = False
+    drew_bans = False
+    for row in rows or []:
+        if not row.get('is_antislop'):
+            continue
+        history = row.get('history') or []
+        if not history:
+            continue
+        colour = _metric_series_colour(row.get('slot_idx'))
+        label = row.get('label') or 'API'
+        # The request counter is cumulative, so its per-minute rate comes from the delta between
+        # consecutive samples over the wall clock between them -- the same rule the proxy's own
+        # generation speed uses.
+        _plot_metric_series(request_ax, _rate_history(history, 'antislop_requests', 60.0),
+                            'rate', colour, label)
+        _plot_metric_series(ban_ax, history, 'antislop_ban_rate', colour,
+                            '%s — bans' % label)
+        _plot_metric_series(ban_ax, history, 'antislop_backtrack_rate', colour,
+                            '%s — back-tracks' % label, linestyle='--', marker='s')
+        drew = True
+        if any(sample.get('antislop_ban_rate') is not None
+               or sample.get('antislop_backtrack_rate') is not None for sample in history):
+            drew_bans = True
+
+    if not drew:
+        _draw_metric_hint(request_ax, 'No antislop-vllm-fork proxy metrics.\nPoint an API slot at '
+                                       'the fork to see its request, ban and back-track rates.')
+        _draw_metric_hint(ban_ax, 'Bans and back-tracks need a proxied slot.')
+    else:
+        _finish_metric_panel(request_ax, legend=True)
+        if drew_bans:
+            _finish_metric_panel(ban_ax, legend=True)
+        else:
+            # A proxied slot with no bans in the window is GOOD news, not missing data -- say so
+            # rather than leaving an empty axes that reads as a broken panel.
+            _draw_metric_hint(ban_ax, 'No bans or back-tracks in this window.\n'
+                                      'That is the healthy case; a rate appears here the moment a '
+                                      'validator fires.')
+    canvas_widget.proxy_graph_canvas.draw_idle()
+
+
+def _rate_history(history, key, scale):
+    """Turn a cumulative counter's history into a per-minute rate history.
+
+    Returns a new history ring whose ``rate`` key holds ``delta / seconds * scale``.  A negative
+    delta (a restarted proxy zeroed its counters) yields ``None`` for that sample, so the graph
+    shows a gap instead of a spike -- the same rule ``vllm_metrics._delta()`` applies.
+    """
+    out = []
+    previous = None
+    previous_time = None
+    for sample in history:
+        value = sample.get(key)
+        rate = None
+        if value is not None and previous is not None and previous_time is not None:
+            elapsed = sample['time'] - previous_time
+            delta = value - previous
+            if elapsed > 0 and delta >= 0:
+                rate = delta / elapsed * scale
+        out.append({"time": sample['time'], "rate": rate})
+        previous = value
+        previous_time = sample['time']
+    return out
+
+
+# --- panel 4: queue depth ---------------------------------------------------
+_queue_graph_last_draw = {"t": 0.0, "sig": None}
+
+
+def update_vllm_queue_graph(canvas_widget, rows, force=False):
+    """Draw each server's running vs waiting request count.
+
+    This is the panel that explains a slow generation: a high ``waiting`` line with a flat
+    ``running`` one means the server is queueing, so the bottleneck is admission, not the GPU.
+    """
+    fig, axes = _metric_panel(canvas_widget, 'queue_graph', [
+        ('queue', 'Requests Running vs Waiting per Server', 'requests', 1.0),
+    ])
+    ax = axes['queue']
+
+    signature = tuple((row.get('slot_idx'), len(row.get('history') or []))
+                      for row in rows or [])
+    now = time.time()
+    if (not force and _queue_graph_last_draw["sig"] == signature
+            and now - _queue_graph_last_draw["t"] < _VLLM_GRAPH_REDRAW_MIN_INTERVAL):
+        return
+    _queue_graph_last_draw["sig"] = signature
+    _queue_graph_last_draw["t"] = now
+
+    ax.clear()
+    _style_metric_axes(ax, 'Requests Running vs Waiting per Server', 'requests')
+    drew = False
+    for row in rows or []:
+        history = row.get('history') or []
+        if not history:
+            continue
+        colour = _metric_series_colour(row.get('slot_idx'))
+        label = row.get('label') or 'API'
+        _plot_metric_series(ax, history, 'running', colour, '%s — running' % label)
+        _plot_metric_series(ax, history, 'waiting', colour, '%s — waiting' % label,
+                            linestyle='--', marker='s')
+        drew = True
+    if not drew:
+        _draw_metric_hint(ax, 'No queue data yet.\nA vLLM server reports running/waiting counts '
+                              'on its /metrics endpoint.')
+    else:
+        _finish_metric_panel(ax, legend=True, ylim=(0, None))
+    canvas_widget.queue_graph_canvas.draw_idle()
+
+
 def update_dashboard():
     """Updates the dashboard labels and text areas with current statistics and recent issues."""
 
