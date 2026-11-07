@@ -38,7 +38,11 @@ What this file pins
 """
 
 import io
+import json as _json
 import os
+import shutil as _shutil
+import tempfile as _tempfile
+import time as _time
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -807,6 +811,249 @@ def test_start_and_stop_polling_are_safe():
     assert vm.start_polling(interval=0.05) is thread, "start_polling must be idempotent"
     vm.stop_polling()
     assert vm._poller_thread is None
+
+
+# --- 8. v13.5.0: the poll cadence and the saved history ----------------------
+
+def _scratch_config(extra_metrics=None):
+    """A config dict pointed at a throwaway output directory, for the persistence tests."""
+    metrics = {"save_history": True}
+    metrics.update(extra_metrics or {})
+    return {"api": {"apis": [{"url": "http://h:8000/v1"}] + [{"url": ""}] * 5},
+            "quality": {"scoring_api": {"url": ""}},
+            "metrics": metrics}
+
+
+def _with_scratch_output():
+    """Point ``vllm_metrics.history_path()`` at a temp dir for the duration of a ``with`` block."""
+    class _Ctx:
+        def __enter__(self):
+            self._saved = vm.history_path
+            self.dir = _tempfile.mkdtemp(prefix="sdg-metrics-hist-")
+            vm.history_path = lambda config=None: os.path.join(
+                self.dir, vm.METRICS_HISTORY_FILENAME)
+            return self.dir
+
+        def __exit__(self, *exc):
+            vm.history_path = self._saved
+            _shutil.rmtree(self.dir, ignore_errors=True)
+            return False
+    return _Ctx()
+
+
+def test_the_poll_interval_is_short_enough_to_be_usable():
+    """v13.5.0: 10 s made the tab stale and the graphs coarse; 2 s is the fix."""
+    assert vm.POLL_INTERVAL_SECONDS <= 3.0, vm.POLL_INTERVAL_SECONDS
+    # The timeout must stay BELOW the interval, or one dead host delays every other endpoint's
+    # sample and skews their rates too.
+    assert vm.REQUEST_TIMEOUT_SECONDS < vm.POLL_INTERVAL_SECONDS, (
+        vm.REQUEST_TIMEOUT_SECONDS, vm.POLL_INTERVAL_SECONDS)
+
+
+def test_the_history_window_is_dense_enough_to_read_a_trend():
+    """300 samples at 2 s is 10 minutes; 120 at 10 s was 20 minutes but only 120 points."""
+    assert vm.HISTORY_LENGTH >= 240, vm.HISTORY_LENGTH
+    window_seconds = vm.HISTORY_LENGTH * vm.POLL_INTERVAL_SECONDS
+    assert window_seconds >= 300, window_seconds
+
+
+def test_one_slow_endpoint_does_not_delay_the_others():
+    """The v13.5.0 fix: endpoints are fetched CONCURRENTLY, not one after another.
+
+    Serially, a 1.2 s hang on the first host cost every later host its sample for that cycle.
+    """
+    _reset()
+    config = {"api": {"apis": [{"url": "http://slow:8000/v1"},
+                               {"url": "http://fast1:8000/v1"},
+                               {"url": "http://fast2:8000/v1"}] + [{"url": ""}] * 3},
+              "quality": {"scoring_api": {"url": ""}},
+              "metrics": {"save_history": False}}
+
+    # EVERY host is slow, so a serial fetch pays the delay three times and a concurrent one pays it
+    # once.  A single slow host would not distinguish the two: serially it is still only one sleep.
+    delay = 0.5
+
+    class _SlowStub:
+        def get(self, url, timeout=None):
+            _time.sleep(delay)
+            return _StubResponse(FIRST_POLL)
+
+    with _with_stub(_SlowStub()):
+        started = _time.time()
+        vm.poll_once(config)
+        elapsed = _time.time() - started
+
+    # Concurrent: ~0.5 s.  Serial: ~1.5 s.  The midpoint separates them with room for scheduler
+    # noise in either direction.
+    serial_floor = delay * 2
+    assert elapsed < serial_floor, (
+        "poll_once took %.2fs for 3 hosts that each take %.2fs: the endpoints were fetched "
+        "serially, so one slow host delays every other one" % (elapsed, delay))
+    assert vm.polled_endpoint_count() == 3, vm.polled_endpoint_count()
+
+
+def test_the_history_is_saved_by_default():
+    """v13.5.0: the figures must survive the window closing, so saving is ON by default."""
+    assert vm.save_history_enabled({}) is True
+    assert vm.save_history_enabled({"metrics": {}}) is True
+    assert vm.save_history_enabled({"metrics": {"save_history": True}}) is True
+    assert vm.save_history_enabled({"metrics": {"save_history": False}}) is False
+
+
+def test_a_poll_cycle_writes_the_history_file():
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        path = os.path.join(directory, vm.METRICS_HISTORY_FILENAME)
+        assert os.path.exists(path), "no history file was written"
+        with io.open(path, encoding="utf-8") as handle:
+            document = _json.load(handle)
+    assert document["version"] == 1, document
+    assert document["poll_interval_seconds"] == vm.POLL_INTERVAL_SECONDS, document
+    assert "http://h:8000/metrics" in document["endpoints"], document
+
+
+def test_the_saved_history_restores_after_a_restart():
+    """The whole point: closing the window must not throw the samples away."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": [FIRST_POLL, SECOND_POLL]})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        before = [len(row["history"]) for row in vm.endpoint_rows(config)]
+
+        # Simulate a restart: everything in memory is gone, the file is not.
+        vm.reset_endpoints()
+        vm.reset_slot_usage()
+        vm.reset_slot_history()
+        assert vm.polled_endpoint_count() == 0, "the reset did not clear the endpoints"
+
+        loaded = vm.load_snapshot(config)
+        after = [len(row["history"]) for row in vm.endpoint_rows(config)]
+    assert loaded == 1, loaded
+    assert after == before, (before, after)
+
+
+def test_the_saved_history_keeps_a_missing_figure_missing():
+    """A plain-vLLM sample drops its ``None`` keys; they must read back as ``None``, not ``0``."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        vm.reset_endpoints()
+        vm.load_snapshot(config)
+        rows = vm.endpoint_rows(config)
+    sample = rows[0]["history"][-1]
+    assert sample.get("antislop_ban_events") is None, sample
+    assert sample.get("load_percent") is not None, sample
+
+
+def test_saving_is_throttled_but_can_be_forced():
+    """A few hundred KB every 2 s is pointless churn on an SD card."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        first = vm.save_snapshot(config, force=True)
+        assert first is not None, "a forced save must always write"
+        # Immediately after, a non-forced save is inside the interval and must be skipped.
+        assert vm.save_snapshot(config) is None, "the save throttle did not skip"
+        # ... and forcing still writes.
+        assert vm.save_snapshot(config, force=True) is not None
+
+
+def test_saving_can_be_switched_off():
+    _reset()
+    config = _scratch_config({"save_history": False})
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        assert vm.save_snapshot(config, force=True) is None
+        assert not os.path.exists(os.path.join(directory, vm.METRICS_HISTORY_FILENAME))
+
+
+def test_a_corrupt_history_file_does_not_stop_startup():
+    """A stale or truncated snapshot must never stop the app from starting."""
+    _reset()
+    config = _scratch_config()
+    with _with_scratch_output() as directory:
+        path = os.path.join(directory, vm.METRICS_HISTORY_FILENAME)
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        assert vm.load_snapshot(config) == 0
+        # A well-formed document of the wrong version is ignored too.
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"version": 99, "endpoints": {}}')
+        assert vm.load_snapshot(config) == 0
+
+
+def test_a_missing_history_file_loads_nothing():
+    _reset()
+    with _with_scratch_output():
+        assert vm.load_snapshot(_scratch_config()) == 0
+
+
+def test_the_saved_document_is_rounded_and_drops_nulls():
+    """The file is written every 30 s; 17 digits per float and a null per absent metric is waste."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": [FIRST_POLL, SECOND_POLL]})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        with io.open(os.path.join(directory, vm.METRICS_HISTORY_FILENAME),
+                     encoding="utf-8") as handle:
+            document = _json.load(handle)
+    sample = document["endpoints"]["http://h:8000/metrics"]["history"][-1]
+    # A plain-vLLM sample has no antislop figures, so those keys are absent, not null.
+    assert "antislop_ban_events" not in sample, sample
+    for value in sample.values():
+        if isinstance(value, float):
+            assert value == round(value, 3), value
+
+
+def test_stopping_the_poller_writes_a_final_snapshot():
+    """Closing the window must not lose the last interval to the save throttle."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output() as directory, _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)   # start the throttle window
+        vm.stop_polling()
+        assert os.path.exists(os.path.join(directory, vm.METRICS_HISTORY_FILENAME))
+
+
+def test_the_history_path_follows_the_output_directory():
+    path = vm.history_path({})
+    assert path.endswith(vm.METRICS_HISTORY_FILENAME), path
+    assert "output" in path.replace("\\", "/"), path
+
+
+def test_start_polling_loads_the_saved_history():
+    """The graphs must open with the previous run's samples, not an empty canvas."""
+    _reset()
+    config = _scratch_config()
+    stub = _StubRequests({"http://h:8000/metrics": FIRST_POLL})
+    with _with_scratch_output(), _with_stub(stub):
+        vm.poll_once(config)
+        vm.save_snapshot(config, force=True)
+        vm.reset_endpoints()
+        assert vm.polled_endpoint_count() == 0
+        vm.start_polling(interval=0.05)
+        try:
+            assert vm.polled_endpoint_count() == 1, "start_polling did not load the snapshot"
+        finally:
+            vm.stop_polling()
 
 
 # --- the module is in the undefined-globals sweep -----------------------------

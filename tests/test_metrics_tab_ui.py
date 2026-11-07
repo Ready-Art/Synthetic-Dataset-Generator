@@ -510,6 +510,56 @@ class MetricsTabLayoutTests(unittest.TestCase):
         ax = self.widgets["metrics_queue_graph_canvas"].queue_graph_axes["queue"]
         self.assertEqual(len(ax.get_lines()), 2, "running and waiting are two lines")
 
+    # --- v13.5.0: collection is independent of the visible tab -------------
+
+    def test_the_poller_collects_while_the_metrics_tab_is_closed(self):
+        """The tab is a VIEW of the history, not the thing that collects it.
+
+        Before v13.5.0 the graphs were empty for the first poll after every tab switch, and the
+        history had holes wherever the user was looking at another tab.
+        """
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"})
+        before = len(self._rows())
+        # Switch away, then poll again with the tab hidden.
+        for tab_id in self.notebook.tabs():
+            if "Totals" in self.notebook.tab(tab_id, "text"):
+                self.notebook.select(tab_id)
+                break
+        self.settle()
+        self.vllm_metrics.poll_once()
+        self.settle()
+        # The history grew even though the tab was not on screen.
+        rows = self.vllm_metrics.endpoint_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertGreaterEqual(len(rows[0]["history"]), 2,
+                                "the poller did not collect while the tab was hidden")
+        # Coming back re-renders from that history rather than starting empty.
+        self._select_tab()
+        self.assertEqual(len(self._rows()), before)
+
+    def test_the_status_line_says_where_the_history_is_saved(self):
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"})
+        text = self.widgets["metrics_status_label"].cget("text")
+        self.assertIn(self.vllm_metrics.METRICS_HISTORY_FILENAME, text,
+                      "the status line does not say where the history goes: %r" % text)
+
+    def test_the_status_line_shows_the_real_poll_interval(self):
+        """The interval is 2 s now, so a truncated "%d" would read "2" -- but 1.5 s must not
+        silently become "1"."""
+        self._select_tab()
+        self._stub_poll({0: "http://a:8000/v1"})
+        text = self.widgets["metrics_status_label"].cget("text")
+        self.assertIn("%.1f" % self.vllm_metrics.POLL_INTERVAL_SECONDS, text, text)
+
+    def test_the_graph_redraw_floor_is_shorter_than_the_poll_interval(self):
+        """A 5 s floor against a 2 s poll skipped every other sample."""
+        import dashboard
+        self.assertLess(dashboard._VLLM_GRAPH_REDRAW_MIN_INTERVAL,
+                        self.vllm_metrics.POLL_INTERVAL_SECONDS,
+                        "the graph would drop samples between polls")
+
     # --- the graph -------------------------------------------------------
 
     def test_graph_draws_one_line_per_endpoint(self):
