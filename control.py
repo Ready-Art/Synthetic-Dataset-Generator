@@ -1646,4 +1646,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "14.2.1"
+GENERATOR_VERSION = "14.2.2"

@@ -3321,7 +3321,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v14.2.1",
+    text="v14.2.2",
     font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY),
     foreground=ui_theme.TEXT_SUBTLE
 )
