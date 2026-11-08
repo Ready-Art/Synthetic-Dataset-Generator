@@ -26,6 +26,8 @@ from tkinter import ttk, scrolledtext, font, messagebox, filedialog
 
 import app_state
 import api_handler
+import ui_theme
+from ui_theme import configure_table_style, resolve_font
 from app_state import global_config
 from logging_config import log_message, LOG_FILE_PATH
 from api_handler import (
@@ -33,7 +35,26 @@ from api_handler import (
     api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK,
 )
 
-SPACING = 8  # UI padding constant (mirrors generate.py)
+# The spacing scale lives in ui_theme.py. This is an alias, not a second copy of the
+# number, so generate.py and dashboard.py cannot drift apart again.
+SPACING = ui_theme.SPACE_S
+
+
+def _selected_api_slot():
+    """0-based index of the API slot the APIs tab's selector shows (0 when absent).
+
+    The four per-API tabs collapsed into one tab with a slot selector, so the
+    refresher has to ask the selector which slot to draw rather than being handed
+    the slot by the tab it is refreshing.
+    """
+    try:
+        label = app_state.api_slot_var.get()
+    except Exception:
+        return 0
+    for index in range(6):
+        if ui_theme.api_tab_name(index) == label:
+            return index
+    return 0
 
 
 def _active_dashboard_tab_text():
@@ -52,26 +73,18 @@ def _active_dashboard_tab_text():
     except Exception:
         return ""
 
-def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
+def create_modern_issue_panel(panel_widget, columns, highlight_color=ui_theme.DANGER):
     """Keep issue columns readable; scroll when the panel is narrower than them."""
     style = ttk.Style()
     scale = panel_widget.winfo_fpixels("1i") / 96.0
-    body_font = font.Font(root=panel_widget, font=('Segoe UI', 9))
-    heading_font = font.Font(root=panel_widget, font=('Segoe UI', 10, 'bold'))
-    row_height = body_font.metrics("linespace") + max(6, round(8 * scale))
-    style.configure("Issue.Treeview",
-                    background="#2a2a35",
-                    fieldbackground="#2a2a35",
-                    foreground="#e0e0e0",
-                    rowheight=row_height,
-                    font=('Segoe UI', 9))
-    style.configure("Issue.Treeview.Heading",
-                    background="#1e1e24",
-                    foreground="#ffffff",
-                    font=('Segoe UI', 10, 'bold'))
-    style.map("Issue.Treeview",
-              background=[('selected', '#3a3a45')],
-              foreground=[('selected', '#ffffff')])
+    body_font = resolve_font(panel_widget, ui_theme.UI_FONT_STACK, ui_theme.SIZE_SMALL)
+    heading_font = resolve_font(panel_widget, ui_theme.UI_FONT_STACK,
+                              ui_theme.SIZE_BODY, 'bold')
+    # The panel keeps its own slack because it is the densest table in the app.
+    configure_table_style(panel_widget, style, "Issue.Treeview",
+                          body_font=body_font, heading_font=heading_font,
+                          slack=max(6, round(8 * scale)))
+    heading_font = font.Font(root=panel_widget, font=heading_font)
 
     tree = ttk.Treeview(panel_widget, columns=columns, show="headings",
                         height=8, style="Issue.Treeview")
@@ -85,8 +98,9 @@ def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
         tree.column(col, width=max(minimum, round(col_widths.get(col, 120) * scale)),
                     minwidth=minimum, stretch=col not in ("Time", "API"), anchor='w')
 
-    scrollbar_options = dict(width=max(14, round(18 * scale)), background="#7a7a9a",
-                             troughcolor="#16161c", activebackground="#b0b0d0",
+    scrollbar_options = dict(width=max(14, round(18 * scale)), background=ui_theme.SCROLL_THUMB,
+                             troughcolor=ui_theme.SURFACE_SUNKEN,
+                             activebackground=ui_theme.SCROLL_THUMB_ACTIVE,
                              highlightthickness=0, borderwidth=0, relief="flat")
     vsb = tk.Scrollbar(panel_widget, orient="vertical", command=tree.yview,
                        **scrollbar_options)
@@ -100,8 +114,9 @@ def create_modern_issue_panel(panel_widget, columns, highlight_color="#ff6b6b"):
     hsb.grid(row=1, column=0, sticky="ew", padx=(5, 2), pady=(2, 5))
 
     tree.tag_configure("issue_highlight",
-                       background="#3a3a45", foreground=highlight_color,
-                       font=('Segoe UI', 9, 'italic'))
+                       background=ui_theme.SURFACE_SELECTED, foreground=highlight_color,
+                       font=resolve_font(panel_widget, ui_theme.UI_FONT_STACK,
+                                         ui_theme.SIZE_SMALL, 'italic'))
     return tree
 
 def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight", is_total_tab=False):
@@ -170,10 +185,10 @@ def draw_issue_graph(canvas_widget, height=400):
 
     # Modern dark theme setup
     fig = Figure(figsize=(7.5, max(280, min(height, 400)) / 100),
-                 dpi=100, facecolor='#1e1e24')
-    fig.patch.set_facecolor('#1e1e24')
+                 dpi=100, facecolor=ui_theme.CHART_BG)
+    fig.patch.set_facecolor(ui_theme.CHART_BG)
     ax = fig.add_subplot(111)
-    ax.set_facecolor('#2a2a35')
+    ax.set_facecolor(ui_theme.CHART_AXES_BG)
 
     # Time bins setup
     now = time.time()
@@ -211,10 +226,7 @@ def draw_issue_graph(canvas_widget, height=400):
     offsets = [((i + 0.5) - n_series / 2) * width for i in range(n_series)]
 
     # Cohesive, accessible color palette
-    colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
-              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b',
-              'logic_issues': '#38d9a9', 'regex_watch': '#b197fc', 'non_latin': '#20c997',
-              'scene_continuity': '#e599f7'}
+    colors = ui_theme.GRAPH_SERIES_COLORS
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
               'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift',
               'logic_issues': 'Logic Errors', 'regex_watch': 'Regex Watch',
@@ -224,34 +236,34 @@ def draw_issue_graph(canvas_widget, height=400):
     # Plot bars & add value labels
     for i, key in enumerate(counts.keys()):
         bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
-                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+                     color=colors[key], edgecolor=ui_theme.CHART_BG, linewidth=0.8, alpha=0.9)
         for rect in bar:
             h = rect.get_height()
             if h > 0:
                 ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
                             xytext=(0, 4), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+                            ha='center', va='bottom', fontsize=8, color=ui_theme.CHART_TEXT, fontweight='bold')
 
     # Styling & Layout
     max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
     ax.set_ylim(0, max_val + 2)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
-    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
-    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color=ui_theme.CHART_TEXT, labelpad=10)
+    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color=ui_theme.CHART_TEXT, labelpad=10)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color=ui_theme.CHART_TEXT_TITLE, pad=15)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
+    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color=ui_theme.CHART_TEXT_TICK)
 
-    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color=ui_theme.CHART_GRID)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.spines['bottom'].set_color('#555555')
-    ax.spines['left'].set_color('#555555')
-    ax.tick_params(axis='both', colors='#c0c0c0')
+    ax.spines['bottom'].set_color(ui_theme.CHART_GRID)
+    ax.spines['left'].set_color(ui_theme.CHART_GRID)
+    ax.tick_params(axis='both', colors=ui_theme.CHART_TEXT_TICK)
 
-    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
-              edgecolor='#444444', labelcolor='#e0e0e0')
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor=ui_theme.CHART_AXES_BG,
+              edgecolor=ui_theme.CHART_LEGEND_EDGE, labelcolor=ui_theme.CHART_TEXT)
     _fit_issue_graph(fig, ax)
 
     # Embed in Tkinter
@@ -330,8 +342,8 @@ def update_issue_graph(canvas_widget):
 
     # Reuse the exact same drawing logic from draw_issue_graph
     # (We extract it into a shared helper in production, but for drop-in replacement:)
-    fig.patch.set_facecolor('#1e1e24')
-    ax.set_facecolor('#2a2a35')
+    fig.patch.set_facecolor(ui_theme.CHART_BG)
+    ax.set_facecolor(ui_theme.CHART_AXES_BG)
 
     sixty_minutes_ago = now - 3600
     num_bins = 6
@@ -361,10 +373,7 @@ def update_issue_graph(canvas_widget):
     # can never be shorter than `counts.keys()`.
     n_series = len(counts)
     offsets = [((i + 0.5) - n_series / 2) * width for i in range(n_series)]
-    colors = {'refusals': '#ff4d6d', 'user_speaking': '#4dabf7', 'slop': '#9775fa',
-              'anti_slop': '#ffd43b', 'errors': '#fc8181', 'out_of_character': '#ff922b',
-              'logic_issues': '#38d9a9', 'regex_watch': '#b197fc', 'non_latin': '#20c997',
-              'scene_continuity': '#e599f7'}
+    colors = ui_theme.GRAPH_SERIES_COLORS
     labels = {'refusals': 'Refusals', 'user_speaking': 'User Speak', 'slop': 'Slop',
               'anti_slop': 'Anti-Slop', 'errors': 'Errors', 'out_of_character': 'OOC Drift',
               'logic_issues': 'Logic Errors', 'regex_watch': 'Regex Watch',
@@ -373,33 +382,33 @@ def update_issue_graph(canvas_widget):
 
     for i, key in enumerate(counts.keys()):
         bar = ax.bar([j + offsets[i] for j in x], counts[key], width, label=labels[key],
-                     color=colors[key], edgecolor='#1e1e24', linewidth=0.8, alpha=0.9)
+                     color=colors[key], edgecolor=ui_theme.CHART_BG, linewidth=0.8, alpha=0.9)
         for rect in bar:
             h = rect.get_height()
             if h > 0:
                 ax.annotate(f'{int(h)}', xy=(rect.get_x() + rect.get_width()/2, h),
                             xytext=(0, 4), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8, color='#e0e0e0', fontweight='bold')
+                            ha='center', va='bottom', fontsize=8, color=ui_theme.CHART_TEXT, fontweight='bold')
 
     max_val = max(max(c) for c in counts.values()) if any(any(c) for c in counts.values()) else 5
     ax.set_ylim(0, max_val + 2)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
-    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color='#e0e0e0', labelpad=10)
-    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color='#ffffff', pad=15)
+    ax.set_xlabel('Time Window (Last 60 Minutes)', fontsize=12, fontweight='bold', color=ui_theme.CHART_TEXT, labelpad=10)
+    ax.set_ylabel('Issue Count', fontsize=12, fontweight='bold', color=ui_theme.CHART_TEXT, labelpad=10)
+    ax.set_title('Issue Detection Dashboard', fontsize=15, fontweight='bold', color=ui_theme.CHART_TEXT_TITLE, pad=15)
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color='#c0c0c0')
+    ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=10, color=ui_theme.CHART_TEXT_TICK)
 
-    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color=ui_theme.CHART_GRID)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.spines['bottom'].set_color('#555555')
-    ax.spines['left'].set_color('#555555')
-    ax.tick_params(axis='both', colors='#c0c0c0')
+    ax.spines['bottom'].set_color(ui_theme.CHART_GRID)
+    ax.spines['left'].set_color(ui_theme.CHART_GRID)
+    ax.tick_params(axis='both', colors=ui_theme.CHART_TEXT_TICK)
 
-    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor='#2a2a35',
-              edgecolor='#444444', labelcolor='#e0e0e0')
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.85, facecolor=ui_theme.CHART_AXES_BG,
+              edgecolor=ui_theme.CHART_LEGEND_EDGE, labelcolor=ui_theme.CHART_TEXT)
     _fit_issue_graph(fig, ax)
     canvas_widget.graph_canvas.draw()
 
@@ -417,8 +426,7 @@ def update_issue_graph(canvas_widget):
 # ---------------------------------------------------------------------------
 
 # One colour per API slot index (0-6), matching the slot colours used elsewhere in the UI.
-_VLLM_SERIES_COLORS = ('#4dabf7', '#51cf66', '#ffd43b', '#ff922b',
-                       '#b197fc', '#f783ac', '#20c997')
+_VLLM_SERIES_COLORS = ui_theme.SERIES_COLORS
 
 # Redrawing both panels is the expensive part, so a redraw per poll is enough; this keeps a
 # 500 ms UI tick from re-rasterising the same data.
@@ -462,18 +470,18 @@ def draw_vllm_metrics_graph(canvas_widget, height=420):
     """
     canvas_widget.delete("all")
 
-    fig = Figure(figsize=(7.5, max(300, min(height, 460)) / 100), dpi=100, facecolor='#1e1e24')
-    fig.patch.set_facecolor('#1e1e24')
+    fig = Figure(figsize=(7.5, max(300, min(height, 460)) / 100), dpi=100, facecolor=ui_theme.CHART_BG)
+    fig.patch.set_facecolor(ui_theme.CHART_BG)
     speed_ax = fig.add_subplot(211)
     load_ax = fig.add_subplot(212, sharex=speed_ax)
     for ax in (speed_ax, load_ax):
-        ax.set_facecolor('#2a2a35')
-        ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+        ax.set_facecolor(ui_theme.CHART_AXES_BG)
+        ax.grid(axis='y', linestyle='--', alpha=0.25, color=ui_theme.CHART_GRID)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_color('#555555')
-        ax.spines['left'].set_color('#555555')
-        ax.tick_params(axis='both', colors='#c0c0c0')
+        ax.spines['bottom'].set_color(ui_theme.CHART_GRID)
+        ax.spines['left'].set_color(ui_theme.CHART_GRID)
+        ax.tick_params(axis='both', colors=ui_theme.CHART_TEXT_TICK)
 
     canvas = FigureCanvasTkAgg(fig, master=canvas_widget)
     canvas.draw()
@@ -543,19 +551,19 @@ def update_vllm_metrics_graph(canvas_widget, rows, force=False):
     if not series:
         for ax, title in ((speed_ax, 'Tokens per Second (per API endpoint)'),
                            (load_ax, 'Endpoint Load — KV Cache Used')):
-            ax.set_facecolor('#2a2a35')
-            ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+            ax.set_facecolor(ui_theme.CHART_AXES_BG)
+            ax.grid(axis='y', linestyle='--', alpha=0.25, color=ui_theme.CHART_GRID)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            ax.spines['bottom'].set_color('#555555')
-            ax.spines['left'].set_color('#555555')
-            ax.tick_params(axis='both', colors='#c0c0c0')
-            ax.set_title(title, fontsize=12, fontweight='bold', color='#ffffff', pad=8)
+            ax.spines['bottom'].set_color(ui_theme.CHART_GRID)
+            ax.spines['left'].set_color(ui_theme.CHART_GRID)
+            ax.tick_params(axis='both', colors=ui_theme.CHART_TEXT_TICK)
+            ax.set_title(title, fontsize=12, fontweight='bold', color=ui_theme.CHART_TEXT_TITLE, pad=8)
             ax.set_yticks([])
             ax.text(0.5, 0.5, 'No vLLM metrics yet.\nConfigure an API slot that points at a vLLM '
                               'server; the tab polls its /metrics endpoint every 10 seconds.',
                     transform=ax.transAxes, ha='center', va='center', fontsize=10,
-                    color='#8b949e', multialignment='center')
+                    color=ui_theme.TEXT_MUTED, multialignment='center')
         canvas_widget.graph_fig.tight_layout(pad=1.0)
         canvas_widget.graph_canvas.draw_idle()
         return
@@ -579,19 +587,19 @@ def update_vllm_metrics_graph(canvas_widget, rows, force=False):
 
     for ax, title in ((speed_ax, 'Tokens per Second (per API endpoint)'),
                       (load_ax, 'Endpoint Load — KV Cache Used (per API endpoint)')):
-        ax.set_facecolor('#2a2a35')
-        ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+        ax.set_facecolor(ui_theme.CHART_AXES_BG)
+        ax.grid(axis='y', linestyle='--', alpha=0.25, color=ui_theme.CHART_GRID)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_color('#555555')
-        ax.spines['left'].set_color('#555555')
-        ax.tick_params(axis='both', colors='#c0c0c0')
-        ax.set_title(title, fontsize=12, fontweight='bold', color='#ffffff', pad=8)
-        ax.legend(loc='upper left', fontsize=8, framealpha=0.85, facecolor='#2a2a35',
-                  edgecolor='#444444', labelcolor='#e0e0e0', ncol=2)
+        ax.spines['bottom'].set_color(ui_theme.CHART_GRID)
+        ax.spines['left'].set_color(ui_theme.CHART_GRID)
+        ax.tick_params(axis='both', colors=ui_theme.CHART_TEXT_TICK)
+        ax.set_title(title, fontsize=12, fontweight='bold', color=ui_theme.CHART_TEXT_TITLE, pad=8)
+        ax.legend(loc='upper left', fontsize=8, framealpha=0.85, facecolor=ui_theme.CHART_AXES_BG,
+                  edgecolor=ui_theme.CHART_LEGEND_EDGE, labelcolor=ui_theme.CHART_TEXT, ncol=2)
 
     load_ax.set_ylim(0, 105)
-    load_ax.set_xlabel('Seconds Ago', fontsize=10, fontweight='bold', color='#e0e0e0')
+    load_ax.set_xlabel('Seconds Ago', fontsize=10, fontweight='bold', color=ui_theme.CHART_TEXT)
     _fit_issue_graph(canvas_widget.graph_fig, speed_ax)
     _fit_issue_graph(canvas_widget.graph_fig, load_ax)
     canvas_widget.graph_canvas.draw_idle()
@@ -612,22 +620,21 @@ def update_vllm_metrics_graph(canvas_widget, rows, force=False):
 # ---------------------------------------------------------------------------
 
 # Per-slot colours, matching _VLLM_SERIES_COLORS so a slot keeps one colour across every panel.
-_PROXY_SERIES_COLORS = ('#4dabf7', '#51cf66', '#ffd43b', '#ff922b',
-                        '#b197fc', '#f783ac', '#20c997')
+_PROXY_SERIES_COLORS = ui_theme.SERIES_COLORS
 
 
 def _style_metric_axes(ax, title, ylabel=None):
     """Apply the tab's dark panel styling to one axes."""
-    ax.set_facecolor('#2a2a35')
-    ax.grid(axis='y', linestyle='--', alpha=0.25, color='#555555')
+    ax.set_facecolor(ui_theme.CHART_AXES_BG)
+    ax.grid(axis='y', linestyle='--', alpha=0.25, color=ui_theme.CHART_GRID)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.spines['bottom'].set_color('#555555')
-    ax.spines['left'].set_color('#555555')
-    ax.tick_params(axis='both', colors='#c0c0c0', labelsize=9)
-    ax.set_title(title, fontsize=11, fontweight='bold', color='#ffffff', pad=6)
+    ax.spines['bottom'].set_color(ui_theme.CHART_GRID)
+    ax.spines['left'].set_color(ui_theme.CHART_GRID)
+    ax.tick_params(axis='both', colors=ui_theme.CHART_TEXT_TICK, labelsize=9)
+    ax.set_title(title, fontsize=11, fontweight='bold', color=ui_theme.CHART_TEXT_TITLE, pad=6)
     if ylabel:
-        ax.set_ylabel(ylabel, fontsize=9, color='#c0c0c0')
+        ax.set_ylabel(ylabel, fontsize=9, color=ui_theme.CHART_TEXT_TICK)
 
 
 def _draw_metric_hint(ax, message):
@@ -635,7 +642,7 @@ def _draw_metric_hint(ax, message):
     ax.set_yticks([])
     ax.set_xticks([])
     ax.text(0.5, 0.5, message, transform=ax.transAxes, ha='center', va='center',
-            fontsize=9, color='#8b949e', multialignment='center')
+            fontsize=9, color=ui_theme.TEXT_MUTED, multialignment='center')
 
 
 def _metric_panel(canvas_widget, attr, panels):
@@ -653,8 +660,8 @@ def _metric_panel(canvas_widget, attr, panels):
         return fig, axes
 
     canvas_widget.delete("all")
-    fig = Figure(figsize=(7.5, 3.0), dpi=100, facecolor='#1e1e24')
-    fig.patch.set_facecolor('#1e1e24')
+    fig = Figure(figsize=(7.5, 3.0), dpi=100, facecolor=ui_theme.CHART_BG)
+    fig.patch.set_facecolor(ui_theme.CHART_BG)
     total = sum(panel[3] for panel in panels)
     bottom = 0.0
     axes = {}
@@ -711,11 +718,11 @@ def _finish_metric_panel(ax, legend=False, ylim=None):
     if legend:
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(loc='upper left', fontsize=7, framealpha=0.85, facecolor='#2a2a35',
-                      edgecolor='#444444', labelcolor='#e0e0e0', ncol=2)
+            ax.legend(loc='upper left', fontsize=7, framealpha=0.85, facecolor=ui_theme.CHART_AXES_BG,
+                      edgecolor=ui_theme.CHART_LEGEND_EDGE, labelcolor=ui_theme.CHART_TEXT, ncol=2)
     if ylim is not None:
         ax.set_ylim(*ylim)
-    ax.set_xlabel('Seconds Ago', fontsize=9, color='#c0c0c0')
+    ax.set_xlabel('Seconds Ago', fontsize=9, color=ui_theme.CHART_TEXT_TICK)
 
 
 # --- panel 2: per-slot achieved throughput -----------------------------------
@@ -1046,30 +1053,43 @@ def update_dashboard():
     # expensive, X-resource-leaking part.
     active_tab = _active_dashboard_tab_text()
 
-    if active_tab == "Totals":
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["refusals"], app_state.recent_refusals_total, is_total_tab=True)
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["user_speak"], app_state.recent_user_speaking_total, is_total_tab=True)
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["slop"], app_state.recent_slop_total, is_total_tab=True)
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["anti_slop"], app_state.recent_anti_slop_total, is_total_tab=True)
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["out_of_character"], app_state.recent_ooc_total, is_total_tab=True)
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["non_latin"], app_state.recent_non_latin_total, is_total_tab=True)
-        update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets["Totals"]["scene_continuity"], app_state.recent_scene_continuity_total, is_total_tab=True)
+    # Overview carries the old Totals panels: seven panels, Errors excluded, with
+    # the four-column Time/API/Phrase/Context layout. The registry key is
+    # "Overview" now, so these lookups had to be retargeted with the merge or the
+    # panels would silently stop updating -- no exception, just frozen tables.
+    if active_tab == ui_theme.TAB_OVERVIEW:
+        overview_widgets = app_state.dashboard_notebook.tabs_widgets[ui_theme.TAB_OVERVIEW]
+        update_modern_issue_panel(overview_widgets["refusals"], app_state.recent_refusals_total, is_total_tab=True)
+        update_modern_issue_panel(overview_widgets["user_speak"], app_state.recent_user_speaking_total, is_total_tab=True)
+        update_modern_issue_panel(overview_widgets["slop"], app_state.recent_slop_total, is_total_tab=True)
+        update_modern_issue_panel(overview_widgets["anti_slop"], app_state.recent_anti_slop_total, is_total_tab=True)
+        update_modern_issue_panel(overview_widgets["out_of_character"], app_state.recent_ooc_total, is_total_tab=True)
+        update_modern_issue_panel(overview_widgets["non_latin"], app_state.recent_non_latin_total, is_total_tab=True)
+        update_modern_issue_panel(overview_widgets["scene_continuity"], app_state.recent_scene_continuity_total, is_total_tab=True)
 
-    for i in range(6):
-        api_tab_name = f"API {i+1}"
-        if active_tab == api_tab_name and api_tab_name in app_state.dashboard_notebook.tabs_widgets:
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["refusals"], app_state.recent_refusals_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["user_speak"], app_state.recent_user_speaking_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["slop"], app_state.recent_slop_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["out_of_character"], app_state.recent_ooc_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["errors"], app_state.recent_errors_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["non_latin"], app_state.recent_non_latin_per_api.get(i,[]))
-            update_modern_issue_panel(app_state.dashboard_notebook.tabs_widgets[api_tab_name]["scene_continuity"], app_state.recent_scene_continuity_per_api.get(i,[]))
+    # APIs carries the old per-API panels: eight panels, three columns, for the
+    # slot the selector shows. The loop keeps its range(6) guard even though only
+    # slots 1-4 have a selector entry today, so a future slot 5/6 is a one-line
+    # change. Slots 5 and 6 are the fixer/judge slots and have no tab today.
+    if active_tab == ui_theme.TAB_APIS and ui_theme.TAB_APIS in app_state.dashboard_notebook.tabs_widgets:
+        api_widgets = app_state.dashboard_notebook.tabs_widgets[ui_theme.TAB_APIS]
+        selected_slot = _selected_api_slot()
+        for i in range(6):
+            if i != selected_slot:
+                continue
+            update_modern_issue_panel(api_widgets["refusals"], app_state.recent_refusals_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["user_speak"], app_state.recent_user_speaking_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["slop"], app_state.recent_slop_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["anti_slop"], app_state.recent_anti_slop_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["out_of_character"], app_state.recent_ooc_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["errors"], app_state.recent_errors_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["non_latin"], app_state.recent_non_latin_per_api.get(i,[]))
+            update_modern_issue_panel(api_widgets["scene_continuity"], app_state.recent_scene_continuity_per_api.get(i,[]))
 
-    # Update the graph on the Totals tab — only while that tab is visible.
-    if active_tab == "Totals" and "Totals" in app_state.dashboard_notebook.tabs_widgets:
-        graph_canvas_widget = app_state.dashboard_notebook.tabs_widgets["Totals"].get("graph_canvas")
+    # Update the graph on the Overview tab — only while that tab is visible.
+    if (active_tab == ui_theme.TAB_OVERVIEW
+            and ui_theme.TAB_OVERVIEW in app_state.dashboard_notebook.tabs_widgets):
+        graph_canvas_widget = app_state.dashboard_notebook.tabs_widgets[ui_theme.TAB_OVERVIEW].get("graph_canvas")
         if graph_canvas_widget and hasattr(graph_canvas_widget, 'winfo_exists') and graph_canvas_widget.winfo_exists():
             try:
                 update_issue_graph(graph_canvas_widget)
@@ -1138,7 +1158,8 @@ def search_in_dashboard_tab(tab_name):
         text_widget = app_state.dashboard_notebook.tabs_widgets[tab_name].get(key)
         if text_widget and text_widget.winfo_exists():
             # Configure highlight tag (doesn't interfere with existing issue tags)
-            text_widget.tag_configure("search_match", background="#FFD700", foreground="#000000", underline=False)
+            text_widget.tag_configure("search_match", background=ui_theme.SEARCH_HIGHLIGHT_BG,
+                                      foreground=ui_theme.SEARCH_HIGHLIGHT_FG, underline=False)
 
             start_pos = "1.0"
             while True:
@@ -1213,69 +1234,69 @@ def pulse_progress_bar(bar, bar_key, root_window):
 def configure_animated_progress_styles(style_obj):
     """Configure custom progress bar styles with color-coded stages and animation support."""
     # Trough (background track) - dark theme consistent
-    trough_color = '#2a2a35'
-    border_color = '#1e1e24'
+    trough_color = ui_theme.PROGRESS_TROUGH
+    border_color = ui_theme.PROGRESS_BORDER
 
     # Stage 1: Low progress (0-25%) - Cool Blue
     style_obj.configure("Low.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#3498db',
-                        darkcolor='#2980b9',
-                        lightcolor='#5dade2',
+                        background=ui_theme.PROGRESS_LOW[0],
+                        darkcolor=ui_theme.PROGRESS_LOW[1],
+                        lightcolor=ui_theme.PROGRESS_LOW[2],
                         bordercolor=border_color,
                         thickness=22)
 
     # Stage 2: Medium progress (25-50%) - Cyan / Teal
     style_obj.configure("Medium.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#17a2b8',
-                        darkcolor='#138496',
-                        lightcolor='#4dc8e8',
+                        background=ui_theme.PROGRESS_MEDIUM[0],
+                        darkcolor=ui_theme.PROGRESS_MEDIUM[1],
+                        lightcolor=ui_theme.PROGRESS_MEDIUM[2],
                         bordercolor=border_color,
                         thickness=22)
 
     # Stage 3: Progressing (50-75%) - Green
     style_obj.configure("Progressing.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#28a745',
-                        darkcolor='#1e7e34',
-                        lightcolor='#5cb85c',
+                        background=ui_theme.PROGRESS_PROGRESSING[0],
+                        darkcolor=ui_theme.PROGRESS_PROGRESSING[1],
+                        lightcolor=ui_theme.PROGRESS_PROGRESSING[2],
                         bordercolor=border_color,
                         thickness=22)
 
     # Stage 4: High progress (75-90%) - Amber / Yellow
     style_obj.configure("High.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#ffc107',
-                        darkcolor='#e0a800',
-                        lightcolor='#ffd54f',
+                        background=ui_theme.PROGRESS_HIGH[0],
+                        darkcolor=ui_theme.PROGRESS_HIGH[1],
+                        lightcolor=ui_theme.PROGRESS_HIGH[2],
                         bordercolor=border_color,
                         thickness=22)
 
     # Stage 5: Complete (90-100%) - Bright Green with pulse
     style_obj.configure("Complete.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#51cf66',
-                        darkcolor='#40c057',
-                        lightcolor='#69db7c',
+                        background=ui_theme.PROGRESS_COMPLETE[0],
+                        darkcolor=ui_theme.PROGRESS_COMPLETE[1],
+                        lightcolor=ui_theme.PROGRESS_COMPLETE[2],
                         bordercolor=border_color,
                         thickness=22)
 
     # Pulse state (briefly flashes brighter when milestones are hit)
     style_obj.configure("Pulse.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#74c0fc',
-                        darkcolor='#4dabf7',
-                        lightcolor='#a5d8ff',
+                        background=ui_theme.PROGRESS_PULSE[0],
+                        darkcolor=ui_theme.PROGRESS_PULSE[1],
+                        lightcolor=ui_theme.PROGRESS_PULSE[2],
                         bordercolor=border_color,
                         thickness=22)
 
     # Error / Stalled state - Red
     style_obj.configure("Error.Horizontal.TProgressbar",
                         troughcolor=trough_color,
-                        background='#ff6b6b',
-                        darkcolor='#fa5252',
-                        lightcolor='#ffa8a8',
+                        background=ui_theme.PROGRESS_ERROR[0],
+                        darkcolor=ui_theme.PROGRESS_ERROR[1],
+                        lightcolor=ui_theme.PROGRESS_ERROR[2],
                         bordercolor=border_color,
                         thickness=22)
 
@@ -1318,9 +1339,9 @@ def update_rate_limit_status():
         return
 
     # Color constants matching the dark theme
-    ACCENT_GREEN = "#51cf66"
-    ACCENT_ORANGE = "#ff922b"
-    ACCENT_RED = "#ff6b6b"
+    ACCENT_GREEN = ui_theme.OK
+    ACCENT_ORANGE = ui_theme.ISSUE_OUT_OF_CHARACTER
+    ACCENT_RED = ui_theme.DANGER
 
     with global_rate_limiter.lock:
         for slot_idx in range(6):
