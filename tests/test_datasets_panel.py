@@ -40,6 +40,7 @@ except ImportError:
     tk = None
 
 if tk is not None:
+    import ui_theme
     from datasets_panel import DatasetsPanel
     from dataset_settings import apply_schema, new_source
     from dataset_sources import DatasetSchema, open_source
@@ -62,7 +63,7 @@ class DatasetsPanelTests(unittest.TestCase):
         except tk.TclError as exc:
             raise unittest.SkipTest("A desktop/virtual display is required: {}".format(exc))
         cls.root.tk.call("tk", "scaling", 4 / 3)
-        cls.style = ttkbootstrap.Style(theme="superhero")
+        cls.style = ttkbootstrap.Style(theme=ui_theme.THEME_NAME)
         cls.root.title("Dataset configuration checks")
 
     @classmethod

@@ -51,6 +51,8 @@ except ImportError as exc:
 else:
     TK_UNAVAILABLE = None
 
+import ui_theme
+
 
 TASK_ID = "opening_ferry_notes_chunk_at_1042"
 LONG_ID = "opening_ferry_notes_chunk_at_1042_and_a_much_longer_suffix_for_truncation"
@@ -86,7 +88,7 @@ class ReviewTabTests(unittest.TestCase):
         cls.app_state = app_state
         cls.root = app_state.root
         cls.notebook = app_state.dashboard_notebook
-        cls.tab = "🔍 Review"
+        cls.tab = ui_theme.TAB_REVIEW
         for tab_id in cls.notebook.tabs():
             if "Review" in cls.notebook.tab(tab_id, "text"):
                 cls.notebook.select(tab_id)
