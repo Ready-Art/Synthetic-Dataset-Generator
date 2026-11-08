@@ -406,6 +406,20 @@ prompts:
     max_churn: 2
     max_deferrals: 1
     placement: depth0
+    # v14.1: how a scheduled transition is judged to have LANDED. The old test searched the reply
+    # for the character's NAME anywhere, which was wrong in both directions -- "Cole is still here"
+    # counted as an exit, while "She grabbed her coat and left" counted as nothing, so exits were
+    # deferred and then cancelled and characters appeared never to leave. 'evidence' reads the reply
+    # for a departure/arrival verb in a sentence about the character, and accepts a pronoun when
+    # exactly one character is mid-transition. 'name' restores the old behaviour for A/B runs;
+    # 'always' lands every scheduled transition whether the reply narrates it or not.
+    exit_detection: evidence
+    # v14.1: where the beats land, in reply numbers (0 = automatic: arrival a third of the way in,
+    # departure at the halfway point). A short conversation needs these set explicitly -- with 4
+    # replies the automatic exit lands on reply 3, so the scene ends before the departure has an
+    # aftermath and the character reads as never having left. Both are clamped into range.
+    join_slot: 0
+    exit_slot: 0
     # v13.5.1: cut-aways are OFF by default. They produced disconnected filler -- a reply opening
     # on a stray dog barking or a stranger asleep in another building -- rather than a scene. The
     # join/leave feature works without them (see docs/scene-cast.md).

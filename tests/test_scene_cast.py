@@ -552,6 +552,129 @@ def test_cast_dimension_is_scored():
 # 8. Default config is inert
 # --------------------------------------------------------------------------------------
 
+def test_transition_evidence():
+    """v14.1: a transition lands on EVIDENCE, not on a bare mention of the name.
+
+    The v12.0 test searched the reply for the character's name anywhere, which was wrong in both
+    directions and both halves were visible in one run:
+      * "Cole is still here, arguing" contains "Cole", so the exit was recorded as landed and the
+        next reply blocked a character who had never left;
+      * "She grabbed her coat and headed for the door" contains no name, so a perfectly good exit
+        was deferred and then cancelled -- which is why characters appeared never to leave.
+    """
+    print("\nTransition evidence (v14.1: the exit actually lands)")
+    cfg = {"enabled": True, "shape": "minimal", "min_present": 2}
+    plan = g._build_scene_cast_plan(["Melody", "Cole", "Ines"], 6, cfg)
+    leaver = next(m for m in plan["members"] if m["exit_slot"] is not None)
+    slot = leaver["exit_slot"]
+
+    def advance(text, mode="evidence"):
+        state = g._cast_state_from_plan(plan)
+        return g._advance_cast_state(plan, state, slot, text, max_deferrals=1, mode=mode)
+
+    # --- the beat lands on a real departure, named or pronominal -------------------------
+    for text in ("%s said goodbye and left." % leaver["name"],
+                 "She grabbed her coat and headed for the door.",
+                 "He sighed, pushed back his chair, and walked out.",
+                 '"I have to go," %s said.' % leaver["name"]):
+        state, events = advance(text)
+        check("a real departure lands the exit: %r" % text[:40],
+              ("exited", leaver["name"]) in events, events)
+
+    # --- a mere MENTION is not a departure ----------------------------------------------
+    for text in ("%s is still here, arguing." % leaver["name"],
+                 "%s did not leave." % leaver["name"],
+                 "%s nodded slowly." % leaver["name"],
+                 "%s stayed put." % leaver["name"]):
+        state, events = advance(text)
+        check("a mere mention does NOT land the exit: %r" % text[:40],
+              ("exited", leaver["name"]) not in events, events)
+
+    # --- mode 'name' reproduces the old (buggy) behaviour --------------------------------
+    state, events = advance("%s is still here, arguing." % leaver["name"], mode="name")
+    check("mode 'name' still lands on a bare mention (A/B escape hatch)",
+          ("exited", leaver["name"]) in events, events)
+
+    # --- mode 'always' lands every transition regardless of the prose ---------------------
+    state, events = advance("Nobody does anything.", mode="always")
+    check("mode 'always' lands the exit with no evidence at all",
+          ("exited", leaver["name"]) in events, events)
+
+    # --- an unknown mode falls back to 'evidence' ----------------------------------------
+    state, events = advance("%s is still here." % leaver["name"], mode="bogus")
+    check("an unknown mode falls back to 'evidence'",
+          ("exited", leaver["name"]) not in events, events)
+
+    # --- a pronoun is only evidence when ONE character is mid-transition ------------------
+    check("a pronoun is ambiguous with two candidates",
+          detection.find_transition_evidence("She left the room.", ["A", "B"], "departure") == [])
+    check("a pronoun is evidence with one candidate",
+          [n for n, _s in detection.find_transition_evidence(
+              "She left the room.", ["A"], "departure")] == ["A"])
+
+    # --- the detector never blames the wrong character -----------------------------------
+    check("the actor, not the object, owns the verb",
+          [n for n, _s in detection.find_transition_evidence(
+              "Cole watched Ines leave.", ["Cole", "Ines"], "departure")] == ["Ines"])
+
+
+def test_slot_overrides():
+    """v14.1: join_slot / exit_slot place the beats, and are clamped rather than trusted."""
+    print("\nSlot overrides (v14.1: place the beats in a short conversation)")
+    base = {"enabled": True, "shape": "minimal", "min_present": 2}
+
+    def plan_for(slots, join_slot=0, exit_slot=0):
+        cfg = dict(base, join_slot=join_slot, exit_slot=exit_slot)
+        return g._build_scene_cast_plan(["A", "B", "C"], slots, cfg)
+
+    # 0 = automatic, so the override must not change the schedule at all.
+    check("join_slot 0 and exit_slot 0 leave the automatic schedule untouched",
+          plan_for(6) == plan_for(6, 0, 0))
+
+    # An explicit exit moves the departure earlier, which is the whole point in a short scene.
+    auto = plan_for(6)
+    auto_exit = next(m["exit_slot"] for m in auto["members"] if m["exit_slot"] is not None)
+    moved = plan_for(6, exit_slot=3)
+    moved_exit = next(m["exit_slot"] for m in moved["members"] if m["exit_slot"] is not None)
+    check("an explicit exit_slot moves the departure earlier", moved_exit == 3,
+          "auto %s -> %s" % (auto_exit, moved_exit))
+
+    # Clamping: a slot past the end of the conversation is pulled back into range, and an exit
+    # always keeps a reply after it for the aftermath.
+    for slots in (4, 6, 8):
+        plan = plan_for(slots, join_slot=99, exit_slot=99)
+        members = plan["members"]
+        check("%d slots: an out-of-range override is clamped into range" % slots,
+              all(m["enter_slot"] <= slots for m in members)
+              and all(m["exit_slot"] is None or m["exit_slot"] <= slots - 1 for m in members),
+              members)
+        check("%d slots: a clamped exit still leaves an aftermath" % slots,
+              all(m["exit_slot"] is None or slots - m["exit_slot"] >= 1 for m in members),
+              members)
+
+    # An exit before the arrival is impossible: the departure is pushed after it.
+    plan = plan_for(8, join_slot=5, exit_slot=2)
+    for m in plan["members"]:
+        if m["exit_slot"] is not None and m["enter_slot"] > 0:
+            check("an exit is never scheduled before the arrival it follows",
+                  m["exit_slot"] > m["enter_slot"], m)
+
+    # An override never violates the plan invariants.
+    for slots in (4, 6, 8, 12):
+        for join_slot, exit_slot in ((0, 0), (2, 3), (1, 2), (99, 99), (3, 2)):
+            plan = plan_for(slots, join_slot, exit_slot)
+            members = plan["members"]
+            if not members:
+                continue
+            state = g._cast_state_from_plan(plan)
+            worst = slots + 1
+            for slot in range(1, slots + 1):
+                worst = min(worst, len(g._cast_names_for_slot(plan, state, slot)[2]))
+                state, _e = g._advance_cast_state(plan, state, slot, "", max_deferrals=1)
+            check("%d slots / override (%d,%d): min_present still holds" % (slots, join_slot, exit_slot),
+                  worst >= plan["min_present"], "min present %d" % worst)
+
+
 def test_default_config_inert():
     print("\nDefault config (the shipped feature is inert)")
     import yaml
@@ -565,6 +688,15 @@ def test_default_config_inert():
           cast.get("allow_cutaway", True) is False, cast)
     check("prompts.scene_cast.shape is one the worker understands",
           cast.get("shape") in g.SCENE_CAST_SHAPES, cast.get("shape"))
+    check("prompts.scene_cast.exit_detection is a mode the worker understands",
+          cast.get("exit_detection", "evidence") in g.CAST_TRANSITION_MODES,
+          cast.get("exit_detection"))
+    check("prompts.scene_cast.exit_detection ships 'evidence' (exits actually land)",
+          cast.get("exit_detection", "evidence") == "evidence", cast.get("exit_detection"))
+    check("prompts.scene_cast.join_slot ships 0 (automatic)",
+          int(cast.get("join_slot", 0) or 0) == 0, cast.get("join_slot"))
+    check("prompts.scene_cast.exit_slot ships 0 (automatic)",
+          int(cast.get("exit_slot", 0) or 0) == 0, cast.get("exit_slot"))
     continuity = config.get("detection", {}).get("scene_continuity", {}) or {}
     check("detection.scene_continuity.max_rounds is in 1..5",
           1 <= int(continuity.get("max_rounds", 2)) <= 5, continuity)
@@ -609,6 +741,8 @@ def main():
     test_metadata()
     test_quality_dimension()
     test_cast_dimension_is_scored()
+    test_transition_evidence()
+    test_slot_overrides()
     test_default_config_inert()
     test_cache_warning()
     if FAILURES:
