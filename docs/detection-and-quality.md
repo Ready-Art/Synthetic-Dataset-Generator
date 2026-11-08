@@ -113,6 +113,8 @@ That inversion is the whole design. If the model chose, a forgotten exit would l
 
 The asymmetry is deliberate and must not be "simplified" into forcing exits. Cancelling is the only direction that cannot produce an incoherent dataset. Every transition is logged, and `exit_cancelled` in the metadata is how you measure whether the model actually wrote its exits.
 
+**A beat lands on evidence, not on a name (v14.1).** The generator decides whether a scheduled exit or arrival actually happened by looking for a departure/arrival **verb** in a sentence that is *about* the character — the name in the same sentence, or a pronoun when exactly one character is mid-transition. Before v14.1 it searched for the character's name anywhere, which was wrong in both directions: `"Cole is still here"` contains `Cole` so it exited him, while `"She grabbed her coat and left"` contains no name so a good exit was cancelled. That second half is why characters appeared never to leave. `exit_detection` selects the strictness (`evidence` / `name` / `always`); `join_slot` and `exit_slot` place the beats by reply number when the automatic anchors put them too late for a short conversation. See [scene-cast.md](scene-cast.md).
+
 **The hard check, with no LLM.** A character who has left (or has not arrived yet) may not speak or act. `detection.check_scene_continuity()` finds attributed quoted lines (including script-style `Name:` prefixes, and names ending in punctuation like `Dr. Vance`) plus a curated narration action-verb list. Quoted dialogue is blanked before the action match, so a character merely *mentioned* in someone else's line — `"Where is Melody?"` — never flags. A hit sends the reply back to the same main API slot with a fix appended to the system prompt, exactly like OOC drift; once the fixes are exhausted the best-effort answer is **kept**, never dropped. A missing entrance/exit is reported but never regenerates the reply — the state machine handles it for free.
 
 **Cache-safe by construction.** The cast note rides in the per-turn `depth0` note beside the persona and emotion blocks, so the system prompt never changes mid-conversation and a server's prefix cache stays warm. The note carries **no per-reply counter**, so two static replies produce byte-identical text. Only the present/absent *sets* and this reply's transitions appear in it.
@@ -128,6 +130,9 @@ prompts:
     max_churn: 2              # only used by shape: churn
     max_deferrals: 1          # replies an un-narrated exit may slip before it is cancelled
     placement: depth0          # depth0 (cache-friendly) | system
+    exit_detection: evidence  # evidence (a departure verb) | name (old, buggy) | always
+    join_slot: 0              # 0 = automatic; else the reply the arrival lands on
+    exit_slot: 0              # 0 = automatic; else the reply the departure lands on
     exit_guidance: []         # one per line; empty = built-in defaults
     arrival_guidance: []
     allow_cutaway: false      # a short moment elsewhere, rejoining the main thread
