@@ -913,7 +913,10 @@ def test_generate_wiring():
                      "first_reply_first_word_cap_local", "first_reply_opener_cap_local",
                      "first_reply_opener_max_retries",
                      # v13.2.0: the {style} pool, plumbed config -> start_processing -> worker kwargs
-                     "style_enabled_local", "style_list_local"})
+                     "style_enabled_local", "style_list_local",
+                     # v13.5.2: foreign-word corruption check, plumbed
+                     # config -> start_processing -> worker kwargs
+                     "current_foreign_word_enabled", "current_foreign_word_fixes"})
     conflict = _calls(start, "opening_mode_conflict")
     questions_read = [c for c in _calls(start, "read_txt")]
     check("start_processing checks opening_mode_conflict before reading the questions file",
