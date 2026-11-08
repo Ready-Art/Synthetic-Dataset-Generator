@@ -100,6 +100,11 @@ CAST_STATE_EXITING = "exiting"
 CAST_STATE_EXITED = "exited"
 CAST_BLOCKED_STATES = (CAST_STATE_ABSENT, CAST_STATE_EXITED)
 
+# How the state machine decides a scheduled transition LANDED (v14.1). See
+# _advance_cast_state() for what each mode means; "evidence" is the default and the only one that
+# reads the reply for a departure/arrival rather than for a name.
+CAST_TRANSITION_MODES = ("evidence", "name", "always")
+
 DEFAULT_EXIT_GUIDANCE = (
     "give them a concrete reason to go, somewhere to be or someone waiting, and let them "
     "actually leave the room",
@@ -1026,6 +1031,31 @@ def _build_scene_cast_plan(names, total_slots, config):
     leave_slot = max(join_slot + 2, total_slots // 2)
     leave_slot = min(leave_slot, total_slots - 1)
 
+    # --- EXPLICIT SLOT OVERRIDES (v14.1) ---------------------------------------------
+    # The automatic anchors above are a compromise: they suit a long conversation and put both
+    # beats late in a short one. With 4 replies the exit lands on reply 3, so the departure is the
+    # second-to-last thing that happens and the scene ends before the aftermath is visible -- which
+    # reads as "the character never left". `join_slot` / `exit_slot` (both 0 = automatic) let the
+    # user place the beats directly. They are CLAMPED, never trusted: a slot outside the reply range,
+    # or an exit that would leave no aftermath, is pulled back into range rather than honoured.
+    def _override(key):
+        try:
+            value = int(config.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return value if value > 0 else 0
+
+    override_join = _override("join_slot")
+    override_exit = _override("exit_slot")
+    if override_join:
+        # An arrival needs a reply left to be present in, and cannot be the opening reply.
+        join_slot = min(max(2, override_join), max(2, total_slots - 1))
+    if override_exit:
+        # A departure needs a reply left for the aftermath, and must follow the arrival.
+        leave_slot = min(max(2, override_exit), max(2, total_slots - 1))
+        if join_slot >= leave_slot:
+            leave_slot = min(join_slot + 1, max(2, total_slots - 1))
+
     # --- JOINS FIRST ----------------------------------------------------------------
     # The LAST characters start outside the scene, so the opening cast stays the core group.
     join_count = min(max_joins, spare) if can_join else 0
@@ -1155,7 +1185,7 @@ def _cast_names_for_slot(plan, state, slot_no):
     return tuple(blocked), tuple(expected), tuple(present)
 
 
-def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
+def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1, mode="evidence"):
     """Apply one accepted reply to the cast state machine. Returns (new_state, events).
 
     ``events`` is a list of ``(event, name)`` with event one of 'arrived', 'exited',
@@ -1169,11 +1199,28 @@ def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
         invented -- it would flag text it had just made wrong. Cancelling is the only direction
         that cannot produce an incoherent dataset.
 
-    ``answer_text`` is matched for the character's name; a name anywhere in the reply counts as
-    the beat landing (narration or dialogue), because the point is that the reader saw it happen.
+    ``answer_text`` is matched for EVIDENCE OF THE TRANSITION, not merely for the character's name
+    (v14.1). The old name-anywhere test was wrong in both directions and both halves were visible in
+    one run: "Cole is still here, arguing" contains "Cole", so the exit was recorded as landed and
+    the next reply blocked a character who had never left; "She grabbed her coat and headed for the
+    door" contains no name, so a perfectly good exit was deferred and then cancelled. That second
+    half is why characters appeared never to leave the scene at all. See
+    detection.find_transition_evidence().
+
+    ``config['exit_detection']`` selects the strictness (v14.1):
+      * ``"evidence"`` (default) -- a departure/arrival verb in a sentence about the character, with
+        a pronoun fallback when exactly one character is mid-transition. The behaviour above.
+      * ``"name"`` -- the old name-anywhere test, kept for A/B comparison and for anyone whose
+        prose defeats the verb lists.
+      * ``"always"`` -- every scheduled transition lands on its slot, narrated or not. Use with care:
+        it can mark a character gone who is still visibly in the room, which is exactly the
+        incoherence the continuity check then reports.
     """
     import re as _re
     plan = plan or {}
+    mode = str(mode or "evidence").strip().lower()
+    if mode not in CAST_TRANSITION_MODES:
+        mode = "evidence"
     state = dict(state or {})
     # Deferral counts live on the STATE, not the plan: the plan is immutable and shared by every
     # slot, so counting there would leak across tasks and never accumulate per character.
@@ -1183,11 +1230,65 @@ def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
         return state, events
     text = str(answer_text or "")
 
-    def _seen(name):
+    # Which characters are mid-transition RIGHT NOW, so the evidence matcher knows when a pronoun
+    # is unambiguous. Computed before the loop because the pronoun fallback needs the whole set.
+    def _name_seen(name):
+        """The v12.0 test: the name appears anywhere in the reply. Kept for mode 'name'."""
         if not name:
             return False
         return bool(_re.search(r'(?<!\w)' + _re.escape(str(name)) + r'(?!\w)', text,
                                _re.IGNORECASE))
+
+    # mode 'always': every scheduled transition lands on its slot, narrated or not.
+    if mode == "always":
+        for member in plan.get("members", []):
+            number = member.get("number")
+            name = member.get("name")
+            current = state.get(number, CAST_STATE_PRESENT)
+            if current == CAST_STATE_PRESENT and member.get("exit_slot") == slot_no:
+                state[number] = CAST_STATE_EXITED
+                events.append(("exited", name))
+            elif current == CAST_STATE_ABSENT and member.get("enter_slot") == slot_no:
+                state[number] = CAST_STATE_PRESENT
+                events.append(("arrived", name))
+        state["_deferrals"] = deferrals
+        return state, events
+
+    def _landed(name, kind):
+        """Did this reply actually narrate *name*'s transition?
+
+        *kind* is 'departure' (for an exit) or 'arrival'. In mode 'name' this is the old
+        name-anywhere test. In mode 'evidence' it is detection.find_transition_evidence(), which
+        needs the candidate list -- so it is evaluated once per slot below, not per character.
+        """
+        if mode == "name":
+            return _name_seen(name)
+        return name in _evidence_names
+
+    # mode 'evidence': resolve the candidates once. A character in 'exiting' is a departure
+    # candidate; one in 'arriving' is an arrival candidate. The two lists are kept apart because
+    # "left" and "arrived" are different evidence.
+    _evidence_names = set()
+    if mode == "evidence" and text:
+        departing, incoming = [], []
+        for member in plan.get("members", []):
+            current = state.get(member.get("number"), CAST_STATE_PRESENT)
+            if current == CAST_STATE_EXITING:
+                departing.append(member["name"])
+            elif current == CAST_STATE_ARRIVING:
+                incoming.append(member["name"])
+        # A character scheduled to start its transition on THIS slot is a candidate too, even
+        # though its state has not flipped yet.
+        for member in plan.get("members", []):
+            current = state.get(member.get("number"), CAST_STATE_PRESENT)
+            if current == CAST_STATE_PRESENT and member.get("exit_slot") == slot_no:
+                departing.append(member["name"])
+            elif current == CAST_STATE_ABSENT and member.get("enter_slot") == slot_no:
+                incoming.append(member["name"])
+        for name, _sentence in detection.find_transition_evidence(text, departing, "departure"):
+            _evidence_names.add(name)
+        for name, _sentence in detection.find_transition_evidence(text, incoming, "arrival"):
+            _evidence_names.add(name)
 
     for member in plan.get("members", []):
         number = member.get("number")
@@ -1205,7 +1306,7 @@ def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
                 current = CAST_STATE_ARRIVING
 
         if current == CAST_STATE_ARRIVING:
-            if _seen(name):
+            if _landed(name, "arrival"):
                 current = CAST_STATE_PRESENT
                 events.append(("arrived", name))
             else:
@@ -1216,7 +1317,7 @@ def _advance_cast_state(plan, state, slot_no, answer_text, max_deferrals=1):
                 else:
                     events.append(("arrival_deferred", name))
         elif current == CAST_STATE_EXITING:
-            if _seen(name):
+            if _landed(name, "departure"):
                 current = CAST_STATE_EXITED
                 events.append(("exited", name))
             else:
@@ -2178,6 +2279,13 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     0, int(scene_cast_config_local.get("max_deferrals", 1)))
             except (TypeError, ValueError):
                 scene_cast_max_deferrals_local = 1
+            # v14.1: how a scheduled transition is judged to have landed. "evidence" reads the
+            # reply for a departure/arrival verb (pronoun-aware); "name" is the old name-anywhere
+            # test; "always" lands every transition regardless of the prose.
+            scene_cast_transition_mode_local = str(
+                scene_cast_config_local.get("exit_detection", "evidence") or "evidence").strip().lower()
+            if scene_cast_transition_mode_local not in CAST_TRANSITION_MODES:
+                scene_cast_transition_mode_local = "evidence"
             # A compact, flat description of the schedule for the output metadata and the judge
             # ("Melody:enter 0 exit 4; Cole:enter 2 exit -"). "" when the feature is off.
             if scene_cast_plan["members"]:
@@ -2994,7 +3102,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     scene_cast_state, cast_events = _advance_cast_state(
                         scene_cast_plan, scene_cast_state, turn_num + 1 + greeting_offset,
                         assistant_answer,
-                        max_deferrals=scene_cast_max_deferrals_local)
+                        max_deferrals=scene_cast_max_deferrals_local,
+                        mode=scene_cast_transition_mode_local)
                     if cast_events:
                         app_state.record_cast_events(task_id, cast_events,
                                                     api_slot_idx_for_this_task

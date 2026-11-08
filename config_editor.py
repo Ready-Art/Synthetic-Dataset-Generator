@@ -1202,7 +1202,71 @@ class ConfigEditor(tk.Toplevel):
         self.scene_cast_max_deferrals_spinbox.grid(
             row=9, column=0, padx=SPACING, pady=0, sticky="w")
 
-        cast_placement_row = 10
+        # --- v14.1: how a transition is judged to have LANDED ------------------------------
+        # The old state machine looked for the character's NAME anywhere in the reply, which was wrong
+        # in both directions: "Cole is still here" counted as an exit, while "She grabbed her coat and
+        # left" counted as nothing at all. "evidence" reads the reply for a departure/arrival verb
+        # instead. The other two values exist so the change can be A/B'd without editing the config.
+        ttk.Label(scene_cast_lf, text="Transition Detection:").grid(
+            row=10, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_exit_detection_var_editor = tk.StringVar(value="evidence")
+        ttk.Combobox(
+            scene_cast_lf, textvariable=self.scene_cast_exit_detection_var_editor,
+            values=["evidence", "name", "always"], state="readonly", width=10
+        ).grid(row=11, column=0, padx=SPACING, pady=0, sticky="w")
+        cast_detection_help = ttk.Label(
+            scene_cast_lf, wraplength=1,
+            text="(evidence = a departure/arrival verb in a sentence about the character, and a "
+                 "pronoun counts when only one character is leaving: this is what makes exits "
+                 "actually land. name = the old behaviour, where any mention of the name counted, "
+                 "so 'Cole is still here' exited him. always = every scheduled transition lands "
+                 "whether the reply narrates it or not.)")
+        cast_detection_help.grid(row=12, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(cast_detection_help, scene_cast_lf, padding=2 * SPACING)
+
+        # --- v14.1: where the beats land ---------------------------------------------------
+        # 0 = automatic (a third of the way in for the arrival, halfway for the departure). A short
+        # conversation needs these set explicitly: with 4 replies the automatic exit lands on reply 3,
+        # so the scene ends before the departure has an aftermath and the character reads as never
+        # having left.
+        ttk.Label(scene_cast_lf, text="Join Slot (0 = automatic):").grid(
+            row=13, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_join_slot_var_editor = tk.StringVar(value="0")
+        self.scene_cast_join_slot_spinbox = ttk.Spinbox(
+            scene_cast_lf, from_=0, to=20, width=6,
+            textvariable=self.scene_cast_join_slot_var_editor, style=self.spinbox_style)
+        self.scene_cast_join_slot_spinbox.grid(
+            row=14, column=0, padx=SPACING, pady=0, sticky="w")
+
+        ttk.Label(scene_cast_lf, text="Exit Slot (0 = automatic):").grid(
+            row=15, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
+        self.scene_cast_exit_slot_var_editor = tk.StringVar(value="0")
+        self.scene_cast_exit_slot_spinbox = ttk.Spinbox(
+            scene_cast_lf, from_=0, to=20, width=6,
+            textvariable=self.scene_cast_exit_slot_var_editor, style=self.spinbox_style)
+        self.scene_cast_exit_slot_spinbox.grid(
+            row=16, column=0, padx=SPACING, pady=0, sticky="w")
+        cast_slot_help = ttk.Label(
+            scene_cast_lf, wraplength=1,
+            text="(Reply numbers, counting the greeting in opening mode. A departure needs a reply "
+                 "left after it to show the aftermath, so an exit on the last reply is pulled back "
+                 "one. Leave both at 0 to let the generator place the beats.)")
+        cast_slot_help.grid(row=17, column=0, padx=SPACING, pady=(0, SPACING), sticky="ew")
+        wrap_label(cast_slot_help, scene_cast_lf, padding=2 * SPACING)
+
+        # v14.1: a live feasibility readout. The single most common report about this feature is
+        # "nothing happens", and the cause is almost always that min_present leaves no spare
+        # character (2 characters with min_present 2 can never change cast at all). Saying so in the
+        # panel is cheaper than making the user find the WARNING in the log.
+        self.scene_cast_feasibility_label = ttk.Label(scene_cast_lf, wraplength=1)
+        self.scene_cast_feasibility_label.grid(row=18, column=0, padx=SPACING,
+                                             pady=(0, SPACING), sticky="ew")
+        wrap_label(self.scene_cast_feasibility_label, scene_cast_lf, padding=2 * SPACING)
+        for var in (self.scene_cast_min_present_var_editor, self.scene_cast_shape_var_editor):
+            var.trace_add("write", lambda *_a: self._refresh_scene_cast_feasibility())
+        self._refresh_scene_cast_feasibility()
+
+        cast_placement_row = 19
         ttk.Label(scene_cast_lf, text="Cast Note Placement:").grid(
             row=cast_placement_row, column=0, padx=SPACING, pady=(SPACING, 0), sticky="w")
         cast_placement_row += 1
@@ -2403,6 +2467,9 @@ class ConfigEditor(tk.Toplevel):
                     'min_present': int(self.scene_cast_min_present_var_editor.get()),
                     'max_churn': int(self.scene_cast_max_churn_var_editor.get()),
                     'max_deferrals': int(self.scene_cast_max_deferrals_var_editor.get()),
+                    'exit_detection': self.scene_cast_exit_detection_var_editor.get(),
+                    'join_slot': int(self.scene_cast_join_slot_var_editor.get()),
+                    'exit_slot': int(self.scene_cast_exit_slot_var_editor.get()),
                     'placement': self.scene_cast_placement_var_editor.get(),
                     'allow_cutaway': self.scene_cast_allow_cutaway_var_editor.get(),
                     'exit_guidance': [line.strip() for line in
@@ -3301,10 +3368,16 @@ class ConfigEditor(tk.Toplevel):
             sc_shape = str(scene_cast_conf.get('shape', 'minimal') or 'minimal').strip().lower()
             self.scene_cast_shape_var_editor.set(
                 sc_shape if sc_shape in ('minimal', 'churn', 'none') else 'minimal')
+            sc_detection = str(scene_cast_conf.get('exit_detection', 'evidence')
+                               or 'evidence').strip().lower()
+            self.scene_cast_exit_detection_var_editor.set(
+                sc_detection if sc_detection in ('evidence', 'name', 'always') else 'evidence')
             for var, key, default, lo, hi in (
                     (self.scene_cast_min_present_var_editor, 'min_present', 2, 1, 10),
                     (self.scene_cast_max_churn_var_editor, 'max_churn', 2, 0, 10),
-                    (self.scene_cast_max_deferrals_var_editor, 'max_deferrals', 1, 0, 5)):
+                    (self.scene_cast_max_deferrals_var_editor, 'max_deferrals', 1, 0, 5),
+                    (self.scene_cast_join_slot_var_editor, 'join_slot', 0, 0, 20),
+                    (self.scene_cast_exit_slot_var_editor, 'exit_slot', 0, 0, 20)):
                 try:
                     value = int(scene_cast_conf.get(key, default))
                 except (TypeError, ValueError):
@@ -3893,7 +3966,8 @@ class ConfigEditor(tk.Toplevel):
         is_enabled = self.enable_scene_cast_var_editor.get()
         state = 'normal' if is_enabled else 'disabled'
         for name in ('scene_cast_min_present_spinbox', 'scene_cast_max_churn_spinbox',
-                     'scene_cast_max_deferrals_spinbox'):
+                     'scene_cast_max_deferrals_spinbox', 'scene_cast_join_slot_spinbox',
+                     'scene_cast_exit_slot_spinbox'):
             widget = getattr(self, name, None)
             if widget is not None and widget.winfo_exists():
                 widget.config(state=state)
@@ -3902,6 +3976,32 @@ class ConfigEditor(tk.Toplevel):
             widget = getattr(self, name, None)
             if widget is not None and widget.winfo_exists():
                 widget.config(state=state)
+
+    def _refresh_scene_cast_feasibility(self):
+        """Explain, in the panel, whether the current settings can change the cast at all.
+
+        v14.1. A join and a leave each cost one present character, so `min_present` must leave a
+        spare or the schedule is empty and the feature silently does nothing -- which is the single
+        most common "it does not work" report. This mirrors generation._scene_cast_feasible() for the
+        one case the config alone can decide (the number of characters is a run-time choice, so the
+        readout states the requirement rather than guessing the scene).
+        """
+        label = getattr(self, 'scene_cast_feasibility_label', None)
+        if label is None or not label.winfo_exists():
+            return
+        try:
+            min_present = max(1, int(self.scene_cast_min_present_var_editor.get()))
+        except (TypeError, ValueError):
+            min_present = 2
+        shape = str(self.scene_cast_shape_var_editor.get() or 'minimal').strip().lower()
+        if shape == 'none':
+            label.config(text="Cast Shape is 'none': no entrance or exit will ever be scheduled.")
+            return
+        needed = min_present + 1
+        label.config(
+            text="Needs at least %d characters selected: a join and a leave each cost one present "
+                 "character, so with min_present=%d a scene of %d or fewer can never change cast."
+                 % (needed, min_present, min_present))
 
     def _toggle_scene_continuity_fields(self):
         """Enable/disable the Scene Continuity fields from the toggle's state."""
