@@ -118,7 +118,9 @@ The developer cheat sheet is split so a modest-context model can follow it in on
 | [`task-index.md`](agents/task-index.md) | "how do I add X?" → the files to edit |
 | [`config.md`](agents/config.md) | `config/config.yml`, `config/api_profiles.yml`, dependency pins |
 | [`core-modules.md`](agents/core-modules.md) | `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py`, `style_metrics.py`, the state/lock inventory and the config paths |
-| [`generate-ui.md`](agents/generate-ui.md) | `generate.py` — tabs, metric cards, issue panels, worker launch, table styles, Review tab, Regex Watch tab, Metrics tab |
+| [`generate-ui.md`](agents/generate-ui.md) | `generate.py` — tabs, metric cards, issue panels, worker launch, table styles, Regex Watch tab, Metrics tab |
+| [`ui-theme.md`](agents/ui-theme.md) | `ui_theme.py` — every colour, font, spacing value, tab name, emoji icon, empty state and style builder |
+| [`review-tab.md`](agents/review-tab.md) | the Review tab, its count badge, the flagged-id set, and any code that identifies a tab by its label |
 | [`config-editor.md`](agents/config-editor.md) | `config_editor.py` — editor fields, label wrapping, spinbox styling, panel pitfalls |
 | [`dashboard.md`](agents/dashboard.md) | `dashboard.py` — metric cards, issue panels, issue-graph series |
 | [`vllm-metrics.md`](agents/vllm-metrics.md) | `vllm_metrics.py` — the 📊 Metrics tab, per-endpoint vLLM speeds and load, per-slot token accounting |

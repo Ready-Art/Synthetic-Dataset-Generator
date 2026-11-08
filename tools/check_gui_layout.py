@@ -167,8 +167,11 @@ def settle(root):
 
 
 def select_tab(notebook, text):
+    # Match on the BASE label: a tab may carry a count badge such as "Review (5)"
+    # (v14.2.1), which must not stop the harness from finding it.
+    import ui_theme
     for tab in notebook.tabs():
-        if notebook.tab(tab, "text") == text:
+        if ui_theme.tab_base_name(notebook.tab(tab, "text")) == text:
             notebook.select(tab)
             return notebook.nametowidget(tab)
     raise RuntimeError(f"Missing expected tab: {text}")

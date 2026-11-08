@@ -72,6 +72,8 @@ readyart-dataset-generator/
 │   └── agents/              # Developer docs TOPIC FILES (read the one for your area)
 │       ├── task-index.md    # "how do I add X?" -> files to edit
 │       ├── generate-ui.md   # generate.py (tabs, worker launch, table styles)
+│       ├── ui-theme.md     # ui_theme.py (colours, fonts, spacing, tab names, emoji, empty states)
+│       ├── review-tab.md   # the Review tab, its count badge and the flagged-id set
 │       ├── cli.md          # cli.py / control.py / run_config.py (headless control)
 │       ├── config-editor.md # config_editor.py (editor fields, layout, readability)
 │       ├── dashboard.md     # dashboard.py (metric cards, panels, issue graph)

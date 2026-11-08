@@ -292,6 +292,15 @@ def load_generation_state():
                 app_state.quality_scores = state_data.get('quality_scores', {})
                 app_state.quality_dropped = state_data.get('quality_dropped', {})
                 app_state.dropped_task_ids = set(app_state.quality_dropped)
+                # v14.2.1: restore the Review flags. A state file written before this
+                # key existed has no flags, so derive them from the restored scores --
+                # otherwise a resumed run shows every score but an empty Review tab.
+                with app_state.quality_review_lock:
+                    if 'quality_review_ids' in state_data:
+                        app_state.quality_review_ids = set(state_data.get('quality_review_ids') or [])
+                    else:
+                        app_state.quality_review_ids = generation._derive_review_ids(
+                            app_state.quality_scores, app_state.quality_dropped)
                 app_state.character_counter = state_data.get('character_counter', 0)
                 app_state.question_history = state_data.get('question_history', [])
                 
@@ -608,17 +617,24 @@ def update_database_status():
     threading.Thread(target=_check, daemon=True).start()
 
 def _active_dashboard_tab_text():
-    """Text label of the currently selected dashboard tab ('' if unavailable).
+    """BASE name of the currently selected dashboard tab ('' if unavailable).
 
     Used to skip expensive per-tick refreshes (Treeview rebuilds, matplotlib
     redraws) for tabs the user isn't looking at. Those refreshes each allocate
     X server resources (pixmaps / GCs); run continuously for hours across every
     tab at once they eventually exhaust the X server, which drops the connection
-    (``XIO: fatal IO error`` / errno 0)."""
+    (``XIO: fatal IO error`` / errno 0).
+
+    Returns the label with any count badge stripped (``ui_theme.tab_base_name``), so a
+    badged tab still matches its ``ui_theme.TAB_*`` constant. The Review tab's label
+    becomes ``"Review (5)"`` as soon as anything is flagged; comparing the raw label
+    meant every gated refresher silently decided the Review tab was not on screen, so
+    the table stayed empty while the badge counted (v14.2.1).
+    """
     try:
         nb = app_state.dashboard_notebook
         selected = nb.select()
-        return nb.tab(selected, "text") if selected else ""
+        return ui_theme.tab_base_name(nb.tab(selected, "text")) if selected else ""
     except Exception:
         return ""
 
@@ -1184,16 +1200,17 @@ def update_quality_display():
     with app_state.quality_review_lock:
         review_count = len(app_state.quality_review_ids)
 
-    # Find the review tab widget by its text (since we don't store the widget ref)
+    # Find the review tab widget by its BASE label: the tab's label carries the badge
+    # this function writes, so comparing it to the bare constant stopped matching as
+    # soon as anything was flagged and the badge froze at its last value (v14.2.1).
     review_tab_widget = None
     for tab_id in app_state.dashboard_notebook.tabs():
-        if app_state.dashboard_notebook.tab(tab_id, "text") == ui_theme.TAB_REVIEW:
+        if ui_theme.tab_base_name(app_state.dashboard_notebook.tab(tab_id, "text")) == ui_theme.TAB_REVIEW:
             review_tab_widget = tab_id
             break
 
     if review_tab_widget:
-        label = (f"{ui_theme.TAB_REVIEW} ({review_count})" if review_count > 0
-                 else ui_theme.TAB_REVIEW)
+        label = ui_theme.tab_badge(ui_theme.TAB_REVIEW, review_count)
         if app_state.dashboard_notebook.tab(review_tab_widget, "text") != label:
             app_state.dashboard_notebook.tab(review_tab_widget, text=label)
             dashboard_navigator.refresh()
@@ -3304,7 +3321,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v14.2.0",
+    text="v14.2.1",
     font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY),
     foreground=ui_theme.TEXT_SUBTLE
 )
@@ -4607,7 +4624,8 @@ for _position, _tab_label in enumerate((
         ui_theme.TAB_REVIEW, ui_theme.TAB_REGEX_WATCH, ui_theme.TAB_METRICS,
         ui_theme.TAB_PROMPTS, ui_theme.TAB_QUEUE)):
     for _tab_id in app_state.dashboard_notebook.tabs():
-        if app_state.dashboard_notebook.tab(_tab_id, "text") == _tab_label:
+        # Match on the BASE label: a tab may already carry a count badge (v14.2.1).
+        if ui_theme.tab_base_name(app_state.dashboard_notebook.tab(_tab_id, "text")) == _tab_label:
             app_state.dashboard_notebook.insert(_position, _tab_id)
             break
 

@@ -684,3 +684,39 @@ TAB_APIS = 'APIs'
 def api_tab_name(slot_index):
     """Tab label for a 1-based API slot, e.g. api_tab_name(0) -> 'API 1'."""
     return f'API {slot_index + 1}'
+
+
+# --- Tab badges -----------------------------------------------------------
+# A tab's LABEL is mutable: the Review tab appends a live count, so its label is
+# "Review" at zero and "Review (5)" once five conversations are flagged. Anything that
+# identifies a tab by comparing its label to a TAB_* constant therefore stops matching
+# the moment a badge appears -- which is exactly how the Review table went blank while
+# the badge still counted (v14.2.1). The badge format is defined ONCE here, and
+# every label comparison goes through ``tab_base_name()``.
+TAB_BADGE_TEMPLATE = '{name} ({count})'
+
+
+def tab_badge(name, count):
+    """The tab label for ``name`` carrying a count badge, or the plain name at zero.
+
+    ``count`` of 0 (or None) returns the bare name, so a cleared badge restores the
+    exact label the tab was created with.
+    """
+    if not count:
+        return name
+    return TAB_BADGE_TEMPLATE.format(name=name, count=count)
+
+
+def tab_base_name(label):
+    """Strip a trailing `` (n)`` badge from a tab label.
+
+    The inverse of ``tab_badge()``. Used wherever a tab is identified by its label, so a
+    badged tab still matches its TAB_* constant. Only a trailing parenthesised integer is
+    removed, so a tab whose real name contains brackets is left alone.
+    """
+    if not label:
+        return label
+    head, sep, tail = label.rpartition(' (')
+    if sep and tail.endswith(')') and tail[:-1].strip().isdigit():
+        return head
+    return label

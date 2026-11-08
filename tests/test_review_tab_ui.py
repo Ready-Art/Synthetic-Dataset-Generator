@@ -221,6 +221,94 @@ class ReviewTabTests(unittest.TestCase):
             self.assertEqual(row["conversations"], TRANSCRIPT,
                              "the exported conversation must be unmodified")
 
+    # --- v14.2.1: the count badge must not hide the list --------------------------------
+
+    def test_05a_badge_does_not_hide_the_list(self):
+        """The Review tab's own count badge must not gate its table off.
+
+        The tab label becomes ``"Review (5)"`` once anything is flagged. Every per-tick
+        refresher is gated on the ACTIVE tab matching a ``TAB_*`` constant, and that
+        comparison used the raw label, so as soon as the badge appeared the Review table
+        decided it was not on screen and stopped rebuilding -- the tab showed a count and
+        an empty list, while Export (which reads the id set directly instead of the
+        table) still wrote every row. This pins the whole sequence: refresh, badge, tick.
+        """
+        g = self.g
+        widgets = self.widgets()
+        tree = widgets["review_tree"]
+
+        # 1. A refresh with no badge lists the flagged rows.
+        g.update_quality_display()
+        self.settle()
+        g._update_review_table(force=True)
+        self.settle()
+        self.assertEqual(len(tree.get_children()), 2)
+
+        # 2. The badge is now applied to the tab label.
+        tab_id = self.notebook.select()
+        self.assertEqual(self.notebook.tab(tab_id, "text"), "Review (2)",
+                         "the tab label must carry the flagged count")
+
+        # 3. A plain refresh tick (no force) must still see the tab as active and keep
+        #    the rows. Before v14.2.1 this rebuilt nothing and the table stayed empty.
+        for item in tree.get_children():
+            tree.delete(item)
+        widgets.pop("review_signature", None)
+        g._update_review_table()
+        self.settle()
+        self.assertEqual(len(tree.get_children()), 2,
+                         "a badged Review tab must still list its flagged conversations")
+        self.assertIn("2 flagged", widgets["review_count_label"].cget("text"))
+
+    def test_05b_active_tab_helper_strips_the_badge(self):
+        """``_active_dashboard_tab_text()`` must return the BASE label."""
+        g = self.g
+        g.update_quality_display()
+        self.settle()
+        self.assertEqual(g._active_dashboard_tab_text(), ui_theme.TAB_REVIEW,
+                         "the gated refreshers compare against the bare tab name")
+        # The same helper exists in dashboard.py for the issue panels / graph.
+        import dashboard
+        self.assertEqual(dashboard._active_dashboard_tab_text(), ui_theme.TAB_REVIEW)
+
+    def test_05c_tab_badge_helpers_round_trip(self):
+        """``tab_badge()`` and ``tab_base_name()`` are inverses, and zero means no badge."""
+        self.assertEqual(ui_theme.tab_badge(ui_theme.TAB_REVIEW, 0), "Review")
+        self.assertEqual(ui_theme.tab_badge(ui_theme.TAB_REVIEW, None), "Review")
+        self.assertEqual(ui_theme.tab_badge(ui_theme.TAB_REVIEW, 7), "Review (7)")
+        self.assertEqual(ui_theme.tab_base_name("Review (7)"), "Review")
+        self.assertEqual(ui_theme.tab_base_name("Review"), "Review")
+        self.assertEqual(ui_theme.tab_base_name(""), "")
+        # A tab whose real name ends in brackets that are NOT a count is left alone.
+        self.assertEqual(ui_theme.tab_base_name("Metrics (vLLM)"), "Metrics (vLLM)")
+        self.assertEqual(ui_theme.tab_base_name("Queue (beta) (3)"), "Queue (beta)")
+
+    def test_05d_review_flags_survive_a_state_round_trip(self):
+        """The flags must be persisted, or a resumed run shows an empty Review tab.
+
+        ``quality_scores`` was saved but ``quality_review_ids`` was not, so a resume
+        restored every score while the Review list came back empty -- the flagged rows
+        were still in the dataset and still below the threshold, and Export (which reads
+        the id set) found nothing to write.
+        """
+        g = self.g
+        with self.app_state.quality_review_lock:
+            before = set(self.app_state.quality_review_ids)
+        self.assertTrue(before, "the fixture must have flags to round-trip")
+
+        state = g.generation._build_generation_state_data()
+        self.assertIn("quality_review_ids", state,
+                      "the state document must carry the review flags")
+        self.assertEqual(set(state["quality_review_ids"]), before)
+
+        # A state file written BEFORE the key existed must still restore the flags,
+        # derived from the scores it does carry.
+        legacy = {k: v for k, v in state.items() if k != "quality_review_ids"}
+        derived = g.generation._derive_review_ids(
+            legacy["quality_scores"], legacy["quality_dropped"])
+        self.assertEqual(derived, before,
+                         "a pre-v14.2.1 state file must derive the same flags")
+
     def test_05_filter_narrows_the_list(self):
         g = self.g
         widgets = self.widgets()
