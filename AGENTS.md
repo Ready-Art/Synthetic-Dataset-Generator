@@ -65,7 +65,9 @@ If you are editing the control layer rather than using it, the topic file is
 | [`docs/agents/task-index.md`](docs/agents/task-index.md) | you know WHAT you want to change and need the list of files to edit. |
 | [`docs/agents/config.md`](docs/agents/config.md) | you are changing `config/config.yml`, `config/api_profiles.yml` or the dependency pins. |
 | [`docs/agents/core-modules.md`](docs/agents/core-modules.md) | you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py` or `style_metrics.py`. |
-| [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, table styles, the Review tab or the Regex Watch tab — **or changing any colour, font, spacing value, tab name, emoji icon or empty state, all of which live in `ui_theme.py`**. |
+| [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, table styles or the Regex Watch tab. |
+| [`docs/agents/ui-theme.md`](docs/agents/ui-theme.md) | you are changing any colour, font, spacing value, tab name, emoji icon, empty state or widget style — **all of which live in `ui_theme.py`**. |
+| [`docs/agents/review-tab.md`](docs/agents/review-tab.md) | you are touching the Review tab, its count badge, the flagged-id set, or any code that identifies a tab by its label. |
 | [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the editor, or fixing editor layout/readability. |
 | [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
 | [`docs/agents/vllm-metrics.md`](docs/agents/vllm-metrics.md) | you are touching `vllm_metrics.py`, the 📊 Metrics tab, the per-endpoint vLLM graph, or the per-slot token accounting that feeds it. |

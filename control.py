@@ -968,6 +968,14 @@ class HeadlessController:
             app_state.quality_scores = state.get('quality_scores', {})
             app_state.quality_dropped = state.get('quality_dropped', {})
             app_state.dropped_task_ids = set(app_state.quality_dropped)
+        # v14.2.1: restore the Review flags, or derive them from the restored scores
+        # for a state file written before the key existed (see generate.py).
+        with app_state.quality_review_lock:
+            if 'quality_review_ids' in state:
+                app_state.quality_review_ids = set(state.get('quality_review_ids') or [])
+            else:
+                app_state.quality_review_ids = generation._derive_review_ids(
+                    app_state.quality_scores, app_state.quality_dropped)
         app_state.total_attempts_global = state.get('total_attempts_global', 0)
         app_state.refusal_count_total = state.get('refusal_count_total', 0)
         app_state.user_speaking_count_total = state.get('user_speaking_count_total', 0)
@@ -1638,4 +1646,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "14.2.0"
+GENERATOR_VERSION = "14.2.1"

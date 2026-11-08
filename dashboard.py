@@ -58,18 +58,22 @@ def _selected_api_slot():
 
 
 def _active_dashboard_tab_text():
-    """Text label of the currently selected dashboard tab ('' if unavailable).
+    """BASE name of the currently selected dashboard tab ('' if unavailable).
 
     Per-tick Treeview rebuilds and matplotlib redraws each allocate X server
     resources (pixmaps / GCs). Done for every tab at once, continuously, over a
     multi-hour run they exhaust the X server and the connection is dropped
     (``XIO: fatal IO error`` / errno 0). Refreshing only the visible tab keeps
     that churn bounded.
+
+    The label is returned with any count badge stripped (``ui_theme.tab_base_name``) so
+    a badged tab still matches its ``ui_theme.TAB_*`` constant -- see the same helper
+    in ``generate.py`` (v14.2.1).
     """
     try:
         nb = app_state.dashboard_notebook
         selected = nb.select()
-        return nb.tab(selected, "text") if selected else ""
+        return ui_theme.tab_base_name(nb.tab(selected, "text")) if selected else ""
     except Exception:
         return ""
 

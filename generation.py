@@ -590,6 +590,17 @@ _state_save_thread = None
 _state_save_thread_lock = threading.Lock()
 
 
+def _review_ids_snapshot():
+    """Sorted copy of the flagged-for-review ids, taken under the review lock.
+
+    ``quality_review_ids`` is written by judge threads, so it must never be iterated
+    without ``app_state.quality_review_lock`` -- a set mutated mid-iteration raises
+    ``RuntimeError: Set changed size during iteration``, which would abort the state save.
+    """
+    with app_state.quality_review_lock:
+        return sorted(app_state.quality_review_ids)
+
+
 def _build_generation_state_data():
     """Assemble the state document. Caller holds ``app_state.state_file_lock``."""
     state_data = {
@@ -635,6 +646,12 @@ def _build_generation_state_data():
             # v11.4: judge drops persist so a resumed run does not retry (or re-flag) a
             # conversation the judge already rejected.
             'quality_dropped': dict(app_state.quality_dropped),
+            # v14.2.1: the Review flags persist too. They used to be rebuilt only in
+            # memory, so a resumed run restored every score but left the Review tab
+            # empty -- the flagged rows were still in the dataset and still below the
+            # threshold, yet nothing listed them. Snapshot under the review lock: a set
+            # mutated by a judge thread mid-iteration raises RuntimeError.
+            'quality_review_ids': _review_ids_snapshot(),
         }
     # If in master duplication mode and task queue has per-API progress, save it
     # Also save overall progress if not in duplication mode
@@ -6877,6 +6894,23 @@ def _quality_dropped(quality_result):
     review: the judge's job is to keep unjudged/rejected conversations out of the dataset.
     """
     return bool(isinstance(quality_result, dict) and quality_result.get("dropped"))
+
+
+def _derive_review_ids(scores, dropped):
+    """The review flags implied by a set of stored scores (v14.2.1).
+
+    Used when loading a state file written before ``quality_review_ids`` was persisted:
+    the flags were only ever held in memory, so a resumed run restored every score but
+    listed nothing on the Review tab. The rule is the one the scoring path applies --
+    below ``quality.min_score_threshold`` and not dropped -- so the derived set matches
+    what a fresh run would have flagged.
+    """
+    threshold = global_config.get('quality.min_score_threshold', 50)
+    dropped = dropped or {}
+    return {task_id for task_id, score in (scores or {}).items()
+            if task_id not in dropped
+            and isinstance(score, dict)
+            and score.get('composite', 0) < threshold}
 
 
 def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_FILE_PATH is used
