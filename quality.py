@@ -183,6 +183,11 @@ DROP_REASON_JUDGE_FAILED = "judge_failed"
 # the judge's drop reasons so the dashboard, the log and a resumed run agree that the row is
 # gone on purpose, but nothing in the scoring path ever produces it.
 DROP_REASON_MANUAL = "manual"
+# v14.3: a scene-continuity violation survived every fix round, so the row contradicts its own
+# cast (an exited/absent character still speaks or acts). Produced by the WORKER, not by the
+# judge: it is an objective fact about the text, so it never costs a judge call. Recorded with the
+# judge's reasons so the dashboard, the log and a resumed run all agree the row is gone on purpose.
+DROP_REASON_SCENE_CONTINUITY = "scene_continuity"
 
 
 def judge_max_attempts(config=None):

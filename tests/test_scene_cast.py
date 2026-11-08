@@ -829,6 +829,117 @@ def test_v142_regressions():
           or ("PRESENT: " + leaver["name"] + ",") in man_note, man_note)
 
 
+def test_v143_regressions():
+    print("\nv14.3 regressions (the arrival slot is not a violation, objects are not actors)")
+
+    # --- 1. A character mid-transition is NOT blocked on the reply that narrates the beat ---
+    # The defect: _cast_slot_transitions reports the ARRIVING member for its enter_slot while the
+    # state is still 'absent' (it only flips after the reply comes back), so the plain
+    # 'absent'/'exited' test put the SAME name in blocked AND expected. The note said
+    # "Dani ARRIVES in this reply" and the continuity check then flagged the model for writing it,
+    # so every arrival reply was regenerated to exhaustion -- the "scene continuity violation, fixes
+    # exhausted" flood in the operator's log.
+    cfg = {"enabled": True, "shape": "minimal", "min_present": 1,
+           "join_slot": 3, "exit_slot": 4, "exit_detection": "evidence"}
+    plan = g._build_scene_cast_plan(["Presley", "Dani"], 5, cfg)
+    joiner = next((m for m in plan["members"] if m["enter_slot"] > 0), None)
+    check("the fixture plan schedules an arrival", joiner is not None, plan)
+    state = g._cast_state_from_plan(plan)
+    blocked, expected, _present = g._cast_names_for_slot(plan, state, joiner["enter_slot"])
+    check("the arrival slot EXPECTS the newcomer", joiner["name"] in expected, expected)
+    check("the arrival slot does NOT block the newcomer",
+          joiner["name"] not in blocked, blocked)
+    check("no name is both blocked and expected on the same slot",
+          not (set(blocked) & set(expected)), (blocked, expected))
+
+    # Writing the entrance the note asked for must therefore PASS the check.
+    violation, findings = detection.check_scene_continuity(
+        "%s steps through the door and looks around the room." % joiner["name"],
+        list(blocked), list(expected))
+    check("writing the directed entrance is not a violation", violation is False, findings)
+
+    # The newcomer is still blocked on the replies BEFORE its arrival.
+    early_blocked = g._cast_names_for_slot(plan, state, 1)[0]
+    check("the newcomer is still blocked before its arrival slot",
+          joiner["name"] in early_blocked, early_blocked)
+
+    # An EXITING character stays writable on the reply that narrates the exit.
+    leaver = next((m for m in plan["members"] if m["exit_slot"] is not None), None)
+    check("the fixture plan schedules a departure", leaver is not None, plan)
+    if leaver is not None:
+        blocked, expected, _present = g._cast_names_for_slot(
+            plan, state, leaver["exit_slot"])
+        check("the departure slot EXPECTS the leaver", leaver["name"] in expected, expected)
+        check("the departure slot does NOT block the leaver",
+              leaver["name"] not in blocked, blocked)
+        violation, findings = detection.check_scene_continuity(
+            "%s said goodbye and left." % leaver["name"], list(blocked), list(expected))
+        check("writing the directed exit is not a violation", violation is False, findings)
+
+    # --- 2. A name that is the OBJECT of a preposition is not the actor ---
+    # "She looks at Dani and smiles" put Dani after the verb, in the preposition's phrase, so the
+    # next action verb in the sentence belongs to the subject. The detector used to blame Dani.
+    object_cases = [
+        "She looks at Dani and smiles.",
+        "Presley glances over at Dani and laughs.",
+        "Presley turned to Dani and smiled.",
+        "Cole nodded at Melody.",
+        "He set the glass down beside Dani and sighed.",
+    ]
+    bad = []
+    for text in object_cases:
+        name = "Dani" if "Dani" in text else "Melody"
+        violation, findings = detection.check_scene_continuity(text, [name])
+        if violation:
+            bad.append((text, findings))
+    check("a name in a preposition's phrase is not blamed for the action", not bad, bad)
+
+    # The subject of the same sentence is still caught.
+    subject_cases = [
+        "Dani nods slowly.",
+        "Dani walked away.",
+        "Dani steps through the door and looks around the room.",
+        "Melody nodded slowly.",
+    ]
+    missed = []
+    for text in subject_cases:
+        name = "Dani" if "Dani" in text else "Melody"
+        violation, _findings = detection.check_scene_continuity(text, [name])
+        if not violation:
+            missed.append(text)
+    check("a name that IS the actor is still caught", not missed, missed)
+
+    # --- 3. An unfixable continuity miss DROPS the row ---
+    # Every other check keeps its best-effort text on exhaustion; a cast contradiction cannot be
+    # kept, because the row would be a transcript in which a character who left is still talking.
+    check("quality carries a scene-continuity drop reason",
+          getattr(g.quality, "DROP_REASON_SCENE_CONTINUITY", None) == "scene_continuity",
+          getattr(g.quality, "DROP_REASON_SCENE_CONTINUITY", None))
+    check("the drop reason is distinct from the judge's reasons",
+          g.quality.DROP_REASON_SCENE_CONTINUITY not in
+          (g.quality.DROP_REASON_INVALID_JSON, g.quality.DROP_REASON_LOGIC_ZERO,
+           g.quality.DROP_REASON_JUDGE_FAILED, g.quality.DROP_REASON_MANUAL))
+
+    # The retry helper reports the flag as its 4th element, and only when a violation
+    # survived every fix round.
+    import inspect
+    source = inspect.getsource(g.generate_answer_with_retries)
+    check("generate_answer_with_retries returns a 4-tuple",
+          "cast_violation_this_task)" in source.replace(" ", ""),
+          "return statements do not carry the flag")
+    check("an exhausted continuity violation sets the drop flag",
+          "cast_violation_this_task = True" in source)
+    check("the exhausted branch no longer says it keeps the answer",
+          "fixes exhausted for attempt {attempt+1}. Keeping the best-effort answer." not in source)
+
+    worker_source = inspect.getsource(g.worker)
+    check("the worker drops a task whose cast violation survived",
+          "if cast_violation_this_task:" in worker_source)
+    check("the drop is recorded so a resumed run does not retry it",
+          "app_state.quality_dropped[task_id] = quality.DROP_REASON_SCENE_CONTINUITY"
+          in worker_source)
+
+
 def main():
     print("Scene Cast / Scene Continuity (v12.0) - headless checks")
     test_feasibility()
@@ -842,6 +953,7 @@ def main():
     test_transition_evidence()
     test_slot_overrides()
     test_v142_regressions()
+    test_v143_regressions()
     test_default_config_inert()
     test_cache_warning()
     if FAILURES:

@@ -80,7 +80,16 @@ In `generate_answer_with_retries()` AFTER the OOC branch and BEFORE Regex Watch 
 (it is a character-level wrongness like OOC, while those two are shape passes that must run on text about to be
 kept). Kwargs `scene_continuity_enabled_local` / `scene_continuity_fixes_local` /
 `scene_continuity_max_rounds` / `cast_blocked_names_local` / `cast_expected_names_local`. On exhaustion the
-best-effort answer is KEPT, never dropped.
+**conversation is DROPPED** (v14.3), not kept. This is the ONE branch here that does not keep its
+best-effort text, and the asymmetry is deliberate: a slop phrase or a repeated opener is a STYLE miss, so
+losing the row would be the bigger loss, while a continuity miss is a CAST CONTRADICTION — the text has a
+character who has left the scene still speaking or acting, so writing it puts a row in the dataset that argues
+with itself. The verdict travels back as the **4th element** of `generate_answer_with_retries()`'s result
+(`(answer, issue, refusal, cast_violation)`); `worker()` reads it BEFORE the truthy-`answer_result[0]` guard,
+because an exhausted turn returns `answer=None` WITH the flag set — a check nested inside that branch never
+fires and the task silently falls through to the "incomplete" requeue path instead of being dropped. The drop is
+recorded as `quality.DROP_REASON_SCENE_CONTINUITY` in `app_state.quality_dropped` (so a resumed run does not
+retry it) and still credited for progress. Guarded by `tests/test_scene_continuity_drop.py`.
 
 ### Repeated-opener guard (v12.5)
 `detection.is_repeated_opener()` plus the branch in `generate_answer_with_retries()` AFTER Regex Watch and
