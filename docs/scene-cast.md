@@ -12,7 +12,8 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 # Scene Cast — Characters That Join and Leave
 
-**Version:** v12.0, transition detection and slot placement revised in v14.1
+**Version:** v12.0, transition detection and slot placement revised in v14.1, scheduling and note
+correctness revised in v14.2
 **Applies to:** multi-character scenes (2 or more characters selected)
 **Default state:** OFF
 
@@ -272,6 +273,35 @@ There is **no "reply 3 of 5" counter** in it. The note depends only on the prese
 this reply's transitions — never on the slot index. Two replies with no transition produce **byte-identical**
 notes.
 
+### The note is not the same for both sides (v14.2)
+
+The **assistant** is being asked to *narrate* this reply's beat, so a character mid-arrival is listed as
+arriving and the directive below puts her in the room:
+
+```
+SCENE CAST:
+PRESENT: Melody.
+ARRIVING IN THIS REPLY: Ines.
+Ines ARRIVES in this reply. Bring Ines into the scene with a natural entrance -- ...
+```
+
+An `ARRIVING` character is **never** also listed under `NOT IN THE SCENE` in the same note. The two lines
+used to appear together, and a model handed a contradiction resolves it by doing neither.
+
+The **simulated user** gets a presence-only note with no directive (see `transitions=False` below), and for
+him a character mid-arrival has **not arrived yet** — the reply that was meant to walk her in did not do it,
+so she is still outside. She is therefore listed under `NOT IN THE SCENE`, and his note adds one line:
+
+```
+Do not speak to them, call out to them, summon them or wait for an answer from them -- they cannot
+hear you and they are not in this room.
+```
+
+Without that, a first-person narrator reads `PRESENT: Teresa` and writes *"Come here, Teresa"* one reply
+before she is written entering the room — and the next reply then narrates her walking in from outside, as
+if she had heard him through the wall. An `exiting` character stays `PRESENT` for both readers: the exit has
+not been narrated yet, so she is still here.
+
 On a transition reply, one directive is appended:
 
 ```
@@ -474,7 +504,7 @@ Schedule: `Melody:enter 0 exit -; Cole:enter 0 exit 4; Ines:enter 5 exit -`
 | 2 | Melody, Cole | `NOT IN THE SCENE: Ines` | normal scene |
 | 3 | Melody, Cole | `NOT IN THE SCENE: Ines` | normal scene |
 | 4 | Melody, Cole | `Cole LEAVES...` | Cole says goodbye and goes |
-| 5 | Melody, Ines | `Ines ARRIVES...` | Ines comes in; Cole is gone |
+| 5 | Melody, Ines | `ARRIVING IN THIS REPLY: Ines` + `Ines ARRIVES...` | Ines comes in; Cole is gone |
 | 6 | Melody, Ines | `NOT IN THE SCENE: Cole` | Ines is here; Cole is not |
 
 If the model writes reply 4 with no exit:
@@ -515,6 +545,9 @@ character and there are none to spare. Use 3+ characters, or set `min_present: 1
 |---|---|---|
 | Nothing happens, no `cast_schedule` in metadata | Feature off, fewer than 2 characters, or an infeasible scene | Check the log for the `Scene cast enabled but...` warning; the panel now states the character count you need |
 | Characters never leave, even with a long conversation | Pre-v14.1: exits were cancelled because the reply used a pronoun | Fixed in v14.1 by `exit_detection: evidence`. Check `cast_events` for `exit_cancelled` |
+| Characters never leave in a **2-character** scene, whatever `exit_slot` says | Pre-v14.2: the leave budget was computed against the *leavable* set (`len(leavable) - 1`), which is 0 when only one character can leave, so the exit was never scheduled at all | Fixed in v14.2: the budget is `spare` (`cast_size - min_present`). Check the `Scene cast plan ...` DEBUG line for `exit=<slot>` |
+| A newcomer is introduced twice, or arrives with no prompt to do so | Pre-v14.2: the transition scan skipped every non-`present` state, so the `ARRIVES` directive was never emitted on the slot it was scheduled for | Fixed in v14.2. Check the `Scene cast plan ...` DEBUG line and the note's `ARRIVING IN THIS REPLY` line |
+| The user calls a character over, and the next reply has her walking in from outside | Pre-v14.2: the man's presence-only note listed a not-yet-arrived character as `PRESENT` | Fixed in v14.2: she is `NOT IN THE SCENE` for him, and his note forbids summoning her |
 | A character leaves who is still in the room | `exit_detection: name` (a bare mention counted) or `always` | Set `exit_detection: evidence` |
 | The departure lands too late to have an aftermath | The automatic anchor, in a short conversation | Set `exit_slot` explicitly (e.g. `3` for a 4-reply scene) |
 | `WARNING ... no join or leave is possible in this scene` | `min_present` leaves no spare character | Add a character, or lower `min_present` |
