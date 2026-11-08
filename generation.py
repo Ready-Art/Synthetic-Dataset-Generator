@@ -19,7 +19,6 @@ so this module never imports generate.py: the dependency is one-way (generate.py
 import hashlib
 import json
 import random
-import requests
 import threading
 import time
 import tkinter as tk
@@ -42,7 +41,15 @@ from api_handler import (
     RateLimiter, global_rate_limiter, get_cached_response, set_cached_response,
     api_response_times_per_slot, api_response_times_lock, MAX_RESPONSE_TIMES_TO_TRACK,
     apply_thinking_mode, SLOP_FIXER_THINKING_KEY, ANTI_SLOP_FIXER_THINKING_KEY,
+    http,
 )
+
+# v14.2.0: every request in this module goes through ONE shared, pooled session instead of
+# a throwaway connection per call. The name stays ``requests`` so the ~100 call sites and
+# the test suite's ``generation.requests.post = stub`` patches are unchanged, and the facade
+# is the same object ``quality`` and ``vllm_metrics`` bind, so a patch still reaches all of
+# them. See the connection-reuse note in api_handler.py.
+requests = http
 from app_state import (
     API_CIRCUIT_BREAKER, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES,
     STATE_FILE_PATH, anti_slop_counts_per_api, api_circuit_breaker_lock, estimated_cost,

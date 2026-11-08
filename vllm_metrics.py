@@ -64,6 +64,13 @@ from urllib.parse import urlsplit
 
 import requests
 
+from api_handler import http
+
+# v14.2.0: the /metrics poller shares the pooled session too. It runs every 2 s against
+# every endpoint, so it was a steady drip of fresh connections on top of the workers'.
+# The name stays ``requests`` for the call site and for the tests that stub it.
+requests = http
+
 # --- tuning ------------------------------------------------------------------
 # v13.5.0: 2 s, down from 10 s.  At 10 s the tab was visibly stale and the graphs were
 # coarse: a 40-thread run finishes several requests between two polls, so a burst of bans
