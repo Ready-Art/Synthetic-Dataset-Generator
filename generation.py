@@ -1103,7 +1103,17 @@ def _build_scene_cast_plan(names, total_slots, config):
     # LAST of those leaves first, so the opening cast erodes from the back instead of the front.
     if can_leave and max_leaves > 0:
         leavable = [m for m in members if m["enter_slot"] == 0]
-        leave_count = min(max_leaves, spare, max(0, len(leavable) - 1))
+        # The budget is `spare`, NOT `len(leavable) - 1`. The old `- 1` was meant to keep at least one
+        # character in the scene, but it counted the LEAVABLE set rather than the PRESENT set, and a
+        # scheduled joiner is not in `leavable` at all. So in the common 2-character scene
+        # (min_present 1, spare 1) the single leavable character was `len(leavable) - 1 == 0`, and the
+        # departure was silently dropped: `exit_slot` was configured, honoured by the clamp, and then never
+        # scheduled. That is why a character never left on the slot the config asked for.
+        #
+        # `spare` is the correct budget: `spare = cast_size - min_present`, and every transition in
+        # flight costs exactly one present character, so leaving `spare` of them keeps min_present present.
+        # The block below that pushes an exit past a pending arrival keeps the two from overlapping.
+        leave_count = min(max_leaves, spare)
         leavers = list(reversed(leavable))[:leave_count]
         if leavers:
             slot = leave_slot
@@ -1180,11 +1190,18 @@ def _cast_slot_transitions(plan, state, slot_no):
         if current == CAST_STATE_ARRIVING:
             arriving.append(member)
             continue
-        if current != CAST_STATE_PRESENT:
-            continue  # absent/exited: nothing to narrate this slot
-        if member.get("exit_slot") == slot_no:
+        if current == CAST_STATE_EXITED:
+            continue  # gone for good: nothing to narrate
+        # v14.2: 'absent' is a LIVE state, not a skip. A character scheduled to arrive on THIS slot is
+        # still 'absent' when the note for that slot is built (the state only flips to 'arriving' when
+        # _advance_cast_state runs, AFTER the reply comes back). The old `current != PRESENT: continue`
+        # therefore skipped exactly the slot the ARRIVES directive was meant for, so the directive was
+        # NEVER emitted: the model was told who was not in the room and never told to bring them in.
+        # That is why newcomers appeared late and unprompted, and why the man called them over first --
+        # nothing in the prompt had put them in the doorway.
+        if member.get("exit_slot") == slot_no and current == CAST_STATE_PRESENT:
             exiting.append(member)
-        elif member.get("enter_slot") == slot_no:
+        elif member.get("enter_slot") == slot_no and current == CAST_STATE_ABSENT:
             arriving.append(member)
     return arriving, exiting
 
@@ -1385,11 +1402,36 @@ def _cast_presence_note(plan, state, slot_no, config=None, transitions=True):
     total_slots = int(config.get("total_slots") or 0)
     arriving, exiting = _cast_slot_transitions(plan, state, slot_no)
 
+    # v14.2: WHICH states count as "here" depends on who is reading the note.
+    #
+    #   * The ASSISTANT (transitions=True) is being told to NARRATE this slot's beat, so an
+    #     'arriving' character is present -- the ARRIVES directive below is what puts them in the
+    #     room, and listing them as absent would contradict it and suppress the entrance.
+    #   * The MAN (transitions=False) is writing his own line and is never told to narrate a beat.
+    #     For him an 'arriving' character has NOT ARRIVED YET: the reply that was supposed to show
+    #     her walking in did not do it (the arrival was deferred), so she is still outside. Listing
+    #     her as PRESENT made him address someone the transcript has not put in the room --
+    #     "Come here, Teresa" -- and the next reply then narrated her walking in from outside, as if
+    #     she had heard him through the wall. That is the incoherence this branch removes.
+    #
+    # 'exiting' stays PRESENT for both: the exit has not been narrated yet, so she is still here.
+    not_here_states = CAST_BLOCKED_STATES if transitions else CAST_BLOCKED_STATES + (CAST_STATE_ARRIVING,)
+    # A character whose ARRIVES directive is being issued this slot is listed as ARRIVING, never as
+    # NOT IN THE SCENE. The two lines would otherwise contradict each other in the same note
+    # ("NOT IN THE SCENE: Teresa." followed by "Teresa ARRIVES in this reply."), and the model resolves
+    # that contradiction by doing neither -- which is the other half of why entrances went missing.
+    # Only the ASSISTANT gets the ARRIVING line, because only the assistant is being asked to narrate
+    # the entrance. For the man the newcomer is simply not here yet, so she belongs in NOT IN THE SCENE
+    # with the rest -- which is what stops him calling her over before she has walked in.
+    arriving_names = {m["name"] for m in arriving} if transitions else set()
     present = []
     absent = []
+    incoming = []
     for member in members:
         current = state.get(member.get("number"), CAST_STATE_PRESENT)
-        if current in CAST_BLOCKED_STATES:
+        if member["name"] in arriving_names:
+            incoming.append(member["name"])
+        elif current in not_here_states:
             absent.append(member["name"])
         else:
             present.append(member["name"])
@@ -1401,11 +1443,22 @@ def _cast_presence_note(plan, state, slot_no, config=None, transitions=True):
     lines = ["SCENE CAST:"]
     if present:
         lines.append("PRESENT: " + ", ".join(present) + ".")
+    if incoming:
+        lines.append("ARRIVING IN THIS REPLY: " + ", ".join(incoming) + ".")
     if absent:
         lines.append("NOT IN THE SCENE: " + ", ".join(absent) + ".")
         lines.append(
             "Do not give the absent characters dialogue, actions, thoughts or feelings. "
             "They are not here.")
+        if not transitions:
+            # v14.2: the man's note needs the SUMMONING case spelled out. The sentence above only
+            # forbids writing them; it does not forbid ADDRESSING them, and a first-person narrator
+            # reads "Come here, <name>" as his own line rather than as giving her an action. Measured
+            # on the operator's run, 8 of the 17 rows with a detectable arrival had the man call the
+            # newcomer over by name one reply BEFORE she was written entering the room.
+            lines.append(
+                "Do not speak to them, call out to them, summon them or wait for an answer from "
+                "them -- they cannot hear you and they are not in this room.")
 
     # v13.5.2 (D9): the man's messages carry presence only -- no LEAVES / ARRIVES / CUT-AWAY.
     # The assistant reply for the same slot gets those directives; handing them to the man as well

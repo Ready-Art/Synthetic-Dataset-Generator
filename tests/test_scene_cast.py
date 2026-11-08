@@ -731,6 +731,104 @@ def test_cache_warning():
           base_warning == "" and depth_warning == "", (base_warning, depth_warning))
 
 
+def test_v142_regressions():
+    """v14.2: the three defects that made a 2-character scene never leave and never arrive cleanly.
+
+    All three were found by dumping a real run and reading it, and all three are invisible to the
+    checks above because each one is a case where the code was self-consistent and simply wrong.
+    """
+    print("\nv14.2 regressions (exit scheduled, arrival directed, man not told to summon)")
+
+    # --- (1) a 2-character scene with min_present 1 must actually SCHEDULE the exit ----------
+    # The old `leave_count = min(max_leaves, spare, max(0, len(leavable) - 1))` budgeted against the
+    # LEAVABLE set, and in a 2-character scene that set holds one name, so the budget was 0 and the
+    # departure was silently dropped. `exit_slot` was configured, clamped, honoured -- and never used.
+    two = {"enabled": True, "shape": "minimal", "min_present": 1, "exit_slot": 8, "join_slot": 0}
+    plan = g._build_scene_cast_plan(["A", "B"], 10, two)
+    exits = [m for m in plan["members"] if m["exit_slot"] is not None]
+    check("2 characters / min_present 1: the configured exit is SCHEDULED",
+          len(exits) == 1 and exits[0]["exit_slot"] == 8, plan["members"])
+    check("2 characters / min_present 1: the exit is on the slot the config asked for",
+          bool(exits) and exits[0]["exit_slot"] == 8,
+          [(m["name"], m["exit_slot"]) for m in plan["members"]])
+
+    # The budget must still respect min_present: 2 characters with min_present 2 has no spare.
+    check("2 characters / min_present 2: still no exit (no spare character)",
+          g._build_scene_cast_plan(["A", "B"], 10,
+                                   {"enabled": True, "shape": "minimal", "min_present": 2,
+                                    "exit_slot": 8})["members"] == [])
+    # And a 3-character scene must not now schedule more leaves than it has spare characters.
+    three = g._build_scene_cast_plan(["A", "B", "C"], 10,
+                                     {"enabled": True, "shape": "minimal", "min_present": 2,
+                                      "exit_slot": 8})
+    check("3 characters / min_present 2: exactly one exit is scheduled",
+          sum(1 for m in three["members"] if m["exit_slot"] is not None) == 1,
+          three["members"])
+
+    # --- (2) the ARRIVES directive must fire ON the arrival slot -----------------------------
+    # A character scheduled to arrive on slot N is still 'absent' when slot N's note is built (the
+    # state only flips when _advance_cast_state runs, after the reply). The old transition scan
+    # skipped every non-'present' state, so the directive was never emitted at all.
+    arrive_cfg = {"enabled": True, "shape": "minimal", "min_present": 1,
+                  "join_slot": 3, "exit_slot": 0}
+    plan = g._build_scene_cast_plan(["A", "B"], 6, arrive_cfg)
+    state = g._cast_state_from_plan(plan)
+    joiner = next(m for m in plan["members"] if m["enter_slot"] > 0)
+    arriving, _exiting = g._cast_slot_transitions(plan, state, joiner["enter_slot"])
+    check("the arrival slot reports the joiner as ARRIVING",
+          [m["name"] for m in arriving] == [joiner["name"]], arriving)
+    note_cfg = dict(arrive_cfg)
+    note_cfg["total_slots"] = 6
+    note = g._cast_presence_note(plan, state, joiner["enter_slot"], note_cfg)
+    check("the arrival slot's note carries the ARRIVES directive",
+          "ARRIVES" in note, note)
+    check("the arrival slot's note does NOT also call the joiner absent",
+          "NOT IN THE SCENE: " + joiner["name"] not in note, note)
+    check("the arrival slot's note lists the joiner as ARRIVING IN THIS REPLY",
+          "ARRIVING IN THIS REPLY: " + joiner["name"] in note, note)
+
+    # --- (3) the MAN is never told an un-arrived character is present ------------------------
+    # transitions=False is the man's note. A character mid-arrival has not been written into the room
+    # yet, so listing her as PRESENT made him call out to someone the transcript had not placed there --
+    # "Come here, Teresa" -- and the next reply then narrated her walking in from outside.
+    plan = g._build_scene_cast_plan(["A", "B"], 6, arrive_cfg)
+    state = g._cast_state_from_plan(plan)
+    joiner = next(m for m in plan["members"] if m["enter_slot"] > 0)
+    man_note = g._cast_presence_note(plan, state, joiner["enter_slot"], note_cfg,
+                                     transitions=False)
+    check("the man's note never lists a not-yet-arrived character as PRESENT",
+          "PRESENT: " + joiner["name"] not in man_note
+          and ("PRESENT: " + joiner["name"] + ",") not in man_note, man_note)
+    check("the man's note lists the not-yet-arrived character as NOT IN THE SCENE",
+          "NOT IN THE SCENE: " + joiner["name"] in man_note, man_note)
+    check("the man's note forbids summoning an absent character",
+          "summon" in man_note.lower(), man_note)
+    check("the man's note carries NO transition directive",
+          "ARRIVES" not in man_note and "LEAVES" not in man_note, man_note)
+
+    # The man's note must stay cache-stable between two static slots (it is depth0 by default, but the
+    # same text is what a 'system' placement would put in the prompt).
+    static = [s for s in range(1, 7)
+              if s not in (joiner["enter_slot"],)
+              and not any(m["exit_slot"] == s for m in plan["members"])]
+    if len(static) >= 2:
+        check("the man's note is byte-identical between two static slots",
+              g._cast_presence_note(plan, state, static[0], note_cfg, transitions=False)
+              == g._cast_presence_note(plan, state, static[1], note_cfg, transitions=False))
+
+    # An EXITING character is still in the room for both readers: the exit has not been narrated yet.
+    exit_cfg = {"enabled": True, "shape": "minimal", "min_present": 1,
+                "join_slot": 0, "exit_slot": 4}
+    plan = g._build_scene_cast_plan(["A", "B"], 6, exit_cfg)
+    state = g._cast_state_from_plan(plan)
+    leaver = next(m for m in plan["members"] if m["exit_slot"] is not None)
+    man_note = g._cast_presence_note(plan, state, leaver["exit_slot"], note_cfg,
+                                     transitions=False)
+    check("the man's note keeps an EXITING character as PRESENT",
+          "PRESENT: " + leaver["name"] in man_note
+          or ("PRESENT: " + leaver["name"] + ",") in man_note, man_note)
+
+
 def main():
     print("Scene Cast / Scene Continuity (v12.0) - headless checks")
     test_feasibility()
@@ -743,6 +841,7 @@ def main():
     test_cast_dimension_is_scored()
     test_transition_evidence()
     test_slot_overrides()
+    test_v142_regressions()
     test_default_config_inert()
     test_cache_warning()
     if FAILURES:
