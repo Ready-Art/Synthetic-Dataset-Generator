@@ -54,20 +54,26 @@ The state file tracks:
 ## Dashboard & Monitoring
 
 The four main controls (**Start Generation**, **Pause**, **Stop & Clear Job**, and
-**Edit Config**) remain above the dashboard. Monitoring details scroll inside the
-**Overview** tab, so additional API progress bars do not push the working area
-off the window. On narrow windows, a **View** selector replaces the tab strip;
-it includes every dashboard or configuration view.
+**Edit Config**) sit in the header, next to the version label — **Start Generation**
+is the only filled, accent-coloured button, so the primary action is obvious at a
+glance. Monitoring details scroll inside the **Overview** tab, so additional API
+progress bars do not push the working area off the window. On narrow windows, a
+**View** selector replaces the tab strip; it includes every dashboard or
+configuration view, and `Ctrl+Tab` / the arrow keys still move between tabs.
 
 The real-time dashboard provides:
 
-- **Overview tab** — Metrics, database/cache status, API response times, and generation progress. Its **Tools** section contains export, recovery, database maintenance, Clear Dashboard, Debug Logs, Pause UI Updates, and Quit Application.
-- **Totals tab** — Aggregate statistics with time-series graph of issues over the last 60 minutes (10-minute bins)
-- **Per-API tabs (API 1–4)** — Individual API statistics and recent issues for each generation slot
+- **Overview tab** — Run controls and progress bars first, then the metric cards, then the aggregate issue panels and the time-series graph of issues over the last 60 minutes (10-minute bins). The database/cache status, API response times and **Tools** section (export, recovery, database maintenance, Clear Dashboard, Debug Logs, Pause UI Updates, Quit Application) are folded into one collapsed **Diagnostics** section, because they are only interesting when something looks wrong
+- **APIs tab** — Per-slot statistics and recent issues for each generation slot, behind a slot selector
 - **Quality tab** — Quality scoring summary, dimension averages, and a table of the latest 50 scored conversations
-- **🔍 Review tab** — Flagged conversations (below threshold) with filter, export, dismiss, and detail view
-- **Prompt Viewer tab** — Real-time view of prompts being sent to APIs with rich formatting
+- **Review tab** — Flagged conversations (below threshold) with filter, export, dismiss, and detail view
+- **Prompts tab** — Real-time view of prompts being sent to APIs with rich formatting
 - **Queue tab** — Live view of pending, completed, and failed tasks with management actions
+
+Every table says something when it is empty rather than showing a blank box, and every
+button shows a hover and keyboard-focus state. If no colour-emoji font is installed, the
+emoji icons are replaced by plain ASCII markers (`[>] Start Generation`) instead of
+rendering as empty boxes.
 - **Overview metrics** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
 - **Quality metrics** — Average composite score (color-coded), below-threshold count, top flag
 - **Budget indicator** — Current spend vs. budget limit with color-coded status (turns red when exceeded)
