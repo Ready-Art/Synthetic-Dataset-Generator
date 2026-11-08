@@ -1209,17 +1209,28 @@ def _cast_slot_transitions(plan, state, slot_no):
 def _cast_names_for_slot(plan, state, slot_no):
     """(blocked_names, expected_names, present_names) for one assistant slot.
 
-    ``blocked_names`` may NOT speak or act (states 'absent'/'exited') and drives
-    ``detection.check_scene_continuity``. ``expected_names`` are the characters whose entrance
-    or exit this reply should narrate -- reported, never used to force a rewrite.
-    ``present_names`` is who the greeting/narration may show.
+    ``blocked_names`` may NOT speak or act and drives ``detection.check_scene_continuity``.
+    ``expected_names`` are the characters whose entrance or exit this reply should narrate --
+    reported, never used to force a rewrite. ``present_names`` is who the greeting/narration may
+    show.
+
+    A character mid-transition is NEVER blocked on the reply that narrates the beat (v14.3).
+    ``_cast_slot_transitions`` reports the ARRIVING member for its ``enter_slot`` while the state
+    is still 'absent' (the state only flips to 'arriving' after the reply comes back), so the
+    plain 'absent'/'exited' test put the same name in BOTH lists: the note said
+    "Dani ARRIVES in this reply" and the continuity check then flagged the model for writing
+    exactly that. Every arrival reply was therefore regenerated up to ``max_rounds`` times and the
+    best-effort text was kept, which is the "scene continuity violation, fixes exhausted" flood in
+    the log. The transition lists are the authority here, not the raw state: whoever this reply is
+    asked to walk in or out is allowed to be written.
     """
     arriving, exiting = _cast_slot_transitions(plan, state, slot_no)
     expected = [m["name"] for m in arriving] + [m["name"] for m in exiting]
+    narrating = {m["name"] for m in arriving} | {m["name"] for m in exiting}
     blocked, present = [], []
     for member in (plan or {}).get("members", []):
         current = state.get(member.get("number"), CAST_STATE_PRESENT)
-        if current in CAST_BLOCKED_STATES:
+        if current in CAST_BLOCKED_STATES and member["name"] not in narrating:
             blocked.append(member["name"])
         else:
             present.append(member["name"])
@@ -1607,7 +1618,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          previous_assistant_replies_local=(),
                          first_reply_first_word_cap_local=0.0,
                          first_reply_opener_cap_local=0.0,
-                         first_reply_opener_max_retries=FIRST_REPLY_OPENER_MAX_RETRIES):
+                         first_reply_opener_max_retries=FIRST_REPLY_OPENER_MAX_RETRIES,
+                         cast_violation_under_test=False):
     """Per-turn internal-logic gate for a freshly generated assistant reply.
 
     ``answer_under_test`` is the freshly generated reply (not yet in history). The gate
@@ -1628,13 +1640,16 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
     logic dimension. On judge outage (``success=False``) the answer passes through
     unchanged -- the gate must never block output on a dead judge.
 
-    Returns the regenerated ``answer_result`` 3-tuple ``(answer, issue_flag, refusal_flag)``;
-    on judge outage or a passing score the original tuple is returned unchanged. A rewrite
-    round that yields no usable replacement keeps the last usable answer rather than
-    discarding the turn.
+    Returns the regenerated ``answer_result`` 4-tuple
+    ``(answer, issue_flag, refusal_flag, cast_violation_flag)``; on judge outage or a passing score
+    the original tuple is returned unchanged. A rewrite round that yields no usable replacement
+    keeps the last usable answer rather than discarding the turn. The cast-violation flag is OR-ed
+    across rounds: a round that fixes the continuity miss cannot un-drop a row an earlier round
+    already condemned, and a round that introduces one must still drop it.
     """
     issue_ever_detected_this_task = False
     refusal_ever_detected_this_task = False
+    cast_violation_ever = bool(cast_violation_under_test)
     check = quality.check_logic(
         answer_under_test, conversation_history_for_llm,
         character_profile_text=character_injection,
@@ -1651,7 +1666,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             })
 
     if not check.get("success") or not check.get("failed"):
-        return (answer_under_test, issue_ever_detected_this_task, refusal_ever_detected_this_task)
+        return (answer_under_test, issue_ever_detected_this_task, refusal_ever_detected_this_task,
+                cast_violation_ever)
 
     _record(check)
     log_message(
@@ -1753,6 +1769,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             )
             break
         answer = retry_result[0]
+        if len(retry_result) > 3 and retry_result[3]:
+            cast_violation_ever = True
         check = quality.check_logic(
             answer, conversation_history_for_llm,
             character_profile_text=character_injection,
@@ -1775,7 +1793,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                 "INFO",
             )
             break
-    return (answer, issue_ever_detected_this_task, refusal_ever_detected_this_task)
+    return (answer, issue_ever_detected_this_task, refusal_ever_detected_this_task,
+            cast_violation_ever)
 
 
 def worker(thread_id, q, output_data_lock, use_questions_file_local,
@@ -1985,6 +2004,11 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
         raw_subject_content_for_debug = ""
         raw_context_content_for_debug = ""
         quality_dropped_this_task = False         # v11.4: judge rejected this conversation; do not write it
+        # v14.3: a scene-continuity violation survived every fix round in this conversation, so a
+        # character who is not in the scene is still speaking or acting in it. The row is DROPPED,
+        # not written: unlike the style checks (which keep their best-effort text) a cast
+        # contradiction makes the transcript incoherent, which is what Scene Cast exists to prevent.
+        cast_violation_this_task = False
         # v12.9.2: True once the async judge owns this task's row(s). Duplication mode sets it
         # per turn (the processor writes each turn's per-API rows), so it must be initialised here
         # rather than only in the non-duplication branch -- otherwise the per-turn write guard
@@ -2849,10 +2873,24 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                         first_reply_first_word_cap_local=first_reply_first_word_cap_local,
                                         first_reply_opener_cap_local=first_reply_opener_cap_local,
                                         first_reply_opener_max_retries=first_reply_opener_max_retries,
+                                        cast_violation_under_test=(
+                                            bool(answer_result[3]) if len(answer_result) > 3 else False),
                                     ),
                                     answer_result[1] if len(answer_result) > 1 else False,
                                     answer_result[2] if len(answer_result) > 2 else False,
                                 )
+
+                            # v14.3: an unfixable cast contradiction in ANY duplicated slot
+                            # condemns the whole task -- the per-API turn rows below must not reach
+                            # the dataset either. Read BEFORE the truthy-answer guard: a turn whose
+                            # fix rounds all failed returns answer=None with the flag set.
+                            if answer_result and len(answer_result) > 3 and answer_result[3]:
+                                cast_violation_this_task = True
+                                log_message(
+                                    f"Thread {thread_id}: Task {task_id}, turn {turn_num + 1}, "
+                                    f"API Slot {dup_api_idx + 1}: scene continuity could not be "
+                                    "fixed. The conversation will be dropped instead of written.",
+                                    "WARNING")
 
                             if answer_result and answer_result[0]:  # Check if answer is not None
                                 duplicated_answer_text = answer_result[0]
@@ -3113,7 +3151,22 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                             first_reply_first_word_cap_local=first_reply_first_word_cap_local,
                             first_reply_opener_cap_local=first_reply_opener_cap_local,
                             first_reply_opener_max_retries=first_reply_opener_max_retries,
+                            cast_violation_under_test=(
+                                bool(answer_result[3]) if len(answer_result) > 3 else False),
                         )
+
+                    # v14.3: read the cast verdict BEFORE the `answer_result[0]` guard below. When
+                    # every fix round fails, generate_answer_with_retries() returns answer=None with
+                    # the flag set -- so a check nested inside the truthy-answer branch would never
+                    # see it, and the task would fall through to the "incomplete" requeue path instead
+                    # of being dropped. The verdict is about the CONVERSATION, not about whether this
+                    # turn produced text.
+                    if answer_result and len(answer_result) > 3 and answer_result[3]:
+                        cast_violation_this_task = True
+                        log_message(
+                            f"Thread {thread_id}: Task {task_id}, turn {turn_num + 1}: scene "
+                            "continuity could not be fixed. The conversation will be dropped "
+                            "instead of written.", "WARNING")
 
                     if answer_result and answer_result[0]:  # Check if answer is not None
                         assistant_answer = answer_result[0]
@@ -3289,6 +3342,29 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                     "Not written to the dataset.", "WARNING")
                 # v13.0.5: the work is finished even though the row is not kept, so the bar
                 # credits it; otherwise 100% would be unreachable by construction.
+                _credit_task_progress(task_id, queue=q)
+                request_generation_state_save()
+                q.task_done()
+                continue
+
+            # v14.3: a scene-continuity violation that survived every fix round DROPS the
+            # conversation. It sits beside the quality drop above and for the same reason: a row
+            # that contradicts its own cast must never reach the dataset. The difference is that a
+            # judge drop is a verdict on quality while this one is an objective fact about the text
+            # (a character who left is still speaking), so it is decided here, not by the judge, and
+            # it is recorded as a drop so a resumed run does not retry it.
+            if cast_violation_this_task:
+                with app_state.quality_lock:
+                    app_state.quality_dropped[task_id] = quality.DROP_REASON_SCENE_CONTINUITY
+                    app_state.dropped_task_ids.add(task_id)
+                with app_state.task_queue_ui_lock:
+                    app_state.pending_task_ids.discard(task_id)
+                app_state.completed_task_ids.discard(task_id)
+                log_message(
+                    f"Thread {thread_id}: Task {task_id} had an unfixable scene continuity "
+                    "violation. NOT saving to output.jsonl.", "WARNING")
+                # The work is finished even though the row is not kept, so the bar credits it --
+                # the same accounting the judge drop uses.
                 _credit_task_progress(task_id, queue=q)
                 request_generation_state_save()
                 q.task_done()
@@ -5586,11 +5662,24 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
     ``DEFAULT_REPEAT_REPLY_FIX``) appended to the ANSWER PROMPT, following the same cache contract as
     the opener guard. Runs immediately AFTER the opener branch and BEFORE the success return, so it judges
     the text about to be written.
+
+    RETURNS A 4-TUPLE ``(answer, issue_flag, refusal_flag, cast_violation_flag)`` (v14.3). The fourth
+    element is True only when a SCENE CONTINUITY violation survived every fix round, i.e. the text
+    still has an exited/absent character speaking or acting. Unlike every other check here -- which
+    keeps its best-effort answer because a style miss is not a reason to lose the row -- a continuity
+    miss cannot be kept: the row would be a transcript in which a character who left the scene is
+    still talking, which is the exact corruption Scene Cast exists to prevent. The caller drops such
+    a task (see ``cast_violation_this_task`` in ``worker()``). Callers that do not care about the
+    flag keep reading ``result[0]``/``result[1]``/``result[2]`` as before.
     """
 
     refusal_detected_this_main_api_call = False
     issue_ever_detected_this_task = False
     refusal_ever_detected_this_task = False
+    # v14.3: set when a scene-continuity violation could not be fixed. It is NOT folded into
+    # issue_ever_detected_this_task, because that flag only means "something was rewritten" and
+    # the row is still written; this one means "the row must not be written".
+    cast_violation_this_task = False
 
     if not api_url_local:
         log_message(f"Thread {thread_id}: API URL missing for answer generation (API Slot {api_slot_idx+1}). Cannot proceed.", "ERROR")
@@ -6118,8 +6207,17 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                     f"Applying fix {fix_attempts_specific['scene_continuity']}. Retrying API call.", "DEBUG")
                         continue
                     else:
+                        # v14.3: NOT a best-effort keep. Every other check here keeps its text on
+                        # exhaustion because a style miss should not cost the row; a continuity miss
+                        # is different in kind. The text says a character who has left the scene is
+                        # still speaking or acting, so writing it produces a transcript that
+                        # contradicts its own cast -- the corruption this feature exists to prevent.
+                        # The flag travels back to worker(), which drops the task.
+                        cast_violation_this_task = True
                         log_message(f"Thread {thread_id}: Scene continuity violation (API Slot {api_slot_idx+1}), "
-                                    f"fixes exhausted for attempt {attempt+1}. Keeping the best-effort answer.", "WARNING")
+                                    f"fixes exhausted for attempt {attempt+1}. This reply still has a "
+                                    "character who is not in the scene speaking or acting, so the "
+                                    "conversation will be DROPPED rather than written.", "WARNING")
 
             # Initialize slop fix tracking BEFORE slop detection so fallback logic can reference them
             slop_fully_resolved_by_sentence_fixer = False
@@ -6580,7 +6678,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
             if not issue_detected_this_main_api_call:
                 log_message(f"Thread {thread_id}: Successfully generated answer for attempt {attempt + 1} (API Slot {api_slot_idx+1}).", "INFO")
-                return answer, issue_ever_detected_this_task, refusal_ever_detected_this_task
+                return (answer, issue_ever_detected_this_task, refusal_ever_detected_this_task,
+                        cast_violation_this_task)
     # Safety exit: an issue was flagged but no specific fix path triggered
     # a break/continue (e.g., slop detected but no Slop Fixer API configured).
     # Without this, the while True would loop indefinitely.
@@ -6593,7 +6692,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
             time.sleep(random.uniform(0.5, 1.5))
 
     log_message(f"Thread {thread_id}, API Slot {api_slot_idx+1}: All {max_attempts_local} attempts failed to generate a valid answer for the current turn. Returning None.", "ERROR")
-    return None, issue_ever_detected_this_task, refusal_ever_detected_this_task
+    return (None, issue_ever_detected_this_task, refusal_ever_detected_this_task,
+            cast_violation_this_task)
 
 
 # --- Output metadata helpers (Axolotl-safe provenance block) ---

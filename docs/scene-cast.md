@@ -13,7 +13,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 # Scene Cast — Characters That Join and Leave
 
 **Version:** v12.0, transition detection and slot placement revised in v14.1, scheduling and note
-correctness revised in v14.2
+correctness revised in v14.2, arrival-slot blocking and the drop policy revised in v14.3
 **Applies to:** multi-character scenes (2 or more characters selected)
 **Default state:** OFF
 
@@ -227,6 +227,7 @@ Melody walked away.                      <- caught
 ```
 Cole asked, "Where is Melody?"            <- Melody is only MENTIONED inside Cole's line
 Cole nodded at Melody.                    <- the action belongs to Cole, not Melody
+She looks at Melody and smiles.            <- Melody is the OBJECT of "at"; the smile is hers
 Melody's hands trembled.                  <- possessive, not a spoken line
 Melody. Cole nodded.                      <- the action is in Cole's sentence
 ```
@@ -234,13 +235,39 @@ Melody. Cole nodded.                      <- the action is in Cole's sentence
 Quoted dialogue is blanked out before the action match, so a character being *discussed* is never
 mistaken for a character being *present*. This is the same narration-only rule the OOC drift check uses.
 
+A name that is the **object of a preposition** (`at`, `to`, `with`, `beside`, …) is not the actor, so the
+next action verb in that sentence belongs to whoever the sentence is about. Before v14.3 the detector
+blamed the object, which was the single largest source of false hits on real prose: on one operator run
+27% of the replies that named a present character were flagged, most of them this shape.
+
+### A character mid-transition is never blocked on the reply that narrates the beat
+
+The check is driven by `generation._cast_names_for_slot()`, which returns the names that may NOT appear.
+A character whose entrance or exit **this reply is asked to narrate** is never in that list, even though
+its stored state is still `absent`/`present` (the state only flips after the reply comes back).
+
+Before v14.3 the plain `absent`/`exited` test put the arriving character in **both** the blocked list and
+the expected list, so the note said `Dani ARRIVES in this reply` and the check then flagged the model for
+writing exactly that. Every arrival reply was regenerated to exhaustion. If you change this function, keep the
+invariant: **no name may be both blocked and expected on the same slot.**
+
 ### On a hit
 
 The reply is sent back to the **same main API slot** that produced it, with one fix appended to the
 system prompt — exactly like the refusal, slop and OOC checks. No fixer slot, no extra model.
 
-Once `max_rounds` (default 2) fixes are exhausted, the best-effort answer is **kept**. A continuity
-miss is a scheduling miss, not a reason to lose the row.
+Once `max_rounds` (default 2) fixes are exhausted, the conversation is **DROPPED**. This is the one check
+that does not keep its best-effort text, and the asymmetry is deliberate:
+
+- a slop phrase or a repeated opener is a **style** miss — the transcript still makes sense, so losing the
+  row would be the bigger loss;
+- a continuity miss is a **cast contradiction** — the text has a character who has left the scene still
+  speaking or acting, which is the exact corruption this feature exists to prevent. Writing it would put a row
+  in the dataset that argues with itself.
+
+The drop is recorded in `app_state.quality_dropped` with the reason `scene_continuity`, so the dashboard
+reports it and a resumed run does not retry it, and the task is still credited for progress so the bar can
+reach 100%. Before v14.3 the reply was kept and written.
 
 ### A missing entrance or exit is reported, never regenerated
 
@@ -545,6 +572,9 @@ character and there are none to spare. Use 3+ characters, or set `min_present: 1
 |---|---|---|
 | Nothing happens, no `cast_schedule` in metadata | Feature off, fewer than 2 characters, or an infeasible scene | Check the log for the `Scene cast enabled but...` warning; the panel now states the character count you need |
 | Characters never leave, even with a long conversation | Pre-v14.1: exits were cancelled because the reply used a pronoun | Fixed in v14.1 by `exit_detection: evidence`. Check `cast_events` for `exit_cancelled` |
+| `Scene continuity violation ... fixes exhausted` on almost every reply | Pre-v14.3: the arriving character was in the blocked list AND the expected list on its arrival slot, so the check flagged the model for writing the entrance the note asked for | Fixed in v14.3: `_cast_names_for_slot()` never blocks a character it is asking the model to walk in or out. Check the `Scene cast plan ...` DEBUG line |
+| A character is flagged for acting when someone else did it | Pre-v14.3: `find_character_actions()` blamed the name in a preposition's phrase (`She looks at Dani and smiles`) | Fixed in v14.3: an object of `at`/`to`/`with`/… is not the actor |
+| Rows in the dataset where an exited character still talks | Pre-v14.3: the exhausted continuity check kept the best-effort answer and the row was written | Fixed in v14.3: an unfixable continuity miss DROPS the conversation (`scene_continuity` in `quality_dropped`) |
 | Characters never leave in a **2-character** scene, whatever `exit_slot` says | Pre-v14.2: the leave budget was computed against the *leavable* set (`len(leavable) - 1`), which is 0 when only one character can leave, so the exit was never scheduled at all | Fixed in v14.2: the budget is `spare` (`cast_size - min_present`). Check the `Scene cast plan ...` DEBUG line for `exit=<slot>` |
 | A newcomer is introduced twice, or arrives with no prompt to do so | Pre-v14.2: the transition scan skipped every non-`present` state, so the `ARRIVES` directive was never emitted on the slot it was scheduled for | Fixed in v14.2. Check the `Scene cast plan ...` DEBUG line and the note's `ARRIVING IN THIS REPLY` line |
 | The user calls a character over, and the next reply has her walking in from outside | Pre-v14.2: the man's presence-only note listed a not-yet-arrived character as `PRESENT` | Fixed in v14.2: she is `NOT IN THE SCENE` for him, and his note forbids summoning her |
@@ -567,9 +597,11 @@ character and there are none to spare. Use 3+ characters, or set `min_present: 1
 | Transition evidence (v14.1) | `detection.py` | `find_transition_evidence()`, `_DEPARTURE_VERBS`, `_ARRIVAL_VERBS`, `_NEGATED_TRANSITION_RE` |
 | Slot placement (v14.1) | `generation.py` | the `join_slot` / `exit_slot` override block in `_build_scene_cast_plan()` |
 | The retry branch | `generation.py` | `generate_answer_with_retries()` — after OOC, before Regex Watch |
+| The drop (v14.3) | `generation.py`, `quality.py` | the 4th element of `generate_answer_with_retries()`'s result, the `cast_violation_this_task` gate in `worker()`, `quality.DROP_REASON_SCENE_CONTINUITY` |
 | The Judge dimension | `quality.py` | `CAST_SCORING_DIMENSIONS`, `is_cast_scoring_enabled()`, the cast block in `_score_with_llm()` |
 | GUI | `config_editor.py` | Scene Cast panel (Character Engine), Scene Continuity Check panel (Detection), cast toggle (Quality Scoring) |
 | Dashboard | `generate.py`, `dashboard.py`, `app_state.py` | Cast Drift metric card, issue panel, graph series, cast event log |
 | Config | `config/config.yml` | `prompts.scene_cast.*`, `detection.scene_continuity.*`, `quality.cast_continuity` |
-| Guard | `tests/test_scene_cast.py` | schedule invariants, the asymmetry, note cache stability, the detector, metadata v7, dimension gating, transition evidence, slot overrides |
+| Guard | `tests/test_scene_cast.py` | schedule invariants, the asymmetry, note cache stability, the detector, metadata v7, dimension gating, transition evidence, slot overrides, the v14.3 arrival-slot and preposition-object regressions |
+| Guard (drop) | `tests/test_scene_continuity_drop.py` | the real worker against a fake server: an unfixable violation writes no row, is recorded as a `scene_continuity` drop, and a clean conversation is still written |
 | Guard (GUI) | `tests/test_scene_cast_settings_ui.py` | the three v14.1 controls survive a save/reopen round trip through the real `ConfigEditor` |

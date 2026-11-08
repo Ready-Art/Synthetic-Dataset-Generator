@@ -1019,12 +1019,26 @@ def find_attributed_speakers(text, names):
     return out
 
 
+# A name that is the OBJECT of a preposition is not the actor: "She looks at Dani and smiles"
+# and "Presley turned to Dani" put Dani after the verb, in the preposition's phrase, so the next
+# action verb in the sentence belongs to whoever the sentence is actually about. Without this the
+# detector blamed the blocked character for someone else's action -- the single largest source of
+# false "exited_acts" hits on real prose (measured on the operator's run: 219 of 777 replies that
+# named a present character were flagged, and most of them were this shape).
+_PREPOSITION_OBJECT_RE = re.compile(
+    r'(?:\b(?:at|to|for|with|beside|near|behind|toward|towards|past|around|from|into|of|on|'
+    r'over|under|across|against|between|among|after|before|like|than|about)\s+)$',
+    re.IGNORECASE)
+
+
 def find_character_actions(text, names):
     """[(name, sentence), ...] for a name in NARRATION performing an action.
 
     Quoted dialogue is blanked FIRST, so a character speaking about someone else, or being
     spoken to, is never mistaken for acting. Within a sentence the name must PRECEDE the
-    action verb, which keeps "Cole shrugged at Melody" from blaming Melody for the shrug.
+    action verb, which keeps "Cole shrugged at Melody" from blaming Melody for the shrug -- and the
+    name must not be the OBJECT of a preposition ("She looks at Dani and smiles"), because there the
+    verb after it belongs to the subject, not to the name.
     """
     if not text or not names:
         return []
@@ -1037,6 +1051,9 @@ def find_character_actions(text, names):
     for name in names:
         name_re = _scene_name_pattern(name)
         for name_match in name_re.finditer(narration):
+            # "at Dani", "to Melody", "with Cole": the name is an object, not the actor.
+            if _PREPOSITION_OBJECT_RE.search(narration[max(0, name_match.start() - 12):name_match.start()]):
+                continue
             tail = narration[name_match.end():]
             verb_match = _SCENE_ACTION_RE.search(tail)
             if not verb_match:
