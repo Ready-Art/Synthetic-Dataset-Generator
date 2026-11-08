@@ -33,7 +33,6 @@ import json
 import re
 import time
 import random
-import requests
 import hashlib
 import threading
 from queue import Queue, Empty, Full
@@ -51,7 +50,13 @@ from api_handler import (
     api_response_times_lock,
     MAX_RESPONSE_TIMES_TO_TRACK,
     apply_thinking_mode,
+    http,
 )
+
+# v14.2.0: the judge pool shares the pooled HTTP session (see api_handler.py). The SAME
+# facade object ``generation`` binds, so a test that patches ``generation.requests.post``
+# still intercepts the judge's calls, exactly as it did when both imported the real module.
+requests = http
 from app_state import (
     global_config,
     BASE_DEBUG_LOG_PATH,

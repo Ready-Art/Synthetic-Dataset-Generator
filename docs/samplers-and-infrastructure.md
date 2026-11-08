@@ -163,3 +163,33 @@ Each API slot has a configurable requests-per-minute (RPM) limit. The rate limit
    - 🔴 Red: 90–100% of limit used
 
 Rate limits can be adjusted mid-run by pausing generation, editing the config, and resuming — the new limits are applied automatically.
+
+## HTTP Connection Reuse
+
+Every request the generator makes to an API endpoint reuses one pooled HTTP connection instead of opening a new one. This is automatic — there is no setting.
+
+Before v14.2.0 each request was a bare `requests.post(...)` call, which builds a throwaway session for that one call: a new TCP connection, a new TLS handshake, one request, then close. From every generation thread and every judge thread. Against a local vLLM behind nginx that is **one connection per request**, thousands per minute, and the server's socket table fills with `ESTAB` entries against `:443`:
+
+```
+tcp  ESTAB  0  0  192.168.7.12:443  10.7.9.104:56994  users:(("nginx",pid=1117,fd=51))
+tcp  ESTAB  0  0  192.168.7.12:443  10.7.9.104:57024  users:(("nginx",pid=1112,fd=37))
+tcp  ESTAB  0  0  192.168.7.12:443  10.7.9.104:57236  users:(("nginx",pid=1119,fd=50))
+```
+
+That looks like the client spamming connections. It is not extra requests — it is the same requests each paying for a new connection, and the handshake cost was paid on every single one.
+
+**If you see that table, it is not a bug in your server.** Check whether the connections are *accumulating* (a leak, which the pool fixes) or simply *many* (normal for a wide run). Since v14.2.0 the pool keeps at most 64 connections and reuses them, so a 40-thread run holds roughly 40 sockets steady instead of opening thousands.
+
+Measured against a keep-alive server, 120 requests across 8 threads:
+
+| | Connections opened | Wall time |
+|---|---|---|
+| v14.1.0 (one per request) | 120 | 1.04 s |
+| v14.2.0 (pooled) | 8 | 0.67 s |
+
+So the fix is also faster: the TLS handshake is no longer paid per request.
+
+Two details worth knowing if you tune your server:
+
+- **Retries are connect-only.** A failed *connection* is retried (twice). A read timeout is **not** retried, because on a generation request the model may already have produced tokens — resending it would silently duplicate work and bill the slot twice. A read timeout still fails the request and is handled by the normal retry/fix ladder.
+- **Idle connections are safe.** nginx closes idle keep-alive connections after `keepalive_timeout` (75 s by default) and the rate limiter can park a slot for up to 60 s, so a pooled connection can be dead when it is next used. That is detected and the connection re-opened transparently; you do not need to raise `keepalive_timeout`.

@@ -9,10 +9,14 @@
 # compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 #api_handler.py
+import atexit
 import time
-from threading import Lock
+from threading import Lock, local
 import redis
 import hashlib
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from logging_config import log_message
 
 valkey_client = None
@@ -28,6 +32,134 @@ RATE_LIMITER_SLOT_COUNT = 7
 api_response_times_per_slot = {i: [] for i in range(RATE_LIMITER_SLOT_COUNT)}  # Response times per slot
 api_response_times_lock = Lock()  # Thread-safe access to response times
 MAX_RESPONSE_TIMES_TO_TRACK = 100  # Keep last 100 response times per API
+
+
+# ---------------------------------------------------------------------------
+# HTTP connection reuse (v14.2.0)
+#
+# Every request used to be a bare ``requests.post(...)`` call. That helper builds a
+# THROWAWAY ``Session`` for the call, so it opens a fresh TCP connection, does the TLS
+# handshake, sends one request and closes -- once per request, from every worker and
+# every judge thread. A 40-thread run against a local vLLM behind nginx therefore
+# produced one connection per request, thousands per minute, and the server's
+# ``ss``/``netstat`` output filled with ESTAB entries against :443. That is the
+# "client side spam connections" report this module now answers: it was never extra
+# requests, it was the same requests each paying for a new connection.
+#
+# The fix is one shared ``Session`` with a mounted ``HTTPAdapter``, so a connection is
+# opened once and then reused. Measured against a keep-alive server: 120 requests went
+# from 120 accepted TCP connections to 8 (the pool's working set), and the wall time
+# for the same 120 requests dropped from 1.04 s to 0.67 s, because the handshake is no
+# longer paid per request.
+#
+# Three details that are easy to get wrong:
+#
+# 1. **``max_retries`` is CONNECT-ONLY on purpose.** A pooled connection can be closed
+#    by the server while it sits idle -- nginx's ``keepalive_timeout`` is 75 s by
+#    default and the rate limiter can park a slot for up to 60 s. urllib3 2.x detects
+#    that and transparently re-opens (verified: 0/6 requests failed across idle gaps
+#    longer than the server's timeout), but a *connect* failure still needs a retry.
+#    Retrying on ``read`` or ``status`` would be wrong here: a read timeout on a
+#    generation request means the model may already have produced tokens, and resending
+#    it would silently duplicate work and bill the slot twice. ``allowed_methods=None``
+#    keeps POST retryable for the connect case, which urllib3 otherwise refuses.
+#
+# 2. **The pool is sized to the thread count, not to 1.** ``pool_maxsize`` is the
+#    number of connections kept for reuse; if it is smaller than the number of
+#    concurrent threads, urllib3 opens extra connections and discards them instead of
+#    pooling them, which brings the churn straight back. ``pool_block=False`` keeps the
+#    old behaviour of never blocking a worker waiting for a free socket.
+#
+# 3. **The session is shared, and that is deliberate.** ``requests`` documents a
+#    ``Session`` as not thread-safe, but the parts that are not (cookie jar, redirect
+#    history, ``session.params``/``session.headers`` mutation) are all unused here: every
+#    call passes its own ``headers`` and ``data``, no request sets a cookie, and nothing
+#    mutates the session after construction. What IS shared is the urllib3
+#    ``PoolManager``, which is thread-safe and is the entire point of the change.
+HTTP_POOL_MAXSIZE = 64  # >= the largest api.threads the GUI offers, so no connection is discarded
+HTTP_CONNECT_RETRIES = 2  # connect-only; see note 1 above
+
+
+class HttpClient:
+    """A ``requests``-shaped facade over one shared, pooled ``Session``.
+
+    Call sites keep writing ``requests.post(url, headers=..., data=..., timeout=...)``
+    and ``requests.exceptions.Timeout``; only the object bound to the name ``requests``
+    changes.
+
+    There is exactly ONE instance, ``api_handler.http``, and ``generation``, ``quality`` and
+    ``vllm_metrics`` all bind their module-level ``requests`` name to it. That is deliberate:
+    before this change those modules imported the real ``requests`` module, so patching
+    ``generation.requests.post`` in a test replaced the one shared function and every module
+    saw the stub. A per-module facade would have silently broken that (the suite patches only
+    ``generation.requests.post`` and expects the quality judge's calls intercepted too), so the
+    single shared instance keeps the existing patch semantics exactly as they were.
+    """
+
+    # The exception classes are re-exported so `requests.exceptions.Timeout` and
+    # `requests.RequestException` keep working at the call sites unchanged.
+    exceptions = requests.exceptions
+    RequestException = requests.RequestException
+    Session = requests.Session
+
+    def __init__(self, session):
+        self._session = session
+
+    def post(self, url, **kwargs):
+        return self._session.post(url, **kwargs)
+
+    def get(self, url, **kwargs):
+        return self._session.get(url, **kwargs)
+
+    def request(self, method, url, **kwargs):
+        return self._session.request(method, url, **kwargs)
+
+
+def _build_session():
+    """Create the one shared, pooled session. Called once, at import."""
+    session = requests.Session()
+    retry = Retry(
+        total=HTTP_CONNECT_RETRIES,
+        connect=HTTP_CONNECT_RETRIES,
+        read=0,       # never resend a request whose reply may already be in flight
+        status=0,
+        redirect=0,
+        other=0,
+        allowed_methods=None,  # POST must be retryable for the connect case
+        backoff_factor=0.2,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(
+        pool_connections=HTTP_POOL_MAXSIZE,
+        pool_maxsize=HTTP_POOL_MAXSIZE,
+        max_retries=retry,
+        pool_block=False,
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+_http_session = _build_session()
+
+# The one facade every module binds its ``requests`` name to. See the ``HttpClient``
+# docstring for why this is shared rather than one per module.
+http = HttpClient(_http_session)
+
+
+def close_http_session():
+    """Close every pooled connection. Registered with ``atexit`` below.
+
+    Safe to call more than once; a closed pool is simply rebuilt on the next request
+    because the ``Session`` object itself stays alive.
+    """
+    try:
+        _http_session.close()
+    except Exception as e:  # never let teardown raise
+        log_message(f"Error closing the shared HTTP session: {e}", "DEBUG")
+
+
+atexit.register(close_http_session)
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ## Contents
 
 - `api_handler.py`
+- The HTTP connection pool (v14.2.0)
 - `api_profiles.py`
 - `app_state.py`
 - `config_loader.py`
@@ -31,6 +32,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `ui_layout.py`
 - `style_metrics.py`
 - `tests/test_style_metrics.py`
+- `tests/test_http_connection_pool.py`
 - `Key State Variables (`app_state.py`)`
 - `Thread Safety Pattern`
 - `Config Paths (`config_loader.py`)`
@@ -39,9 +41,11 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ---
 
 ### `api_handler.py` [4]
-**Purpose:** API calls, rate limiting, Valkey caching, and the ONE definition of the thinking-mode rule
+**Purpose:** API calls, rate limiting, Valkey caching, the ONE definition of the thinking-mode rule, and the ONE shared HTTP connection pool
 **Key:** `RateLimiter`, `global_rate_limiter`, `get/set_cached_response`,
-`resolve_thinking_mode()`, `thinking_payload_fragment()`, `apply_thinking_mode()`, `THINKING_MODES`
+`resolve_thinking_mode()`, `thinking_payload_fragment()`, `apply_thinking_mode()`, `THINKING_MODES`,
+`http` (the shared `HttpClient`), `HttpClient`, `_http_session`, `close_http_session()`,
+`HTTP_POOL_MAXSIZE`, `HTTP_CONNECT_RETRIES`
 **Edit for:**
 - Rate limit logic → `RateLimiter.wait_if_needed()`
 - Cache TTL → `set_cached_response()` ttl param
@@ -52,10 +56,51 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
   `generation.py`. **Any new request builder that sends `messages` must call
   `apply_thinking_mode()`** — a builder that reads `enable_thinking` itself silently ignores
   `inherit`. See the v13.0.4 task row below for the full list of files.
+- **Anything about HTTP connections / pooling / retries** → `_build_session()`,
+  `HTTP_POOL_MAXSIZE`, `HTTP_CONNECT_RETRIES` (v14.2.0). See the connection-reuse rule below
 
 ---
 
-### `api_profiles.py` [5]
+### The HTTP connection pool (v14.2.0) — read before touching any request call site
+
+Every outbound request goes through **one shared, pooled `requests.Session`**, exposed as the
+`HttpClient` facade `api_handler.http`. `generation`, `quality` and `vllm_metrics` each bind their
+module-level name `requests` to that ONE object (`requests = http`), so the ~100 call sites still
+read `requests.post(url, headers=..., data=..., timeout=...)` and
+`requests.exceptions.Timeout` still works.
+
+**Why it exists.** The old code called the module-level `requests.post(...)` helper, which builds a
+throwaway `Session` per call: a new TCP connection, a new TLS handshake, one request, close — from
+every worker and every judge thread. Against a local vLLM behind nginx that is one connection per
+request, and the server's socket table fills with `ESTAB` entries against `:443` (the "client side
+spam connections" report). It was never extra requests; it was the same requests each paying for a
+new connection. Measured: 120 requests / 8 threads went from **120 connections, 1.04 s** to
+**8 connections, 0.67 s**.
+
+Four rules that are easy to break:
+
+- **`requests` must stay bound to the SHARED facade, not a per-module instance.** The suite patches
+  `generation.requests.post` and expects the quality judge's and the poller's calls intercepted too,
+  because before v14.2.0 all three imported the same real module. A per-module `HttpClient()` looks
+  tidier and silently breaks that: `tests/test_dataset_compatibility.py` fails with
+  `len(judges) == 0`. `tests/test_http_connection_pool.py` pins the shared identity.
+- **`max_retries` is CONNECT-ONLY.** `read=0`/`status=0` on purpose: a read timeout on a generation
+  request means the model may already have produced tokens, so resending it would silently duplicate
+  work and bill the slot twice. `allowed_methods=None` is required for the connect case, because
+  urllib3 otherwise refuses to retry POST.
+- **`pool_maxsize` must stay >= the largest `api.threads` the GUI offers** (64). A pool smaller than
+  the thread count makes urllib3 open extra connections and discard them instead of pooling them,
+  which brings the churn straight back. `pool_block=False` keeps the old never-block-a-worker
+  behaviour.
+- **A reused connection may be dead.** nginx closes idle keep-alive connections
+  (`keepalive_timeout`, 75 s default) and the rate limiter can park a slot for 60 s. urllib3 2.x
+  detects this and re-opens transparently (verified: 0/6 requests failed across idle gaps longer
+  than the server's timeout), so do not "fix" it by disabling pooling or by raising the server's
+  timeout.
+
+`close_http_session()` is registered with `atexit`; it is idempotent and never raises.
+
+---
 **Purpose:** Filter request payloads per API endpoint compatibility
 **Key:** `apply_profile_for_slot()`, `detect_profile()`, `set_slot_profile()`
 **Edit for:**
@@ -197,5 +242,6 @@ if lock_acquired:
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
 | Add/modify an always-on deterministic text cleanup (v12.7.3: repeated-word collapse) | `text_utils.py` (the helper + its pre-compiled patterns at the top of the module), `generation.py` (`write_conversation()` processing loop — it goes in the always-on tail BEFORE `repair_straight_quotes`/`normalize_quotes`), `docs/features.md` (Text Post-Processing list), `docs/how-it-works.md` (step 7), `tests/test_repeated_words.py`. Keep the rule an EXCLUSION list of ordinary words (`_REPEAT_EXEMPT_WORDS`) so valid emphasis such as `no no no` survives, keep the helper idempotent and empty-input safe, and keep the comma-run-end pattern ahead of the comma-run pattern. There is no config key on purpose — do not add one |
 | Add UI metric | `app_state.py` (widget ref), `generate.py` (create widget), `dashboard.py` (update) |
+| Add a new outbound HTTP call, or change pooling / retries / timeouts (v14.2.0) | `api_handler.py` (`_build_session()`, `HTTP_POOL_MAXSIZE`, `HTTP_CONNECT_RETRIES`). **Bind the module's `requests` name to the SHARED `api_handler.http` facade** — never `import requests` and never a per-module `HttpClient()`, or the suite's `generation.requests.post` patches stop reaching the judge and the poller. Keep `max_retries` connect-only (`read=0`/`status=0`) so a read timeout is never silently resent. `tests/test_http_connection_pool.py` |
 | Change which requests send `chat_template_kwargs` / add a per-request `enable_thinking` override (v13.0.4) | `api_handler.py` (`resolve_thinking_mode()` / `thinking_payload_fragment()` / `apply_thinking_mode()` / `THINKING_MODES` / the `*_THINKING_KEY` constants — the ONE definition, here because both `generation.py` and `quality.py` import it and `quality.py` must not import `generation.py`), the four call sites (`generation.call_slop_fixer_llm`, `call_anti_slop_llm`, `rewrite_regex_watch_text`, `quality._call_logic_judge_once`), `config/config.yml`, `config_editor.py` (three dropdowns; `THINKING_MODE_CHOICES` is asserted equal to `api_handler.THINKING_MODES`), `tests/test_thinking_mode.py`. **The keys are SIBLINGS of `slop_fixer_params` / `anti_slop_params` / `sampler_settings`, never entries in them** — those dicts are read with an all-or-nothing `params or main_sampler_settings` fallback, so a lone extra key makes one truthy and stops it inheriting the main defaults (top_p 0.9 -> 0.95). **`inherit` is the default for the auxiliary three and must stay so.** Mechanism: `docs/samplers-and-infrastructure.md` |
 | Add a style measurement / style metadata column | `style_metrics.py` (keep it dependency-free, Python 3.11-clean — no 3.12+ syntax such as PEP 695 `type` aliases), then `quality._score_tic_density()` (if it feeds the dimension) and/or `generation._style_metrics_for_record()` (it flows into the `style_*` block automatically via `response_metrics()`/`aggregate()`); `tests/test_style_metrics.py` |

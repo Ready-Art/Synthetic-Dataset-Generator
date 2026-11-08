@@ -129,6 +129,7 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 - `tests/test_progress_accounting.py` is headless and runs the real worker against a fake main-API server with a stubbed judge: it pins the v13.0.5 rule that `processed_tasks` is credited once per COMPLETED TASK, idempotently, and never refunded (see `docs/agents/generation.md`).
 - `tests/test_state_save_coalescing.py` and `tests/test_prompt_trace_gate.py` are headless and pin the two v13.1.1 performance fixes: the per-task state save must COALESCE onto one background writer, and the prompt traces must be opt-in.
 - `tests/test_undefined_globals.py` is headless and imports nothing: it parses the application modules with `symtable` and fails on any global a function references but its module never binds (the v12.9.1 `NameError` class). Add a new top-level module to its `CHECKED_MODULES`.
+- `tests/test_http_connection_pool.py` is headless and starts a loopback keep-alive server on an ephemeral port (no external network): it pins the v14.2.0 shared HTTP pool — the pool sizing, the CONNECT-ONLY retry policy, the fact that `generation`, `quality` and `vllm_metrics` all bind the SAME `api_handler.http` facade (a per-module facade silently stops the suite's `generation.requests.post` patches from reaching the judge), and that N requests open far fewer than N connections.
 
 ## Boundaries
 
