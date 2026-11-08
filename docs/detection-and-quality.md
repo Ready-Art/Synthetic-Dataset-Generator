@@ -44,6 +44,10 @@ detection:
   non_latin:                      # v11.10.0 (off by default)
     enabled: false
     fixes: []                     # empty = built-in instruction
+
+  foreign_word:                   # v13.5.2 (off by default)
+    enabled: false
+    fixes: []                     # empty = built-in instruction
 ```
 
 The **gender** setting (`config.yml` top level) determines which user speaking phrase list is active:
@@ -163,6 +167,46 @@ On a hit the reply is reported once per distinct script (with the sentence that 
 - **It reports, it does not discard silently.** Every hit bumps the `Non-Latin` metric card, fills the `Recent Non-Latin` panel on the Totals and per-API tabs, and adds a series to the issue graph.
 
 The Config Editor's **Detection** tab has a **Non-Latin Script Check** panel (toggle + fix list, the field disabled while the toggle is off). Off by default, so existing output is unchanged.
+
+## Foreign-Word Check (v13.5.2)
+
+The Non-Latin check above is a **script** allow-list, so it cannot see a word that is written in Latin letters but belongs to another language. A model trained across several languages drops those in constantly, and most often on the words a reply leans on hardest — a body part or a colour:
+
+```
+her green olhos watching him        (Portuguese)
+her brown ojos widened             (Spanish)
+green ogen stared back              (Dutch)
+```
+
+The same corruption also shows up as two words fused with a capital in the middle, which is not English orthography at all:
+
+```
+visiblyTrembling hands
+blueEyes looked up
+Jessieshifted on the bed
+```
+
+A phrase list cannot catch either, because there is no fixed phrase — only a word in the wrong language.
+
+**The check needs no LLM.** It is word based, in `detection.is_foreign_word()`:
+
+- **Foreign words** are matched whole and case-insensitively against a curated list of words from Portuguese, Spanish, Italian, German, French and Dutch. The list is deliberately conservative: it holds only words with **no English homograph**. Words that are also ordinary English — `pie`, `sole`, `hay`, `sea`, `come`, `dice`, `son` — are **not** listed, because flagging them would reject good replies and burn a regeneration on every one.
+- **Glued words** are a lowercase run, a capital, then more lowercase (`visiblyTrembling`). A capital inside a word is not English orthography, so it is a reliable signal — but real camel-case names and brands are allow-listed (`iPhone`, `JavaScript`, `GitHub`, `McDonald`, `PlayStation`).
+- **A capitalised glued word** is ambiguous — it could be a real name (`DeAngelo`, `LaToya`) — so it is only flagged when its tail is an ordinary English word (`Jessie` + `shifted`).
+- **A name fused with no capital at all** (`Jessieshifted`) has no orthographic signal, so it can only be caught when the head is a character name the caller knows. `is_foreign_word()` takes the cast for exactly that reason and never guesses.
+
+```yaml
+detection:
+  foreign_word:
+    enabled: false        # off by default
+    fixes: []             # one instruction per retry round; empty = built-in default
+```
+
+On a hit the reply is reported once per distinct offending word (with the sentence that holds the first occurrence) and then regenerated with one fix from `detection.foreign_word.fixes` appended to the system prompt (empty falls back to `generation.DEFAULT_FOREIGN_WORD_FIX`). Once the fixes are exhausted the turn fails for that attempt and a fresh attempt starts, the same policy as the Non-Latin check, so a permanently corrupted reply is never written to the dataset. Every hit bumps the `Foreign Word` metric card and fills its recent-list panel.
+
+**A corruption that collides with a real English word is deliberately not caught.** `expires` was observed once as a mangled `ojos`, but it is also an ordinary English verb (*"the contract expires"*), so flagging it would reject good replies. A false positive costs a whole regeneration, so the check stays silent rather than guess.
+
+Off by default, so existing output is unchanged.
 
 ## Quality Scoring
 

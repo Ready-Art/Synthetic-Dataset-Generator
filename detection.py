@@ -552,6 +552,233 @@ def is_non_latin(text):
                   for script, _character, sentence in hits]
 
 
+# --- Foreign-word corruption (v13.5.2) ----------------------------------------------------
+# A model trained across several languages occasionally emits a word from another language inside an
+# otherwise English reply -- most often a body part or a colour, because those are the words the reply
+# leans on hardest. Observed in generated output: "green olhos" (Portuguese), "brown ojos" (Spanish),
+# "green ogen" (Dutch), "blue expires" (a mangled "ojos"). The non-Latin check above cannot catch
+# these: the characters are all plain Latin, so the script allow-list passes them.
+#
+# A phrase list cannot catch them either -- there is no fixed phrase, only a word in the wrong
+# language. So this check is WORD BASED, and deliberately conservative: it flags only words that have
+# NO English meaning at all in this context. Words that are also ordinary English ("pie", "sole",
+# "hay", "sea", "come", "dice", "son") are NOT listed, because flagging them would reject good
+# replies and burn a regeneration on every one.
+
+# Foreign words that are unambiguously not English. Grouped by language for the report only; the
+# decision is membership. Keep this list to words with no common English homograph.
+FOREIGN_WORD_GROUPS = (
+    ('Portuguese', (
+        'olhos', 'olho', 'cabelo', 'cabelos', 'pele', 'mao', 'maos', 'perna', 'pernas',
+        'boca', 'labios', 'seios', 'coxa', 'coxas', 'barriga', 'costas', 'ombro', 'ombros',
+        'dedos', 'unhas', 'sorriso', 'suspiro', 'gemido', 'corpo', 'rosto', 'testa', 'queixo',
+        'pescoco', 'lingua', 'dente', 'dentes', 'sangue', 'suor', 'lagrima', 'lagrimas',
+        'vermelho', 'vermelhos', 'vermelha', 'azul', 'azuis', 'verde', 'verdes', 'preto', 'pretos',
+        'branco', 'brancos', 'amarelo', 'castanho', 'castanhos', 'loiro', 'loiros', 'ruivo',
+        'escuro', 'escuros', 'claro', 'claros', 'pequeno', 'pequena', 'grande', 'quente', 'frio',
+    )),
+    ('Spanish', (
+        'ojos', 'pelo', 'piel', 'mano', 'manos', 'pierna', 'piernas', 'boca', 'labios',
+        'pechos', 'muslo', 'muslos', 'barriga', 'espalda', 'hombros', 'dedos', 'unas', 'sonrisa',
+        'suspiro', 'gemido', 'cuerpo', 'rostro', 'frente', 'barbilla', 'cuello', 'lengua',
+        'diente', 'dientes', 'sangre', 'sudor', 'lagrima', 'lagrimas', 'rojo', 'rojos', 'roja',
+        'azul', 'azules', 'verde', 'verdes', 'negro', 'negros', 'blanco', 'blancos', 'amarillo',
+        'marron', 'moreno', 'rubio', 'oscuro', 'oscuros', 'claro', 'claros', 'pequeno', 'pequena',
+        'grande', 'caliente', 'frio', 'respiración', 'respiracion',
+    )),
+    ('Italian', (
+        'occhi', 'occhio', 'capelli', 'pelle', 'mano', 'mani', 'gamba', 'gambe', 'bocca',
+        'labbra', 'seni', 'coscia', 'cosce', 'pancia', 'schiena', 'spalle', 'dita', 'sorriso',
+        'sospiro', 'gemito', 'corpo', 'viso', 'fronte', 'mento', 'collo', 'lingua', 'dente',
+        'denti', 'sangue', 'sudore', 'lacrima', 'lacrime', 'rosso', 'rossi', 'rossa', 'blu',
+        'verde', 'verdi', 'nero', 'neri', 'bianco', 'bianchi', 'giallo', 'marrone', 'biondo',
+        'scuro', 'scuri', 'chiaro', 'chiari', 'piccolo', 'piccola', 'grande', 'caldo', 'freddo',
+    )),
+    ('German', (
+        'augen', 'haare', 'haut', 'hande', 'beine', 'mund', 'lippen', 'bruste', 'schenkel',
+        'bauch', 'rucken', 'schultern', 'finger', 'lacheln', 'seufzer', 'stohnen', 'korper',
+        'gesicht', 'stirn', 'kinn', 'hals', 'zunge', 'zahne', 'blut', 'schweiss', 'trane',
+        'tranen', 'rot', 'blau', 'grun', 'schwarz', 'weiss', 'gelb', 'braun', 'dunkel', 'hell',
+        'klein', 'gross', 'heiss', 'kalt',
+    )),
+    ('French', (
+        'yeux', 'cheveux', 'peau', 'mains', 'jambes', 'bouche', 'levres', 'seins', 'cuisse',
+        'cuisses', 'ventre', 'dos', 'epaules', 'doigts', 'sourire', 'soupir', 'gemissement',
+        'corps', 'visage', 'front', 'menton', 'cou', 'langue', 'dents', 'sang', 'sueur', 'larme',
+        'larmes', 'rouge', 'bleu', 'vert', 'noir', 'blanc', 'jaune', 'brun', 'sombre', 'clair',
+        'petit', 'petite', 'chaud', 'froid',
+    )),
+    ('Dutch', (
+        'ogen', 'haar', 'huid', 'handen', 'benen', 'mond', 'lippen', 'borsten', 'dijen', 'buik',
+        'rug', 'schouders', 'vingers', 'glimlach', 'zucht', 'kreun', 'lichaam', 'gezicht',
+        'voorhoofd', 'kin', 'nek', 'tong', 'tanden', 'bloed', 'zweet', 'traan', 'tranen', 'rood',
+        'blauw', 'groen', 'zwart', 'wit', 'geel', 'bruin', 'donker', 'licht', 'klein', 'groot',
+        'heet', 'koud',
+    )),
+)
+
+_FOREIGN_WORD_LOOKUP = {}
+for _language, _words in FOREIGN_WORD_GROUPS:
+    for _word in _words:
+        _FOREIGN_WORD_LOOKUP.setdefault(_word, _language)
+
+# A word is matched whole and case-insensitively. The look-behind/ahead stop "olhos" matching inside
+# "olhosomething", and the apostrophe class keeps a possessive ("ojos'") matching.
+_FOREIGN_WORD_RE = re.compile(
+    r"(?<![\w'\u2019])([A-Za-z\u00c0-\u024f]+)(?![\w'\u2019])", re.UNICODE)
+
+# --- Glued words (v13.5.2) --------------------------------------------------------------
+# The same class of corruption also shows up as two words fused with a capital in the middle:
+# "visiblyTrembling", "blueEyes", "Jessieshifted". A capital inside a word is not English
+# orthography, so it is a reliable signal -- but a handful of real names and brands use it, and those
+# are allow-listed here.
+GLUED_WORD_ALLOWLIST = frozenset(word.lower() for word in (
+    'iPhone', 'iPad', 'iPod', 'iTunes', 'iCloud', 'iOS', 'macOS', 'macBook',
+    'eBay', 'eBook', 'eCommerce', 'eSports', 'eMail',
+    'YouTube', 'LinkedIn', 'GitHub', 'GitLab', 'JavaScript', 'TypeScript',
+    'PowerPoint', 'WordPress', 'PayPal', 'WhatsApp', 'FaceTime', 'MasterCard',
+    'McDonald', 'McFadden', 'McKenzie', 'MacKenzie', 'DeLorean', 'LaTeX',
+    'BlackBerry', 'PlayStation', 'GameBoy', 'SoundCloud', 'TechCrunch',
+))
+
+# A run of letters, then a capital, then more letters. Requires 3+ letters before the capital so
+# "McDonald" (2 before) and "iPhone" (1 before) are not even candidates.
+#
+# The tail is matched case-insensitively and may itself start with a capital, because a fused pair
+# often capitalises BOTH halves: "BlueEyes" splits as "Blue" + "Eyes", not "Blue" + "E" + "yes".
+# Matching only a lowercase tail made the tail check read "yes" instead of "eyes" and miss it.
+_GLUED_WORD_RE = re.compile(r"\b([A-Za-z]{3,})([A-Z][a-z]{2,})\b")
+
+# A name fused to the next word with NO capital in between ("Jessieshifted", "Raventurned"). This is
+# the same corruption as the capitalised form, but there is no orthographic signal at all, so it can
+# only be caught when the tail is an ordinary English word AND the head is a name the caller knows.
+# ``find_glued_name_words()`` takes the character names for exactly that reason -- it is called with
+# the names in play, never with a bare string, so it cannot guess.
+_NAME_GLUE_TAILS = frozenset((
+    'shifted', 'shifting', 'trembling', 'trembled', 'looked', 'looking', 'smiled', 'smiling',
+    'moaned', 'gasped', 'sighed', 'whispered', 'nodded', 'turned', 'moved', 'moving',
+    'stood', 'standing', 'pulled', 'pushed', 'reached', 'grabbed', 'dropped', 'climbed',
+    'laughed', 'screamed', 'shuddered', 'flinched', 'winced', 'blushed', 'shivered',
+))
+
+# When the FIRST segment is capitalised the candidate is ambiguous -- it could be a real name
+# ("DeAngelo", "LaToya") rather than two fused words. So a capitalised candidate is only flagged
+# when its SECOND segment is an ordinary English word, which is what a fused pair looks like
+# ("Jessie" + "shifted", "blue" + "Eyes"). A name whose tail is not a common word is left alone.
+GLUED_WORD_TAILS = frozenset((
+    'eyes', 'eye', 'hair', 'skin', 'lips', 'lip', 'hands', 'hand', 'fingers', 'finger',
+    'trembling', 'trembled', 'shifted', 'shifting', 'looked', 'looking', 'smiled', 'smiling',
+    'body', 'face', 'mouth', 'tongue', 'teeth', 'throat', 'neck', 'shoulders', 'shoulder',
+    'breath', 'breathing', 'voice', 'whispered', 'moaned', 'gasped', 'sighed', 'blushed',
+    'legs', 'leg', 'thighs', 'thigh', 'arms', 'arm', 'chest', 'back', 'stomach', 'hips',
+    'turned', 'nodded', 'shook', 'moved', 'moving', 'stood', 'standing', 'sat', 'sitting',
+    'red', 'blue', 'green', 'black', 'white', 'brown', 'grey', 'gray', 'blonde', 'dark',
+))
+
+# NOTE: "expires" was seen once as a mangled "ojos", but it is also a perfectly ordinary English verb
+# ("the contract expires"), so flagging it would reject good replies. It is deliberately NOT listed.
+# A corruption that collides with a real English word cannot be caught without false positives, and a
+# false positive costs a whole regeneration.
+
+
+def find_foreign_words(text):
+    """Return ``[(language, word, sentence), ...]`` for foreign words and glued words.
+
+    One entry per distinct offending word, so a reply that repeats "olhos" three times reports it once.
+    The sentence is the one holding the first occurrence, trimmed and capped.
+    """
+    if not text:
+        return []
+    text = str(text)
+    found, seen = [], set()
+    for match in _FOREIGN_WORD_RE.finditer(text):
+        word = match.group(1)
+        language = _FOREIGN_WORD_LOOKUP.get(word.lower())
+        if not language:
+            continue
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append((language, word, _sentence_around(text, match.start(), match.end())))
+    for match in _GLUED_WORD_RE.finditer(text):
+        word = match.group(0)
+        if word.lower() in GLUED_WORD_ALLOWLIST:
+            continue
+        # A capitalised first segment is ambiguous (a real name, or two fused words), so it is only
+        # flagged when the tail is an ordinary English word.
+        if match.group(1)[0].isupper() and match.group(2).lower() not in GLUED_WORD_TAILS:
+            continue
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(("Glued word", word, _sentence_around(text, match.start(), match.end())))
+    return found
+
+
+def find_glued_name_words(text, names):
+    """Return ``[(name, word, sentence), ...]`` for a character name fused to the next word.
+
+    Catches the no-capital variant ("Jessieshifted") that ``_GLUED_WORD_RE`` cannot see. It needs the
+    names actually in play, so it can never guess: the head must be one of ``names`` and the tail must
+    be an ordinary English word. Called with the scene's cast, never with a bare string.
+    """
+    if not text or not names:
+        return []
+    text = str(text)
+    found, seen = [], set()
+    for name in names:
+        name = str(name or '').strip()
+        if len(name) < 3:
+            continue
+        pattern = re.compile(r"\b(" + re.escape(name) + r")([a-z]{3,})\b")
+        for match in pattern.finditer(text):
+            tail = match.group(2)
+            if tail.lower() not in _NAME_GLUE_TAILS:
+                continue
+            word = match.group(0)
+            key = word.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append((name, word, _sentence_around(text, match.start(), match.end())))
+    return found
+
+
+def is_foreign_word(text, names=None):
+    """Detect a foreign-language word or a glued word inside an English reply.
+
+    The non-Latin check above only catches a word written in another SCRIPT. A word written in Latin
+    letters but belonging to another LANGUAGE passes it, and so does a pair of words fused with a capital
+    in the middle. Both poison a dataset whose target language is English, and neither can be caught by a
+    phrase list -- there is no fixed phrase, only a word in the wrong language.
+
+    The check is word based and deliberately conservative: it flags only words with no English
+    homograph, so it does not reject a good reply and burn a regeneration on it.
+
+    Same contract as the other ``is_*()`` checks: ``(bool, [(label, sentence), ...])`` plus a timestamp
+    in ``issue_timestamps['foreign_word']`` (1-hour rolling window) so the dashboard's metric card,
+    issue panel and graph update on their own.
+    """
+    if not text or not str(text).strip():
+        return False, []
+    hits = find_foreign_words(text)
+    if names:
+        hits = hits + [("Glued name", word, sentence)
+                       for _name, word, sentence in find_glued_name_words(text, names)]
+    if not hits:
+        return False, []
+    if issue_timestamps is not None and issue_timestamps_lock is not None:
+        with issue_timestamps_lock:
+            issue_timestamps.setdefault('foreign_word', []).append(time.time())
+            cutoff = time.time() - 3600
+            issue_timestamps['foreign_word'] = [
+                t for t in issue_timestamps['foreign_word'] if t > cutoff]
+    return True, [("Foreign word (%s): %s" % (language, word), sentence)
+                  for language, word, sentence in hits]
+
+
 def is_incomplete_quote(text):
     if not text:
         return False, []

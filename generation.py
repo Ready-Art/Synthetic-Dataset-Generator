@@ -63,6 +63,17 @@ DEFAULT_NON_LATIN_FIX = (
     "Hebrew or Devanagari characters, and no emoji)."
 )
 
+# Foreign-word corruption check (v13.5.2): the instruction appended to the system prompt when a reply
+# contains a word from another LANGUAGE written in Latin letters ("green olhos", "brown ojos") or two
+# words fused with a capital in the middle ("visiblyTrembling", "blueEyes"). The non-Latin check above
+# cannot see either, because every character is plain Latin. Used when `detection.foreign_word.fixes`
+# is empty, so switching the check on in the config editor works without also authoring a fix list.
+DEFAULT_FOREIGN_WORD_FIX = (
+    "Write every word in English. Do not use a word from another language, even when it means the "
+    "same thing in that language. Do not join two words together: put a space between them, and "
+    "never put a capital letter in the middle of a word."
+)
+
 # --- Scene Cast (v12.0) -------------------------------------------------------------------
 # Characters join and leave a multi-character scene. THE GENERATOR OWNS THE CAST: the schedule
 # is computed before any request is sent, the model is told who is present each reply, and the
@@ -1407,6 +1418,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
                          current_retry_missing_quotations=False,
                          current_non_latin_enabled=False,
                          current_non_latin_fixes=(),
+                         current_foreign_word_enabled=False,
+                         current_foreign_word_fixes=(),
                          repeat_opener_enabled_local=False,
                          repeat_opener_fixes_local=(),
                          repeat_opener_max_retries=REPEAT_OPENER_MAX_RETRIES,
@@ -1539,6 +1552,9 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
             retry_missing_quotations_local=current_retry_missing_quotations,
             non_latin_enabled_local=current_non_latin_enabled,
             non_latin_fixes_local=current_non_latin_fixes,
+            foreign_word_enabled_local=current_foreign_word_enabled,
+            foreign_word_fixes_local=current_foreign_word_fixes,
+            character_names_local=scene_character_names,
             repeat_opener_enabled_local=repeat_opener_enabled_local,
             repeat_opener_fixes_local=repeat_opener_fixes_local,
             repeat_opener_max_retries=repeat_opener_max_retries,
@@ -1649,6 +1665,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
            retry_missing_quotations_local=False,
            current_non_latin_enabled=False,
            current_non_latin_fixes=(),
+           current_foreign_word_enabled=False,
+           current_foreign_word_fixes=(),
            questions_append_alias_local="",
            questions_append_separator_local=DEFAULT_QUESTION_SEPARATOR,
            scene_cast_enabled_local=False,
@@ -2591,6 +2609,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                                 retry_missing_quotations_local=retry_missing_quotations_local,
                                 non_latin_enabled_local=current_non_latin_enabled,
                                 non_latin_fixes_local=current_non_latin_fixes,
+                                foreign_word_enabled_local=current_foreign_word_enabled,
+                                foreign_word_fixes_local=current_foreign_word_fixes,
                                 scene_continuity_enabled_local=scene_continuity_enabled_local,
                                 scene_continuity_fixes_local=scene_continuity_fixes_local,
                                 scene_continuity_max_rounds=scene_continuity_max_rounds,
@@ -2856,6 +2876,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                         retry_missing_quotations_local=retry_missing_quotations_local,
                         non_latin_enabled_local=current_non_latin_enabled,
                         non_latin_fixes_local=current_non_latin_fixes,
+                        foreign_word_enabled_local=current_foreign_word_enabled,
+                        foreign_word_fixes_local=current_foreign_word_fixes,
                         scene_continuity_enabled_local=scene_continuity_enabled_local,
                         scene_continuity_fixes_local=scene_continuity_fixes_local,
                         scene_continuity_max_rounds=scene_continuity_max_rounds,
@@ -5309,6 +5331,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                  retry_missing_quotations_local=False,
                                  non_latin_enabled_local=False,
                                  non_latin_fixes_local=(),
+                                 foreign_word_enabled_local=False,
+                                 foreign_word_fixes_local=(),
+                                 character_names_local=(),
                                  scene_continuity_enabled_local=False,
                                  scene_continuity_fixes_local=(),
                                  scene_continuity_max_rounds=SCENE_CONTINUITY_MAX_ROUNDS,
@@ -5392,7 +5417,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
         api_call_retries_for_this_iteration = current_max_attempts_for_slop_fixer_call
         fix_attempts_specific = {'refusal': 0, 'user_speaking': 0, 'slop_fallback': 0, 'incomplete_quote': 0, 'ooc': 0,
-                                 'missing_quotation': 0, 'non_latin': 0, 'scene_continuity': 0,
+                                 'missing_quotation': 0, 'non_latin': 0, 'foreign_word': 0,
+                                 'scene_continuity': 0,
                                  'repeat_opener': 0, 'repeat_reply': 0, 'first_reply_opener': 0}
         first_reply_rejected_openings = []  # every opening the first-reply caps rejected this attempt
         # v12.5: the per-attempt fix suffix for the answer PROMPT (not the system prompt). It is
@@ -5726,6 +5752,45 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         continue
                     else:
                         log_message(f"Thread {thread_id}: Non-Latin script detected (API Slot {api_slot_idx+1}), fixes "
+                                    f"exhausted for attempt {attempt+1}. Discarding this attempt's answer.", "WARNING")
+
+            # --- Foreign-word corruption check (v13.5.2) ---
+            # The non-Latin check above only catches a word written in another SCRIPT. A word written in
+            # Latin letters but belonging to another LANGUAGE ("green olhos", "brown ojos") passes it, and
+            # so does a pair of words fused with a capital in the middle ("visiblyTrembling"). Both are
+            # word-level corruption, so the check is word based and needs no LLM call and no network
+            # request. Runs after the non-Latin branch so a reply that is half in another script is
+            # replaced first, and before the phrase-driven branches for the same reason.
+            if foreign_word_enabled_local:
+                foreign_word_detected, foreign_word_info = detection.is_foreign_word(
+                    answer, character_names_local)
+                if foreign_word_detected:
+                    issue_detected_this_main_api_call = True
+                    issue_ever_detected_this_task = True
+                    lock_acquired = app_state.system_prompt_lock.acquire(timeout=0.05)
+                    if lock_acquired:
+                        try:
+                            app_state.foreign_word_count_total += 1
+                            if api_slot_idx < len(app_state.foreign_word_counts_per_api):
+                                app_state.foreign_word_counts_per_api[api_slot_idx] += 1
+                            if foreign_word_info:
+                                detected_label, detected_sentence = foreign_word_info[0]
+                                if len(app_state.recent_foreign_word_total) >= MAX_RECENT: app_state.recent_foreign_word_total.pop(0)
+                                app_state.recent_foreign_word_total.append((detected_label, detected_sentence, api_slot_idx))
+                                if api_slot_idx < len(app_state.recent_foreign_word_per_api):
+                                    if len(app_state.recent_foreign_word_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_foreign_word_per_api[api_slot_idx].pop(0)
+                                    app_state.recent_foreign_word_per_api[api_slot_idx].append((detected_label, detected_sentence))
+                        finally:
+                            app_state.system_prompt_lock.release()
+                    foreign_word_fix_list = foreign_word_fixes_local or (DEFAULT_FOREIGN_WORD_FIX,)
+                    if fix_attempts_specific['foreign_word'] < len(foreign_word_fix_list):
+                        current_system_prompt_iter += f" {foreign_word_fix_list[fix_attempts_specific['foreign_word']]}"
+                        fix_attempts_specific['foreign_word'] += 1
+                        log_message(f"Thread {thread_id}: Foreign-word corruption detected (API Slot {api_slot_idx+1}). "
+                                    f"Snippet: {answer[:80]}... Applying fix {fix_attempts_specific['foreign_word']}. Retrying API call.", "DEBUG")
+                        continue
+                    else:
+                        log_message(f"Thread {thread_id}: Foreign-word corruption detected (API Slot {api_slot_idx+1}), fixes "
                                     f"exhausted for attempt {attempt+1}. Discarding this attempt's answer.", "WARNING")
 
             if refusal_detected:

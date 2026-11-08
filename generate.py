@@ -2404,6 +2404,8 @@ def start_processing():
     # there is nothing to validate here (no pattern to compile, no phrase list to sanitize) -- just
     # a toggle and an optional fix list. An empty fix list falls back to generation.DEFAULT_NON_LATIN_FIX.
     current_non_latin_enabled = bool(global_config.get('detection.non_latin.enabled', False))
+    current_foreign_word_enabled = bool(global_config.get('detection.foreign_word.enabled', False))
+    current_foreign_word_fixes = tuple(global_config.get('detection.foreign_word.fixes', []) or [])
     current_non_latin_fixes = global_config.get('detection.non_latin.fixes', []) or []
     if not isinstance(current_non_latin_fixes, list):
         current_non_latin_fixes = []
@@ -2855,6 +2857,8 @@ def start_processing():
             'include_style_metrics_local': include_style_metrics,
             'retry_missing_quotations_local': current_retry_missing_quotations,
             'current_non_latin_enabled': current_non_latin_enabled,
+            'current_foreign_word_enabled': current_foreign_word_enabled,
+            'current_foreign_word_fixes': current_foreign_word_fixes,
             'current_non_latin_fixes': current_non_latin_fixes,
             'questions_append_alias_local': current_questions_append_alias,
             'questions_append_separator_local': current_questions_append_separator,
@@ -3283,7 +3287,7 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.5.1",
+    text="v13.5.2",
     font=('Segoe UI', 10),
     foreground='#868e96'
 )
