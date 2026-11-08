@@ -1087,6 +1087,148 @@ def check_scene_continuity(text, blocked_names, expected_names=()):
     return bool(hard), findings
 
 
+# --- Scene cast transition evidence (v14.1) --------------------------------------------------
+# The state machine used to decide whether a scheduled exit/arrival had LANDED by searching the
+# reply for the character's NAME anywhere at all. That is both too loose and too strict, and both
+# halves were visible in the same run:
+#
+#   * TOO LOOSE: "Cole is still here, arguing" contains "Cole", so the exit was recorded as
+#     `exited` and the very next reply blocked a character who had never left. The transcript was
+#     then incoherent in the opposite direction from the one the feature exists to prevent.
+#   * TOO STRICT: "She grabbed her coat and headed for the door" contains no name, so a perfectly
+#     good exit was recorded as `exit_deferred` and then `exit_cancelled`. This is the common case --
+#     prose uses pronouns -- and it is why characters appeared never to leave the scene.
+#
+# The fix is to look for EVIDENCE OF THE TRANSITION rather than for the name: a departure/arrival
+# verb in a sentence that is about the character. Attribution comes from the name in the same
+# sentence, or -- when the caller says only one character is mid-transition -- from a pronoun.
+#
+# These lists are deliberately about LEAVING and ARRIVING, not about motion in general: "Cole turned"
+# is not a departure, and treating it as one would re-create the too-loose half of the bug.
+_DEPARTURE_VERBS = (
+    'left', 'leaves', 'leaving', 'leave', 'departs', 'departed', 'departing', 'exits', 'exited',
+    'exiting', 'goes', 'went', 'gone', 'goodbye', 'goodbyes', 'farewell', 'leaves the room',
+    'left the room', 'walks out', 'walked out', 'walking out', 'heads out', 'headed out',
+    'heading out', 'steps out', 'stepped out', 'slips out', 'slipped out', 'shows out',
+    'showed out', 'storms out', 'stormed out', 'ducks out', 'ducked out', 'takes off',
+    'took off', 'taking off', 'walks away', 'walked away', 'walking away', 'walks off',
+    'walked off', 'turns and leaves', 'turned and left', 'out the door', 'through the door',
+    'for the door', 'to the door', 'excuses himself', 'excuses herself', 'excused himself',
+    'excused herself', 'says his goodbyes', 'says her goodbyes', 'said his goodbyes',
+    'said her goodbyes',
+    # A stated reason to go is the most common departure in prose, and it is usually SPOKEN. These
+    # are phrases rather than the bare verb 'go', which is far too common to be evidence on its own.
+    'have to go', 'has to go', 'had to go', 'must go', 'need to go', 'needs to go', 'got to go',
+    'should go', 'better go', 'gotta go', 'have to leave', 'has to leave', 'had to leave',
+    'must leave', 'need to leave', 'got to leave', 'should leave', 'better leave',
+    'have to get going', 'has to get going', 'have to head', 'has to head',
+)
+_ARRIVAL_VERBS = (
+    'arrives', 'arrived', 'arriving', 'enters', 'entered', 'entering', 'comes in', 'came in',
+    'coming in', 'walks in', 'walked in', 'walking in', 'steps in', 'stepped in', 'stepping in',
+    'shows up', 'showed up', 'showing up', 'appears', 'appeared', 'appearing', 'joins',
+    'joined', 'joining', 'walks through the door', 'walked through the door',
+    'comes through the door', 'came through the door', 'lets himself in', 'lets herself in',
+    'let himself in', 'let herself in', 'steps through the door', 'stepped through the door',
+    'turns up', 'turned up', 'turning up', 'pokes his head in', 'pokes her head in',
+)
+
+# A transition verb inside a NEGATED clause is not evidence: "Cole did not leave", "Cole is still
+# here", "Cole stayed". Without this guard the too-loose half of the old bug survives in a new form.
+_NEGATED_TRANSITION_RE = re.compile(
+    r"\b(?:not|never|n't|still|remains?|remained|stays?|stayed|staying)\b", re.IGNORECASE)
+
+# Pronouns, used only when the caller says exactly one character is mid-transition (so the pronoun
+# is unambiguous). "She" in a two-candidate reply is not evidence for either of them.
+_TRANSITION_PRONOUN_RE = re.compile(r'\b(?:he|she|they|him|her|them|his|hers|their)\b',
+                                   re.IGNORECASE)
+
+_TRANSITION_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+|\n+')
+
+
+def _transition_verb_re(kind):
+    """The compiled verb matcher for 'departure' or 'arrival'."""
+    verbs = _DEPARTURE_VERBS if kind == "departure" else _ARRIVAL_VERBS
+    return re.compile(r'\b(?:' + '|'.join(re.escape(v) for v in verbs) + r')\b', re.IGNORECASE)
+
+
+def _transition_sentences(text):
+    """Yield (sentence, offset) for each sentence of *text*, keeping offsets into the original.
+
+    Offsets matter because the caller reports the sentence it matched, and a snippet taken from a
+    re-joined string would point at the wrong place in the reply.
+    """
+    position = 0
+    for chunk in _TRANSITION_SENTENCE_SPLIT_RE.split(text):
+        if chunk:
+            yield chunk, position
+        position += len(chunk) + 1
+
+
+def find_transition_evidence(text, names, kind="departure"):
+    """[(name, sentence), ...] for each name with real evidence of a transition.
+
+    *kind* is ``"departure"`` or ``"arrival"``. *names* are the CANDIDATES -- the characters
+    the caller believes are mid-transition (cast states 'exiting' / 'arriving'). Passing exactly one
+    candidate enables the pronoun fallback, because then "she" can only mean that character; passing
+    two or more disables it, because a pronoun would be a guess.
+
+    Evidence is a transition verb in a sentence that is ABOUT the character: the name appears in it, or
+    (single candidate only) a pronoun does. A negated sentence is never evidence. Dialogue counts when
+    it is attributed to the character ("I have to go," Cole said), because that is a departure the
+    reader sees; the attribution reuses find_attributed_speakers().
+    """
+    if not text or not names:
+        return []
+    names = [str(n).strip() for n in names if str(n).strip()]
+    if not names:
+        return []
+    text = str(text)
+    verb_re = _transition_verb_re(kind)
+    if not verb_re.search(text):
+        return []
+    single_candidate = len(names) == 1
+    out = []
+    seen_names = set()
+
+    # --- narration ---------------------------------------------------------------------
+    narration = _strip_quoted_dialogue(text)
+    for sentence, offset in _transition_sentences(narration):
+        if not verb_re.search(sentence):
+            continue
+        if _NEGATED_TRANSITION_RE.search(sentence):
+            continue
+        named = [n for n in names if _scene_name_pattern(n).search(sentence)]
+        if named:
+            # The name in the sentence owns the verb. If two candidates share a sentence, the one
+            # closest to the verb wins, which keeps "Cole watched Ines leave" from exiting Cole.
+            verb_match = verb_re.search(sentence)
+            owner = min(named, key=lambda n: min(
+                (abs(m.start() - verb_match.start())
+                 for m in _scene_name_pattern(n).finditer(sentence)), default=10 ** 6))
+            if owner not in seen_names:
+                seen_names.add(owner)
+                out.append((owner, _scene_snippet(text, offset, offset + len(sentence))))
+            continue
+        if single_candidate and _TRANSITION_PRONOUN_RE.search(sentence):
+            if names[0] not in seen_names:
+                seen_names.add(names[0])
+                out.append((names[0], _scene_snippet(text, offset, offset + len(sentence))))
+
+    # --- attributed dialogue -----------------------------------------------------------
+    # "I have to go," Cole said. -- the beat is spoken, but the reader still sees it happen.
+    for name, sentence in find_attributed_speakers(text, names):
+        if name in seen_names:
+            continue
+        if not verb_re.search(sentence):
+            continue
+        if _NEGATED_TRANSITION_RE.search(sentence):
+            continue
+        seen_names.add(name)
+        out.append((name, sentence))
+    return out
+
+
 # --- Repeated opener (v12.5) ---------------------------------------------------------------
 # The failure this catches: a model that opens EVERY reply in a conversation the same way
 # ("She lets out a breath.", "She lets out a laugh.", ...). It is not a banned phrase and not a

@@ -12,7 +12,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 # Scene Cast — Characters That Join and Leave
 
-**Version:** v12.0
+**Version:** v12.0, transition detection and slot placement revised in v14.1
 **Applies to:** multi-character scenes (2 or more characters selected)
 **Default state:** OFF
 
@@ -71,6 +71,85 @@ Each selected character is in exactly one state at any moment:
 | `exited` | Left the scene | **No** |
 
 `absent` and `exited` are the two states that may not speak. Everything else may.
+
+---
+
+## How the generator decides a beat has LANDED (v14.1)
+
+Before v14.1 the state machine asked one question: **does the character's name appear anywhere in
+the reply?** That test was wrong in both directions, and both halves were visible in the same run.
+
+**Too loose.** `Cole is still here, arguing.` contains `Cole`, so the exit was recorded as landed.
+The very next reply then blocked a character who had never left the room — the transcript was made
+incoherent by the generator itself, which is the exact failure this feature exists to prevent.
+
+**Too strict.** `She grabbed her coat and headed for the door.` contains no name at all, because
+prose uses pronouns. A perfectly good exit was recorded as `exit_deferred` and then
+`exit_cancelled`. **This is why characters appeared never to leave the scene**, and it was the
+common case, not the edge case.
+
+v14.1 replaces the name test with **evidence of the transition**:
+
+> A departure (or arrival) verb in a sentence that is *about* the character.
+
+Attribution comes from the name in the same sentence, or — when exactly one character is
+mid-transition — from a pronoun. A negated sentence is never evidence.
+
+| Reply | Lands the exit? | Why |
+|---|---|---|
+| `Cole said goodbye and left.` | yes | name + departure verb |
+| `She grabbed her coat and headed for the door.` | yes | one candidate, so `she` is unambiguous |
+| `"I have to go," Cole said.` | yes | attributed dialogue with a departure phrase |
+| `Cole is still here, arguing.` | **no** | no departure verb |
+| `Cole did not leave.` | **no** | negated |
+| `Cole nodded slowly.` | **no** | `nodded` is not a departure |
+| `Cole watched Ines leave.` | Ines, not Cole | the verb belongs to the object |
+
+A pronoun is only accepted when **one** character is mid-transition. With two candidates it would be
+a guess, so it is ignored and the beat defers.
+
+### `exit_detection`
+
+| Value | Behaviour |
+|---|---|
+| `evidence` (default) | The verb test above. This is what makes exits actually land. |
+| `name` | The old v12.0 name-anywhere test, kept so the change can be A/B'd without editing code. |
+| `always` | Every scheduled transition lands on its slot, narrated or not. **Use with care:** it can mark a character gone who is still visibly in the room, which the continuity check then reports. |
+
+An unrecognised value falls back to `evidence`.
+
+---
+
+## Where the beats land, and why a short conversation needs help (v14.1)
+
+The automatic schedule anchors the arrival around the **first third** and the departure at the
+**halfway point**. That suits a long conversation. In a short one it does not:
+
+| Replies | Automatic exit | What you see |
+|---|---|---|
+| 4 | reply 3 | the scene ends on reply 4, so the departure has one reply of aftermath |
+| 6 | reply 4 | workable |
+| 12 | reply 6 | comfortable |
+
+With 4 replies the exit lands on the second-to-last thing that happens, so the scene is over before
+the departure reads as a departure — which is the other reason characters seemed never to leave.
+
+`join_slot` and `exit_slot` place the beats directly (0 = automatic):
+
+```yaml
+prompts:
+  scene_cast:
+    join_slot: 2     # the newcomer arrives on reply 2
+    exit_slot: 3     # the departure happens on reply 3, leaving reply 4 for the aftermath
+```
+
+Both are **clamped, never trusted**:
+
+- an arrival needs a reply left to be present in, and cannot be the opening reply;
+- a departure needs a reply left for the aftermath, so an exit on the last reply is pulled back one;
+- an exit is never scheduled on or before the arrival it follows.
+
+Slot numbers are reply numbers, counting the greeting in opening mode.
 
 ---
 
@@ -220,6 +299,9 @@ prompts:
     max_churn: 2              # only used by shape: churn
     max_deferrals: 1          # replies an un-narrated exit may slip before cancelling
     placement: depth0          # depth0 (cache-friendly) | system
+    exit_detection: evidence  # evidence | name | always  (v14.1)
+    join_slot: 0              # 0 = automatic; else the reply the arrival lands on
+    exit_slot: 0              # 0 = automatic; else the reply the departure lands on
     exit_guidance:            # one per line; empty = built-in defaults
     - has somewhere to be and says so plainly before going
     - leaves without explanation, and the silence afterwards says it for them
@@ -431,7 +513,10 @@ character and there are none to spare. Use 3+ characters, or set `min_present: 1
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Nothing happens, no `cast_schedule` in metadata | Feature off, fewer than 2 characters, or an infeasible scene | Check the log for the `Scene cast enabled but...` warning |
+| Nothing happens, no `cast_schedule` in metadata | Feature off, fewer than 2 characters, or an infeasible scene | Check the log for the `Scene cast enabled but...` warning; the panel now states the character count you need |
+| Characters never leave, even with a long conversation | Pre-v14.1: exits were cancelled because the reply used a pronoun | Fixed in v14.1 by `exit_detection: evidence`. Check `cast_events` for `exit_cancelled` |
+| A character leaves who is still in the room | `exit_detection: name` (a bare mention counted) or `always` | Set `exit_detection: evidence` |
+| The departure lands too late to have an aftermath | The automatic anchor, in a short conversation | Set `exit_slot` explicitly (e.g. `3` for a 4-reply scene) |
 | `WARNING ... no join or leave is possible in this scene` | `min_present` leaves no spare character | Add a character, or lower `min_present` |
 | Lots of `exit_cancelled` | The model is not writing the exits | Sharpen `exit_guidance`; raise `max_deferrals`; raise `num_turns` |
 | `Cast Drift` counts climbing | The model is bringing exited characters back | Expected — the check is working. Consider a stronger system prompt or the `cast_continuity` judge dimension |
@@ -446,9 +531,12 @@ character and there are none to spare. Use 3+ characters, or set `min_present: 1
 |---|---|---|
 | Schedule + state machine | `generation.py` | `_build_scene_cast_plan()`, `_scene_cast_feasible()`, `_cast_state_from_plan()`, `_cast_slot_transitions()`, `_cast_names_for_slot()`, `_advance_cast_state()`, `_cast_presence_note()` |
 | The hard check | `detection.py` | `check_scene_continuity()`, `find_attributed_speakers()`, `find_character_actions()` |
+| Transition evidence (v14.1) | `detection.py` | `find_transition_evidence()`, `_DEPARTURE_VERBS`, `_ARRIVAL_VERBS`, `_NEGATED_TRANSITION_RE` |
+| Slot placement (v14.1) | `generation.py` | the `join_slot` / `exit_slot` override block in `_build_scene_cast_plan()` |
 | The retry branch | `generation.py` | `generate_answer_with_retries()` — after OOC, before Regex Watch |
 | The Judge dimension | `quality.py` | `CAST_SCORING_DIMENSIONS`, `is_cast_scoring_enabled()`, the cast block in `_score_with_llm()` |
 | GUI | `config_editor.py` | Scene Cast panel (Character Engine), Scene Continuity Check panel (Detection), cast toggle (Quality Scoring) |
 | Dashboard | `generate.py`, `dashboard.py`, `app_state.py` | Cast Drift metric card, issue panel, graph series, cast event log |
 | Config | `config/config.yml` | `prompts.scene_cast.*`, `detection.scene_continuity.*`, `quality.cast_continuity` |
-| Guard | `tests/test_scene_cast.py` | schedule invariants, the asymmetry, note cache stability, the detector, metadata v7, dimension gating |
+| Guard | `tests/test_scene_cast.py` | schedule invariants, the asymmetry, note cache stability, the detector, metadata v7, dimension gating, transition evidence, slot overrides |
+| Guard (GUI) | `tests/test_scene_cast_settings_ui.py` | the three v14.1 controls survive a save/reopen round trip through the real `ConfigEditor` |
