@@ -97,6 +97,9 @@ generation:
   first_reply_opener_cap: 0.0
   first_reply_opener_max_retries: 2
   max_slop_sentence_fix_iterations: 5
+  # How many sentences the Anti-Slop Fixer may rewrite in one pass. Only used when the
+  # anti-slop fixer slot is configured; the Slop Fixer has its own limit above.
+  max_anti_slop_fix_iterations: 10
   output_format: sharegpt
   api_request_timeout: 300
   max_newlines_malformed: 32
@@ -124,6 +127,15 @@ quality:
   logic_max_chars_for_check: 4000
   min_score_threshold: 50
   max_chars_for_scoring: 8000
+  # How much of each character profile is sent to the judge. A long backstory is truncated to
+  # this many characters so one verbose card cannot crowd out the conversation itself in the
+  # scoring request.
+  max_profile_chars_for_scoring: 4000
+  # Per-dimension weights for the composite score. Empty means "use the built-in defaults";
+  # any entry here scales that dimension's default weight. The composite is always normalised
+  # by the total active weight, so a partial map still produces a meaningful 0-100 score.
+  # Example: {coherence: 2.0, diversity: 0.5}
+  weights: {}
   judge_max_attempts: 3
   judge_retry_delay: 1.0
   result_timeout: 600
@@ -208,9 +220,11 @@ prompts:
     thoughts or feelings. When the block says a character leaves or arrives in this
     reply, write that entrance or exit as part of the scene.
 
-    STYLE: begin this reply as follows: {style}. It shapes how the reply opens,
-    not what happens in the scene, and the scene continues from what is already
-    on the page.'
+    STYLE: begin this reply as follows: {style}
+
+    If no style is given above, open however the moment demands. A style shapes how
+    the reply opens, not what happens in the scene, and the scene continues from what
+    is already on the page.'
   user_continuation_prompt: 'Write the user''s next message. Write only as the user,
     not as any other character, and do not write any character''s words, actions,
     thoughts or feelings.
@@ -223,7 +237,9 @@ prompts:
     the characters listed under PRESENT and does not address a character who is not
     in the scene.
 
-    Begin this message as follows: {style}.'
+    Begin this message as follows: {style}
+
+    If no style is given above, open however the moment demands.'
   use_questions_file: false
   opening_mode: false
   greeting: 'Write the opening message of this roleplay as {speaker}, the way the
@@ -1468,6 +1484,13 @@ detection:
     - I hope this helps you with your question
     fixes: []
   non_latin:
+    enabled: false
+    fixes: []
+  # A word from another language written in Latin letters ("green olhos", "brown ojos") or two
+  # words fused with a capital in the middle ("visiblyTrembling"). The non_latin check above is a
+  # Unicode SCRIPT allow-list, so it cannot see either -- every character is plain Latin. Word
+  # based: no LLM call, no phrase list, no network request. Off by default.
+  foreign_word:
     enabled: false
     fixes: []
   scene_continuity:
