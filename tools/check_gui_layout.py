@@ -41,7 +41,11 @@ from types import SimpleNamespace
 
 
 DEFAULT_SIZES = ["900x600", "1024x700", "1366x700", "1916x1126"]
-SUPPORTED_MINIMUM_AT_96_DPI = (760, 520)
+# The bound the harness asserts against is the same token the application passes to
+# fit_window(). Hard-coding it here meant a change to the app's minimum silently
+# invalidated this check instead of failing it. It is resolved in run() once the repo
+# root is on sys.path; see supported_minimum_at_96_dpi().
+SUPPORTED_MINIMUM_AT_96_DPI = (760, 520)  # fallback only; run() rebinds it
 
 
 @contextmanager
@@ -740,6 +744,12 @@ def run(args):
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(repo))
 
+    # Bind the supported-minimum bound to the token the application itself uses, so
+    # the harness cannot disagree with the window it is checking.
+    global SUPPORTED_MINIMUM_AT_96_DPI
+    import ui_theme as _ui_theme
+    SUPPORTED_MINIMUM_AT_96_DPI = _ui_theme.MINIMUM_WINDOW_SIZE
+
     # Fail closed if a future source revision unexpectedly attempts Python networking.
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
@@ -817,6 +827,10 @@ def run(args):
                 return window
             ttkbs.Window = probe_window
             namespace = {"__name__": "_isolated_sdg_layout", "__file__": str(source_path)}
+            # generate.py imports ui_theme at module scope; exec() gets a fresh
+            # namespace, so bind it here too or the tab-name constants are missing.
+            import ui_theme
+            namespace["ui_theme"] = ui_theme
             exec(ui_code, namespace)
             exec(progress_code, namespace)
             state = namespace["app_state"]
@@ -840,7 +854,7 @@ def run(args):
                 "supported_minimum_bound": supported_minimum_bound(root),
             }
             notebook = state.dashboard_notebook
-            active_tab = select_tab(notebook, "Totals")
+            active_tab = select_tab(notebook, ui_theme.TAB_OVERVIEW)
             for scenario in ("idle", "single", "four_apis"):
                 state.master_duplication_enabled_var.set(scenario == "four_apis")
                 for child in namespace["progress_frame"].winfo_children():
@@ -858,8 +872,8 @@ def run(args):
                     settle(root)
                     named = {"root": root, "dashboard_outer": namespace["dashboard_outer_frame"],
                              "notebook": notebook, "active_tab": active_tab,
-                             "content_viewport": notebook.tabs_widgets["Totals"]["canvas"],
-                             "graph": notebook.tabs_widgets["Totals"]["graph_canvas"],
+                             "content_viewport": notebook.tabs_widgets[ui_theme.TAB_OVERVIEW]["canvas"],
+                             "graph": notebook.tabs_widgets[ui_theme.TAB_OVERVIEW]["graph_canvas"],
                              "progress": namespace["progress_frame"], "status": state.status_bar}
                     for name in ("start_button", "pause_button", "stop_clear_button", "config_button",
                                  "quit_button", "export_button", "clear_db_button", "recovery_button"):
@@ -882,7 +896,7 @@ def run(args):
                         check(report, f"{label}: {name} fits natural size", natural_size_fits(info),
                               {"actual": info["rect_in_window"][2:], "requested": info["requested_size"]})
                     viewport = case["widgets"]["content_viewport"]
-                    check(report, f"{label}: Totals viewport at least 120px high",
+                    check(report, f"{label}: Overview viewport at least 120px high",
                           viewport["mapped"] and viewport["visible_size_in_window"][1] >= 120,
                           viewport["visible_size_in_window"])
                 check_navigation(report, root, root, notebook, scenario)

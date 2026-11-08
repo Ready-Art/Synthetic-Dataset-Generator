@@ -98,7 +98,13 @@ from app_state import (
     global_config, API_CIRCUIT_BREAKER, api_circuit_breaker_lock, task_retry_counts, task_retry_lock, BASE_DEBUG_LOG_PATH, BASE_OUTPUT_FILE_PATH, MAX_RECENT, MAX_TASK_REQUEUES, STATE_FILE_PATH, OUTPUT_DIR, INPUT_DIR, anti_slop_counts_per_api, estimated_cost,
 )
 from config_editor import ConfigEditor
-from ui_layout import fit_window, ScrollableFrame, ResponsiveGrid, NotebookNavigator, wrap_label
+import ui_theme
+from ui_theme import (configure_global_styles, configure_button_styles,
+                       configure_notebook_styles, configure_table_style,
+                       configure_scrollbar_styles, configure_interaction_styles,
+                       resolve_font, row_height)
+from ui_layout import (fit_window, ScrollableFrame, ResponsiveGrid, NotebookNavigator,
+                       CollapsibleSection, wrap_label, empty_state)
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -123,7 +129,10 @@ os.makedirs(INPUT_DIR, exist_ok=True) # Ensure input directory exists
 system_prompt_counter_lock = Lock()  # For system_prompt_counter
 
 # --- UI Spacing System ---
-SPACING = 8  # Unified padding constant for all frames, widgets, and separators
+# The value lives in ui_theme.py so the whole front end shares one scale. `SPACING`
+# stays as the name the 50-odd call sites already use; it is an alias, not a second
+# copy of the number, so changing SPACE_S moves every frame at once.
+SPACING = ui_theme.SPACE_S  # Unified padding constant for all frames, widgets, and separators
 
 # --- Statistics Counters ---
 # These track various events during generation for monitoring and analysis.
@@ -164,13 +173,16 @@ class ToastManager:
         self._offset_y = 10
 
     def show(self, message, level="info", duration=4000):
+        # Colours come from ui_theme; the glyphs go through ui_theme.icon() so a box
+        # without a colour-emoji font shows [OK]/[X]/[!]/[i] instead of tofu.
         colors = {
-            "success": ("#28a745", "✅"),
-            "error": ("#dc3545", "❌"),
-            "warning": ("#ffc107", "⚠️"),
-            "info": ("#17a2b8", "ℹ️")
+            "success": (ui_theme.TOAST_SUCCESS, "✅"),
+            "error": (ui_theme.TOAST_ERROR, "❌"),
+            "warning": (ui_theme.TOAST_WARNING, "⚠️"),
+            "info": (ui_theme.TOAST_INFO, "ℹ️")
         }
-        bg_color, icon = colors.get(level, colors["info"])
+        bg_color, glyph = colors.get(level, colors["info"])
+        icon = ui_theme.icon(self.root, glyph)
 
         toast = tk.Toplevel(self.root)
         toast.wm_overrideredirect(True)
@@ -189,7 +201,8 @@ class ToastManager:
         frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         tk.Label(frame, text=f"{icon} {message}", bg=bg_color, fg="white",
-                 font=('Segoe UI', 10), anchor="w").pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+                 font=resolve_font(self.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY),
+                 anchor="w").pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         self._toasts.append(toast)
         self._offset_y += 60
@@ -575,20 +588,20 @@ def update_database_status():
             pi = widgets.get('postgres_icon'); ps = widgets.get('postgres_status')
             if pi and ps and pi.winfo_exists() and ps.winfo_exists():
                 if pg_ok:
-                    pi.config(text="✅", foreground="green"); ps.config(text="PostgreSQL: Connected & Active", foreground="green")
+                    pi.config(text=ui_theme.icon_text(app_state.root, "✅"), foreground="green"); ps.config(text="PostgreSQL: Connected & Active", foreground="green")
                 elif postgres_connected:
-                    pi.config(text="⚠️", foreground="orange"); ps.config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
+                    pi.config(text=ui_theme.icon_text(app_state.root, "⚠️"), foreground="orange"); ps.config(text="PostgreSQL: Connected (Inactive)", foreground="orange")
                 else:
-                    pi.config(text="❌", foreground="gray"); ps.config(text="PostgreSQL: Disconnected", foreground="gray")
+                    pi.config(text=ui_theme.icon_text(app_state.root, "❌"), foreground="gray"); ps.config(text="PostgreSQL: Disconnected", foreground="gray")
 
             vi = widgets.get('valkey_icon'); vs = widgets.get('valkey_status')
             if vi and vs and vi.winfo_exists() and vs.winfo_exists():
                 if vk_ok:
-                    vi.config(text="✅", foreground="green"); vs.config(text="Valkey: Connected & Active", foreground="green")
+                    vi.config(text=ui_theme.icon_text(app_state.root, "✅"), foreground="green"); vs.config(text="Valkey: Connected & Active", foreground="green")
                 elif valkey_connected:
-                    vi.config(text="⚠️", foreground="orange"); vs.config(text="Valkey: Connected (Inactive)", foreground="orange")
+                    vi.config(text=ui_theme.icon_text(app_state.root, "⚠️"), foreground="orange"); vs.config(text="Valkey: Connected (Inactive)", foreground="orange")
                 else:
-                    vi.config(text="❌", foreground="gray"); vs.config(text="Valkey: Disconnected", foreground="gray")
+                    vi.config(text=ui_theme.icon_text(app_state.root, "❌"), foreground="gray"); vs.config(text="Valkey: Disconnected", foreground="gray")
 
         root.after(0, _apply)
 
@@ -720,11 +733,11 @@ def _update_review_table(force=False):
     The table is only rebuilt when its content changed (``force=True`` for an explicit
     Refresh click), so a per-tick refresh never clears the selection or the detail pane.
     """
-    review_tab = "🔍 Review"
+    review_tab = ui_theme.TAB_REVIEW
     if review_tab not in app_state.dashboard_notebook.tabs_widgets:
         return
     # Skip the Treeview rebuild unless the Review tab is actually on screen.
-    if "Review" not in _active_dashboard_tab_text():
+    if _active_dashboard_tab_text() != ui_theme.TAB_REVIEW:
         return
     widgets = app_state.dashboard_notebook.tabs_widgets[review_tab]
     review_tree = widgets.get('review_tree')
@@ -835,7 +848,7 @@ def _show_review_detail(review_tree, force=False):
     selection is skipped unless ``force`` is set, so a refresh tick never resets the reader's
     scroll position.
     """
-    review_tab = "🔍 Review"
+    review_tab = ui_theme.TAB_REVIEW
     widgets = app_state.dashboard_notebook.tabs_widgets.get(review_tab, {})
     detail_text = widgets.get('detail_text')
     if not detail_text or not hasattr(detail_text, 'winfo_exists') or not detail_text.winfo_exists():
@@ -1054,7 +1067,7 @@ def _drop_review_conversation():
     ``quality_scores`` / ``quality_review_ids``, so the dashboard, the Quality tab, a resumed
     run and the Review list all agree that the row is gone on purpose.
     """
-    review_tab = "🔍 Review"
+    review_tab = ui_theme.TAB_REVIEW
     widgets = app_state.dashboard_notebook.tabs_widgets.get(review_tab, {})
     review_tree = widgets.get('review_tree')
     if not review_tree or not hasattr(review_tree, 'winfo_exists') or not review_tree.winfo_exists():
@@ -1144,11 +1157,11 @@ def update_quality_display():
     # Composite score with color coding
     avg = stats["avg_composite"]
     if avg >= 80:
-        color = "#51cf66"  # Green
+        color = ui_theme.OK  # Green
     elif avg >= 60:
-        color = "#fcc419"  # Amber
+        color = ui_theme.WARN  # Amber
     else:
-        color = "#ff6b6b"  # Red
+        color = ui_theme.DANGER  # Red
 
     if hasattr(app_state.quality_score_label, 'winfo_exists') and app_state.quality_score_label.winfo_exists():
         app_state.quality_score_label.config(
@@ -1174,12 +1187,13 @@ def update_quality_display():
     # Find the review tab widget by its text (since we don't store the widget ref)
     review_tab_widget = None
     for tab_id in app_state.dashboard_notebook.tabs():
-        if "Review" in app_state.dashboard_notebook.tab(tab_id, "text"):
+        if app_state.dashboard_notebook.tab(tab_id, "text") == ui_theme.TAB_REVIEW:
             review_tab_widget = tab_id
             break
 
     if review_tab_widget:
-        label = f"🔍 Review ({review_count})" if review_count > 0 else "🔍 Review"
+        label = (f"{ui_theme.TAB_REVIEW} ({review_count})" if review_count > 0
+                 else ui_theme.TAB_REVIEW)
         if app_state.dashboard_notebook.tab(review_tab_widget, "text") != label:
             app_state.dashboard_notebook.tab(review_tab_widget, text=label)
             dashboard_navigator.refresh()
@@ -1198,7 +1212,7 @@ def _rebuild_quality_roleplay_layout(force=False):
     (or ``tic_dimension``) left the tab showing the old columns, so the new dimension was
     scored and stored but never displayed.
     """
-    widgets = app_state.dashboard_notebook.tabs_widgets.get("Quality", {})
+    widgets = app_state.dashboard_notebook.tabs_widgets.get(ui_theme.TAB_QUALITY, {})
     parent_frame = widgets.get("scrollable_frame")
     signature = tuple(quality.active_scoring_dimensions())
     if not force and "quality_dims_signature" in widgets \
@@ -1261,10 +1275,10 @@ def _update_regex_watch_tab(force=False):
     actually changed, so a 500 ms refresh tick never clears the user's selection. ``force=True``
     is for the Refresh button and for a tab switch.
     """
-    tab_name = "🔎 Regex Watch"
+    tab_name = ui_theme.TAB_REGEX_WATCH
     if tab_name not in app_state.dashboard_notebook.tabs_widgets:
         return
-    if "Regex Watch" not in _active_dashboard_tab_text():
+    if _active_dashboard_tab_text() != ui_theme.TAB_REGEX_WATCH:
         return
     widgets = app_state.dashboard_notebook.tabs_widgets[tab_name]
     pattern_tree = widgets.get('regex_pattern_tree')
@@ -1302,7 +1316,7 @@ def _update_regex_watch_tab(force=False):
             status_label.configure(
                 text="Regex Watch is off. Enable it in the Configuration Editor (Detection tab) "
                      "to rewrite regex-shaped prose.",
-                foreground="#ffb86b")
+                foreground=ui_theme.WARN_SOFT)
 
     for item in pattern_tree.get_children():
         pattern_tree.delete(item)
@@ -1323,6 +1337,8 @@ def _update_regex_watch_tab(force=False):
                         values=(time.strftime("%H:%M:%S"), f"Slot {api_slot_idx + 1}",
                                 status, pattern[:120], sentence[:200]),
                         tags=(status,) if status in ("rewritten", "unresolved") else ())
+    empty_state(hit_tree, "No regex hits yet. A hit appears here when a pattern matches "
+                           "generated text.")
     children = hit_tree.get_children()
     if children:
         hit_tree.see(children[-1])
@@ -1552,7 +1568,7 @@ def _update_metrics_summary(widgets, rows):
         label.configure(text=value)
         detail_label = widgets.get('metrics_cards_detail', {}).get(key)
         if detail_label is not None and detail_label.winfo_exists():
-            detail_label.configure(text=detail, foreground=colour or "#8b949e")
+            detail_label.configure(text=detail, foreground=colour or ui_theme.TEXT_MUTED)
 
     # --- 1. throughput: what the whole proxy is delivering right now ---
     if totals["generation_tps"] is None:
@@ -1568,8 +1584,8 @@ def _update_metrics_summary(widgets, rows):
         worst = max(totals["loads"])
         put("load", vllm_metrics.format_percent(worst),
             "busiest of %d endpoint(s)" % len(totals["loads"]),
-            {"saturated": "#ff6b6b", "busy": "#ffd43b",
-             "light": "#69f0ae"}.get(vllm_metrics.describe_load(worst), "#8b949e"))
+            {"saturated": ui_theme.DANGER, "busy": ui_theme.SYNTAX_WARN,
+             "light": ui_theme.SYNTAX_ASSISTANT}.get(vllm_metrics.describe_load(worst), ui_theme.TEXT_MUTED))
 
     # --- 3. bans: the ban-list tuning figure ---
     if totals["bans"] is None:
@@ -1590,9 +1606,9 @@ def _update_metrics_summary(widgets, rows):
     if problems:
         put("errors", vllm_metrics.format_count(
                 (totals["upstream_errors"] or 0) + (totals["failed"] or 0)),
-            ", ".join(problems), "#ff6b6b")
+            ", ".join(problems), ui_theme.DANGER)
     else:
-        put("errors", "0", "no proxy failures" if rows else "nothing polled", "#69f0ae")
+        put("errors", "0", "no proxy failures" if rows else "nothing polled", ui_theme.SYNTAX_ASSISTANT)
 
 
 def _refresh_metrics_graphs(widgets, rows, force=False):
@@ -1640,10 +1656,10 @@ def _update_metrics_tab(force=False):
     waiting for the next poll.  Skipping the redraw while hidden is still right: it is the
     expensive part, and ``_on_dashboard_tab_changed()`` forces one on the way in.
     """
-    tab_name = "📊 Metrics"
+    tab_name = ui_theme.TAB_METRICS
     if tab_name not in app_state.dashboard_notebook.tabs_widgets:
         return
-    if "Metrics" not in _active_dashboard_tab_text():
+    if _active_dashboard_tab_text() != ui_theme.TAB_METRICS:
         return
     widgets = app_state.dashboard_notebook.tabs_widgets[tab_name]
     tree = widgets.get('metrics_tree')
@@ -1688,7 +1704,7 @@ def _update_metrics_tab(force=False):
                 text="No vLLM backend configured. Add an API URL (API Slots 1-6 or the Quality "
                      "Judge) that points at a vLLM server; its /metrics endpoint is polled every "
                      "%.1f seconds." % vllm_metrics.POLL_INTERVAL_SECONDS,
-                foreground="#ffb86b")
+                foreground=ui_theme.WARN_SOFT)
         else:
             failing = [row['label'] for row in rows if row.get('error')]
             proxied = [row['label'] for row in rows if row.get('is_antislop')]
@@ -1706,7 +1722,7 @@ def _update_metrics_tab(force=False):
             if failing:
                 text += " Unreachable: %s." % ", ".join(failing)
             status_label.configure(text=text,
-                                   foreground="#ffb86b" if failing else "lightgray")
+                                   foreground=ui_theme.WARN_SOFT if failing else "lightgray")
 
     for item in tree.get_children():
         tree.delete(item)
@@ -1740,10 +1756,10 @@ def update_quality_tab():
         return
 
     # Skip the rebuild unless the Quality tab is actually on screen.
-    if _active_dashboard_tab_text() != "Quality":
+    if _active_dashboard_tab_text() != ui_theme.TAB_QUALITY:
         return
 
-    widgets = app_state.dashboard_notebook.tabs_widgets.get("Quality", {})
+    widgets = app_state.dashboard_notebook.tabs_widgets.get(ui_theme.TAB_QUALITY, {})
 
     # Pick up a roleplay-dimensions toggle change made in the Config Editor mid-run.
     _rebuild_quality_roleplay_layout()
@@ -1785,6 +1801,9 @@ def update_quality_tab():
             ", ".join(score_data.get("flags", [])[:4]),
             score_data.get("method", "N/A"),
         ))
+
+    # Nothing scored yet is the normal state before the first quality pass completes.
+    empty_state(quality_tree, "No scores yet. Rows appear as tasks are scored.")
 
 def update_live_prompt_preview(messages_list, metadata=None):
     """Thread-safe function to update the Rich Prompt Viewer from worker threads."""
@@ -2691,8 +2710,9 @@ def start_processing():
                 bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate",
                                        style="Low.Horizontal.TProgressbar")
                 bar.pack(pady=SPACING, fill='x', expand=True)
-                percent_label = ttk.Label(progress_frame, text="0.0%", foreground='#868e96',
-                                         font=('Segoe UI', 9, 'bold'))
+                percent_label = ttk.Label(progress_frame, text="0.0%", foreground=ui_theme.TEXT_SUBTLE,
+                                         font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                                           ui_theme.SIZE_SMALL, 'bold'))
                 percent_label.pack(anchor='e', padx=(0, SPACING))
                 time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
                 time_label.pack(pady=(0,5), anchor='w')
@@ -2717,8 +2737,9 @@ def start_processing():
         overall_progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=600, mode="determinate",
                                                 style="Low.Horizontal.TProgressbar")
         overall_progress_bar.pack(pady=SPACING, fill='x', expand=True)
-        overall_percent_label = ttk.Label(progress_frame, text="0.0%", foreground='#868e96',
-                                           font=('Segoe UI', 9, 'bold'))
+        overall_percent_label = ttk.Label(progress_frame, text="0.0%", foreground=ui_theme.TEXT_SUBTLE,
+                                           font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                                             ui_theme.SIZE_SMALL, 'bold'))
         overall_percent_label.pack(anchor='e', padx=(0, SPACING))
         overall_time_label = ttk.Label(progress_frame, text="Time Rem: Estimating...", foreground="lightgray")
         overall_time_label.pack(pady=SPACING)
@@ -2992,7 +3013,7 @@ def start_processing():
                                 widgets['bar']['value'] = 100
                                 update_progress_bar_style(widgets['bar'], 100)
                                 if 'percent_label' in widgets and widgets['percent_label'].winfo_exists():
-                                    widgets['percent_label'].config(text="100%", foreground='#51cf66')
+                                    widgets['percent_label'].config(text="100%", foreground=ui_theme.OK)
                                 widgets['time_label'].config(text="Time Rem: Done!")
                 elif hasattr(app_state.task_queue, 'overall_progress_bar') and app_state.task_queue.overall_progress_bar.winfo_exists():
                     with app_state.task_queue.processed_tasks_lock:
@@ -3001,7 +3022,7 @@ def start_processing():
                         app_state.task_queue.overall_progress_bar['value'] = 100
                         update_progress_bar_style(app_state.task_queue.overall_progress_bar, 100)
                         if hasattr(app_state.task_queue, 'overall_percent_label') and app_state.task_queue.overall_percent_label.winfo_exists():
-                            app_state.task_queue.overall_percent_label.config(text="100%", foreground='#51cf66')
+                            app_state.task_queue.overall_percent_label.config(text="100%", foreground=ui_theme.OK)
                         app_state.task_queue.overall_time_label.config(text="Time Remaining: Done!")
             flush_generation_state()
 
@@ -3206,14 +3227,15 @@ def test_valkey_connection():
         messagebox.showerror("Valkey Test Failed", f"Error: {e}")
 
 # --- Color Constants ---
-ACCENT_CYAN = '#17a2b8'  # Teal/cyan accent for superhero theme
+ACCENT_CYAN = ui_theme.ACCENT_SOFT  # Heading/highlight accent (no fill behind it)
 
-app_state.root = ttkbs.Window(themename="superhero")
+app_state.root = ttkbs.Window(themename=ui_theme.THEME_NAME)
 app_state.root.title("Main UI")
-fit_window(app_state.root, preferred=(1280, 900), minimum=(760, 520))
+fit_window(app_state.root, preferred=ui_theme.PREFERRED_WINDOW_SIZE,
+           minimum=ui_theme.MINIMUM_WINDOW_SIZE)
 toast = ToastManager(app_state.root)
 app_state.root.grid_columnconfigure(0, weight=1)
-app_state.root.grid_rowconfigure(2, weight=1)
+app_state.root.grid_rowconfigure(1, weight=1)
 icon_path = "taskbar.png"
 if os.path.exists(icon_path):
     try:
@@ -3225,13 +3247,15 @@ if os.path.exists(icon_path):
 else:
     log_message("taskbar.png not found in main directory. Using default system icon.", "WARNING")
 
-style = ttk.Style()
-available_themes = style.theme_names()
-try:
-    style.theme_use('superhero')
-    log_message(f"Using theme: superhero", "INFO")
-except tk.TclError:
-    log_message(f"Could not apply superhero theme. Using system default.", "WARNING")
+# ttkbootstrap.Window(themename=...) already applied the theme, so there is no
+# second theme_use() here: the duplicate was what made the "Could not apply theme"
+# warning misleading, because it could fail while the window was already themed.
+# Bind the Style to the app window explicitly. A bare ttk.Style() attaches to
+# tkinter._default_root, which is a different interpreter whenever anything
+# created a Tk() first -- a test, or the layout harness. Styles and the
+# PhotoImages behind the tab underline then live in the wrong interpreter.
+style = ttk.Style(master=app_state.root)
+log_message(f"Using theme: {ui_theme.THEME_NAME}", "INFO")
 
 
 
@@ -3240,21 +3264,14 @@ configure_animated_progress_styles(style)
 # --- End Animated Progress Bar Styling ---
 
 # 🎨 1. Set a Global Typography Hierarchy
-# Default body text for all standard widgets
-style.configure('.', font=('Segoe UI', 10))
-
-# Section headers, status labels, and important metrics
-style.configure('Header.TLabel', font=('Segoe UI', 12, 'bold'))
-
-# Helper text, footnotes, and secondary info
-style.configure('Small.TLabel', font=('Segoe UI', 9), foreground='#8b949e')
-
-# Code blocks, prompts, and raw logs
-style.configure('Code.TLabel', font=('Consolas', 9))
-
-# Dashboard tabs & notebook styling
-style.configure('TNotebook.Tab', font=('Segoe UI', 10, 'bold'), padding=[16, 6])
-style.configure('TNotebook', font=('Segoe UI', 10))
+# Every font is resolved from the token stacks in ui_theme.py, so the app looks the
+# same on Windows and correct everywhere else. This also defines MetricValue.TLabel,
+# which _create_ttkbs_metric() referenced but nothing ever configured.
+configure_global_styles(style, app_state.root)
+configure_button_styles(style, app_state.root)
+configure_notebook_styles(style, app_state.root)
+configure_scrollbar_styles(style, app_state.root)
+configure_interaction_styles(style, app_state.root)
 
 # --- Global Tkinter Variables ---
 num_threads_var = tk.StringVar(value=str(global_config.get('threads', 10))) # Default from config or 10
@@ -3278,8 +3295,8 @@ header_frame.columnconfigure(0, weight=1)
 
 title_label = ttk.Label(
     header_frame,
-    text="🧠 ReadyArt Synthetic Dataset Generator",
-    font=('Segoe UI', 16, 'bold'),
+    text=ui_theme.icon_text(app_state.root, "🧠 ReadyArt Synthetic Dataset Generator"),
+    font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_TITLE, 'bold'),
     foreground=ACCENT_CYAN
 )
 title_label.grid(row=0, column=0, sticky="w")
@@ -3287,18 +3304,18 @@ wrap_label(title_label, header_frame, padding=90)
 
 version_label = ttk.Label(
     header_frame,
-    text="v13.5.2",
-    font=('Segoe UI', 10),
-    foreground='#868e96'
+    text="v14.0.0",
+    font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY),
+    foreground=ui_theme.TEXT_SUBTLE
 )
 version_label.grid(row=0, column=1, sticky="e", padx=(10, 0))
 
-ttk.Separator(header_frame, orient='horizontal').grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+ttk.Separator(header_frame, orient='horizontal').grid(row=1, column=0, columnspan=2, sticky="ew", pady=(ui_theme.SPACE_XS, 0))
 
 # The working area owns the expanding root row. Monitoring details and progress
 # scroll inside Overview, so adding progress bars cannot displace run controls.
 dashboard_outer_frame = ttk.Frame(app_state.root)
-dashboard_outer_frame.grid(row=2, column=0, sticky="nsew", padx=SPACING, pady=(4, SPACING))
+dashboard_outer_frame.grid(row=1, column=0, sticky="nsew", padx=SPACING, pady=(ui_theme.SPACE_XS, SPACING))
 dashboard_outer_frame.columnconfigure(0, weight=1)
 dashboard_outer_frame.rowconfigure(1, weight=1)
 app_state.dashboard_notebook = ttk.Notebook(dashboard_outer_frame)
@@ -3306,24 +3323,54 @@ app_state.dashboard_notebook.grid(row=1, column=0, sticky="nsew")
 app_state.dashboard_notebook.tabs_widgets = {}
 
 overview_tab = ScrollableFrame(app_state.dashboard_notebook)
-app_state.dashboard_notebook.add(overview_tab, text="Overview")
+app_state.dashboard_notebook.add(overview_tab, text=ui_theme.TAB_OVERVIEW)
 overview_content = overview_tab.content
 app_state.dashboard_notebook.tabs_widgets['Overview'] = {'canvas': overview_tab.canvas}
+
+
+# --- Diagnostics section (collapsed by default) ---
+# Overview used to be: metric cards -> DB status -> API response times -> progress ->
+# Tools -> issue panels. That put three blocks of rarely-watched diagnostics between
+# the numbers and the tables, so on a short window the issue panels were below the fold.
+# The diagnostics now live in one collapsible section that is packed *after* the panels
+# and starts collapsed, which leaves the watched content (progress, cards, panels, graph)
+# at the top of the page. Nothing is removed: expanding the header shows the same three
+# frames, in the same order, with the same widgets.
+overview_diagnostics = CollapsibleSection(
+    overview_content, "Diagnostics: database, response times and tools", expanded=False)
+
+
+# --- Progress Bars Frame ---
+# Packed first so the run controls and the progress bars are the first thing on the
+# page, above the metric cards. It used to sit between the response times and the
+# Tools box, i.e. below two blocks of diagnostics.
+progress_frame = ttk.Frame(overview_content)
+progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 
 # --- Metrics Display Frame ---
 metrics_frame = ttk.Frame(overview_content)
 metrics_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
-def _create_ttkbs_metric(parent, title, icon, default_text="0 (0.0%)"):
-    """Helper to create consistent ttkbootstrap Card metrics"""
-    card = ttk.Frame(parent, borderwidth=0, padding=10)
+def _create_ttkbs_metric(parent, title, glyph, default_text="0 (0.0%)"):
+    """Create one Overview metric card and return its value label.
+
+    The returned label is the big number; sixteen call sites store it on
+    app_state and dashboard.update_dashboard() writes into it, so the return value
+    must stay the value label.
+
+    ``glyph`` is the emoji for this card. It is resolved through ui_theme.icon() so
+    a machine without a colour-emoji font gets an ASCII marker instead of tofu.
+    """
+    card = ttk.Frame(parent, style='Card.TFrame', padding=10)
     if not hasattr(parent, '_metric_cards'):
         parent._metric_cards = []
     parent._metric_cards.append(card)
 
-    ttk.Label(card, text=f"{icon} {title}", style='Header.TLabel').pack(pady=(0, 2))
-    val_lbl = ttk.Label(card, text=default_text, style='MetricValue.TLabel', wraplength=220)
+    icon = ui_theme.icon(app_state.root, glyph)
+    caption = f"{icon} {title}" if icon else title
+    ttk.Label(card, text=caption, style='CardTitle.TLabel').pack(pady=(0, 2))
+    val_lbl = ttk.Label(card, text=default_text, style='CardValue.TLabel', wraplength=220)
     val_lbl.pack(pady=(0, 4), fill="x")
     wrap_label(val_lbl, card, padding=20)
     return val_lbl
@@ -3360,20 +3407,20 @@ metric_layouts = [ResponsiveGrid(frame, frame._metric_cards, min_width=180, max_
 # --- End of Metrics Display Frame ---
 
 # --- Database Connection Status Frame ---
-db_status_frame = ttk.LabelFrame(overview_content, text="🗄️ Database & Cache Status")
+db_status_frame = ttk.LabelFrame(overview_diagnostics.content, text=ui_theme.icon_text(app_state.root, "🗄️ Database & Cache Status"))
 db_status_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 # Add refresh button to db_status_frame
 db_refresh_btn = ttk.Button(
     db_status_frame,
-    text="🔄 Refresh Status",
+    text=ui_theme.icon_text(app_state.root, "🔄 Refresh Status"),
     command=update_database_status
 )
 
 
 db_test_btn = ttk.Button(
     db_status_frame,
-    text="🔍 Test Valkey",
+    text=ui_theme.icon_text(app_state.root, "🔍 Test Valkey"),
     command=test_valkey_connection
 )
 
@@ -3384,7 +3431,7 @@ postgres_status_frame = ttk.Frame(db_status_frame)
 
 postgres_icon_label = ttk.Label(
     postgres_status_frame,
-    text="❌",
+    text=ui_theme.icon_text(app_state.root, "❌"),
     font=('Segoe UI Emoji', 14),
     foreground="gray"
 )
@@ -3404,7 +3451,7 @@ valkey_status_frame = ttk.Frame(db_status_frame)
 
 valkey_icon_label = ttk.Label(
     valkey_status_frame,
-    text="❌",
+    text=ui_theme.icon_text(app_state.root, "❌"),
     font=('Segoe UI Emoji', 14),
     foreground="gray"
 )
@@ -3433,7 +3480,7 @@ app_state.db_status_widgets = {
 }
 
 # --- API Response Time Display Frame ---
-api_response_times_frame = ttk.LabelFrame(overview_content, text="⚡ API Response Times")
+api_response_times_frame = ttk.LabelFrame(overview_diagnostics.content, text=ui_theme.icon_text(app_state.root, "⚡ API Response Times"))
 api_response_times_frame.pack(pady=SPACING, padx=SPACING, fill="x")
 
 api_response_cards = []
@@ -3444,9 +3491,9 @@ for slot_idx in range(6):
     slot_label_name = f"api_response_time_label_{slot_idx+1}"
     slot_label = ttk.Label(
         card,
-        text=f"⚡ API {slot_idx+1}: No data yet",
-        font=('Segoe UI', 9),
-        foreground='#868e96',
+        text=ui_theme.icon_text(app_state.root, f"⚡ API {slot_idx+1}: No data yet"),
+        font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_SMALL),
+        foreground=ui_theme.TEXT_SUBTLE,
         anchor="w"
     )
     slot_label.pack(fill="x")
@@ -3460,10 +3507,10 @@ api_response_layout = ResponsiveGrid(api_response_times_frame, api_response_card
 API_RT_THRESHOLDS_MS = (500, 1500)  # (good, medium) — above medium = slow
 
 API_RT_COLORS = {
-    "good":    "#51cf66",   # Green  — snappy
-    "medium":  "#fcc419",   # Amber  — acceptable
-    "slow":    "#ff6b6b",   # Red    — needs attention
-    "no_data": "#868e96",   # Muted  — idle
+    "good":    ui_theme.OK,      # Green  — snappy
+    "medium":  ui_theme.WARN,    # Amber  — acceptable
+    "slow":    ui_theme.DANGER,  # Red    — needs attention
+    "no_data": ui_theme.TEXT_SUBTLE,  # Muted  — idle
 }
 
 def _get_api_rt_color(avg_ms):
@@ -3502,32 +3549,33 @@ def update_api_response_time_labels():
 
             if not times:
                 label.config(
-                    text=f"⚡ API {slot_idx + 1}: No data yet",
+                    text=ui_theme.icon_text(app_state.root, f"⚡ API {slot_idx + 1}: No data yet"),
                     foreground=API_RT_COLORS["no_data"]
                 )
             else:
                 avg_ms = sum(times) / len(times)
                 color = _get_api_rt_color(avg_ms)
                 label.config(
-                    text=f"⚡ API {slot_idx + 1}: {_format_api_rt(avg_ms)} avg",
+                    text=ui_theme.icon_text(app_state.root, f"⚡ API {slot_idx + 1}: {_format_api_rt(avg_ms)} avg"),
                     foreground=color
                 )
 # --- End API Response Time Dynamic Color Coding ---
 
 # --- Progress Bars Frame ---
-progress_frame = ttk.Frame(overview_content)
-progress_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
-maintenance_frame = ttk.LabelFrame(overview_content, text="Tools")
+maintenance_frame = ttk.LabelFrame(overview_diagnostics.content, text="Tools")
 maintenance_frame.pack(pady=SPACING, padx=SPACING, fill=tk.X)
 
 # --- Main Action Buttons Frame ---
-button_frame = ttkbs.Frame(app_state.root)
-button_frame.grid(row=1, column=0, sticky="ew", padx=SPACING)
+# The run controls live in the header, not in a root row of their own. Gridded at
+# root row 1 they sat between the title and the notebook, so Start/Pause/Stop floated
+# in the middle of the window. Root rows are now 0 header, 1 notebook, 2 status bar.
+button_frame = ttkbs.Frame(header_frame)
+button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(SPACING, 0))
 
-start_button = ttk.Button(button_frame, text="🚀 Start Generation", command=start_processing, style="Accent.TButton")
+start_button = ttk.Button(button_frame, text=ui_theme.icon_text(app_state.root, "🚀 Start Generation"), command=start_processing, style="Primary.TButton")
 
 
-pause_button = ttk.Button(button_frame, text="⏸️ Pause", command=toggle_pause, state=tk.DISABLED)
+pause_button = ttk.Button(button_frame, text="⏸️ Pause", command=toggle_pause, state=tk.DISABLED, style="Secondary.TButton")
 
 
 dashboard_pause_var = tk.BooleanVar(value=False)
@@ -3635,14 +3683,14 @@ def finalize_stop_and_clear_ui():
     quit_button.config(state=tk.NORMAL)
     log_message("Stop & Clear: UI reset. Ready for a new job.", "INFO")
 
-stop_clear_button = ttk.Button(button_frame, text="🛑 Stop & Clear Job", command=stop_and_clear_processing_job, state=tk.DISABLED)
+stop_clear_button = ttk.Button(button_frame, text=ui_theme.icon_text(app_state.root, "🛑 Stop & Clear Job"), command=stop_and_clear_processing_job, state=tk.DISABLED, style="Secondary.TButton")
 
 # --- End of Stop and Clear Job Functionality ---
 
-config_button = ttk.Button(button_frame, text="⚙️ Edit Config", command=open_config_editor)
+config_button = ttk.Button(button_frame, text=ui_theme.icon_text(app_state.root, "⚙️ Edit Config"), command=open_config_editor, style="Secondary.TButton")
 
 
-debug_log_check = ttk.Checkbutton(maintenance_frame, text="🐛 Debug Logs", variable=debug_logging_var, command=toggle_debug_logging)
+debug_log_check = ttk.Checkbutton(maintenance_frame, text=ui_theme.icon_text(app_state.root, "🐛 Debug Logs"), variable=debug_logging_var, command=toggle_debug_logging)
 
 # v13.1.1: per-request prompt traces are opt-in (config: generation.debug_prompt_log).
 # The checkbox is a convenience mirror of that key for the current run; the config value is
@@ -3657,11 +3705,11 @@ def toggle_debug_prompt_logging():
 
 
 debug_prompt_log_check = ttk.Checkbutton(
-    maintenance_frame, text="📝 Prompt Trace", variable=debug_prompt_log_var,
+    maintenance_frame, text=ui_theme.icon_text(app_state.root, "📝 Prompt Trace"), variable=debug_prompt_log_var,
     command=toggle_debug_prompt_logging)
 primary_actions_layout = ResponsiveGrid(button_frame,
     [start_button, pause_button, stop_clear_button, config_button],
-    min_width=170, max_columns=4, pady=4)
+    min_width=170, max_columns=4, pady=ui_theme.SPACE_XS)
 
 def start_control_server_if_enabled():
     """Serves terminal commands for this window when ``control.enabled`` is true (v13.0).
@@ -3784,12 +3832,12 @@ def quit_application():
         log_message("Application shutdown sequence complete. Exiting process.", "INFO")
         sys.exit(0) # Terminate the script
 
-quit_button = ttk.Button(maintenance_frame, text="❌ Quit Application", command=quit_application)
+quit_button = ttk.Button(maintenance_frame, text=ui_theme.icon_text(app_state.root, "❌ Quit Application"), command=quit_application)
 
 app_state.root.protocol("WM_DELETE_WINDOW", quit_application) # Handle window close (X) button
 
 app_state.status_bar = ttk.Label(app_state.root, text="Ready", foreground="lightgray", anchor="w")
-app_state.status_bar.grid(row=3, column=0, sticky="ew", padx=SPACING, pady=(0, 4))
+app_state.status_bar.grid(row=2, column=0, sticky="ew", padx=SPACING, pady=(0, 4))
 wrap_label(app_state.status_bar, app_state.root, padding=2 * SPACING)
 
 def force_recovery():
@@ -3828,17 +3876,17 @@ def trigger_export():
     app_state.status_bar.config(text="Exporting from PostgreSQL...", foreground="blue")
     threading.Thread(target=run_export, daemon=True).start()
 
-export_button = ttk.Button(maintenance_frame, text="📤 Export DB → JSONL", command=trigger_export)
+export_button = ttk.Button(maintenance_frame, text=ui_theme.icon_text(app_state.root, "📤 Export DB → JSONL"), command=trigger_export)
 
 
-clear_db_button = ttk.Button(maintenance_frame, text="🗑️ Clear Database", command=clear_database)
+clear_db_button = ttk.Button(maintenance_frame, text=ui_theme.icon_text(app_state.root, "🗑️ Clear Database"), command=clear_database)
 
 
-recovery_button = ttk.Button(maintenance_frame, text="🔄 Force Recovery", command=force_recovery)
+recovery_button = ttk.Button(maintenance_frame, text=ui_theme.icon_text(app_state.root, "🔄 Force Recovery"), command=force_recovery)
 
 
 # Secondary actions share the scrollable Overview area.
-clear_dash_btn = ttk.Button(maintenance_frame, text="🧹 Clear Dashboard", command=clear_dashboard)
+clear_dash_btn = ttk.Button(maintenance_frame, text=ui_theme.icon_text(app_state.root, "🧹 Clear Dashboard"), command=clear_dashboard)
 maintenance_layout = ResponsiveGrid(maintenance_frame,
     [export_button, clear_db_button, recovery_button, clear_dash_btn,
      quit_button, debug_log_check, debug_prompt_log_check, pause_updates_check],
@@ -3849,21 +3897,26 @@ dashboard_navigator = NotebookNavigator(dashboard_outer_frame, app_state.dashboa
 dashboard_navigator.grid(row=0, column=0, sticky="ew", pady=(0, 4))
 
 highlight_colors = {
-    "highlight_refusal": {"foreground": "#FF6B6B", "font": ('TkDefaultFont', 9, 'bold')},  # Bright red
-    "highlight_user_speak": {"foreground": "#4DABF7", "font": ('TkDefaultFont', 9, 'bold')},  # Bright blue
-    "highlight_slop": {"foreground": "#9775FA", "font": ('TkDefaultFont', 9, 'bold')},  # Bright purple
-    "highlight_anti_slop": {"foreground": "#FFD43B", "font": ('TkDefaultFont', 9, 'bold')},  # Bright yellow
-    "highlight_ooc": {"foreground": "#FF922B", "font": ('TkDefaultFont', 9, 'bold')},  # Bright orange (OOC drift)
-    "highlight_error": {"foreground": "#FC8181", "font": ('TkDefaultFont', 9, 'bold')}  # Bright red-orange (errors)
+    "highlight_refusal": {"foreground": ui_theme.ISSUE_REFUSALS, "font": ('TkDefaultFont', 9, 'bold')},  # Bright red
+    "highlight_user_speak": {"foreground": ui_theme.ISSUE_USER_SPEAK, "font": ('TkDefaultFont', 9, 'bold')},  # Bright blue
+    "highlight_slop": {"foreground": ui_theme.ISSUE_SLOP, "font": ('TkDefaultFont', 9, 'bold')},  # Bright purple
+    "highlight_anti_slop": {"foreground": ui_theme.ISSUE_ANTI_SLOP, "font": ('TkDefaultFont', 9, 'bold')},  # Bright yellow
+    "highlight_ooc": {"foreground": ui_theme.ISSUE_OUT_OF_CHARACTER, "font": ('TkDefaultFont', 9, 'bold')},  # Bright orange (OOC drift)
+    "highlight_error": {"foreground": ui_theme.ISSUE_ERRORS, "font": ('TkDefaultFont', 9, 'bold')}  # Bright red-orange (errors)
 }
 
-tab_names = ["Totals"] + [f"API {i+1}" for i in range(4)] + ["Quality", "🔍 Review", "🔎 Regex Watch", "📊 Metrics"]
+# The strip is eight tabs. `Totals` folded into `Overview` and the four per-API
+# tabs became one `APIs` tab with a slot selector, so every panel, table and graph
+# that existed before still exists. A test asserts this count so a future addition is
+# a deliberate decision rather than an accident.
+tab_names = [ui_theme.TAB_APIS, ui_theme.TAB_QUALITY, ui_theme.TAB_REVIEW,
+             ui_theme.TAB_REGEX_WATCH, ui_theme.TAB_METRICS]
 issue_types = ["Refusals", "User Speak", "Slop", "Anti-Slop", "OOC Drift", "Errors", "Non-Latin", "Cast Drift"]
 issue_keys = ["refusals", "user_speak", "slop", "anti_slop", "out_of_character", "errors", "non_latin", "scene_continuity"] # Keys for accessing data and widgets
 
 # --- Rich Prompt Viewer Tab Setup ---
 preview_tab = ttk.Frame(app_state.dashboard_notebook)
-app_state.dashboard_notebook.add(preview_tab, text="🔍 Prompt Viewer")
+app_state.dashboard_notebook.add(preview_tab, text=ui_theme.TAB_PROMPTS)
 
 # Top toolbar: metadata + stats
 preview_toolbar = ttk.Frame(preview_tab)
@@ -3872,13 +3925,17 @@ preview_toolbar.pack(fill=tk.X, padx=SPACING, pady=(SPACING, 2))
 # Metadata label (thread, slot, type, attempt, timestamp)
 prompt_preview_meta_var = tk.StringVar(value="Waiting for prompt generation...")
 meta_label = ttk.Label(preview_toolbar, textvariable=prompt_preview_meta_var,
-                       font=('Segoe UI', 9, 'bold'), foreground=ACCENT_CYAN, anchor='w')
+                       font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                         ui_theme.SIZE_SMALL, 'bold'),
+                       foreground=ACCENT_CYAN, anchor='w')
 meta_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
 # Stats label (message count, chars, tokens)
 prompt_preview_stats_var = tk.StringVar(value="")
 stats_label = ttk.Label(preview_toolbar, textvariable=prompt_preview_stats_var,
-                        font=('Segoe UI', 9), foreground='#868e96', anchor='e')
+                        font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                          ui_theme.SIZE_SMALL),
+                        foreground=ui_theme.TEXT_SUBTLE, anchor='e')
 stats_label.pack(side=tk.RIGHT)
 
 # Second toolbar: search + actions
@@ -3909,7 +3966,7 @@ def _preview_search():
     start = '1.0'
     idx = prompt_preview_text.search(term, start, stopindex=tk.END)
     tag_name = f'search_{id(term)}'
-    prompt_preview_text.tag_configure(tag_name, background='#ffd43b', foreground='#000000')
+    prompt_preview_text.tag_configure(tag_name, background=ui_theme.SYNTAX_WARN, foreground=ui_theme.TEXT_ON_HIGHLIGHT)
     count = 0
     while idx:
         end_idx = f"{idx}+{len(term)}c"
@@ -3923,7 +3980,7 @@ def _preview_search():
     prompt_preview_text.config(state=tk.DISABLED)
 
 preview_search_entry.bind('<Return>', lambda e: _preview_search())
-ttk.Button(preview_search_group, text="🔍", width=3, command=_preview_search).pack(side=tk.LEFT, padx=2)
+ttk.Button(preview_search_group, text=ui_theme.icon_text(app_state.root, "🔍"), width=3, command=_preview_search).pack(side=tk.LEFT, padx=2)
 ttk.Button(preview_search_group, text="Clear", width=5,
            command=lambda: (preview_search_var.set(''), _preview_search())).pack(side=tk.LEFT, padx=2)
 
@@ -3972,9 +4029,9 @@ def _copy_all():
     app_state.root.clipboard_append(content)
     toast.show("Full prompt copied.", "success")
 
-ttk.Button(preview_copy_group, text="📋 System", width=10, command=_copy_system_prompt).pack(side=tk.RIGHT, padx=2)
-ttk.Button(preview_copy_group, text="📋 Latest", width=10, command=_copy_latest_message).pack(side=tk.RIGHT, padx=2)
-ttk.Button(preview_copy_group, text="📋 All", width=8, command=_copy_all).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_copy_group, text=ui_theme.icon_text(app_state.root, "📋 System"), width=10, command=_copy_system_prompt).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_copy_group, text=ui_theme.icon_text(app_state.root, "📋 Latest"), width=10, command=_copy_latest_message).pack(side=tk.RIGHT, padx=2)
+ttk.Button(preview_copy_group, text=ui_theme.icon_text(app_state.root, "📋 All"), width=8, command=_copy_all).pack(side=tk.RIGHT, padx=2)
 
 # Auto-scroll toggle
 prompt_preview_autoscroll_var = tk.BooleanVar(value=True)
@@ -3986,21 +4043,21 @@ wrap_label(meta_label, preview_toolbar, padding=200)
 # Main rich text area
 prompt_preview_text = scrolledtext.ScrolledText(
     preview_tab, wrap=tk.WORD, state=tk.NORMAL, width=1, height=8,
-    font=('Consolas', 10), spacing1=2, spacing3=2,
-    background='#1a1a2e', foreground='#e0e0e0',
-    insertbackground='#ffffff', selectbackground='#2a4a6a',
+    font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 10), spacing1=2, spacing3=2,
+    background=ui_theme.SURFACE_PLOT, foreground=ui_theme.TEXT,
+    insertbackground=ui_theme.TEXT_INVERSE, selectbackground=ui_theme.TEXT_SELECT_BG,
     relief=tk.FLAT, borderwidth=0
 )
 prompt_preview_text.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=(0, SPACING))
 
 # Configure text tags for rich syntax highlighting
-prompt_preview_text.tag_configure('system_role', foreground='#bb86fc', font=('Consolas', 11, 'bold'))
-prompt_preview_text.tag_configure('system_content', foreground='#ce93d8')
-prompt_preview_text.tag_configure('user_role', foreground='#4fc3f7', font=('Consolas', 11, 'bold'))
-prompt_preview_text.tag_configure('user_content', foreground='#81d4fa')
-prompt_preview_text.tag_configure('assistant_role', foreground='#69f0ae', font=('Consolas', 11, 'bold'))
-prompt_preview_text.tag_configure('assistant_content', foreground='#b2dfdb')
-prompt_preview_text.tag_configure('separator', foreground='#444466')
+prompt_preview_text.tag_configure('system_role', foreground=ui_theme.SYNTAX_SYSTEM, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 11, 'bold'))
+prompt_preview_text.tag_configure('system_content', foreground=ui_theme.SYNTAX_SYSTEM_CONTENT)
+prompt_preview_text.tag_configure('user_role', foreground=ui_theme.SYNTAX_USER, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 11, 'bold'))
+prompt_preview_text.tag_configure('user_content', foreground=ui_theme.SYNTAX_USER_CONTENT)
+prompt_preview_text.tag_configure('assistant_role', foreground=ui_theme.SYNTAX_ASSISTANT, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 11, 'bold'))
+prompt_preview_text.tag_configure('assistant_content', foreground=ui_theme.SYNTAX_ASSISTANT_CONTENT)
+prompt_preview_text.tag_configure('separator', foreground=ui_theme.SYNTAX_RULE)
 
 # Initial placeholder text
 prompt_preview_text.insert(tk.END,
@@ -4030,15 +4087,15 @@ def _grid_scrollable_table(container, tree, wide_scrollbars=False):
     container.rowconfigure(0, weight=1)
     if wide_scrollbars:
         scale = container.winfo_fpixels("1i") / 96.0
-        options = dict(width=max(16, round(20 * scale)), background="#7a7a9a",
-                       troughcolor="#16161c", activebackground="#b0b0d0",
+        options = dict(width=max(16, round(20 * scale)), background=ui_theme.SCROLL_THUMB,
+                       troughcolor=ui_theme.SURFACE_SUNKEN, activebackground=ui_theme.SCROLL_THUMB_ACTIVE,
                        highlightthickness=0, borderwidth=0, relief="flat")
         vertical = tk.Scrollbar(container, orient="vertical", command=tree.yview, **options)
         horizontal = tk.Scrollbar(container, orient="horizontal", command=tree.xview, **options)
         tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-        tree.grid(row=0, column=0, sticky="nsew", padx=(4, 2), pady=(4, 2))
-        vertical.grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=(4, 2))
-        horizontal.grid(row=1, column=0, sticky="ew", padx=(4, 2), pady=(0, 4))
+        tree.grid(row=0, column=0, sticky="nsew", padx=(ui_theme.SPACE_XS, 2), pady=(ui_theme.SPACE_XS, 2))
+        vertical.grid(row=0, column=1, sticky="ns", padx=(0, ui_theme.SPACE_XS), pady=(ui_theme.SPACE_XS, 2))
+        horizontal.grid(row=1, column=0, sticky="ew", padx=(ui_theme.SPACE_XS, 2), pady=(0, ui_theme.SPACE_XS))
         return
     vertical = ttk.Scrollbar(container, orient="vertical", command=tree.yview)
     horizontal = ttk.Scrollbar(container, orient="horizontal", command=tree.xview)
@@ -4049,14 +4106,15 @@ def _grid_scrollable_table(container, tree, wide_scrollbars=False):
 
 
 # --- Regex Watch table styling -------------------------------------------------------
-# The "superhero" theme leaves Treeview without an explicit row height, so Tk falls back to a
+# ttk leaves Treeview without an explicit row height on every theme, so Tk falls back to a
 # flat 20px for a 10pt font whose linespace is 17px. Rows then show 3px of slack, which clips
 # ascenders/descenders and makes the Regex Watch tables read as scrunched, overlapping text.
-# Give the tables their own style with an explicit font and a row height measured from that
-# font, and size the columns from the heading text so no header is truncated either.
+# The tables get their own style through ui_theme.configure_table_style(), which sets an explicit
+# font and a row height measured from that font. The style NAME is unchanged because two tests
+# read REGEX_TREE_STYLE out of this module.
 REGEX_TREE_STYLE = 'RegexWatch.Treeview'
-REGEX_TREE_BODY_FONT = ('Segoe UI', 10)
-REGEX_TREE_HEADING_FONT = ('Segoe UI', 10, 'bold')
+REGEX_TREE_BODY_FONT = resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY)
+REGEX_TREE_HEADING_FONT = resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY, 'bold')
 
 
 def _configure_regex_tree_style():
@@ -4065,10 +4123,12 @@ def _configure_regex_tree_style():
     root = getattr(app_state, 'root', None)
     body = font.Font(root=root, font=REGEX_TREE_BODY_FONT)
     scale = root.winfo_fpixels("1i") / 96.0 if root is not None else 1.0
-    row_height = body.metrics("linespace") + max(8, round(10 * scale))
-    style.configure(REGEX_TREE_STYLE, font=REGEX_TREE_BODY_FONT, rowheight=row_height)
-    style.configure(REGEX_TREE_STYLE + '.Heading', font=REGEX_TREE_HEADING_FONT)
-    return row_height
+    slack = max(8, round(10 * scale))
+    configure_table_style(root, style, REGEX_TREE_STYLE,
+                          body_font=REGEX_TREE_BODY_FONT,
+                          heading_font=REGEX_TREE_HEADING_FONT,
+                          slack=slack)
+    return body.metrics("linespace") + slack
 
 
 def _configure_regex_tree_columns(tree, columns, widths, stretch_columns=()):
@@ -4092,6 +4152,43 @@ def _configure_regex_tree_columns(tree, columns, widths, stretch_columns=()):
 _configure_regex_tree_style()
 
 
+def _build_issue_panels(parent_frame, tab_name, columns, skip_errors, max_columns,
+                        row=0, use_pack=False):
+    """Build one tab's issue panels and register them under *tab_name*.
+
+    ``columns`` is the column tuple for this tab (four columns on Overview, three on
+    APIs), ``skip_errors`` drops the Errors panel (Overview keeps the old Totals set,
+    which excluded it), and ``row`` is the grid row inside *parent_frame* so the APIs
+    tab can put its slot selector above the panels.
+
+    ``use_pack`` exists because the two tabs use different geometry managers:
+    Overview's content frame is packed (it is a ScrollableFrame's inner frame), while
+    the loop-built tabs grid their children. Tk refuses to mix the two inside one
+    container.
+    """
+    panels_frame = ttk.Frame(parent_frame)
+    if use_pack:
+        panels_frame.pack(fill="x")
+    else:
+        panels_frame.grid(row=row, column=0, sticky="ew")
+    panels = []
+    for idx, issue_type_title in enumerate(issue_types):
+        if skip_errors and issue_keys[idx] == "errors":
+            continue
+
+        key = issue_keys[idx]
+        panel = ttk.LabelFrame(panels_frame, text=f"Recent {issue_type_title}")
+        panels.append(panel)
+
+        panel_tree = create_modern_issue_panel(
+            panel, columns,
+            highlight_color=ui_theme.ISSUE_COLORS.get(key, ui_theme.ISSUE_FALLBACK))
+        app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
+    app_state.dashboard_notebook.tabs_widgets[tab_name]['panel_layout'] = ResponsiveGrid(
+        panels_frame, panels, min_width=540, max_columns=max_columns,
+        padx=SPACING, pady=SPACING)
+
+
 for tab_name in tab_names:
     tab_frame = ttk.Frame(app_state.dashboard_notebook)
     app_state.dashboard_notebook.add(tab_frame, text=tab_name)
@@ -4111,9 +4208,9 @@ for tab_name in tab_names:
     search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
     search_entry.bind("<Return>", lambda e, t=tab_name: search_in_dashboard_tab(t))
 
-    ttk.Button(search_frame, text="🔍 Search", command=lambda t=tab_name: search_in_dashboard_tab(t)).pack(side=tk.LEFT, padx=SPACING)
-    ttk.Button(search_frame, text="❌ Clear", command=lambda t=tab_name: clear_dashboard_search(t)).pack(side=tk.LEFT, padx=SPACING)
-    ttk.Button(search_frame, text="📋 Copy All", command=lambda t=tab_name: copy_dashboard_tab(t)).pack(side=tk.LEFT, padx=SPACING)
+    ttk.Button(search_frame, text=ui_theme.icon_text(app_state.root, "🔍 Search"), command=lambda t=tab_name: search_in_dashboard_tab(t)).pack(side=tk.LEFT, padx=SPACING)
+    ttk.Button(search_frame, text=ui_theme.icon_text(app_state.root, "❌ Clear"), command=lambda t=tab_name: clear_dashboard_search(t)).pack(side=tk.LEFT, padx=SPACING)
+    ttk.Button(search_frame, text=ui_theme.icon_text(app_state.root, "📋 Copy All"), command=lambda t=tab_name: copy_dashboard_tab(t)).pack(side=tk.LEFT, padx=SPACING)
 
     app_state.dashboard_notebook.tabs_widgets[tab_name]['search_var'] = search_var
     app_state.dashboard_notebook.tabs_widgets[tab_name]['search_entry'] = search_entry
@@ -4129,51 +4226,44 @@ for tab_name in tab_names:
     app_state.dashboard_notebook.tabs_widgets[tab_name]['scrollable_frame'] = scrollable_frame
     app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas'] = canvas
 
-    # 3. Create Issue Panels (skip for custom tabs)
-    if tab_name not in ("Quality", "🔍 Review", "🔎 Regex Watch", "📊 Metrics"):
-        panels_frame = ttk.Frame(parent_frame)
-        panels_frame.grid(row=0, column=0, sticky="ew")
-        panels = []
-        for idx, issue_type_title in enumerate(issue_types):
-            if tab_name == "Totals" and idx == 5:  # Skip "Errors" for Totals tab
-                continue
+    # 3. Issue panels.
+    #
+    # Two tabs carry issue panels and they do not share a layout:
+    #   * Overview keeps the old Totals set -- seven panels (Errors excluded) with
+    #     the four-column Time/API/Phrase/Context layout, plus the 60-minute graph.
+    #   * APIs keeps the old per-API set -- eight panels with the three-column
+    #     Time/Phrase/Context layout, for whichever slot the selector shows.
+    # Both sets are built here rather than in the loop body so the widget registry
+    # keys are the same as before the merge.
+    if tab_name == ui_theme.TAB_APIS:
+        # One set of eight panels plus a slot selector. The four per-API tabs were
+        # identical in structure and differed only in which
+        # recent_*_per_api.get(i) they read, so one panel set driven by a selector
+        # is the same information with three fewer tabs.
+        slot_frame = ttk.Frame(parent_frame)
+        slot_frame.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(0, 4))
+        ttk.Label(slot_frame, text="API Slot:").pack(side=tk.LEFT, padx=(0, 6))
+        app_state.api_slot_var = tk.StringVar(value=ui_theme.api_tab_name(0))
+        slot_selector = ttk.Combobox(
+            slot_frame, textvariable=app_state.api_slot_var, state="readonly", width=12,
+            values=[ui_theme.api_tab_name(i) for i in range(4)])
+        slot_selector.pack(side=tk.LEFT)
+        app_state.dashboard_notebook.tabs_widgets[tab_name]['slot_selector'] = slot_selector
+        # Switching slots has to redraw the panels at once, otherwise the tab
+        # shows the previous slot's rows until the next update tick.
+        slot_selector.bind("<<ComboboxSelected>>",
+                           lambda _e: update_dashboard())
 
-            key = issue_keys[idx]
-            columns = ("Time", "API", "Phrase", "Context") if tab_name == "Totals" else ("Time", "Phrase", "Context")
-            color_map = {"refusals": "#ff4d6d", "user_speak": "#4dabf7", "slop": "#9775fa",
-                         "anti_slop": "#ffd43b", "out_of_character": "#ff922b", "errors": "#fc8181",
-                         "non_latin": "#20c997", "scene_continuity": "#e599f7"}
+        _build_issue_panels(parent_frame, tab_name,
+                           columns=("Time", "Phrase", "Context"),
+                           skip_errors=False, max_columns=2, row=1)
 
-            panel = ttk.LabelFrame(panels_frame, text=f"Recent {issue_type_title}")
-            panels.append(panel)
-
-            panel_tree = create_modern_issue_panel(panel, columns, highlight_color=color_map.get(key, "#ff6b6b"))
-            app_state.dashboard_notebook.tabs_widgets[tab_name][key] = panel_tree
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['panel_layout'] = ResponsiveGrid(
-            panels_frame, panels, min_width=540, max_columns=2, padx=SPACING, pady=SPACING)
-
-    # 4. Add Graph to Totals Tab
-    if tab_name == "Totals":
-        graph_frame = ttk.LabelFrame(scrollable_frame, text="Issue Detection Over Time (Last 60 Minutes)")
-        graph_frame.grid(row=1, column=0, padx=SPACING, pady=(12, 5), sticky="ew")
-
-        graph_canvas_widget = tk.Canvas(graph_frame, width=1, height=320, highlightthickness=0, bg='#1a1a1a')
-        graph_canvas_widget.pack_propagate(False)
-        graph_canvas_widget.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
-        app_state.dashboard_notebook.tabs_widgets[tab_name]['graph_canvas'] = graph_canvas_widget
-        draw_issue_graph(graph_canvas_widget)
-
-        # FIX: Explicitly refresh the parent canvas scrollregion after the graph renders
-        app_state.root.update_idletasks()
-        parent_canvas = app_state.dashboard_notebook.tabs_widgets[tab_name]['canvas']
-        parent_canvas.configure(scrollregion=parent_canvas.bbox("all"))
-
-    elif tab_name == "Quality":
+    elif tab_name == ui_theme.TAB_QUALITY:
         # Summary labels + score-table columns follow the roleplay-dimensions toggle;
         # rebuilt on change by _rebuild_quality_roleplay_layout() from the update loop.
         _rebuild_quality_roleplay_layout(force=True)
 
-    elif tab_name == "🔍 Review":
+    elif tab_name == ui_theme.TAB_REVIEW:
         # The Review tab has no issue panels, so its search bar would only search nothing.
         search_frame.grid_remove()
         # The Review tab is a fixed, non-scrolling split view: the flagged list on top and
@@ -4200,23 +4290,24 @@ for tab_name in tab_names:
         review_filter_entry = ttk.Entry(review_toolbar, textvariable=review_filter_var, width=30)
         review_filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         review_filter_entry.bind("<Return>", lambda e: _update_review_table(force=True))
-        ttk.Button(review_toolbar, text="🔍 Filter", command=lambda: _update_review_table(force=True)).grid(row=0, column=1)
+        ttk.Button(review_toolbar, text=ui_theme.icon_text(app_state.root, "🔍 Filter"), command=lambda: _update_review_table(force=True)).grid(row=0, column=1)
 
         review_actions = ttk.Frame(review_toolbar)
-        review_actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        review_actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(ui_theme.SPACE_XS, 0))
         # Dismiss and Export both leave the dataset alone; DROP is the only action that
         # removes a row, so it acts on the SELECTED conversation only (never the whole set)
         # and asks for confirmation first. See _drop_review_conversation().
         review_action_buttons = [
-            ttk.Button(review_actions, text="📤 Export Flagged → JSONL", command=_export_flagged_review),
-            ttk.Button(review_actions, text="🗑 Drop Selected", command=_drop_review_conversation),
-            ttk.Button(review_actions, text="✅ Dismiss All", command=_dismiss_all_review),
-            ttk.Button(review_actions, text="🔄 Refresh", command=lambda: _update_review_table(force=True)),
+            ttk.Button(review_actions, text=ui_theme.icon_text(app_state.root, "📤 Export Flagged → JSONL"), command=_export_flagged_review),
+            ttk.Button(review_actions, text=ui_theme.icon_text(app_state.root, "🗑 Drop Selected"), command=_drop_review_conversation),
+            ttk.Button(review_actions, text=ui_theme.icon_text(app_state.root, "✅ Dismiss All"), command=_dismiss_all_review),
+            ttk.Button(review_actions, text=ui_theme.icon_text(app_state.root, "🔄 Refresh"), command=lambda: _update_review_table(force=True)),
         ]
         app_state.dashboard_notebook.tabs_widgets[tab_name]['action_layout'] = ResponsiveGrid(
             review_actions, review_action_buttons, min_width=190, max_columns=4)
-        review_count_label = ttk.Label(review_toolbar, text="", foreground="#ff6b6b",
-                                       font=('Segoe UI', 10, 'bold'))
+        review_count_label = ttk.Label(review_toolbar, text="", foreground=ui_theme.DANGER,
+                                       font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                                         ui_theme.SIZE_BODY, 'bold'))
         review_count_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
         app_state.dashboard_notebook.tabs_widgets[tab_name]['review_count_label'] = review_count_label
 
@@ -4233,15 +4324,18 @@ for tab_name in tab_names:
         review_tree.column("Task ID", width=300, minwidth=200, stretch=True)
         review_tree.column("Flags", width=230, minwidth=150, stretch=True)
         # Readable row height: the theme's default is cramped and clips descenders.
-        style.configure('Review.Treeview', font=('Segoe UI', 10),
-                        rowheight=font.Font(family='Segoe UI', size=10).metrics('linespace') + 10)
-        style.configure('Review.Treeview.Heading', font=('Segoe UI', 10, 'bold'))
+        _review_body_font = resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY)
+        configure_table_style(app_state.root, style, 'Review.Treeview',
+                              body_font=_review_body_font,
+                              heading_font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                                        ui_theme.SIZE_BODY, 'bold'),
+                              slack=10)
         review_tree.configure(style='Review.Treeview')
 
         _grid_scrollable_table(review_table_lf, review_tree)
 
-        review_tree.tag_configure("critical", foreground="#ff6b6b")
-        review_tree.tag_configure("warning", foreground="#fcc419")
+        review_tree.tag_configure("critical", foreground=ui_theme.DANGER)
+        review_tree.tag_configure("warning", foreground=ui_theme.WARN)
 
         # A single click opens the conversation, not only a double click: the old binding
         # made rows feel dead until the user guessed they had to double-click.
@@ -4257,21 +4351,21 @@ for tab_name in tab_names:
         detail_lf.rowconfigure(0, weight=1)
 
         detail_text = scrolledtext.ScrolledText(detail_lf, wrap=tk.WORD, width=1, height=6,
-                                                font=('Consolas', 10),
-                                                bg='#1a1a2e', fg='#e0e0e0', relief=tk.FLAT,
+                                                font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 10),
+                                                bg=ui_theme.SURFACE_PLOT, fg=ui_theme.TEXT, relief=tk.FLAT,
                                                 padx=8, pady=6)
-        detail_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        detail_text.tag_configure("detail_head", foreground="#bb86fc", font=('Consolas', 10, 'bold'))
-        detail_text.tag_configure("detail_meta", foreground="#8b949e")
-        detail_text.tag_configure("detail_rule", foreground="#444466")
-        detail_text.tag_configure("role_user", foreground="#4fc3f7", font=('Consolas', 10, 'bold'))
-        detail_text.tag_configure("role_assistant", foreground="#69f0ae", font=('Consolas', 10, 'bold'))
-        detail_text.tag_configure("role_system", foreground="#ffd43b", font=('Consolas', 10, 'bold'))
+        detail_text.grid(row=0, column=0, sticky="nsew", padx=ui_theme.SPACE_XS, pady=ui_theme.SPACE_XS)
+        detail_text.tag_configure("detail_head", foreground=ui_theme.SYNTAX_HEADING, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 10, 'bold'))
+        detail_text.tag_configure("detail_meta", foreground=ui_theme.TEXT_MUTED)
+        detail_text.tag_configure("detail_rule", foreground=ui_theme.SYNTAX_RULE)
+        detail_text.tag_configure("role_user", foreground=ui_theme.SYNTAX_USER, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 10, 'bold'))
+        detail_text.tag_configure("role_assistant", foreground=ui_theme.SYNTAX_ASSISTANT, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 10, 'bold'))
+        detail_text.tag_configure("role_system", foreground=ui_theme.SYNTAX_WARN, font=resolve_font(app_state.root, ui_theme.MONO_FONT_STACK, 10, 'bold'))
         detail_text.insert(tk.END, "Select a flagged conversation above to read it here.", "detail_meta")
         detail_text.configure(state=tk.DISABLED)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['detail_text'] = detail_text
 
-    elif tab_name == "🔎 Regex Watch":
+    elif tab_name == ui_theme.TAB_REGEX_WATCH:
         # Regex Watch is a diagnostics area, not an issue panel: it shows which configured
         # expressions are actually firing, how often, and what the rewrite did with each hit.
         # It has no search bar (the pattern table has its own filter) and no issue panels.
@@ -4295,7 +4389,7 @@ for tab_name in tab_names:
             style='Small.TLabel', justify="left", wraplength=1)
         app_state.regex_watch_status_label.grid(row=0, column=0, sticky="ew")
         wrap_label(app_state.regex_watch_status_label, regex_header)
-        ttk.Button(regex_header, text="🔄 Refresh",
+        ttk.Button(regex_header, text=ui_theme.icon_text(app_state.root, "🔄 Refresh"),
                    command=lambda: _update_regex_watch_tab(force=True)).grid(row=0, column=1, padx=(SPACING, 0))
 
         # --- Configured patterns and their hit counts ---
@@ -4311,8 +4405,8 @@ for tab_name in tab_names:
         _configure_regex_tree_columns(regex_pattern_tree, pattern_cols,
                                       widths={"#": 56, "Hits": 70, "Last Status": 130, "Pattern": 520},
                                       stretch_columns=("Pattern",))
-        regex_pattern_tree.tag_configure("unresolved", foreground="#ff6b6b")
-        regex_pattern_tree.tag_configure("rewritten", foreground="#69f0ae")
+        regex_pattern_tree.tag_configure("unresolved", foreground=ui_theme.DANGER)
+        regex_pattern_tree.tag_configure("rewritten", foreground=ui_theme.SYNTAX_ASSISTANT)
         _grid_scrollable_table(patterns_lf, regex_pattern_tree)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['regex_pattern_tree'] = regex_pattern_tree
 
@@ -4326,12 +4420,12 @@ for tab_name in tab_names:
                                       widths={"Time": 90, "API": 80, "Status": 130,
                                               "Pattern": 260, "Matched Text": 340},
                                       stretch_columns=("Pattern", "Matched Text"))
-        regex_hit_tree.tag_configure("unresolved", foreground="#ff6b6b")
-        regex_hit_tree.tag_configure("rewritten", foreground="#69f0ae")
+        regex_hit_tree.tag_configure("unresolved", foreground=ui_theme.DANGER)
+        regex_hit_tree.tag_configure("rewritten", foreground=ui_theme.SYNTAX_ASSISTANT)
         _grid_scrollable_table(hits_lf, regex_hit_tree)
         app_state.dashboard_notebook.tabs_widgets[tab_name]['regex_hit_tree'] = regex_hit_tree
 
-    elif tab_name == "📊 Metrics":
+    elif tab_name == ui_theme.TAB_METRICS:
         # v13.1.0: a fixed, non-scrolling diagnostics area (like Regex Watch) -- one row per API
         # slot with a vLLM backend plus per-endpoint graphs. It has no search bar (a metrics
         # table is not a search target) and no issue panels: it is not an issue view at all.
@@ -4367,7 +4461,7 @@ for tab_name in tab_names:
             style='Small.TLabel', justify="left", wraplength=1)
         app_state.metrics_status_label.grid(row=0, column=0, sticky="ew")
         wrap_label(app_state.metrics_status_label, metrics_header)
-        ttk.Button(metrics_header, text="🔄 Refresh Now",
+        ttk.Button(metrics_header, text=ui_theme.icon_text(app_state.root, "🔄 Refresh Now"),
                    command=_poll_metrics_now).grid(
             row=0, column=1, padx=(SPACING, 0))
         app_state.dashboard_notebook.tabs_widgets[tab_name]['metrics_status_label'] = \
@@ -4389,11 +4483,13 @@ for tab_name in tab_names:
         kpi_cards = []
         for key, title, value, detail in kpi_specs:
             card = ttk.Frame(kpi_frame, borderwidth=0, padding=8)
-            ttk.Label(card, text=title, style='Header.TLabel').pack(anchor="w")
+            ttk.Label(card, text=ui_theme.icon_text(app_state.root, title),
+                       style='Header.TLabel').pack(anchor="w")
             value_label = ttk.Label(card, text=value, style='MetricValue.TLabel')
             value_label.pack(anchor="w", fill="x")
-            detail_label = ttk.Label(card, text=detail, foreground="#8b949e",
-                                     font=('Segoe UI', 9))
+            detail_label = ttk.Label(card, text=detail, foreground=ui_theme.TEXT_MUTED,
+                                     font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                                       ui_theme.SIZE_SMALL))
             detail_label.pack(anchor="w", fill="x")
             cards[key] = value_label
             card_details[key] = detail_label
@@ -4416,12 +4512,12 @@ for tab_name in tab_names:
         _configure_regex_tree_columns(metrics_tree, METRICS_COLUMNS,
                                       widths=METRICS_COLUMN_WIDTHS,
                                       stretch_columns=("API Endpoint", "Model"))
-        metrics_tree.tag_configure("idle", foreground="#8b949e")
-        metrics_tree.tag_configure("light", foreground="#69f0ae")
-        metrics_tree.tag_configure("busy", foreground="#ffd43b")
-        metrics_tree.tag_configure("saturated", foreground="#ff6b6b")
-        metrics_tree.tag_configure("unreachable", foreground="#ff6b6b")
-        metrics_tree.tag_configure("unknown", foreground="#8b949e")
+        metrics_tree.tag_configure("idle", foreground=ui_theme.TEXT_MUTED)
+        metrics_tree.tag_configure("light", foreground=ui_theme.SYNTAX_ASSISTANT)
+        metrics_tree.tag_configure("busy", foreground=ui_theme.SYNTAX_WARN)
+        metrics_tree.tag_configure("saturated", foreground=ui_theme.DANGER)
+        metrics_tree.tag_configure("unreachable", foreground=ui_theme.DANGER)
+        metrics_tree.tag_configure("unknown", foreground=ui_theme.TEXT_MUTED)
         # v13.4.0: wide, grabbable scrollbars.  The theme's default is a ~6px thumb, which is
         # unusable on a 22-column table -- the user could not drag it at all.
         _grid_scrollable_table(metrics_lf, metrics_tree, wide_scrollbars=True)
@@ -4442,8 +4538,8 @@ for tab_name in tab_names:
             frame = ttk.LabelFrame(graph_host, text=title)
             frame.grid(row=row, column=0, sticky="ew", padx=2, pady=(0, 6))
             canvas = tk.Canvas(frame, width=1, height=height, highlightthickness=0,
-                               bg='#1a1a1a')
-            canvas.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+                               bg=ui_theme.SURFACE_PLOT)
+            canvas.pack(fill=tk.BOTH, expand=True, padx=ui_theme.SPACE_XS, pady=ui_theme.SPACE_XS)
             app_state.dashboard_notebook.tabs_widgets[tab_name][key] = canvas
             return canvas
 
@@ -4468,9 +4564,52 @@ for tab_name in tab_names:
         update_vllm_queue_graph(queue_graph_canvas, [])
 
 
+# --- Overview issue panels + graph ---
+# Overview is created above, before tab_names exists, so its panels cannot be
+# built by the loop below. It keeps the old Totals set: seven panels (Errors
+# excluded) with the four-column Time/API/Phrase/Context layout, plus the
+# 60-minute issue graph.
+_build_issue_panels(overview_content, ui_theme.TAB_OVERVIEW,
+                    columns=("Time", "API", "Phrase", "Context"),
+                    skip_errors=True, max_columns=2, use_pack=True)
+
+_overview_graph_frame = ttk.LabelFrame(
+    overview_content, text="Issue Detection Over Time (Last 60 Minutes)")
+_overview_graph_frame.pack(pady=(SPACING, SPACING), padx=SPACING, fill="x")
+
+_overview_graph_canvas = tk.Canvas(_overview_graph_frame, width=1, height=320,
+                                  highlightthickness=0, bg=ui_theme.SURFACE_PLOT)
+_overview_graph_canvas.pack_propagate(False)
+_overview_graph_canvas.pack(fill=tk.BOTH, expand=True, padx=SPACING, pady=SPACING)
+app_state.dashboard_notebook.tabs_widgets[ui_theme.TAB_OVERVIEW]['graph_canvas'] = _overview_graph_canvas
+draw_issue_graph(_overview_graph_canvas)
+
+# The diagnostics section is packed last so it renders below the panels and the graph.
+# It was created early (the DB status, response-time and Tools frames are built against
+# it further up), but pack order is what decides where it appears.
+overview_diagnostics.pack(pady=SPACING, padx=SPACING, fill="x")
+
+# FIX: Explicitly refresh the parent canvas scrollregion after the graph renders
+app_state.root.update_idletasks()
+_overview_canvas = app_state.dashboard_notebook.tabs_widgets[ui_theme.TAB_OVERVIEW]['canvas']
+_overview_canvas.configure(scrollregion=_overview_canvas.bbox("all"))
+
+
 # --- Queue Management Tab ---
 queue_tab = ttk.Frame(app_state.dashboard_notebook)
-app_state.dashboard_notebook.add(queue_tab, text="📦 Queue")
+app_state.dashboard_notebook.add(queue_tab, text=ui_theme.TAB_QUEUE)
+
+# The strip order is set here, not by the order the tabs were added: Overview is
+# added above, before tab_names even exists, so the add order does not match the
+# intended reading order. Re-inserting an existing tab moves it.
+for _position, _tab_label in enumerate((
+        ui_theme.TAB_OVERVIEW, ui_theme.TAB_APIS, ui_theme.TAB_QUALITY,
+        ui_theme.TAB_REVIEW, ui_theme.TAB_REGEX_WATCH, ui_theme.TAB_METRICS,
+        ui_theme.TAB_PROMPTS, ui_theme.TAB_QUEUE)):
+    for _tab_id in app_state.dashboard_notebook.tabs():
+        if app_state.dashboard_notebook.tab(_tab_id, "text") == _tab_label:
+            app_state.dashboard_notebook.insert(_position, _tab_id)
+            break
 
 
 def _on_dashboard_tab_changed(_event=None):
@@ -4510,9 +4649,12 @@ def create_queue_panel(parent, title, columns):
     inner.rowconfigure(0, weight=1)
 
     # Override theme compression with explicit font and row spacing
-    style.configure('Queue.Treeview', font=('Segoe UI', 10),
-                    rowheight=font.Font(family='Segoe UI', size=10).metrics('linespace') + 8)
-    style.configure('Queue.Treeview.Heading', font=('Segoe UI', 10, 'bold'))
+    _queue_body_font = resolve_font(app_state.root, ui_theme.UI_FONT_STACK, ui_theme.SIZE_BODY)
+    configure_table_style(app_state.root, style, 'Queue.Treeview',
+                          body_font=_queue_body_font,
+                          heading_font=resolve_font(app_state.root, ui_theme.UI_FONT_STACK,
+                                                    ui_theme.SIZE_BODY, 'bold'),
+                          slack=8)
 
     tree = ttk.Treeview(inner, columns=columns, show="headings", height=12, style='Queue.Treeview')
 
@@ -4526,12 +4668,12 @@ def create_queue_panel(parent, title, columns):
 
     vsb = tk.Scrollbar(inner, orient="vertical", command=tree.yview,
                        width=20, highlightthickness=0, bd=0,
-                       bg='#999999', troughcolor='#555555',
-             activebackground='#bbbbbb', relief='flat')
+                       bg=ui_theme.SCROLL_THUMB, troughcolor=ui_theme.SCROLL_TROUGH,
+             activebackground=ui_theme.SCROLL_THUMB_LIGHT, relief='flat')
     hsb = tk.Scrollbar(inner, orient="horizontal", command=tree.xview,
                        width=20, highlightthickness=0, bd=0,
-                       bg='#999999', troughcolor='#555555',
-             activebackground='#bbbbbb', relief='flat')
+                       bg=ui_theme.SCROLL_THUMB, troughcolor=ui_theme.SCROLL_TROUGH,
+             activebackground=ui_theme.SCROLL_THUMB_LIGHT, relief='flat')
     tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
     # Grid layout is significantly more stable for Treeviews + Scrollbars than pack
@@ -4556,6 +4698,14 @@ def update_queue_ui():
         for tid in app_state.failed_task_ids:
             m = app_state.task_metadata.get(tid, {})
             app_state.queue_trees['failed'].insert("", tk.END, values=(tid, m.get('file', 'N/A'), m.get('retries', 0)))
+
+    # A queue table with no rows is a blank box; say which kind of empty it is.
+    for state, message in (('pending', "No pending tasks. Press Start to queue a run."),
+                           ('completed', "No completed tasks yet."),
+                           ('failed', "No failed tasks. Nothing to retry.")):
+        tree = app_state.queue_trees.get(state)
+        if tree is not None:
+            empty_state(tree, message)
 
 def purge_queue():
     if messagebox.askyesno("Purge Queue", "Remove all pending tasks? They will be skipped by workers."):
@@ -4604,10 +4754,10 @@ def export_queue():
 queue_btn_frame = ttk.Frame(queue_scrollable_frame)
 queue_btn_frame.pack(fill=tk.X, padx=SPACING, pady=SPACING)
 queue_actions = [
-    ttk.Button(queue_btn_frame, text="🗑️ Purge Queue", command=purge_queue),
-    ttk.Button(queue_btn_frame, text="🔄 Retry Failed", command=retry_failed_tasks),
-    ttk.Button(queue_btn_frame, text="📤 Export Queue", command=export_queue),
-    ttk.Button(queue_btn_frame, text="🔄 Refresh View", command=update_queue_ui),
+    ttk.Button(queue_btn_frame, text=ui_theme.icon_text(app_state.root, "🗑️ Purge Queue"), command=purge_queue),
+    ttk.Button(queue_btn_frame, text=ui_theme.icon_text(app_state.root, "🔄 Retry Failed"), command=retry_failed_tasks),
+    ttk.Button(queue_btn_frame, text=ui_theme.icon_text(app_state.root, "📤 Export Queue"), command=export_queue),
+    ttk.Button(queue_btn_frame, text=ui_theme.icon_text(app_state.root, "🔄 Refresh View"), command=update_queue_ui),
 ]
 queue_action_layout = ResponsiveGrid(queue_btn_frame, queue_actions, min_width=150, max_columns=4)
 

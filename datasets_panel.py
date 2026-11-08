@@ -23,6 +23,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from dataset_column_menu import ColumnVisibilityMenu
+import ui_theme
 from dataset_settings import (
     apply_schema, new_source, normalize_config, source_selector, source_spec,
     validate_config, visible_column_names, with_visible_columns,
@@ -257,7 +258,7 @@ class DatasetsPanel(ttk.Frame):
         # missing names cannot consume the mapping viewport.
         message = str(message).replace("\r", " ").replace("\n", " ")
         self.status_var.set(message if len(message) <= 260 else message[:257] + "...")
-        self.status_label.configure(foreground="#b64242" if error else "")
+        self.status_label.configure(foreground=ui_theme.DANGER_DEEP if error else "")
 
     def _on_resize(self, event):
         if event.widget is self:

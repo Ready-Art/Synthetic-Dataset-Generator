@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v13.5.2
+# ReadyArt Synthetic Dataset Generator v14.0.0
 
 A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs, driven either by a Tkinter GUI (`python generate.py`) or by a headless CLI (`python -m cli`) that speaks JSON and exit codes over a local control socket. Both front ends run the same engine against the same `config/config.yml` and write the same output.
 
@@ -91,7 +91,8 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 | Page | What it covers |
 |------|----------------|
 | [Version History](docs/version-history.md) | Index of the changelogs |
-| [Changelog — v13.x](docs/changelog-v13.md) | Current release notes |
+| [Changelog — v14.x](docs/changelog-v14.md) | Current release notes |
+| [Changelog — v13.x](docs/changelog-v13.md) | v13.x release notes |
 | [Changelog — v12.x](docs/changelog-v12.md) | v12.x release notes |
 | [Changelog — v11.x and earlier](docs/changelog-v11.md) | The rest of the history |
 | [License & Credits](docs/license-and-credits.md) | AGPLv3, the early MIT provenance, file headers, credits, third-party code |

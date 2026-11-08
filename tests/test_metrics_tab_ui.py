@@ -51,6 +51,8 @@ except ImportError as exc:
 else:
     TK_UNAVAILABLE = None
 
+import ui_theme
+
 MIN_ROW_SLACK = 6
 
 # A body shaped like the real vLLM /metrics output this tab reads.
@@ -121,7 +123,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         cls.vllm_metrics = vllm_metrics
         cls.root = app_state.root
         cls.notebook = app_state.dashboard_notebook
-        cls.tab = "📊 Metrics"
+        cls.tab = ui_theme.TAB_METRICS
         cls.settle()
 
         _os.makedirs("output", exist_ok=True)
@@ -200,15 +202,22 @@ class MetricsTabLayoutTests(unittest.TestCase):
         self.assertNotIn("panel_layout", self.widgets)
 
     def test_other_tabs_still_have_their_panels(self):
-        """Adding this tab must not have swallowed the issue panels of the others."""
-        totals = self.notebook.tabs_widgets["Totals"]
-        self.assertIn("refusals", totals)
-        self.assertIn("scene_continuity", totals)
+        """Adding this tab must not have swallowed the issue panels of the others.
+
+        The old Totals panels live on Overview after the 12->8 merge, and the old
+        per-API panels live on APIs.
+        """
+        overview = self.notebook.tabs_widgets[ui_theme.TAB_OVERVIEW]
+        self.assertIn("refusals", overview)
+        self.assertIn("scene_continuity", overview)
+        apis = self.notebook.tabs_widgets[ui_theme.TAB_APIS]
+        self.assertIn("errors", apis)
+        self.assertIn("scene_continuity", apis)
 
     # --- table readability -----------------------------------------------
 
     def test_table_uses_the_dedicated_style(self):
-        regex_widgets = self.notebook.tabs_widgets["🔎 Regex Watch"]
+        regex_widgets = self.notebook.tabs_widgets[ui_theme.TAB_REGEX_WATCH]
         self.assertEqual(self.widgets["metrics_tree"].cget("style"),
                          regex_widgets["regex_pattern_tree"].cget("style"),
                          "the metrics table must use the shared readable Treeview style")
@@ -523,7 +532,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         before = len(self._rows())
         # Switch away, then poll again with the tab hidden.
         for tab_id in self.notebook.tabs():
-            if "Totals" in self.notebook.tab(tab_id, "text"):
+            if self.notebook.tab(tab_id, "text") == ui_theme.TAB_OVERVIEW:
                 self.notebook.select(tab_id)
                 break
         self.settle()

@@ -27,6 +27,8 @@ readyart-dataset-generator/
 ├── logging_config.py        # Centralized logging with colorama (colored console + file output)
 ├── config_editor.py         # Configuration editor GUI (tabbed interface with search, validation)
 ├── dashboard.py             # Dashboard UI (graphs, progress bars, metrics, queue view, prompt preview)
+├── ui_theme.py              # v14.0: design tokens (palette, font stacks, spacing, tab names) + style builders; pure data, never creates a Tk object
+├── ui_layout.py              # v14.0: shared layout helpers (fit_window, ScrollableFrame, ResponsiveGrid, NotebookNavigator, CollapsibleSection, empty_state)
 ├── vllm_metrics.py          # v13.1.0: vLLM /metrics reader for the 📊 Metrics tab (headless, no Tk)
 ├── cli.py                   # v13.0: argparse surface + client + daemon launcher (GUI-free)
 ├── control.py               # v13.0: control protocol, socket server, HeadlessController (GUI-free)
@@ -54,7 +56,8 @@ readyart-dataset-generator/
 │   ├── performance.md       # Throughput and cost tuning
 │   ├── key-configuration-details.md  # Injection formats and storage details
 │   ├── version-history.md   # Index of the changelogs
-│   ├── changelog-v13.md     # Current release notes
+│   ├── changelog-v14.md     # Current release notes
+│   ├── changelog-v13.md     # v13.x release notes
 │   ├── changelog-v12.md     # v12.x release notes
 │   ├── changelog-v11.md     # v11.x and earlier
 │   ├── license-and-credits.md  # AGPLv3, provenance, credits

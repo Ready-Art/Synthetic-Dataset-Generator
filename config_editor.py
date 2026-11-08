@@ -36,8 +36,12 @@ from dataset_settings import DatasetSettingsError
 from dataset_templates import DEFAULT_QUESTION_SEPARATOR, DatasetTemplateError, validate_alias
 from ui_layout import (NotebookNavigator, ResponsiveGrid, ScrollableFrame,
                        bind_scroll_wheel, fit_window, scroll_to_widget, wrap_label)
+import ui_theme
+from ui_theme import resolve_font
 
-SPACING = 8  # UI padding constant (mirrors generate.py)
+# The spacing scale lives in ui_theme.py. This is an alias, not a second copy of the
+# number, so the editor cannot drift away from the main window.
+SPACING = ui_theme.SPACE_S
 # v13.0.4: the choices offered by every Thinking Mode dropdown. ``inherit`` only makes
 # sense for the auxiliary requests (fixers, judge) and is listed first because it is the
 # shipped default; the main Samplers-tab dropdown offers the other three only.
@@ -45,11 +49,12 @@ THINKING_MODE_CHOICES = ("inherit", "default", "enable", "disable")
 assert THINKING_MODE_CHOICES == THINKING_MODES, "Thinking Mode choices must match api_handler.THINKING_MODES"
 QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate.py (UI label only)
 
-# ttk.Spinbox needs an explicit field colour on the 'superhero' theme. The theme configures the
-# Spinbox text as white (foreground #ffffff) but leaves `fieldbackground` unset, so the field
-# falls back to the platform's native white entry background: white text on white, i.e. an
-# apparently empty box the user cannot read. Setting `fieldbackground` to the theme's own entry
-# colour (#2f4357, what TEntry uses) restores the contrast the rest of the form has.
+# ttk.Spinbox needs an explicit field colour on a dark theme. The theme configures the
+# Spinbox text but leaves `fieldbackground` unset, so the field falls back to the platform's
+# native white entry background: light text on white, i.e. an apparently empty box the user
+# cannot read. Setting `fieldbackground` to the theme's own entry colour (what TEntry uses)
+# restores the contrast the rest of the form has. Under `one-dark` the theme's own pair is
+# already 6.10:1, so the theme value is kept and the fallback is not used.
 SPINBOX_FIELD_STYLE = 'Readable.TSpinbox'
 
 
@@ -90,18 +95,18 @@ def configure_spinbox_style(widget):
     """
     style = ttk.Style(widget)
     try:
-        field_bg = style.lookup('TEntry', 'fieldbackground') or '#2f4357'
-        text_fg = style.lookup('TEntry', 'foreground') or '#ebebeb'
+        field_bg = style.lookup('TEntry', 'fieldbackground') or ui_theme.SURFACE_INPUT
+        text_fg = style.lookup('TEntry', 'foreground') or ui_theme.TEXT
         if color_contrast(widget, text_fg, field_bg) < 4.5:
-            field_bg, text_fg = '#2f4357', '#ebebeb'
-        border = style.lookup('TEntry', 'bordercolor') or '#4d5d6c'
+            field_bg, text_fg = ui_theme.SURFACE_INPUT, ui_theme.TEXT
+        border = style.lookup('TEntry', 'bordercolor') or ui_theme.BORDER
         style.configure(SPINBOX_FIELD_STYLE, fieldbackground=field_bg, foreground=text_fg,
-                        background=style.lookup('TEntry', 'background') or '#2b3e50',
+                        background=style.lookup('TEntry', 'background') or ui_theme.SURFACE,
                         bordercolor=border, lightcolor=field_bg, darkcolor=field_bg,
                         arrowcolor=text_fg)
         style.map(SPINBOX_FIELD_STYLE,
-                  fieldbackground=[('disabled', '#3a4a5a'), ('readonly', field_bg)],
-                  foreground=[('disabled', '#9aa7b4')])
+                  fieldbackground=[('disabled', ui_theme.SURFACE_DISABLED), ('readonly', field_bg)],
+                  foreground=[('disabled', ui_theme.TEXT_DISABLED)])
     except tk.TclError:
         return 'TSpinbox'
     return SPINBOX_FIELD_STYLE
@@ -248,7 +253,8 @@ class ConfigEditor(tk.Toplevel):
         self.title("Configuration Editor")
         # Readable spinbox fields (see configure_spinbox_style); runs before any tab is built.
         self.spinbox_style = configure_spinbox_style(self)
-        fit_window(self, preferred=(1280, 900), minimum=(760, 520))
+        fit_window(self, preferred=ui_theme.PREFERRED_WINDOW_SIZE,
+                   minimum=ui_theme.MINIMUM_WINDOW_SIZE)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
         self.user_speaking_phrases_data = {"male": [], "female": [], "neutral": []} 
@@ -264,7 +270,7 @@ class ConfigEditor(tk.Toplevel):
         # --- NEW: Tab & Section Search Bar ---
         self.search_frame = ttk.Frame(self)
         self.search_frame.grid(row=0, column=0, sticky="ew", padx=SPACING, pady=(SPACING, 0))
-        ttk.Label(self.search_frame, text="🔍 Search Tabs/Sections:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(self.search_frame, text=ui_theme.icon_text(self, "🔍 Search Tabs/Sections:")).pack(side=tk.LEFT, padx=(0, 5))
         self.search_entry = ttk.Entry(self.search_frame)
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.search_entry.bind("<KeyRelease>", self.search_editor_tabs)
@@ -278,7 +284,7 @@ class ConfigEditor(tk.Toplevel):
         self.notebook.add(self.api_tab, text="API")
 
         self.api_canvas = tk.Canvas(self.api_tab)
-        self.api_scrollbar = tk.Scrollbar(self.api_tab, orient="vertical", command=self.api_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.api_scrollbar = tk.Scrollbar(self.api_tab, orient="vertical", command=self.api_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         self.api_content_frame = ttk.Frame(self.api_canvas)
         self.api_content_frame.columnconfigure(1, weight=1)
 
@@ -533,7 +539,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Setup Canvas and Scrollbar for Generation Tab (similar to Prompts tab)
         self.generation_canvas = tk.Canvas(self.generation_tab)
-        self.generation_scrollbar = tk.Scrollbar(self.generation_tab, orient="vertical", command=self.generation_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.generation_scrollbar = tk.Scrollbar(self.generation_tab, orient="vertical", command=self.generation_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         gen_settings_frame = ttk.Frame(self.generation_canvas)
 
         gen_settings_frame.bind(
@@ -875,7 +881,7 @@ class ConfigEditor(tk.Toplevel):
         self.prompts_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.prompts_tab, text="Prompts")
         self.prompts_canvas = tk.Canvas(self.prompts_tab)
-        self.prompts_scrollbar = tk.Scrollbar(self.prompts_tab, orient="vertical", command=self.prompts_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.prompts_scrollbar = tk.Scrollbar(self.prompts_tab, orient="vertical", command=self.prompts_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         self.prompts_content_frame = ttk.Frame(self.prompts_canvas)
         self.prompts_content_frame.bind(
             "<Configure>",
@@ -983,7 +989,7 @@ class ConfigEditor(tk.Toplevel):
         self.notebook.add(self.lore_tab, text="Lore")
 
         self.lore_canvas = tk.Canvas(self.lore_tab)
-        self.lore_scrollbar = tk.Scrollbar(self.lore_tab, orient="vertical", command=self.lore_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.lore_scrollbar = tk.Scrollbar(self.lore_tab, orient="vertical", command=self.lore_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         self.lore_content_frame = ttk.Frame(self.lore_canvas)
 
         self.lore_content_frame.bind(
@@ -1011,7 +1017,7 @@ class ConfigEditor(tk.Toplevel):
         self.character_engine_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.character_engine_tab, text="Character Engine")
         self.character_engine_canvas = tk.Canvas(self.character_engine_tab)
-        self.character_engine_scrollbar = tk.Scrollbar(self.character_engine_tab, orient="vertical", command=self.character_engine_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.character_engine_scrollbar = tk.Scrollbar(self.character_engine_tab, orient="vertical", command=self.character_engine_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         self.character_engine_content_frame = ttk.Frame(self.character_engine_canvas)
         self.character_engine_content_frame.bind(
             "<Configure>",
@@ -1369,7 +1375,7 @@ class ConfigEditor(tk.Toplevel):
         # Add Character button
         self.add_char_btn = ttk.Button(
             self.character_engine_content_frame,
-            text="➕ Add Character",
+            text=ui_theme.icon_text(self, "➕ Add Character"),
             command=self._add_character_row
         )
         self.add_char_btn.grid(
@@ -1388,7 +1394,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Setup Canvas and Scrollbar for Detection Tab (similar to Prompts tab)
         self.detection_canvas = tk.Canvas(self.detection_tab)
-        self.detection_scrollbar = tk.Scrollbar(self.detection_tab, orient="vertical", command=self.detection_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.detection_scrollbar = tk.Scrollbar(self.detection_tab, orient="vertical", command=self.detection_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         self.detection_content_frame = ttk.Frame(self.detection_canvas)
 
         self.detection_content_frame.bind(
@@ -1426,7 +1432,8 @@ class ConfigEditor(tk.Toplevel):
         col1_frame = ttk.Frame(detection_panels)
         col2_frame = ttk.Frame(detection_panels)
         self._detection_layout = ResponsiveGrid(detection_panels, [col1_frame, col2_frame],
-                                                min_width=420, max_columns=2, padx=4, pady=4)
+                                                min_width=420, max_columns=2,
+                                                padx=ui_theme.SPACE_XS, pady=ui_theme.SPACE_XS)
         self.detection_content_frame.grid_columnconfigure(0, weight=1)
         
         def add_detection_list_pair(parent_frame, lf_text, phrases_var_name, fixes_var_name): # Helper for detection list pairs
@@ -1506,16 +1513,16 @@ class ConfigEditor(tk.Toplevel):
         self.regex_watch_entry = ttk.Entry(entry_row, textvariable=self.regex_watch_entry_var)
         self.regex_watch_entry.grid(row=0, column=0, sticky="ew", padx=(0, SPACING))
         self.regex_watch_entry.bind("<Return>", lambda _event: self._add_regex_pattern())
-        self.regex_watch_add_button = ttk.Button(entry_row, text="➕ Add / Update",
+        self.regex_watch_add_button = ttk.Button(entry_row, text=ui_theme.icon_text(self, "➕ Add / Update"),
                                                  command=self._add_regex_pattern)
         self.regex_watch_add_button.grid(row=0, column=1)
 
         button_row = ttk.Frame(regex_lf)
         button_row.pack(fill="x", pady=(0, 4))
-        self.regex_watch_remove_button = ttk.Button(button_row, text="➖ Remove Selected",
+        self.regex_watch_remove_button = ttk.Button(button_row, text=ui_theme.icon_text(self, "➖ Remove Selected"),
                                                     command=self._remove_regex_pattern)
         self.regex_watch_remove_button.pack(side=tk.LEFT, padx=(0, SPACING))
-        self.regex_watch_test_button = ttk.Button(button_row, text="🧪 Test Pattern",
+        self.regex_watch_test_button = ttk.Button(button_row, text=ui_theme.icon_text(self, "🧪 Test Pattern"),
                                                   command=self._test_regex_pattern)
         self.regex_watch_test_button.pack(side=tk.LEFT, padx=(0, SPACING))
         self.regex_watch_reset_button = ttk.Button(button_row, text="↺ Restore Defaults",
@@ -1647,7 +1654,7 @@ class ConfigEditor(tk.Toplevel):
 
         # Setup Canvas and Scrollbar for Samplers Tab
         self.samplers_canvas = tk.Canvas(self.samplers_tab)
-        self.samplers_scrollbar = tk.Scrollbar(self.samplers_tab, orient="vertical", command=self.samplers_canvas.yview, width=self.scrollbar_width, bg='#5a5a70', troughcolor='#2a2a35', activebackground='#8a8aa0', highlightthickness=0, bd=0)
+        self.samplers_scrollbar = tk.Scrollbar(self.samplers_tab, orient="vertical", command=self.samplers_canvas.yview, width=self.scrollbar_width, bg=ui_theme.SCROLL_THUMB_DIM, troughcolor=ui_theme.SURFACE_RAISED, activebackground=ui_theme.SCROLL_THUMB_DIM_ACTIVE, highlightthickness=0, bd=0)
         sampler_params_frame = ttk.Frame(self.samplers_canvas)
         sampler_params_frame.columnconfigure(0, weight=1)
 
@@ -1712,7 +1719,7 @@ class ConfigEditor(tk.Toplevel):
         ).grid(row=sampler_row, column=0, columnspan=3, padx=SPACING, pady=(SPACING, 0), sticky="w")
         sampler_row += 1
         bad_words_caption = ttk.Label(sampler_params_frame, text="Bad Words (one per line; leading whitespace is significant):", justify="left", wraplength=1)
-        bad_words_caption.grid(row=sampler_row, column=0, columnspan=3, sticky="ew", padx=SPACING, pady=(4, 0))
+        bad_words_caption.grid(row=sampler_row, column=0, columnspan=3, sticky="ew", padx=SPACING, pady=(ui_theme.SPACE_XS, 0))
         wrap_label(bad_words_caption, sampler_params_frame)
         sampler_row += 1
         self.bad_words_text = scrolledtext.ScrolledText(sampler_params_frame, wrap=tk.NONE, height=5, width=1, undo=True)
@@ -1883,7 +1890,7 @@ class ConfigEditor(tk.Toplevel):
         
         # The shell reserves search, navigation and actions; only the notebook grows.
         self.tab_navigator = NotebookNavigator(self, self.notebook)
-        self.tab_navigator.grid(row=1, column=0, sticky="ew", padx=SPACING, pady=(4, 0))
+        self.tab_navigator.grid(row=1, column=0, sticky="ew", padx=SPACING, pady=(ui_theme.SPACE_XS, 0))
         self.tab_navigator.refresh()
         toolbar = ttk.Frame(self)
         toolbar.grid(row=3, column=0, sticky="ew", padx=SPACING, pady=(0, SPACING))
@@ -1893,7 +1900,7 @@ class ConfigEditor(tk.Toplevel):
                 ("validate_button", "Validate values", self.validate_config_handler))):
             toolbar.columnconfigure(column, weight=1)
             button = ttk.Button(toolbar, text=text, command=command)
-            button.grid(row=0, column=column, sticky="ew", padx=4)
+            button.grid(row=0, column=column, sticky="ew", padx=ui_theme.SPACE_XS)
             setattr(self, name, button)
         self.status = ttk.Label(self, text="Ready", foreground="lightgray", wraplength=1)
         self.status.grid(row=4, column=0, sticky="ew", padx=SPACING, pady=(0, 5))
@@ -2626,7 +2633,7 @@ class ConfigEditor(tk.Toplevel):
     def _set_regex_status(self, message, ok=True):
         label = getattr(self, 'regex_watch_status_label', None)
         if label is not None and label.winfo_exists():
-            label.configure(text=message, foreground="green" if ok else "#ff6b6b")
+            label.configure(text=message, foreground=ui_theme.OK if ok else ui_theme.DANGER)
 
     def _toggle_regex_watch_fields(self):
         """Enable/disable the Regex Watch editor controls from the checkbox.
@@ -3750,12 +3757,12 @@ class ConfigEditor(tk.Toplevel):
         character_data = character_data or {}
         row_index = len(self.character_entries)
         card_frame = ttk.LabelFrame(self.character_cards_frame,
-                                    text=f"  ✦ Character {row_index + 1}  ", padding=8)
+                                    text=ui_theme.icon_text(self, f"  ✦ Character {row_index + 1}  "), padding=8)
         # _show_character_page is the only place that manages card frames.
         card_frame.columnconfigure(0, weight=1)
         entry_vars = {}
-        label_font = ('Segoe UI', 9, 'bold')
-        entry_font = ('Segoe UI', 9)
+        label_font = resolve_font(self, ui_theme.UI_FONT_STACK, ui_theme.SIZE_SMALL, 'bold')
+        entry_font = resolve_font(self, ui_theme.UI_FONT_STACK, ui_theme.SIZE_SMALL)
 
         short_fields = ttk.Frame(card_frame)
         short_fields.grid(row=0, column=0, sticky="ew")
@@ -3764,7 +3771,7 @@ class ConfigEditor(tk.Toplevel):
                              ("job", "Job:"), ("eye_color", "Eye Color:"), ("gender", "Gender:"), ("hair", "Hair:"), ("hair_color", "Hair Color:")):
             group = ttk.Frame(short_fields)
             group.columnconfigure(0, weight=1)
-            label = ttk.Label(group, text=caption, font=label_font, foreground='#e0e0e0')
+            label = ttk.Label(group, text=caption, font=label_font, foreground=ui_theme.TEXT)
             label.grid(row=0, column=0, sticky="w", pady=(0, 3))
             default = '25' if key == 'age' else ''
             var = tk.StringVar(value=character_data.get(key, default))
@@ -3775,7 +3782,7 @@ class ConfigEditor(tk.Toplevel):
             entry_vars[f'{key}_widget'] = widget
             groups.append(group)
         entry_vars['short_layout'] = ResponsiveGrid(short_fields, groups, min_width=180,
-                                                    max_columns=3, padx=4, pady=5)
+                                                    max_columns=3, padx=ui_theme.SPACE_XS, pady=5)
 
         def validate_age(value):
             if not value:
@@ -3797,14 +3804,14 @@ class ConfigEditor(tk.Toplevel):
                                      ("traits", "Traits:", 2),
                                      ("setting", "Setting:", 2),
                                      ("greeting", "Greeting (optional, opening mode):", 3)):
-            label = ttk.Label(card_frame, text=caption, font=label_font, foreground='#e0e0e0')
-            label.grid(row=next_row, column=0, sticky="w", padx=4, pady=(8, 3))
+            label = ttk.Label(card_frame, text=caption, font=label_font, foreground=ui_theme.TEXT)
+            label.grid(row=next_row, column=0, sticky="w", padx=ui_theme.SPACE_XS, pady=(8, 3))
             var = tk.StringVar(value=character_data.get(key, ''))
             widget = tk.Text(card_frame, width=1, height=height, font=entry_font,
-                             bg='#2a2a35', fg='#ffffff', wrap=tk.WORD,
+                             bg=ui_theme.SURFACE_RAISED, fg=ui_theme.TEXT_INVERSE, wrap=tk.WORD,
                              relief=tk.SOLID, borderwidth=1)
             widget.insert('1.0', character_data.get(key, ''))
-            widget.grid(row=next_row + 1, column=0, sticky="ew", padx=4, pady=(0, 4))
+            widget.grid(row=next_row + 1, column=0, sticky="ew", padx=ui_theme.SPACE_XS, pady=(0, ui_theme.SPACE_XS))
             def on_change(event=None, text_widget=widget, value_var=var):
                 if text_widget.winfo_exists():
                     value_var.set(text_widget.get('1.0', tk.END).strip())
@@ -3816,19 +3823,19 @@ class ConfigEditor(tk.Toplevel):
             next_row += 2
 
         action_row_frame = ttk.Frame(card_frame)
-        action_row_frame.grid(row=next_row, column=0, sticky="ew", padx=4, pady=(8, 4))
+        action_row_frame.grid(row=next_row, column=0, sticky="ew", padx=ui_theme.SPACE_XS, pady=(8, ui_theme.SPACE_XS))
         action_row_frame.columnconfigure(0, weight=1)
-        class_label = ttk.Label(action_row_frame, text="⚔ Class:", font=label_font, foreground='#e0e0e0')
+        class_label = ttk.Label(action_row_frame, text=ui_theme.icon_text(self, "⚔ Class:"), font=label_font, foreground=ui_theme.TEXT)
         class_label.grid(row=0, column=0, sticky="w", pady=(0, 3))
         class_var = tk.StringVar(value=character_data.get('class', ''))
         class_entry = ttk.Entry(action_row_frame, textvariable=class_var, width=1, font=entry_font)
         class_entry.grid(row=1, column=0, sticky="ew")
         entry_vars.update({'class': class_var, 'class_label': class_label,
                            'class_entry': class_entry, 'class_frame': action_row_frame})
-        delete_button = ttk.Button(card_frame, text="✕ Remove Character",
+        delete_button = ttk.Button(card_frame, text=ui_theme.icon_text(self, "✕ Remove Character"),
                                    command=lambda idx=row_index: self._remove_character_row(idx),
                                    style='Danger.TButton')
-        delete_button.grid(row=next_row + 1, column=0, sticky="e", padx=4, pady=(8, 4))
+        delete_button.grid(row=next_row + 1, column=0, sticky="e", padx=ui_theme.SPACE_XS, pady=(8, ui_theme.SPACE_XS))
         entry_vars['delete_btn'] = delete_button
         entry_vars['frame'] = card_frame
         self.character_entries.append(entry_vars)
@@ -3847,11 +3854,11 @@ class ConfigEditor(tk.Toplevel):
                     age_value = int(data['age'].get().strip())
                     # Edit the numbers 18 and 60 below to match your new range
                     if age_value < 18 or age_value > 60:
-                        age_widget.config(foreground='#ff6b6b')  # Red for invalid
+                        age_widget.config(foreground=ui_theme.DANGER)  # Red for invalid
                     else:
-                        age_widget.config(foreground='#ffffff')  # White for valid
+                        age_widget.config(foreground=ui_theme.TEXT_INVERSE)  # White for valid
                 except (ValueError, TypeError):
-                    age_widget.config(foreground='#ff6b6b')  # Red for non-numeric
+                    age_widget.config(foreground=ui_theme.DANGER)  # Red for non-numeric
 
     def _remove_character_row(self, row_index):
         """Removes a character card from the table."""

@@ -17,9 +17,51 @@ import sys
 import tkinter as tk
 from tkinter import font, ttk
 
+import ui_theme
+
 
 def _pixels(widget, value):
     return max(1, round(value * widget.winfo_fpixels("1i") / 96.0))
+
+
+# Tag applied to the placeholder row an empty Treeview shows. Callers that clear a
+# table before repopulating delete every row, placeholder included, so the tag is only
+# needed by code that wants to know whether a row is real.
+EMPTY_STATE_TAG = "empty-state"
+
+
+def empty_state(tree, message):
+    """Insert a single muted placeholder row into *tree* if it has no rows.
+
+    A Treeview with no rows is a blank rectangle: it reads as a rendering failure
+    rather than as "nothing has happened yet". Every table that can legitimately be
+    empty calls this at the end of its populate function, after the real rows are in,
+    so the placeholder appears only when there is genuinely nothing to show.
+
+    The row is tagged :data:`EMPTY_STATE_TAG` so a caller can tell it apart from a
+    real row. It is inserted with the first column spanning the message, which is why
+    the caller's column widths do not need to change.
+
+    Returns True when a placeholder was inserted.
+    """
+    if tree is None or not tree.winfo_exists():
+        return False
+    if tree.get_children():
+        return False
+    columns = tree.cget("columns")
+    if isinstance(columns, str):
+        columns = columns.split()
+    if not columns:
+        return False
+    # Muted, so the placeholder does not read as a real row. tag_configure is
+    # idempotent, so calling it on every populate is harmless.
+    try:
+        tree.tag_configure(EMPTY_STATE_TAG, foreground=ui_theme.TEXT_MUTED)
+    except tk.TclError:
+        pass
+    values = [message] + [""] * (len(columns) - 1)
+    tree.insert("", tk.END, values=values, tags=(EMPTY_STATE_TAG,))
+    return True
 
 
 def fit_window(window, preferred=(1280, 900), minimum=(760, 520)):
@@ -210,8 +252,9 @@ class ScrollableFrame(ttk.Frame):
         self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
         if wide_scrollbar:
             scale = self.winfo_fpixels("1i") / 96.0
-            options = dict(width=max(16, round(20 * scale)), background="#7a7a9a",
-                           troughcolor="#16161c", activebackground="#b0b0d0",
+            options = dict(width=max(16, round(20 * scale)), background=ui_theme.SCROLL_THUMB,
+                           troughcolor=ui_theme.SURFACE_SUNKEN,
+                           activebackground=ui_theme.SCROLL_THUMB_ACTIVE,
                            highlightthickness=0, borderwidth=0, relief="flat")
             scrollbar = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview,
                                     **options)
@@ -375,6 +418,56 @@ class NotebookNavigator(ttk.Frame):
                 self.notebook.unbind(sequence, binding)
             except tk.TclError:
                 pass
+
+
+class CollapsibleSection(ttk.Frame):
+    """A titled section whose body can be collapsed to a single header row.
+
+    Used to keep the Overview page readable: the run controls, the metric cards and
+    the issue panels are what a user watches, while the database status, the API
+    response times and the Tools buttons are diagnostics that are only interesting
+    when something looks wrong. Collapsing them means the useful part of the page is
+    visible without scrolling on a short window.
+
+    ``content`` is the frame to put children in. ``expanded`` is the initial state;
+    the header is always visible and toggles the body. The header is a ttk.Button in
+    the Ghost style so it reads as a control rather than as a heading.
+    """
+    def __init__(self, parent, title, expanded=False, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.columnconfigure(0, weight=1)
+        self._expanded = bool(expanded)
+
+        self.header = ttk.Button(self, style='Ghost.TButton', command=self.toggle)
+        self.header.grid(row=0, column=0, sticky="ew")
+
+        self.content = ttk.Frame(self)
+        self.content.grid(row=1, column=0, sticky="ew")
+        self.content.columnconfigure(0, weight=1)
+
+        self._title = title
+        self._sync()
+
+    @property
+    def expanded(self):
+        return self._expanded
+
+    def toggle(self):
+        self._expanded = not self._expanded
+        self._sync()
+        return self._expanded
+
+    def expand(self, expanded=True):
+        self._expanded = bool(expanded)
+        self._sync()
+
+    def _sync(self):
+        arrow = "\u25be" if self._expanded else "\u25b8"  # ▾ / ▸
+        self.header.configure(text=f"{arrow}  {self._title}")
+        if self._expanded:
+            self.content.grid()
+        else:
+            self.content.grid_remove()
 
 
 def wrap_label(label, container=None, padding=16):

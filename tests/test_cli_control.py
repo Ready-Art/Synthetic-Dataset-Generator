@@ -862,7 +862,7 @@ def test_generate_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-VERSION = "13.5.2"
+VERSION = "14.0.0"
 
 
 def test_the_version_is_13_1_1_everywhere_it_is_declared():
@@ -890,9 +890,13 @@ def test_the_version_is_13_1_1_everywhere_it_is_declared():
     assert f"v{VERSION}" in history, f"docs/version-history.md has no v{VERSION} row"
 
     # The changelog must also carry a section for it, or a bump leaves the release notes behind.
-    changelog = (ROOT / "docs" / "changelog-v13.md").read_text(encoding="utf-8")
+    # The file is named for the MAJOR series, so a major bump means a new file: derive it
+    # from VERSION rather than hard-coding it, or a v14 release looks in the v13 file.
+    changelog_path = ROOT / "docs" / f"changelog-v{VERSION.split('.')[0]}.md"
+    assert changelog_path.exists(), f"{changelog_path.name} does not exist"
+    changelog = changelog_path.read_text(encoding="utf-8")
     assert f"### v{VERSION}" in changelog, (
-        f"docs/changelog-v13.md has no '### v{VERSION}' section")
+        f"docs/{changelog_path.name} has no '### v{VERSION}' section")
 
 
 # ---------------------------------------------------------------------------

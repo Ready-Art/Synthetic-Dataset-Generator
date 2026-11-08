@@ -61,16 +61,18 @@ else:
     from config_loader import ConfigLoader
     import config_editor
 
-# The white-on-white spinbox only reproduces under the production 'superhero' theme, where the
-# Spinbox text is white and the field background is left to the platform. Testing under Tk's
-# default theme would hide the bug entirely, so the root is built with ttkbootstrap when it is
-# installed and the theme is applied explicitly either way.
+# The white-on-white spinbox only reproduced under a dark theme whose Spinbox text and field
+# background disagreed. Testing under Tk's default theme would hide the bug entirely, so the root is
+# built with ttkbootstrap when it is installed and the production theme is applied explicitly either
+# way. The theme name comes from ui_theme so this test can never drift from the app again.
 try:
     import ttkbootstrap as _ttkbootstrap
 except ImportError:
     _ttkbootstrap = None
 
-PRODUCTION_THEME = "superhero"
+import ui_theme
+
+PRODUCTION_THEME = ui_theme.THEME_NAME
 
 
 # A label is a "skyscraper" when it is much taller than it is wide. Normal wrapped prose is

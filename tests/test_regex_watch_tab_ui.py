@@ -51,6 +51,8 @@ except ImportError as exc:
 else:
     TK_UNAVAILABLE = None
 
+import ui_theme
+
 # A row must leave at least this much slack around the font's linespace, otherwise glyph
 # ascenders/descenders are clipped and the text looks compressed.
 MIN_ROW_SLACK = 6
@@ -77,7 +79,7 @@ class RegexWatchTabLayoutTests(unittest.TestCase):
         cls.detection = detection
         cls.root = app_state.root
         cls.notebook = app_state.dashboard_notebook
-        cls.tab = "🔎 Regex Watch"
+        cls.tab = ui_theme.TAB_REGEX_WATCH
         for tab_id in cls.notebook.tabs():
             if "Regex Watch" in cls.notebook.tab(tab_id, "text"):
                 cls.notebook.select(tab_id)
