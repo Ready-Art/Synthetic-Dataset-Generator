@@ -19,7 +19,7 @@
 
 import { el, setStatus } from './dom.js';
 import { connectStats } from './stats.js';
-import { renderOverview } from './overview.js';
+import { renderOverview, repaintOverview } from './overview.js';
 import { renderReview, unmountReview } from './review.js';
 import { DATA_TABS } from './tabs.js';
 import { CONFIG_TAB } from './config.js';
@@ -181,7 +181,11 @@ function onStats(payload) {
   setConnected(true);
   // Only the Overview re-renders on a stats tick. A tick must never repaint the Config
   // editor: it would throw away a half-typed field on every second.
-  if (state.tab === 'overview') render();
+  //
+  // It goes through `repaintOverview` rather than `render()` so the reader's scroll position in
+  // the Recent issues panel survives the tick. A plain re-render replaced the panel and snapped it
+  // to the top once a second, which made the list unreadable during a run.
+  if (state.tab === 'overview') repaintOverview(state);
 }
 
 function onDisconnected() {

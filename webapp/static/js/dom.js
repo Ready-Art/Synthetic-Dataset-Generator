@@ -99,6 +99,57 @@ export function emptyState({ title, hint, action } = {}) {
   );
 }
 
+// --- scroll preservation --------------------------------------------------
+
+/**
+ * Record the scroll offset of every keyed scroller under `root`.
+ *
+ * **Why this exists.** A stats tick re-renders the whole screen by replacing its children, which
+ * throws away every scroll position with it. The Overview's Recent issues panel is the visible
+ * symptom: a reader scrolls down to read a row, the next tick arrives a second later, and the panel
+ * snaps back to the top. That is not a cosmetic annoyance -- it makes the list unreadable during a
+ * run, which is the only time it has anything in it.
+ *
+ * A scroller opts in by carrying `data-scroll-key`, which must be **stable across renders** (an id
+ * like `overview-issues`, not an index). Anything without a key is not touched, so this cannot
+ * resurrect a scroll position for a panel that has genuinely changed.
+ *
+ * @param {HTMLElement} root
+ * @returns {Map<string, number>}
+ */
+export function captureScroll(root) {
+  const offsets = new Map();
+  if (!root) return offsets;
+  for (const node of root.querySelectorAll('[data-scroll-key]')) {
+    if (node.scrollTop) offsets.set(node.dataset.scrollKey, node.scrollTop);
+  }
+  return offsets;
+}
+
+/**
+ * Put back the offsets :func:`captureScroll` recorded.
+ *
+ * Deferred to the next frame on purpose: a scroll offset can only be set once the new content has a
+ * height, and immediately after `replaceChildren` it does not, so the assignment would be clamped to
+ * zero. The frame is the first point at which the browser has laid the list out.
+ *
+ * @param {HTMLElement} root
+ * @param {Map<string, number>} offsets
+ */
+export function restoreScroll(root, offsets) {
+  if (!root || !offsets || !offsets.size) return;
+  const apply = () => {
+    for (const node of root.querySelectorAll('[data-scroll-key]')) {
+      const top = offsets.get(node.dataset.scrollKey);
+      if (top) node.scrollTop = top;
+    }
+  };
+  requestAnimationFrame(apply);
+  // The frame is the fast path. A throttled renderer may not produce one for a while, and a
+  // timeout that fires first is harmless because the assignment is idempotent.
+  window.setTimeout(apply, 120);
+}
+
 // --- toasts --------------------------------------------------------------
 
 // The Tk `ToastManager` used `success` / `error` / `warning` / `info`; the web callers

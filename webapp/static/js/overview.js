@@ -25,7 +25,9 @@
  * Every screen must fit 1440x900 with no page scroll. If it needs one, the layout is wrong.
  */
 
-import { el, emptyState, metricCard, num, pct, toast } from './dom.js';
+import {
+  captureScroll, el, emptyState, metricCard, num, pct, restoreScroll, toast,
+} from './dom.js';
 import { lineChart, legend } from './chart.js';
 import { command } from './stats.js';
 
@@ -91,6 +93,31 @@ export function renderOverview(state) {
   return screen;
 }
 
+/**
+ * Re-render the Overview from a stats tick **without losing the reader's scroll position**.
+ *
+ * `main.js` replaces the whole screen on every tick, which is what makes the numbers live -- and
+ * what used to snap the Recent issues panel back to the top once a second, so a reader could not
+ * read a row during a run. The offsets of every `[data-scroll-key]` scroller are captured before
+ * the swap and restored after it.
+ *
+ * The screen is built first and only then swapped, so a throw while building leaves the previous
+ * screen in place rather than blanking the tab.
+ */
+export function repaintOverview(state) {
+  const main = document.getElementById('main');
+  if (!main) return;
+  const current = main.querySelector('#screen-overview');
+  if (!current) return;
+  const offsets = captureScroll(current);
+  const next = renderOverview(state);
+  next.setAttribute('role', 'tabpanel');
+  next.setAttribute('aria-labelledby', 'tab-overview');
+  next.setAttribute('tabindex', '-1');
+  current.replaceChildren(...next.childNodes);
+  restoreScroll(current, offsets);
+}
+
 // --- action bar ----------------------------------------------------------
 
 function actionBar(run) {
@@ -116,6 +143,18 @@ function actionBar(run) {
     send(stopClear, 'stop', { clear: true });
   });
 
+  // **Clear queue, not Stop & Clear.** Stop & Clear needs a live run: `cmd_stop` answers
+  // `not_running` when there is none, so a queue left behind by a finished or crashed run could
+  // not be emptied from the browser at all. This button works either way, never stops a run and
+  // never deletes a dataset row -- it only discards queued work.
+  const clearQueue = el('button', { type: 'button' }, 'Clear queue');
+  clearQueue.addEventListener('click', () => clearQueueNow(clearQueue, run));
+  // Only meaningless when there is nothing queued, which the stats payload already tells us.
+  const queued = Number((run.tasks || {}).pending || 0)
+    + Number((run.tasks || {}).completed || 0)
+    + Number((run.tasks || {}).failed || 0);
+  clearQueue.disabled = queued === 0;
+
   // Download the dataset, and start fresh. These two are about the dataset on disk
   // rather than about the run, so they are never disabled by the run's phase: a
   // finished dataset is exactly when a reader wants to take it away or clear it.
@@ -134,7 +173,7 @@ function actionBar(run) {
 
   return el('div', { class: 'action-bar' },
     el('span', { class: `pill ${pillClass}` }, phase),
-    start, pause, stop, stopClear,
+    start, pause, stop, stopClear, clearQueue,
     el('span', { class: 'spacer' }),
     download, clearDataset,
     el('span', { class: 'card-sub' },
@@ -227,6 +266,52 @@ async function clearStoredDataset(button) {
   }
 }
 
+/**
+ * Empty the whole queue from the Overview, with or without a run in progress.
+ *
+ * The confirmation names the three counts and says what is *not* touched, because "clear" alone
+ * does not tell a reader whether their dataset or their running job survives.
+ */
+async function clearQueueNow(button, run) {
+  const tasks = (run || {}).tasks || {};
+  const total = Number(tasks.pending || 0) + Number(tasks.completed || 0)
+    + Number(tasks.failed || 0);
+  if (!total) {
+    toast('The queue is already empty.', 'info');
+    return;
+  }
+  const agreed = window.confirm(
+    `Clear the whole queue?\n\n`
+    + `${num(tasks.pending || 0)} pending, ${num(tasks.completed || 0)} completed, `
+    + `${num(tasks.failed || 0)} failed.\n\n`
+    + `Nothing is deleted from the dataset, and a running job is not stopped -- only the queued `
+    + `work is discarded.`);
+  if (!agreed) return;
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/queue/clear', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (response.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    const body = await response.json();
+    if (!body.ok) {
+      toast(body.error?.message || 'Could not clear the queue.', 'danger');
+      return;
+    }
+    toast(`Cleared ${num(body.data.total)} task(s).`, 'ok');
+  } catch (error) {
+    toast(error.message || 'Could not clear the queue.', 'danger');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function send(button, cmd, args = {}) {
   if (busy) return;
   busy = true;
@@ -256,6 +341,30 @@ function metricRow(detected) {
   );
 }
 
+/**
+ * The estimated spend, as money.
+ *
+ * A four-decimal `num()` rendered `0.0000` and `0.42` identically to a reader glancing at a card,
+ * and a real spend of `0.00004` rounded to `0.0000` -- which is exactly what "Estimated Cost does
+ * nothing" looked like. Below a cent the value is shown in full precision with a `<` prefix, so a
+ * tiny but non-zero spend is visibly not zero.
+ */
+function costText(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return '$0.00';
+  if (amount < 0.01) return `$${amount.toFixed(6)}`;
+  return `$${amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })}`;
+}
+
+/** The sub-line under the cost: why it is what it is. */
+function costHint(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return 'set a price in Config';
+  return 'at the configured rate';
+}
+
 function disclosure(detected, tokens, output, quality) {
   const body = el('div', { class: 'metric-row secondary', style: { marginTop: '10px' } },
     SECONDARY_METRICS.map(({ key, caption }) => {
@@ -264,7 +373,11 @@ function disclosure(detected, tokens, output, quality) {
     }),
     metricCard('Tokens in', num(tokens.input), null),
     metricCard('Tokens out', num(tokens.output), null),
-    metricCard('Est. cost', num(tokens.estimated_cost, 4), null),
+    // The cost is computed server-side from the tokens and `api.pricing.cost_per_1k_tokens`
+    // (v15.1.0). It used to read `app_state.estimated_cost`, which no run ever wrote, so the
+    // card was 0.0000 forever. The sub-line names the price so a zero is explainable: either
+    // nothing has been spent yet, or no price is configured.
+    metricCard('Est. cost', costText(tokens.estimated_cost), costHint(tokens.estimated_cost)),
     metricCard('Quality', quality.enabled ? num(quality.avg_composite, 1) : 'off',
       quality.enabled ? `${num(quality.scored)} scored` : null),
     metricCard('Below threshold', num(quality.threshold_failures),
@@ -319,7 +432,9 @@ function mainGrid(stats, detected) {
 }
 
 function issuePanel(detected) {
-  const body = el('div', { class: 'panel-body' });
+  // `data-scroll-key` is what lets a stats tick restore this panel's scroll offset. Without it
+  // the panel snapped to the top once a second and a row could not be read during a run.
+  const body = el('div', { class: 'panel-body', 'data-scroll-key': 'overview-issues' });
 
   // One table per issue type, all inside one scrolling panel. A table per panel
   // would need seven scrollbars in a column that is already the taller one.

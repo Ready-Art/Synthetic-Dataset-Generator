@@ -1,3 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+# it is unlikely any of that code survives. Unless you have the original MIT-era code to
+# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+
 """A throwaway UI harness: serve the real static bundle against a seeded payload.
 
 Not part of the app. It exists so a layout bug can be *seen* in a real browser instead of
@@ -95,9 +105,41 @@ def _stats():
 
 
 def _metrics():
-    """Per-slot usage plus a throughput ring, the shape `/api/metrics` returns."""
+    """Per-slot usage, the server rows and the proxy's figures -- the `/api/metrics` shape.
+
+    Set ``HARNESS_PLAIN=1`` to serve a plain-vLLM endpoint with no `antislop:` metrics, which is
+    the case the antislop toggle has to explain rather than draw empty axes for.
+    """
     history = [{'time': 1762700000 + i * 2, 'tokens_per_second': 40 + i * 3}
                for i in range(20)]
+    plain = bool(os.environ.get('HARNESS_PLAIN'))
+
+    def server_history(scale):
+        return [{'time': 1762700000 + i * 2,
+                 'prompt_tps': (180 + i * 4) * scale,
+                 'generation_tps': (52 + i * 2) * scale,
+                 'load_percent': min(96, 22 + i * 3),
+                 'running': 3 + (i % 4),
+                 'waiting': i % 3,
+                 'antislop_requests': None if plain else 100 + i * 7,
+                 'antislop_ban_rate': None if plain else (i % 4) * 0.4,
+                 'antislop_backtrack_rate': None if plain else (i % 3) * 0.2,
+                 'antislop_generation_tps': None if plain else 48 + i * 1.5}
+                for i in range(20)]
+
+    endpoints = [
+        {'slot_idx': 0, 'label': 'API 1', 'model': 'qwen2.5-32b-instruct',
+         'metrics_url': 'http://127.0.0.1:8000/metrics', 'error': None,
+         'is_antislop': not plain, 'prompt_tps': 254.0, 'generation_tps': 90.0,
+         'load_percent': 79.0, 'running': 6, 'waiting': 2,
+         'history': server_history(1.0), 'slot_history': history},
+        {'slot_idx': 1, 'label': 'API 2', 'model': 'qwen2.5-32b-instruct',
+         'metrics_url': 'http://127.0.0.1:8001/metrics', 'error': None,
+         'is_antislop': not plain, 'prompt_tps': 141.0, 'generation_tps': 55.0,
+         'load_percent': 44.0, 'running': 3, 'waiting': 0,
+         'history': server_history(0.6), 'slot_history': history},
+    ]
+
     return {
         'ok': True,
         'slots': [
@@ -113,7 +155,54 @@ def _metrics():
              'history': [{'time': p['time'], 'tokens_per_second': p['tokens_per_second'] * 0.6}
                          for p in history]},
         ],
-        'antislop_columns': False,
+        'endpoints': endpoints,
+        'vllm_available': True,
+        'antislop_columns': not plain,
+        'antislop_available': not plain,
+    }
+
+
+def _live_prompts():
+    """The Live Prompt Viewer's ring, newest first."""
+    entries = []
+    for index in range(6):
+        entries.append({
+            'seq': 6 - index,
+            'time': f'16:00:{10 + index:02d}',
+            'recorded_at': 1762700000 + index,
+            'thread_id': index % 4,
+            'api_slot': index % 2,
+            'message_type': ['Question', 'Answer', 'Slop fix'][index % 3],
+            'attempt': 1,
+            'chars': 1840 + index * 90,
+            'approx_tokens': (1840 + index * 90) // 4,
+            'truncated': False,
+            'turns': [
+                {'role': 'system',
+                 'content': 'You are a roleplay partner. Stay in character, never speak for '
+                            'the user, and never mention that you are an AI.'},
+                {'role': 'user',
+                 'content': f'Write the next reply in the scene. Turn {index + 1}.\n\n'
+                            'The rain had not stopped for three days, and the inn was full.'},
+            ],
+        })
+    return {'ok': True, 'entries': entries, 'count': len(entries),
+            'capacity': 40, 'hooked': True}
+
+
+def _queue():
+    """The three queue tables. Pending is deliberately long: that is the layout case."""
+    def rows(prefix, count):
+        return [{'task_id': f'{prefix}-{i:04d}',
+                 'file': f'source_{i % 7}.jsonl',
+                 'retries': i % 3} for i in range(count)]
+    return {
+        'ok': True,
+        'tables': {'pending': rows('task', 240),
+                   'completed': rows('done', 12),
+                   'failed': rows('fail', 4)},
+        'counts': {'pending': 240, 'completed': 12, 'failed': 4},
+        'purged': 0,
     }
 
 
@@ -161,6 +250,14 @@ def build():
     def metrics():
         return _metrics()
 
+    @app.get('/api/live-prompts')
+    def live_prompts():
+        return _live_prompts()
+
+    @app.get('/api/queue')
+    def queue():
+        return _queue()
+
     @app.get('/api/review')
     def review():
         return _review()
@@ -182,7 +279,7 @@ def build():
     def stub():
         return {'ok': True}
 
-    for path in ('/api/apis', '/api/quality', '/api/regex', '/api/prompts', '/api/queue',
+    for path in ('/api/apis', '/api/quality', '/api/regex', '/api/prompts',
                  '/api/config', '/api/datasets', '/api/profiles'):
         app.add_api_route(path, stub, methods=['GET'])
 

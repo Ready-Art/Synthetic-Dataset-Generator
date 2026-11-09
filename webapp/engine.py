@@ -40,6 +40,8 @@ import threading
 import control
 import vllm_metrics
 
+from . import live_prompts
+
 # The verbs the browser may invoke through ``POST /api/cmd``. A subset of
 # ``HeadlessController.COMMANDS``: ``shutdown`` is deliberately absent, because a browser tab
 # must not be able to stop the process that serves it. The CLI keeps ``shutdown``.
@@ -134,6 +136,17 @@ class Engine:
                 except Exception:  # noqa: BLE001 - telemetry is never fatal
                     pass
 
+            # The Live Prompt Viewer's hook. `generation.py` calls
+            # `update_live_prompt_preview()` before every request and forwards to
+            # `app_state.live_prompt_preview_hook`; the Tk window registered one that wrote
+            # into a Text widget, and the web app has no widget. Without this the hook stays
+            # `None` and the viewer tab would be permanently empty -- the same class of bug
+            # as the metrics poller never being started (v15.0.1).
+            try:
+                live_prompts.install()
+            except Exception:  # noqa: BLE001 - a preview must never stop the app
+                pass
+
             self._started = True
             return self
 
@@ -152,6 +165,10 @@ class Engine:
                 vllm_metrics.stop_polling()
             except Exception:  # noqa: BLE001 - a shutdown must never raise
                 pass
+        try:
+            live_prompts.uninstall()
+        except Exception:  # noqa: BLE001 - a shutdown must never raise
+            pass
 
     # --- accessors ------------------------------------------------------
 

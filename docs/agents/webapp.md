@@ -62,8 +62,9 @@ Two corollaries, both load-bearing:
 | `webapp/security/session.py` | argon2id hash, HMAC-signed cookie, TTL, constant-time compare, `cookie_secure()`. |
 | `webapp/security/ratelimit.py` | Per-IP failure counter and lockout. |
 | `webapp/security/routes.py` | `/login`, `/setup`, `/logout`, and `SessionGate` — a **middleware**, not a per-route dependency. |
-| `webapp/review_routes.py` | The Review tab's five routes. Separate because they need verbs the socket does not have. |
-| `webapp/tabs_routes.py` | The six data tabs, plus the three Queue actions. |
+| `webapp/review_routes.py` | The Review tab's six routes, including `GET /export/download` — the one the Export button uses, because a POST that writes a server file is not a download. |
+| `webapp/tabs_routes.py` | The seven data tabs, plus the four Queue actions and the live-prompt routes. |
+| `webapp/live_prompts.py` | The Live Prompt Viewer's capped ring. `Engine.start()` installs `record()` as `app_state.live_prompt_preview_hook`; `Engine.stop()` removes it. |
 | `webapp/config_routes.py` | The config tree, the save and the delete. The only route that **writes** the config. |
 | `webapp/config_tree.py` | Load/get/set/add/delete by dot-path. |
 | `webapp/config_text.py` | The comment-preserving writer. Splices changed spans; never `yaml.dump`. |
@@ -72,7 +73,7 @@ Two corollaries, both load-bearing:
 | `webapp/profiles_routes.py` | Five routes over the saved profiles. |
 | `webapp/static/index.html` | The one page. Everything else is an ES module. |
 | `webapp/static/js/main.js` | The tablist, the router, window state, the first paint. |
-| `webapp/static/js/dom.js` | `toast()` and `emptyState()` — shared by every screen. |
+| `webapp/static/js/dom.js` | `toast()`, `emptyState()`, and `captureScroll()` / `restoreScroll()` — shared by every screen. |
 | `webapp/static/js/stats.js` | The `/ws/stats` client and its reconnect. |
 | `webapp/static/js/overview.js`, `review.js`, `tabs.js`, `config.js`, `datasets.js`, `profiles.js`, `chart.js` | One module per screen. |
 
@@ -156,7 +157,7 @@ at once. Do not move that check into the browser.
 
 ## The tests
 
-Twelve suites, all headless, all runnable with `python -B tests/<name>.py` or under pytest:
+Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or under pytest:
 
 | Suite | Covers |
 |-------|--------|
@@ -165,13 +166,15 @@ Twelve suites, all headless, all runnable with `python -B tests/<name>.py` or un
 | `test_web_engine.py` | Every verb headless, the CLI against a web-owned controller, the singleton guard, no `generate_tk.py` import, the version agreement |
 | `test_web_overview.py` | The cards, the progress, the issue panels, the graph |
 | `test_web_review.py` | List, detail, export, drop, dismiss |
-| `test_web_tabs.py` | The six data tabs |
+| `test_web_tabs.py` | The seven data tabs |
 | `test_web_config_tree.py` | The tree and the byte-for-byte round trip |
 | `test_web_config_editor.py` | All 1,291 leaves reach the browser exactly once |
 | `test_web_config_schema.py` | Every leaf decorated; every validator |
 | `test_web_datasets.py` | The panel, the alias editor, the column picker |
 | `test_web_profiles.py` | Save, load, the diff preview |
 | `test_web_polish.py` | Toasts, empty states, the tablist, window state, reconnect, emoji |
+| `test_web_ui_regressions.py` | The four v15.0.1 defects: the `recent` shape, the metrics poller, the download preflight, the two clipped panels |
+| `test_web_v151.py` | The v15.1.0 round: the two Metrics toggles, the measured viewBox, the live-prompt ring, scroll preservation, the computed cost, Clear queue, the export download, the Queue order, the polish |
 
 ## Traps
 
@@ -195,6 +198,17 @@ Twelve suites, all headless, all runnable with `python -B tests/<name>.py` or un
 - **Chromium's `--screenshot` fires before ES modules run**, so it captures the pre-JS shell. Drive CDP instead.
 - **Kill by PID.** `pkill -f "python -m webapp"` matches the shell running it and kills your own session.
 - **`pkill -f "generate_tk.py"` kills your own shell.** Use `pkill -f "python generate_tk\\.py$"`.
+- **A re-render throws away every scroll position.** `main.js` replaces the whole screen on a stats
+  tick, so a panel that scrolls must carry a stable `data-scroll-key` and the repaint must go through
+  `dom.captureScroll()` / `restoreScroll()`. The Overview's Recent issues is the case that shipped broken.
+- **`preserveAspectRatio="none"` squashes SVG text.** The chart's viewBox must match the host's own
+  width, or every glyph is scaled horizontally and the axis labels run together.
+- **A hook nobody installs is a feature nobody has.** `app_state.live_prompt_preview_hook` was only ever
+  set by `generate_tk.py`, so headless it stayed `None` and the viewer was permanently empty. The same
+  class of bug as the metrics poller never being started. If a feature needs a hook, `Engine.start()`
+  installs it and `Engine.stop()` removes it, and a test asserts both.
+- **`app_state.estimated_cost` is never written by a run.** It is declared and reset, and the only
+  writer was the Tk dashboard's label refresh. Compute a derived figure where it is read.
 
 ## Tasks that touch this file
 

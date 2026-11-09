@@ -374,10 +374,45 @@ def test_dismiss_and_export_are_separate_routes():
     source = _strip_comments(_read('review.js'))
     export_block = source.split('async function onExport()', 1)[1].split('\n}', 1)[0]
     dismiss_block = source.split('async function onDismiss()', 1)[1].split('\n}', 1)[0]
-    assert "'/api/review/export'" in export_block, export_block
+    # v15.1.0: Export uses the download route, which answers with an attachment. A POST that
+    # writes a file on the server is not a download -- the browser has no reason to save anything.
+    assert "'/api/review/export/download'" in export_block, export_block
     assert "'/api/review/dismiss'" in dismiss_block, dismiss_block
     for block in (export_block, dismiss_block):
         assert '/drop' not in block, 'a non-destructive action reaches the drop route'
+
+
+def test_the_export_button_downloads_in_the_browser():
+    """The whole point of v15.1.0's export fix.
+
+    The old button POSTed and toasted a server path, which is useless from a browser on another
+    machine. The route now answers `Content-Disposition: attachment` and the button turns the body
+    into a Blob and clicks an anchor, which is the only way a fetch can start a download.
+    """
+    source = _strip_comments(_read('review.js'))
+    block = source.split('async function onExport()', 1)[1].split('\n}', 1)[0]
+    assert 'createObjectURL' in block, block
+    assert 'download:' in block, block
+    assert 'link.click()' in block, block
+    # A navigation to a 404 would replace the app with raw JSON, so it must preflight.
+    assert 'status === 404' in block, block
+
+
+def test_the_export_download_route_answers_an_attachment():
+    """Enumerated from the router, and the header is what makes it a download."""
+    from fastapi import FastAPI
+
+    from webapp.review_routes import install_review
+
+    app = install_review(FastAPI())
+    routes = {path: methods for path, methods in _routes(app).items()
+              if path.startswith('/api/review')}
+    assert routes.get('/api/review/export/download') == {'GET'}, routes
+
+    source = _read('../../review_routes.py')
+    block = source.split('def export_download()', 1)[1].split('@router', 1)[0]
+    assert 'Content-Disposition' in block, block
+    assert 'attachment' in block, block
 
 
 def test_dismiss_says_it_deletes_nothing():
@@ -401,6 +436,7 @@ def test_the_routes_are_installed_with_the_right_methods():
     assert routes.get('/api/review/{task_id}/drop') == {'POST'}, routes
     assert routes.get('/api/review/dismiss') == {'POST'}, routes
     assert routes.get('/api/review/export') == {'POST'}, routes
+    assert routes.get('/api/review/export/download') == {'GET'}, routes
     # Nothing destructive is reachable with a GET.
     for path, methods in routes.items():
         if path.endswith('/drop'):

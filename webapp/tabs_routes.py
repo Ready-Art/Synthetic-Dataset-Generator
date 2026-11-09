@@ -8,9 +8,9 @@
 # it is unlikely any of that code survives. Unless you have the original MIT-era code to
 # compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
-"""The data tabs' routes: APIs, Quality, Regex Watch, Metrics, Prompts, Queue.
+"""The data tabs' routes: APIs, Quality, Regex Watch, Metrics, Prompts, Live Prompts, Queue.
 
-Six read routes and three queue actions. Everything here is a **view over data the engine
+Seven read routes and four queue actions. Everything here is a **view over data the engine
 already keeps** -- `control.build_stats_payload()`, `quality.get_quality_stats()`,
 `vllm_metrics.slot_usage_rows()`, and the config. Nothing recomputes a statistic, because a
 second implementation of a number is a second number that can disagree.
@@ -42,6 +42,7 @@ import run_config
 import vllm_metrics
 from fastapi import APIRouter
 
+from . import live_prompts
 from .app import error_response
 
 # How many recent quality scores the Quality tab shows. The Tk tab shows the latest 50; the
@@ -187,10 +188,21 @@ def install_tabs(app):
 
     @router.get('/metrics')
     def metrics():
-        """Per-slot vLLM usage plus the throughput history each graph draws.
+        """Per-slot vLLM usage, the server-side endpoint rows, and the proxy's figures.
 
-        `slot_usage_rows()` is the table; `slot_history()` is the ring the graph reads. Both are
-        copies, so a tick cannot mutate what the page is holding.
+        Three sources, all copies so a tick cannot mutate what the page is holding:
+
+        * `slot_usage_rows()` / `slot_history()` -- this slot's **own** measured throughput. The
+          only figure that can tell two slots on one server apart, because vLLM's `/metrics` has
+          no caller label.
+        * `endpoint_rows()` -- what each vLLM **server** reports: prompt and generation tok/s, KV
+          cache load, running/waiting requests, and the history ring behind the graphs.
+        * the same rows' `antislop_*` keys -- the antislop-vllm fork's own counters. `None` for a
+          plain vLLM, which is why the tab has a separate toggle rather than drawing a zero line.
+
+        The two toggles in the browser read `vllm_available` and `antislop_available` to decide
+        whether to offer themselves at all, and the whole document is one fetch so a toggle flip
+        never needs a second round trip.
         """
         rows = []
         for slot, usage in vllm_metrics.slot_usage_rows():
@@ -200,12 +212,30 @@ def install_tabs(app):
                 'usage': dict(usage or {}),
                 'history': vllm_metrics.slot_history(slot),
             })
+
+        endpoints = []
+        for row in vllm_metrics.endpoint_rows():
+            # A shallow copy per row: the antislop sub-dicts are rebuilt so nothing the page
+            # holds aliases the poller's own state.
+            entry = dict(row)
+            entry['history'] = [dict(sample) for sample in row.get('history') or []]
+            entry['slot_history'] = [dict(sample) for sample in row.get('slot_history') or []]
+            endpoints.append(entry)
+
         return {
             'ok': True,
             'slots': rows,
+            'endpoints': endpoints,
+            # Whether any endpoint answered with `vllm:` metrics at all. A tab with no reachable
+            # server says so instead of drawing empty axes.
+            'vllm_available': any(not row.get('error') for row in endpoints),
             # The proxy's own columns are opt-in (`metrics.antislop_columns`), so the tab asks
             # rather than assuming. Off by default keeps a default run's tab unchanged.
             'antislop_columns': vllm_metrics.antislop_columns_enabled(),
+            # True when at least one endpoint actually served `antislop:` metrics. The toggle is
+            # still shown when this is false (a run can start before the fork is up) but the
+            # panel says what is missing.
+            'antislop_available': any(row.get('is_antislop') for row in endpoints),
         }
 
     # --- Prompts ---------------------------------------------------------
@@ -252,6 +282,35 @@ def install_tabs(app):
         entries.sort(key=lambda row: row['path'])
         return {'ok': True, 'entries': entries}
 
+    # --- Live prompts ----------------------------------------------------
+
+    @router.get('/live-prompts')
+    def live_prompts(limit: int = 0):
+        """The prompts the engine has most recently sent, newest first.
+
+        The engine calls ``update_live_prompt_preview`` before every request; the web app's hook
+        (`webapp/live_prompts.py`) copies each one into a capped ring. This route hands out a
+        copy, so a poll cannot mutate the ring a worker is appending to.
+
+        ``limit=0`` means the whole ring. The tab asks for all of it and pages client-side, so a
+        reader scrolling back through a retry sequence does not need a second request.
+        """
+        entries = live_prompts.snapshot(limit=limit or None)
+        return {
+            'ok': True,
+            'entries': entries,
+            'count': len(entries),
+            'capacity': live_prompts.RING_LENGTH,
+            # A viewer with no hook installed is a viewer that will never fill in, and that is
+            # worth saying out loud rather than showing an empty list forever.
+            'hooked': live_prompts.installed(),
+        }
+
+    @router.post('/live-prompts/clear')
+    def clear_live_prompts():
+        """Empty the ring. Never touches the dataset or the run."""
+        return {'ok': True, 'data': {'cleared': live_prompts.clear()}}
+
     # --- Queue -----------------------------------------------------------
 
     @router.get('/queue')
@@ -287,6 +346,53 @@ def install_tabs(app):
             app_state.purged_task_ids.update(pending)
             app_state.pending_task_ids.clear()
         return {'ok': True, 'data': {'purged': len(pending)}}
+
+    @router.post('/queue/clear')
+    def clear_queue():
+        """Empty the whole queue -- pending, completed and failed -- with no run required.
+
+        **Why this exists next to Purge.** Purge only touches `pending_task_ids`, so a queue left
+        behind by a finished or crashed run keeps its completed and failed rows forever, and the
+        only other way to clear it was Stop & Clear, which needs a live run (`cmd_stop` answers
+        `not_running` when there is none). This route is the "start from a clean queue" button:
+        it works whether or not a run is in progress, and it never deletes a dataset row.
+
+        It also empties the in-memory `task_queue` when one exists, because a stale item left in
+        the queue object would be picked up by the next run's first worker even though its id is
+        no longer pending. `purged_task_ids` is filled first so a worker already holding a task
+        still skips it.
+
+        A live run is **not** stopped: the workers keep going on what they already hold, and only
+        the queued work is discarded. That is the same contract as Purge, extended to the two
+        finished sets.
+        """
+        with app_state.task_queue_ui_lock:
+            pending = list(app_state.pending_task_ids)
+            completed = list(app_state.completed_task_ids)
+            failed = list(app_state.failed_task_ids)
+            app_state.purged_task_ids.update(pending)
+            app_state.pending_task_ids.clear()
+            app_state.completed_task_ids.clear()
+            app_state.failed_task_ids.clear()
+            app_state.task_metadata.clear()
+
+        drained = 0
+        queue = getattr(app_state, 'task_queue', None)
+        if queue is not None:
+            try:
+                while True:
+                    queue.get_nowait()
+                    drained += 1
+            except Exception:  # noqa: BLE001 - Empty, or a queue that is not a Queue
+                pass
+
+        return {'ok': True, 'data': {
+            'pending': len(pending),
+            'completed': len(completed),
+            'failed': len(failed),
+            'drained': drained,
+            'total': len(pending) + len(completed) + len(failed),
+        }}
 
     @router.post('/queue/retry')
     def retry():

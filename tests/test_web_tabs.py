@@ -164,7 +164,7 @@ class _FakeQuality:
 
 
 class _FakeMetrics:
-    """`slot_usage_rows()`, `slot_history()` and `antislop_columns_enabled()`."""
+    """`slot_usage_rows()`, `slot_history()`, `endpoint_rows()` and `antislop_columns_enabled()`."""
 
     @staticmethod
     def slot_usage_rows():
@@ -175,13 +175,17 @@ class _FakeMetrics:
         return list(_CURRENT['slot_history'].get(slot, ()))
 
     @staticmethod
+    def endpoint_rows():
+        return list(_CURRENT['endpoint_rows'])
+
+    @staticmethod
     def antislop_columns_enabled():
         return bool(_CURRENT['antislop_columns'])
 
 
 # The fake quality/metrics helpers read this, because a staticmethod has no `self`.
 _CURRENT = {'quality_scores': {}, 'slot_usage': {}, 'slot_history': {},
-            'antislop_columns': False}
+            'endpoint_rows': [], 'antislop_columns': False}
 
 
 def _app():
@@ -235,8 +239,11 @@ def test_every_tab_route_exists():
         '/api/regex': {'GET'},
         '/api/metrics': {'GET'},
         '/api/prompts': {'GET'},
+        '/api/live-prompts': {'GET'},
+        '/api/live-prompts/clear': {'POST'},
         '/api/queue': {'GET'},
         '/api/queue/purge': {'POST'},
+        '/api/queue/clear': {'POST'},
         '/api/queue/retry': {'POST'},
         '/api/queue/export': {'POST'},
     }
@@ -247,7 +254,8 @@ def test_every_tab_route_exists():
 def test_the_queue_actions_are_posts():
     """A destructive or state-changing action must not answer a GET."""
     routes = _routes(_app())
-    for path in ('/api/queue/purge', '/api/queue/retry', '/api/queue/export'):
+    for path in ('/api/queue/purge', '/api/queue/clear', '/api/queue/retry',
+                 '/api/queue/export', '/api/live-prompts/clear'):
         assert 'GET' not in routes[path], f'{path} answers a GET'
 
 
@@ -302,7 +310,7 @@ def test_every_data_tab_is_registered():
         source = handle.read()
     block = source.split('export const DATA_TABS = [', 1)[1].split('];', 1)[0]
     ids = _re.findall(r"id: '([a-z]+)'", block)
-    assert ids == ['apis', 'quality', 'regex', 'metrics', 'prompts', 'queue'], ids
+    assert ids == ['apis', 'quality', 'regex', 'metrics', 'prompts', 'live', 'queue'], ids
 
 
 def test_every_data_tab_is_wired_into_main():
@@ -454,6 +462,7 @@ def test_the_metrics_tab_reports_each_slot_with_its_history():
         _CURRENT['slot_usage'] = {0: {'tokens_per_second': 12.5}, 1: {}}
         _CURRENT['slot_history'] = {0: [{'time': 1.0, 'tokens_per_second': 12.5}]}
         _CURRENT['antislop_columns'] = False
+        _CURRENT['endpoint_rows'] = []
 
         payload = _call('/api/metrics')
 
@@ -463,10 +472,47 @@ def test_the_metrics_tab_reports_each_slot_with_its_history():
         assert payload['antislop_columns'] is False, payload
 
 
+def test_the_metrics_tab_reports_the_server_rows_and_both_availability_flags():
+    """v15.1.0: the two toggles need to know what is actually there.
+
+    `vllm_available` is "some endpoint answered without an error"; `antislop_available` is "some
+    endpoint served `antislop:` metrics". A plain vLLM is available and not antislop, which is the
+    case the two toggles exist to distinguish.
+    """
+    with sandbox():
+        _CURRENT['slot_usage'] = {}
+        _CURRENT['slot_history'] = {}
+        _CURRENT['endpoint_rows'] = [
+            {'slot_idx': 0, 'label': 'API 1', 'error': None, 'is_antislop': False,
+             'history': [{'time': 1.0, 'prompt_tps': 10.0}], 'slot_history': []},
+        ]
+
+        payload = _call('/api/metrics')
+
+        assert payload['vllm_available'] is True, payload
+        assert payload['antislop_available'] is False, payload
+        assert payload['endpoints'][0]['label'] == 'API 1', payload['endpoints']
+
+
+def test_the_metrics_tab_reports_antislop_available_when_the_fork_answers():
+    with sandbox():
+        _CURRENT['slot_usage'] = {}
+        _CURRENT['slot_history'] = {}
+        _CURRENT['endpoint_rows'] = [
+            {'slot_idx': 0, 'label': 'API 1', 'error': None, 'is_antislop': True,
+             'history': [], 'slot_history': []},
+        ]
+
+        payload = _call('/api/metrics')
+
+        assert payload['antislop_available'] is True, payload
+
+
 def test_the_metrics_tab_does_not_mutate_the_engine_history():
     """The ring is the engine's; a route must hand out a copy."""
     with sandbox():
         _CURRENT['slot_usage'] = {0: {}}
+        _CURRENT['endpoint_rows'] = []
         ring = [{'time': 1.0, 'tokens_per_second': 1.0}]
         _CURRENT['slot_history'] = {0: ring}
 
@@ -474,6 +520,23 @@ def test_the_metrics_tab_does_not_mutate_the_engine_history():
 
         payload['slots'][0]['history'].append({'time': 2.0})
         assert len(ring) == 1, 'the route handed out the engine\'s own list'
+
+
+def test_the_metrics_tab_copies_the_endpoint_history_too():
+    """The endpoint rings are the poller's; a route must not hand out the live lists."""
+    with sandbox():
+        _CURRENT['slot_usage'] = {}
+        _CURRENT['slot_history'] = {}
+        ring = [{'time': 1.0, 'prompt_tps': 1.0}]
+        _CURRENT['endpoint_rows'] = [
+            {'slot_idx': 0, 'label': 'API 1', 'error': None, 'is_antislop': False,
+             'history': ring, 'slot_history': ring},
+        ]
+
+        payload = _call('/api/metrics')
+
+        payload['endpoints'][0]['history'].append({'time': 2.0})
+        assert len(ring) == 1, 'the route handed out the poller\'s own list'
 
 
 # --- prompts -------------------------------------------------------------
