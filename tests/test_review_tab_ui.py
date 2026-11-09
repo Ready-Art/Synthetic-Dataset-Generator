@@ -21,7 +21,7 @@ The Review tab used to be unusable cloth:
     scrolled the page instead of the conversation and the panes were squeezed
   * "Export Flagged → JSONL" read only ``output/output.jsonl`` and silently wrote nothing
 
-This test drives the REAL ``generate.py`` Review tab (constructed by importing the module)
+This test drives the REAL ``generate_tk.py`` Review tab (constructed by importing the module)
 and checks the fixes end to end: single-click selection, a readable multi-line transcript, a
 scrollable detail pane, a stable selection across refresh ticks, and a real export file.
 """
@@ -76,14 +76,14 @@ class ReviewTabTests(unittest.TestCase):
         if tk is None:
             raise unittest.SkipTest("Tk is unavailable: " + TK_UNAVAILABLE)
         try:
-            import generate  # noqa: F401  (constructs the whole UI)
+            import generate_tk  # noqa: F401  (constructs the whole UI)
         except tk.TclError as exc:
             raise unittest.SkipTest("A working Tk display is required: {}".format(exc)) from exc
         except Exception as exc:  # pragma: no cover - environment problem
             raise unittest.SkipTest("Could not construct the UI: {}".format(exc)) from exc
 
         import app_state
-        import generate as g
+        import generate_tk as g
         cls.g = g
         cls.app_state = app_state
         cls.root = app_state.root

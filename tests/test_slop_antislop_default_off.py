@@ -15,7 +15,7 @@ Three things are pinned here:
 1. ``config/config.yml`` carries ``detection.slop.enabled: false`` and
    ``detection.anti_slop.enabled: false`` while still keeping the phrase/fix lists, so a
    layer switched back on restores the saved list instead of losing it.
-2. ``generate.py`` gates the phrase lists on those flags, and requires BOTH layers before
+2. ``generate_tk.py`` gates the phrase lists on those flags, and requires BOTH layers before
    ``slop_to_anti_slop_fallback`` can be true. This is read from source, not imported:
    importing ``generate`` builds the Tk app.
 3. The Config Editor's two checkboxes load ``false`` and round-trip through a save
@@ -38,10 +38,10 @@ import yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(REPO_ROOT, "config", "config.yml")
-GENERATE_PATH = os.path.join(REPO_ROOT, "generate.py")
+GENERATE_PATH = os.path.join(REPO_ROOT, "generate_tk.py")
 
 # The editor half imports the app modules and reads config/config.yml by RELATIVE path (the
-# same way generate.py does), so run from the repository root no matter where this file was
+# same way generate_tk.py does), so run from the repository root no matter where this file was
 # invoked from. Done at import time, before unittest builds the test cases.
 if os.getcwd() != REPO_ROOT:
     os.chdir(REPO_ROOT)
@@ -108,7 +108,7 @@ class ShippedConfigTests(unittest.TestCase):
 
 
 class GenerateGateTests(unittest.TestCase):
-    """`generate.py` is read from disk: importing it would build the Tk app."""
+    """`generate_tk.py` is read from disk: importing it would build the Tk app."""
 
     @classmethod
     def setUpClass(cls):
@@ -152,7 +152,7 @@ class GateBehaviourTests(unittest.TestCase):
     """The gate's actual effect, exercised against a stub config object."""
 
     def _gate(self, slop_enabled, anti_slop_enabled, slop_phrases, anti_phrases):
-        """Mirror the load path in generate.py so the arithmetic is testable without Tk."""
+        """Mirror the load path in generate_tk.py so the arithmetic is testable without Tk."""
         current_slop_enabled = bool(slop_enabled)
         current_anti_slop_enabled = bool(anti_slop_enabled)
         current_slop_phrases = slop_phrases if current_slop_enabled else []

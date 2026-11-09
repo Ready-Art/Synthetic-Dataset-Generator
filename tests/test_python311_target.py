@@ -15,16 +15,16 @@ The project used to claim Python 3.9 but is retargeted to 3.11. The dataset modu
 PEP 604 ``X | None`` annotations, which are 3.10+ syntax, and they import their mapping
 helpers from ``collections.abc`` rather than the deprecated ``typing`` aliases. On an older
 interpreter those modules fail with a confusing SyntaxError or AttributeError deep inside
-the app, so `generate.py` carries a hard, early version guard.
+the app, so `generate_tk.py` carries a hard, early version guard.
 
 These checks pin three things that are easy to lose in a refactor:
 
 1. the running interpreter really is 3.11+;
 2. the four dataset modules still import cleanly and their source text stays modern (no
    ``Optional[`` / ``Tuple[`` / ``Dict[`` / ``List[`` and no ``typing.`` reference);
-3. the guard in `generate.py` runs BEFORE the 3.11-only modules are imported.
+3. the guard in `generate_tk.py` runs BEFORE the 3.11-only modules are imported.
 
-`generate.py` is never imported here: importing it builds the Tk UI and needs a display.
+`generate_tk.py` is never imported here: importing it builds the Tk UI and needs a display.
 Its source text is read from disk instead, so this file is headless — no display, no
 network, no model and no running server.
 """
@@ -45,7 +45,7 @@ import dataset_sources
 import dataset_templates
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GENERATE_PATH = os.path.join(ROOT, "generate.py")
+GENERATE_PATH = os.path.join(ROOT, "generate_tk.py")
 
 # The modules whose annotations must stay on the 3.11 target.
 DATASET_MODULES = (dataset_sources, dataset_templates, dataset_bindings, dataset_settings)
@@ -129,8 +129,8 @@ def test_dataset_bindings_mapping_helpers_accept_a_plain_dict():
 
 def test_generate_guard_compares_against_python_311():
     source = _generate_source()
-    assert "sys.version_info" in source, "generate.py has no sys.version_info guard"
-    assert "(3, 11)" in source, "generate.py does not compare against (3, 11)"
+    assert "sys.version_info" in source, "generate_tk.py has no sys.version_info guard"
+    assert "(3, 11)" in source, "generate_tk.py does not compare against (3, 11)"
     assert "sys.version_info < (3, 11)" in source, (
         "the guard must be a hard ``sys.version_info < (3, 11)`` comparison"
     )
@@ -141,13 +141,13 @@ def test_generate_guard_compares_against_python_311():
 def test_generate_guard_precedes_the_311_only_imports():
     source = _generate_source()
     guard_offset = source.find("sys.version_info < (3, 11)")
-    assert guard_offset != -1, "generate.py has no ``sys.version_info < (3, 11)`` guard"
+    assert guard_offset != -1, "generate_tk.py has no ``sys.version_info < (3, 11)`` guard"
 
     for family, spellings in GUARDED_IMPORT_FAMILIES:
         offsets = [source.find(spelling) for spelling in spellings]
         offsets = [offset for offset in offsets if offset != -1]
         assert offsets, (
-            "expected an import of {} in generate.py; the ordering check needs updating"
+            "expected an import of {} in generate_tk.py; the ordering check needs updating"
             .format(family)
         )
         import_offset = min(offsets)

@@ -58,7 +58,7 @@ class DashboardTabStripTests(unittest.TestCase):
         except tk.TclError as exc:
             raise unittest.SkipTest("A desktop/virtual display is required: {}".format(exc))
         cls.root.withdraw()
-        import generate as g
+        import generate_tk as g
         cls.g = g
         cls.notebook = g.app_state.dashboard_notebook
         cls.widgets = cls.notebook.tabs_widgets

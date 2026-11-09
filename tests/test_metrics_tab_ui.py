@@ -13,7 +13,7 @@
 Run directly: ``xvfb-run python -B tests/test_metrics_tab_ui.py`` (needs a display; skips
 cleanly without one).
 
-This builds the REAL ``generate.py`` UI and pins the invariants that make the tab useful:
+This builds the REAL ``generate_tk.py`` UI and pins the invariants that make the tab useful:
 
 1. the tab exists, is registered in ``tabs_widgets``, and has no issue panels (it is a
    diagnostics area like Regex Watch, not an issue view);
@@ -110,7 +110,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         if tk is None:
             raise unittest.SkipTest("Tk is unavailable: " + TK_UNAVAILABLE)
         try:
-            import generate  # noqa: F401  (constructs the whole UI)
+            import generate_tk  # noqa: F401  (constructs the whole UI)
         except tk.TclError as exc:
             raise unittest.SkipTest("A working Tk display is required: {}".format(exc)) from exc
         except Exception as exc:  # pragma: no cover - environment problem
@@ -179,7 +179,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
             metrics_url = self.vllm_metrics.metrics_url_for_api_url(url)
             self.vllm_metrics.poll_endpoint(metrics_url)
 
-        import generate as g
+        import generate_tk as g
         g._update_metrics_tab(force=True)
         self.settle()
         return stub
@@ -223,7 +223,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
                          "the metrics table must use the shared readable Treeview style")
 
     def test_row_height_leaves_room_for_the_font(self):
-        import generate as g
+        import generate_tk as g
         style = ttk.Style()
         linespace = font.Font(root=self.root, font=g.REGEX_TREE_BODY_FONT).metrics("linespace")
         rowheight = int(style.lookup(self.widgets["metrics_tree"].cget("style"),
@@ -232,7 +232,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
                                  "rowheight %d cannot fit a %dpx font" % (rowheight, linespace))
 
     def test_columns_are_wide_enough_for_their_headings(self):
-        import generate as g
+        import generate_tk as g
         scale = self.root.winfo_fpixels("1i") / 96.0
         heading_font = font.Font(root=self.root, font=g.REGEX_TREE_HEADING_FONT)
         tree = self.widgets["metrics_tree"]
@@ -256,7 +256,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         tree = self.widgets["metrics_tree"]
         # Re-apply from the REAL shipped config: another test in this class may have switched the
         # key on, and `displaycolumns` is tree state that outlives it.
-        import generate as g
+        import generate_tk as g
         saved = self.app_state.global_config
         self.addCleanup(setattr, self.app_state, "global_config", saved)
         self.app_state.global_config = _ConfigStub(
@@ -273,7 +273,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
 
     def test_the_antislop_columns_are_shown_when_the_config_key_is_on(self):
         self._select_tab()
-        import generate as g
+        import generate_tk as g
         tree = self.widgets["metrics_tree"]
         saved = self.app_state.global_config
         self.addCleanup(setattr, self.app_state, "global_config", saved)
@@ -493,7 +493,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         self.vllm_metrics.note_slot_usage(1, {"prompt_tokens": 100,
                                               "completion_tokens": 100}, 4.0)
         self.vllm_metrics.poll_once()
-        import generate as g
+        import generate_tk as g
         g._update_metrics_tab(force=True)
         self.settle()
         ax = self.widgets["metrics_slot_graph_canvas"].slot_graph_axes["throughput"]
@@ -503,7 +503,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         self._select_tab()
         self._stub_poll({0: "http://a:8000/v1"}, stub_class=self._fork_stub())
         self.vllm_metrics.poll_once()
-        import generate as g
+        import generate_tk as g
         g._update_metrics_tab(force=True)
         self.settle()
         axes = self.widgets["metrics_proxy_graph_canvas"].proxy_graph_axes
@@ -513,7 +513,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
         self._select_tab()
         self._stub_poll({0: "http://a:8000/v1"})
         self.vllm_metrics.poll_once()
-        import generate as g
+        import generate_tk as g
         g._update_metrics_tab(force=True)
         self.settle()
         ax = self.widgets["metrics_queue_graph_canvas"].queue_graph_axes["queue"]
@@ -585,7 +585,7 @@ class MetricsTabLayoutTests(unittest.TestCase):
     def test_graph_explains_itself_before_the_first_poll(self):
         self._select_tab()
         self.vllm_metrics.reset_endpoints()
-        import generate as g
+        import generate_tk as g
         g._update_metrics_tab(force=True)
         self.settle()
         canvas = self.widgets["metrics_graph_canvas"]

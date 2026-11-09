@@ -718,7 +718,7 @@ def run(args):
     repo = args.repo.resolve()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    source_path = repo / "generate.py"
+    source_path = repo / "generate_tk.py"
     source = source_path.read_text(encoding="utf-8")
     ui_code, progress_code, seams = extract_ui(source, str(source_path))
     sizes = args.size or [parse_size(value) for value in DEFAULT_SIZES]
@@ -731,7 +731,7 @@ def run(args):
         "repository": str(repo),
         "generate_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
         "source_sha256": {name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
-                          for name in ("generate.py", "config_editor.py", "dashboard.py", "ui_layout.py")
+                          for name in ("generate_tk.py", "config_editor.py", "dashboard.py", "ui_layout.py")
                           if (repo / name).is_file()},
         "seams": seams, "requested_tk_scale": args.scale,
         "minimum_size_override": args.allow_below_minimum,
@@ -830,7 +830,7 @@ def run(args):
                 return window
             ttkbs.Window = probe_window
             namespace = {"__name__": "_isolated_sdg_layout", "__file__": str(source_path)}
-            # generate.py imports ui_theme at module scope; exec() gets a fresh
+            # generate_tk.py imports ui_theme at module scope; exec() gets a fresh
             # namespace, so bind it here too or the tab-name constants are missing.
             import ui_theme
             namespace["ui_theme"] = ui_theme

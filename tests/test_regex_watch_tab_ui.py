@@ -20,7 +20,7 @@ had 3px of slack, which clipped ascenders/descenders and made the whole tab read
 overlapping text. The Review and Queue tables had already been fixed with a dedicated style;
 Regex Watch was missed.
 
-This test builds the REAL ``generate.py`` UI and asserts the layout invariants that keep the tab
+This test builds the REAL ``generate_tk.py`` UI and asserts the layout invariants that keep the tab
 readable: both tables use the dedicated style, the row height leaves room for the font's linespace
 plus padding, and no column is narrower than its own heading text.
 
@@ -64,14 +64,14 @@ class RegexWatchTabLayoutTests(unittest.TestCase):
         if tk is None:
             raise unittest.SkipTest("Tk is unavailable: " + TK_UNAVAILABLE)
         try:
-            import generate  # noqa: F401  (constructs the whole UI)
+            import generate_tk  # noqa: F401  (constructs the whole UI)
         except tk.TclError as exc:
             raise unittest.SkipTest("A working Tk display is required: {}".format(exc)) from exc
         except Exception as exc:  # pragma: no cover - environment problem
             raise unittest.SkipTest("Could not construct the UI: {}".format(exc)) from exc
 
         import app_state
-        import generate as g
+        import generate_tk as g
         import detection
 
         cls.g = g

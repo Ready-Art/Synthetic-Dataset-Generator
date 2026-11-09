@@ -22,7 +22,7 @@ v12.9 wired the async judge writer into ``generate.start_processing()`` with
 
     generation._install_quality_write_handler()
 
-but ``generate.py`` only ever did ``from generation import worker, ...``, which binds the
+but ``generate_tk.py`` only ever did ``from generation import worker, ...``, which binds the
 *names* it imports and NOT the module name ``generation``. The call therefore raised
 ``NameError: name 'generation' is not defined`` -- but only on a run with
 ``quality.async_scoring: true`` and LLM scoring on, so the default run, the default test
@@ -60,10 +60,10 @@ BUILTIN_NAMES = set(dir(builtins)) | {
     "WindowsError",
 }
 
-# The application modules checked by the generic sweep. `generate.py` is the one that
+# The application modules checked by the generic sweep. `generate_tk.py` is the one that
 # regressed; the rest are here so the check is a class guard, not a single-file patch.
 CHECKED_MODULES = (
-    "generate.py",
+    "generate_tk.py",
     "generation.py",
     "quality.py",
     "api_handler.py",
@@ -89,6 +89,31 @@ CHECKED_MODULES = (
     "cli.py",
     # v13.1.0: the 📊 Metrics tab's vLLM /metrics reader.
     "vllm_metrics.py",
+    # v14.4.0: the web front end. Every module here is imported by a long-running server,
+    # so an unbound global is a 500 on a route rather than a traceback in a terminal.
+    "webapp/__init__.py",
+    "webapp/__main__.py",
+    "webapp/app.py",
+    "webapp/config.py",
+    "webapp/theme.py",
+    "webapp/engine.py",
+    "webapp/review_routes.py",
+    "webapp/tabs_routes.py",
+    # v14.4.0 Phase 6a: the config tree and its comment-preserving writer. The tree is what
+    # the Config editor saves through, so an unbound name here writes a broken config.
+    "webapp/config_tree.py",
+    "webapp/config_text.py",
+    "webapp/config_routes.py",
+    # v14.4.0 Phase 6d-a / 6d-b: the two bespoke panels. The datasets routes are the only
+    # place that reads a source, and the profiles routes are the only place that replaces
+    # the whole config, so an unbound name in either is a 500 on a destructive route.
+    "webapp/datasets_routes.py",
+    "webapp/profiles_routes.py",
+    "webapp/security/__init__.py",
+    "webapp/security/policy.py",
+    "webapp/security/ratelimit.py",
+    "webapp/security/routes.py",
+    "webapp/security/session.py",
 )
 
 
@@ -181,7 +206,7 @@ def _module_bindings(filename):
 
 def test_async_judge_wiring_calls_a_bound_module_attribute():
     """v12.9.1: the async writer install in start_processing() must resolve."""
-    start = _function_node("generate.py", "start_processing")
+    start = _function_node("generate_tk.py", "start_processing")
 
     # The call site: <module>._install_quality_write_handler()
     calls = [node for node in ast.walk(start)
@@ -192,14 +217,14 @@ def test_async_judge_wiring_calls_a_bound_module_attribute():
         "generate.start_processing() no longer installs the async-judge writer; if the "
         "wiring moved, move this check with it")
 
-    bindings = _module_bindings("generate.py")
+    bindings = _module_bindings("generate_tk.py")
     for call in calls:
         owner = call.func.value
         assert isinstance(owner, ast.Name), (
             "line {}: the async writer install is not called on a plain module name"
             .format(call.lineno))
         assert owner.id in bindings, (
-            "line {}: '{}._install_quality_write_handler()' is called, but generate.py "
+            "line {}: '{}._install_quality_write_handler()' is called, but generate_tk.py "
             "never binds the name '{}' at module level -- `from {} import x` binds x, not "
             "the module, so this raises NameError on any run with async scoring on"
             .format(call.lineno, owner.id, owner.id, owner.id))
@@ -220,19 +245,19 @@ def test_the_installed_handler_exists_in_generation():
         for target in node.targets if isinstance(target, ast.Name)
     )
     assert "_install_quality_write_handler" in defined, (
-        "generation._install_quality_write_handler() is called by generate.py but is not "
+        "generation._install_quality_write_handler() is called by generate_tk.py but is not "
         "defined at module level in generation.py")
 
 
 def test_generate_imports_the_generation_module_object():
     """Pin the fix itself: the module object, not only names from it."""
-    bindings = _module_bindings("generate.py")
+    bindings = _module_bindings("generate_tk.py")
     assert "generation" in bindings, (
-        "generate.py must bind the name 'generation' (import generation) for the "
+        "generate_tk.py must bind the name 'generation' (import generation) for the "
         "async-judge wiring in start_processing(); `from generation import x` alone "
         "does not create it")
     assert bindings["generation"] == "generation", (
-        "the name 'generation' in generate.py must be the module itself, not a re-export")
+        "the name 'generation' in generate_tk.py must be the module itself, not a re-export")
 
 
 def main():

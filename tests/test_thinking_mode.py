@@ -211,7 +211,7 @@ def test_judge_payload():
 # ---------------------------------------------------------------------------
 
 class _FalseVar:
-    """Stands in for the tk.BooleanVar generate.py installs on app_state."""
+    """Stands in for the tk.BooleanVar generate_tk.py installs on app_state."""
 
     @staticmethod
     def get():
@@ -233,7 +233,7 @@ def _run_fixer(which, fixer_thinking=None, main_thinking=None, empty_fixer_param
     original_post = generation.requests.post
     original_config = app_state.global_config.config
     # The Slop Fixer reads app_state.master_duplication_enabled_var (a tk.BooleanVar that
-    # generate.py normally installs) to choose its debug-log path; a headless run has none.
+    # generate_tk.py normally installs) to choose its debug-log path; a headless run has none.
     original_dup_var = app_state.master_duplication_enabled_var
     app_state.master_duplication_enabled_var = _FalseVar()
     generation.requests.post = _capture_post_text(captured)

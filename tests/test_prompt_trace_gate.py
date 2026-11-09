@@ -118,7 +118,7 @@ def main():
     check("no unguarded debug-log open() remains", not offenders, offenders)
 
     # --- 8. both front ends apply the key at run start ---
-    for module_name in ("generate.py", "control.py"):
+    for module_name in ("generate_tk.py", "control.py"):
         source = (REPO / module_name).read_text(encoding="utf-8")
         check(f"{module_name} applies generation.debug_prompt_log",
               "generation.debug_prompt_log" in source)
