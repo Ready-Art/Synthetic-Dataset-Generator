@@ -109,8 +109,15 @@ def install_dataset(app):
         if not ok:
             _remove(temp_path)
             # "No output JSONL files found" is a 404, not a 500: nothing is broken,
-            # there is simply no dataset yet.
-            return error_response('empty', message, status=404)
+            # there is simply no dataset yet. The message says so in the words a reader
+            # needs, because this response is also what a direct visit to the URL shows
+            # -- the Overview button preflights `GET /api/dataset` first, but a bookmark
+            # or a hand-typed URL still lands here.
+            return error_response(
+                'empty',
+                f'{message} There is no dataset to download yet -- start a run, then '
+                'use Download dataset on the Overview tab.',
+                status=404)
 
         filename = _download_name()
         return FileResponse(

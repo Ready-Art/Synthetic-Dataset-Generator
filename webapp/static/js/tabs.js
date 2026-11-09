@@ -266,6 +266,25 @@ const qualityTab = makeTab({
   },
 });
 
+/**
+ * Run `draw` once `panel` is in the document, on the next frame or shortly after.
+ *
+ * The same helper as `overview.js`: `lineChart` needs a connected node and a layout pass,
+ * and `requestAnimationFrame` alone is not a guarantee -- a throttled renderer may not
+ * produce a frame for seconds, which left the graph blank. `host.childElementCount` makes
+ * the second caller a no-op, so the chart is never drawn twice.
+ */
+function drawWhenReady(panel, host, draw) {
+  let done = false;
+  const attempt = () => {
+    if (done || !panel.isConnected || host.childElementCount) return;
+    done = true;
+    draw();
+  };
+  requestAnimationFrame(attempt);
+  window.setTimeout(attempt, 250);
+}
+
 function metric(caption, value) {
   return el('div', { class: 'card' },
     el('div', { class: 'card-caption' }, caption),
@@ -359,26 +378,26 @@ const metricsTab = makeTab({
     const graphs = slots.map((slot) => {
       const host = el('div', { class: 'chart-host' });
       const history = slot.history || [];
-      // `lineChart(host, ...)` fills the host rather than returning a node, and it reads
-      // the palette via getComputedStyle -- which returns empty strings for a detached
-      // node. So the draw waits for insertion, or the lines all take the fallback colour.
-      requestAnimationFrame(() => {
-        if (!host.isConnected) return;
-        lineChart(host, {
-          labels: history.map((point) => String(point.time ?? '')),
-          series: [{
-            name: slot.label,
-            colour: tokenColour('--accent'),
-            values: history.map((point) => point.tokens_per_second),
-          }],
-          empty: 'Throughput fills in as the poller reaches this endpoint.',
-        });
-      });
-      return el('div', { class: 'panel' },
+      const panel = el('div', { class: 'panel' },
         el('div', { class: 'panel-head' },
           el('span', { class: 'section-header', style: { margin: '0' } },
             `${slot.label} throughput`)),
         el('div', { class: 'panel-body chart-body' }, host));
+      // `lineChart(host, ...)` fills the host rather than returning a node, and it reads
+      // the palette via getComputedStyle -- which returns empty strings for a detached
+      // node. So the draw waits for insertion, or the lines all take the fallback colour.
+      // The timeout is the fallback for a renderer that produces no frame (a background
+      // tab, a headless capture), which would otherwise leave the graph blank forever.
+      drawWhenReady(panel, host, () => lineChart(host, {
+        labels: history.map((point) => String(point.time ?? '')),
+        series: [{
+          name: slot.label,
+          colour: tokenColour('--accent'),
+          values: history.map((point) => point.tokens_per_second),
+        }],
+        empty: 'Throughput fills in as the poller reaches this endpoint.',
+      }));
+      return panel;
     });
 
     return el('div', { class: 'tab-grid' },

@@ -357,13 +357,27 @@ body {
 
 /* `auto` for progress (it sizes to its own rows) and `1fr` for the graph, which
    takes whatever is left. Both get `min-height: 0` so the graph shrinks rather than
-   pushing the progress panel off the bottom. */
+   pushing the progress panel off the bottom.
+
+   `overflow-y: auto` is the fix for the graph being clipped: the chart has a fixed
+   132px height (a stretched SVG looks like it was drawn with a ruler), so when the
+   column is shorter than the chart plus its legend the panel used to be squeezed and
+   `.panel { overflow: hidden }` cut the bottom off the plot -- the x-axis labels and
+   the last gridline simply vanished. The column now scrolls instead, and the graph
+   panel's `min-height` below guarantees the chart always has room. */
 .overview-side {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   min-width: 0;
+  overflow-y: auto;
+}
+
+/* 132px chart + 12px legend + the 6px gap + the body's 20px padding + the 37px head.
+   Anything less and the chart overflows its panel and is clipped. */
+.overview-side > .panel:last-child {
+  min-height: 210px;
 }
 
 .action-bar {
@@ -484,6 +498,21 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* The header and the note are fixed-height rows in a scrolling flex column, so they
+   must not shrink. Without `flex: 0 0 auto` a long transcript makes the flex algorithm
+   shrink every child to fit, and the task-id header collapsed from 23px to 7px -- a
+   sliver of text behind the first turn. Only the turns may scroll. */
+.review-detail > .detail-head,
+.review-detail > .detail-note {
+  flex: 0 0 auto;
+}
+
+/* The transcript is the one part that scrolls, so it takes the leftover height and
+   gets its own scrollbar rather than pushing the header out of the pane. */
+.review-detail > .turn {
+  flex: 0 0 auto;
 }
 
 .detail-head {
@@ -720,6 +749,9 @@ table.grid td .score.ok { color: var(--ok); }
   width: 100%%;
   flex: 0 0 auto;
   display: block;
+  /* Never let the host collapse: a zero-height host draws an SVG that overflows the
+     panel and is clipped by `.panel { overflow: hidden }`. */
+  min-height: 0;
 }
 
 .chart {

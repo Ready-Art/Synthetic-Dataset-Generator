@@ -1688,9 +1688,8 @@ def _per_turn_logic_gate(api_config_for_this_turn, api_slot_idx_for_this_turn,
         cutoff_ts = time.time() - 3600
         app_state.issue_timestamps['logic_issues'] = [
             t for t in app_state.issue_timestamps['logic_issues'] if t > cutoff_ts]
-        app_state.recent_logic_total.append(("logic error", _ev0, api_slot_idx_for_this_turn))
-        if len(app_state.recent_logic_total) > MAX_RECENT:
-            app_state.recent_logic_total.pop(0)
+        app_state.record_recent(app_state.recent_logic_total, "logic error", _ev0,
+                                api_slot_idx_for_this_turn)
         if api_slot_idx_for_this_turn < len(app_state.recent_logic_per_api):
             app_state.recent_logic_per_api[api_slot_idx_for_this_turn].append((_ev0[:80], api_slot_idx_for_this_turn))
             if len(app_state.recent_logic_per_api[api_slot_idx_for_this_turn]) > MAX_RECENT:
@@ -3561,8 +3560,8 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # For general task errors, we don't assign to a specific API unless the error originated there.
                 # Here, it's a task-level error, so log it for the "Totals" dashboard.
                 err_summary = f"T{thread_id} TaskErr: {str(e)[:30]}" # Short summary
-                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                app_state.recent_errors_total.append((err_summary, -1)) # -1 indicates a general task error not tied to a specific API call error
+                app_state.record_recent(app_state.recent_errors_total,
+                                        err_summary, '', -1)
 
         end_time_task_overall = time.time()
         task_duration_overall = end_time_task_overall - start_time_task_overall
@@ -4084,8 +4083,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                         app_state.error_count_total += 1
                         app_state.error_counts_per_api[api_slot_idx] += 1
                         err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
-                        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                        app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                        app_state.record_recent(app_state.recent_errors_total,
+                                                err_summary, '', api_slot_idx)
                         with app_state.issue_timestamps_lock:
                             app_state.issue_timestamps['errors'].append(time.time())
                             cutoff = time.time() - 3600
@@ -4110,8 +4109,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     app_state.error_count_total += 1
                     app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} Q-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx)
                     if api_slot_idx < 4:
                         if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                         app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -4134,8 +4133,8 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
                     app_state.error_count_total += 1
                     app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} Q-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx)
                     if api_slot_idx < 4:
                         if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                         app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -4395,8 +4394,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                         app_state.error_count_total += 1
                         app_state.error_counts_per_api[api_slot_idx] += 1
                         err_summary = f"T{thread_id} Q-Err (API{api_slot_idx+1}): S{response.status_code} A{attempt_num+1}"
-                        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                        app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                        app_state.record_recent(app_state.recent_errors_total,
+                                                err_summary, '', api_slot_idx)
                         if api_slot_idx < 6:
                             if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                             app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -4427,8 +4426,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     app_state.error_count_total += 1
                     app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} UserCont-Timeout (API{api_slot_idx+1}) A{attempt_num+1}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx)
                     if api_slot_idx < 4:
                         if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                         app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -4453,8 +4452,8 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
                     app_state.error_count_total += 1
                     app_state.error_counts_per_api[api_slot_idx] += 1
                     err_summary = f"T{thread_id} UserCont-Exc (API{api_slot_idx+1}) A{attempt_num+1}: {str(e)[:20]}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx)
                     if api_slot_idx < 4:
                         if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                         app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -4552,8 +4551,8 @@ def _record_opening_request_error(thread_id, api_slot_idx, summary):
         app_state.error_count_total += 1
         app_state.error_counts_per_api[api_slot_idx] += 1
         err_summary = f"T{thread_id} {summary}"
-        if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-        app_state.recent_errors_total.append((err_summary, api_slot_idx))
+        app_state.record_recent(app_state.recent_errors_total,
+                                err_summary, '', api_slot_idx)
         if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
         app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
     with app_state.issue_timestamps_lock:
@@ -5014,9 +5013,8 @@ def apply_regex_watch(text, patterns, api_config, sampler_settings, thread_id,
             if api_slot_idx < len(app_state.regex_watch_counts_per_api):
                 app_state.regex_watch_counts_per_api[api_slot_idx] += 1
             for pattern, sentence, status in hits:
-                if len(app_state.recent_regex_total) >= MAX_RECENT:
-                    app_state.recent_regex_total.pop(0)
-                app_state.recent_regex_total.append((pattern, sentence, api_slot_idx))
+                app_state.record_recent(app_state.recent_regex_total, pattern, sentence,
+                                        api_slot_idx)
                 if api_slot_idx < len(app_state.recent_regex_per_api):
                     per_api = app_state.recent_regex_per_api[api_slot_idx]
                     if len(per_api) >= MAX_RECENT:
@@ -5245,8 +5243,8 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                     app_state.error_count_total +=1
                     app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
                     err_summary = f"T{thread_id} SlopFix-API (API{api_slot_idx_slop_fixer+1}): S{response.status_code} A{attempt_num+1}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx_slop_fixer)
                 if attempt_num < current_max_attempts_param - 1:
                     time.sleep(random.uniform(0.5, 1.5))
                     continue
@@ -5260,8 +5258,8 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 app_state.error_count_total +=1
                 app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
                 err_summary = f"T{thread_id} SlopFix-Timeout (API{api_slot_idx_slop_fixer+1}) A{attempt_num+1}"
-                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                app_state.record_recent(app_state.recent_errors_total,
+                                        err_summary, '', api_slot_idx_slop_fixer)
             if attempt_num < current_max_attempts_param - 1:
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
@@ -5275,8 +5273,8 @@ def call_slop_fixer_llm(text_context, slop_phrase,
                 app_state.error_count_total +=1
                 app_state.error_counts_per_api[api_slot_idx_slop_fixer] += 1
                 err_summary = f"T{thread_id} SlopFix-Exc (API{api_slot_idx_slop_fixer+1}) A{attempt_num+1}: {str(e)[:20]}"
-                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                app_state.recent_errors_total.append((err_summary, api_slot_idx_slop_fixer))
+                app_state.record_recent(app_state.recent_errors_total,
+                                        err_summary, '', api_slot_idx_slop_fixer)
             if attempt_num < current_max_attempts_param - 1:
                 time.sleep(random.uniform(0.5, 1.5))
                 continue
@@ -5506,9 +5504,8 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                         app_state.error_count_total += 1
                         app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
                         err_summary = f"T{thread_id} AntiSlop-API: S{response.status_code} A{attempt_num+1}"
-                        if len(app_state.recent_errors_total) >= MAX_RECENT:
-                            app_state.recent_errors_total.pop(0)
-                        app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                        app_state.record_recent(app_state.recent_errors_total,
+                                                err_summary, '', api_slot_idx_anti_slop)
                     finally:
                         app_state.system_prompt_lock.release()
 
@@ -5529,9 +5526,8 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     app_state.error_count_total += 1
                     app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
                     err_summary = f"T{thread_id} AntiSlop-Timeout A{attempt_num+1}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT:
-                        app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx_anti_slop)
                 finally:
                     app_state.system_prompt_lock.release()
 
@@ -5552,9 +5548,8 @@ def call_anti_slop_llm(text_context, anti_slop_phrase,
                     app_state.error_count_total += 1
                     app_state.error_counts_per_api[api_slot_idx_anti_slop] += 1
                     err_summary = f"T{thread_id} AntiSlop-Exc A{attempt_num+1}: {str(e)[:20]}"
-                    if len(app_state.recent_errors_total) >= MAX_RECENT:
-                        app_state.recent_errors_total.pop(0)
-                    app_state.recent_errors_total.append((err_summary, api_slot_idx_anti_slop))
+                    app_state.record_recent(app_state.recent_errors_total,
+                                            err_summary, '', api_slot_idx_anti_slop)
                 finally:
                     app_state.system_prompt_lock.release()
 
@@ -5901,8 +5896,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                 app_state.error_count_total += 1
                                 app_state.error_counts_per_api[api_slot_idx] += 1
                                 err_summary = f"T{thread_id} Ans-Err (API{api_slot_idx+1}): S{response_status_code} A{api_call_attempt_num+1}"
-                                if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                                app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                                app_state.record_recent(app_state.recent_errors_total,
+                                                        err_summary, '', api_slot_idx)
                                 with app_state.issue_timestamps_lock:
                                     app_state.issue_timestamps['errors'].append(time.time())
                                     cutoff = time.time() - 3600
@@ -5929,8 +5924,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         try:
                             app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
                             err_summary = f"T{thread_id} Ans-Timeout (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
-                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                            app_state.record_recent(app_state.recent_errors_total,
+                                                    err_summary, '', api_slot_idx)
                             if api_slot_idx < 6:
                                 if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                                 app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -5947,8 +5942,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         try:
                             app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
                             err_summary = f"T{thread_id} Ans-ReqExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}"
-                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                            app_state.record_recent(app_state.recent_errors_total,
+                                                    err_summary, '', api_slot_idx)
                             if api_slot_idx < 6:
                                 if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                                 app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -5966,8 +5961,8 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         try:
                             app_state.error_count_total += 1; app_state.error_counts_per_api[api_slot_idx] += 1
                             err_summary = f"T{thread_id} Ans-GenExc (API{api_slot_idx+1}) A{api_call_attempt_num+1}: {str(e_gen)[:20]}"
-                            if len(app_state.recent_errors_total) >= MAX_RECENT: app_state.recent_errors_total.pop(0)
-                            app_state.recent_errors_total.append((err_summary, api_slot_idx))
+                            app_state.record_recent(app_state.recent_errors_total,
+                                                    err_summary, '', api_slot_idx)
                             if api_slot_idx < 6:
                                 if len(app_state.recent_errors_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_errors_per_api[api_slot_idx].pop(0)
                                 app_state.recent_errors_per_api[api_slot_idx].append(err_summary)
@@ -6011,8 +6006,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                 app_state.non_latin_counts_per_api[api_slot_idx] += 1
                             if non_latin_info:
                                 detected_script, detected_sentence = non_latin_info[0]
-                                if len(app_state.recent_non_latin_total) >= MAX_RECENT: app_state.recent_non_latin_total.pop(0)
-                                app_state.recent_non_latin_total.append((detected_script, detected_sentence, api_slot_idx))
+                                app_state.record_recent(app_state.recent_non_latin_total,
+                                                        detected_script, detected_sentence,
+                                                        api_slot_idx)
                                 if api_slot_idx < len(app_state.recent_non_latin_per_api):
                                     if len(app_state.recent_non_latin_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_non_latin_per_api[api_slot_idx].pop(0)
                                     app_state.recent_non_latin_per_api[api_slot_idx].append((detected_script, detected_sentence))
@@ -6050,8 +6046,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                                 app_state.foreign_word_counts_per_api[api_slot_idx] += 1
                             if foreign_word_info:
                                 detected_label, detected_sentence = foreign_word_info[0]
-                                if len(app_state.recent_foreign_word_total) >= MAX_RECENT: app_state.recent_foreign_word_total.pop(0)
-                                app_state.recent_foreign_word_total.append((detected_label, detected_sentence, api_slot_idx))
+                                app_state.record_recent(app_state.recent_foreign_word_total,
+                                                        detected_label, detected_sentence,
+                                                        api_slot_idx)
                                 if api_slot_idx < len(app_state.recent_foreign_word_per_api):
                                     if len(app_state.recent_foreign_word_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_foreign_word_per_api[api_slot_idx].pop(0)
                                     app_state.recent_foreign_word_per_api[api_slot_idx].append((detected_label, detected_sentence))
@@ -6080,8 +6077,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         app_state.refusal_counts_per_api[api_slot_idx] += 1
                         if refusal_info:
                             detected_phrase, detected_sentence = refusal_info[0]
-                            if len(app_state.recent_refusals_total) >= MAX_RECENT: app_state.recent_refusals_total.pop(0)
-                            app_state.recent_refusals_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            app_state.record_recent(app_state.recent_refusals_total,
+                                                    detected_phrase, detected_sentence,
+                                                    api_slot_idx)
                             if api_slot_idx < 6:
                                 if len(app_state.recent_refusals_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_refusals_per_api[api_slot_idx].pop(0)
                                 app_state.recent_refusals_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
@@ -6105,8 +6103,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         app_state.user_speaking_counts_per_api[api_slot_idx] += 1
                         if user_speaking_info:
                             detected_phrase, detected_sentence = user_speaking_info[0]
-                            if len(app_state.recent_user_speaking_total) >= MAX_RECENT: app_state.recent_user_speaking_total.pop(0)
-                            app_state.recent_user_speaking_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            app_state.record_recent(app_state.recent_user_speaking_total,
+                                                    detected_phrase, detected_sentence,
+                                                    api_slot_idx)
                             if api_slot_idx < 6:
                                 if len(app_state.recent_user_speaking_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_user_speaking_per_api[api_slot_idx].pop(0)
                                 app_state.recent_user_speaking_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
@@ -6140,8 +6139,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             app_state.ooc_counts_per_api[api_slot_idx] += 1
                         if ooc_info:
                             detected_phrase, detected_sentence = ooc_info[0]
-                            if len(app_state.recent_ooc_total) >= MAX_RECENT: app_state.recent_ooc_total.pop(0)
-                            app_state.recent_ooc_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            app_state.record_recent(app_state.recent_ooc_total,
+                                                    detected_phrase, detected_sentence,
+                                                    api_slot_idx)
                             if api_slot_idx < len(app_state.recent_ooc_per_api):
                                 if len(app_state.recent_ooc_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_ooc_per_api[api_slot_idx].pop(0)
                                 app_state.recent_ooc_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
@@ -6185,10 +6185,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                             if hard_findings:
                                 detected_kind, detected_name, detected_sentence = hard_findings[0]
                                 label = "%s (%s)" % (detected_kind, detected_name)
-                                if len(app_state.recent_scene_continuity_total) >= MAX_RECENT:
-                                    app_state.recent_scene_continuity_total.pop(0)
-                                app_state.recent_scene_continuity_total.append(
-                                    (label, detected_sentence, api_slot_idx))
+                                app_state.record_recent(
+                                    app_state.recent_scene_continuity_total, label,
+                                    detected_sentence, api_slot_idx)
                                 if api_slot_idx < len(app_state.recent_scene_continuity_per_api):
                                     if len(app_state.recent_scene_continuity_per_api[api_slot_idx]) >= MAX_RECENT:
                                         app_state.recent_scene_continuity_per_api[api_slot_idx].pop(0)
@@ -6234,8 +6233,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         app_state.slop_counts_per_api[api_slot_idx] += 1
                         if slop_info:
                             detected_phrase, detected_sentence = slop_info[0]
-                            if len(app_state.recent_slop_total) >= MAX_RECENT: app_state.recent_slop_total.pop(0)
-                            app_state.recent_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            app_state.record_recent(app_state.recent_slop_total,
+                                                    detected_phrase, detected_sentence,
+                                                    api_slot_idx)
                             if api_slot_idx < 6:
                                 if len(app_state.recent_slop_per_api[api_slot_idx]) >= MAX_RECENT: app_state.recent_slop_per_api[api_slot_idx].pop(0)
                                 app_state.recent_slop_per_api[api_slot_idx].append((detected_phrase, detected_sentence))
@@ -6401,9 +6401,9 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
                         anti_slop_counts_per_api[api_slot_idx] += 1
                         if anti_slop_info:
                             detected_phrase, detected_sentence = anti_slop_info[0]
-                            if len(app_state.recent_anti_slop_total) >= MAX_RECENT:
-                                app_state.recent_anti_slop_total.pop(0)
-                            app_state.recent_anti_slop_total.append((detected_phrase, detected_sentence, api_slot_idx))
+                            app_state.record_recent(app_state.recent_anti_slop_total,
+                                                    detected_phrase, detected_sentence,
+                                                    api_slot_idx)
                             if api_slot_idx < 4:
                                 if len(app_state.recent_anti_slop_per_api[api_slot_idx]) >= MAX_RECENT:
                                     app_state.recent_anti_slop_per_api[api_slot_idx].pop(0)

@@ -38,6 +38,7 @@ database and no network.
 import threading
 
 import control
+import vllm_metrics
 
 # The verbs the browser may invoke through ``POST /api/cmd``. A subset of
 # ``HeadlessController.COMMANDS``: ``shutdown`` is deliberately absent, because a browser tab
@@ -65,10 +66,16 @@ class Engine:
     thread, and two controllers would corrupt a run.
     """
 
-    def __init__(self, config=None, controller_factory=None, serve_socket=True):
+    def __init__(self, config=None, controller_factory=None, serve_socket=True,
+                 start_metrics=True):
         self.config = config
         self._controller_factory = controller_factory or self._default_factory
         self._serve_socket = serve_socket
+        # The vLLM metrics poller. `generate_tk.py` starts it when the Tk window is built;
+        # the web app has no window, so without this the Metrics tab's table fills in (it is
+        # written by the generation threads) while every graph stays empty, because the ring
+        # the graphs draw is only appended to by the poller. A test passes False.
+        self._start_metrics = start_metrics
         self._controller = None
         self._server = None
         self._lock = threading.Lock()
@@ -119,17 +126,30 @@ class Engine:
                                       status=409 if exc.code == 'already_running' else 500)
                 self._server = server
 
+            if self._start_metrics:
+                # Best-effort telemetry: a poller that cannot start must not stop the app
+                # from serving. `start_polling` is idempotent and returns the live thread.
+                try:
+                    vllm_metrics.start_polling()
+                except Exception:  # noqa: BLE001 - telemetry is never fatal
+                    pass
+
             self._started = True
             return self
 
     def stop(self):
-        """Stop the control socket. Safe to call more than once."""
+        """Stop the control socket and the metrics poller. Safe to call more than once."""
         with self._lock:
             server, self._server = self._server, None
             self._started = False
         if server is not None:
             try:
                 server.stop()
+            except Exception:  # noqa: BLE001 - a shutdown must never raise
+                pass
+        if self._start_metrics:
+            try:
+                vllm_metrics.stop_polling()
             except Exception:  # noqa: BLE001 - a shutdown must never raise
                 pass
 
@@ -185,9 +205,9 @@ class Engine:
             raise EngineError('failed', str(exc), status=500)
 
 
-def build_engine(config, controller_factory=None, serve_socket=True):
+def build_engine(config, controller_factory=None, serve_socket=True, start_metrics=True):
     """Construct and start an :class:`Engine`. Used by ``create_app``."""
     engine = Engine(config, controller_factory=controller_factory,
-                    serve_socket=serve_socket)
+                    serve_socket=serve_socket, start_metrics=start_metrics)
     engine.start()
     return engine

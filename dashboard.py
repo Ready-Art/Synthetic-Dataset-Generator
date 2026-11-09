@@ -136,13 +136,22 @@ def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight
     for item in recent_items:
         phrase = context = api_str = "N/A"
         ts = time.time()
+        time_str = None
 
-        # Parse tuple formats from app_state
-        if is_total_tab:
+        # v15.0.1: the totals rings hold `{time, phrase, context, api}` dicts, so the
+        # timestamp is the one the detection actually happened at rather than "now".
+        # The tuple branches stay because the per-API rings still hold 2-tuples and a
+        # process started before the change still holds the old shape.
+        if isinstance(item, dict):
+            phrase = item.get("phrase") or "N/A"
+            context = item.get("context") or "N/A"
+            api_idx = item.get("api", -1)
+            api_str = f"Slot {api_idx+1}" if isinstance(api_idx, int) and api_idx >= 0 else "N/A"
+            time_str = item.get("time") or None
+        elif is_total_tab:
             if isinstance(item, tuple) and len(item) == 3:
                 phrase, context, api_idx = item
                 api_str = f"Slot {api_idx+1}"
-                ts = time.time() # Or extract from item if stored
             elif isinstance(item, tuple) and len(item) == 2:
                 context, api_idx = item
                 api_str = f"Slot {api_idx+1}"
@@ -152,8 +161,10 @@ def update_modern_issue_panel(tree, recent_items, highlight_tag="issue_highlight
             else:
                 context = str(item)
 
-        # Format timestamp
-        time_str = time.strftime("%H:%M:%S", time.localtime(ts))
+        # Format timestamp. A dict carries its own; anything else is stamped now, which is
+        # what this panel has always done.
+        if not time_str:
+            time_str = time.strftime("%H:%M:%S", time.localtime(ts))
 
         # Determine columns based on tab type
         if is_total_tab:
