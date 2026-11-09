@@ -239,9 +239,12 @@ def test_retry_pipeline():
           calls[0]["messages"][0]["content"] == "You are a helpful roleplay assistant."
           and "Latin alphabet" in calls[1]["messages"][0]["content"])
     check("on: the hit is counted", app_state.non_latin_count_total == 1)
+    # v15.0.1: the ring holds `{time, phrase, context, api}` dicts, not bare tuples.
+    # A tuple had no timestamp, which is why the Web UI's Time column was blank.
     check("on: the hit lands in recent_non_latin_total",
           len(app_state.recent_non_latin_total) == 1
-          and app_state.recent_non_latin_total[0][0].startswith("Non-Latin script"))
+          and app_state.recent_non_latin_total[0]["phrase"].startswith("Non-Latin script")
+          and app_state.recent_non_latin_total[0]["time"])
     check("on: a timestamp is recorded",
           len(app_state.issue_timestamps['non_latin']) == 1)
 

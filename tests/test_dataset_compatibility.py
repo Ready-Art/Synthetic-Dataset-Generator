@@ -364,12 +364,18 @@ def _trace(candidate, scenario, destination):
                                  "row_ids": [source.row_id for source in binding.sources]}
     if service is not None:
         service.close()
+    # The recent ring carries a wall-clock `time` per entry (v15.0.1). This test compares two
+    # separate runs, so a timestamp that differs by a second between them is noise, not a
+    # behavioural difference -- the same reason `generated_at` is popped above. Everything else
+    # about the entry (phrase, context, api) is still compared.
+    recent_ooc = [dict(entry, time="") if isinstance(entry, dict) else entry
+                  for entry in state.recent_ooc_total]
     result = {
         "trace": {"calls": server.calls, "output": output, "phases": phases,
                   "cache": harness.CACHE_CALLS, "question_history": state.question_history,
                   "character_counter": state.character_counter, "system_prompt_counter": state.system_prompt_counter,
                   "ooc": {"total": state.ooc_count_total, "per_api": state.ooc_counts_per_api,
-                          "recent": state.recent_ooc_total}},
+                          "recent": recent_ooc}},
         "bindings": bindings,
     }
     Path(destination).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
