@@ -14,14 +14,14 @@ Runs a generation job with no Tk window, and exposes it over a local socket so a
 terminal -- or an LLM driving one -- can start it, stop it, save it, clear it and read its
 statistics. ``cli.py`` is the client; this module is the server and the backend.
 
-**Why this module does not import ``generate.py``.** That module builds the entire Tk window
+**Why this module does not import ``generate_tk.py``.** That module builds the entire Tk window
 at *import* time, so importing it here would make every headless path need a display and make
 this whole feature untestable. Everything a run needs already lives in GUI-free modules
 (``run_config`` for the config, ``generation`` for the worker, ``quality`` for the judge), so
 the controller is built on those and the GUI is left alone. The dependency stays one-way:
 
     cli.py  ->  control.py  ->  run_config.py  ->  generation.py / quality.py / app_state.py
-    generate.py (GUI)  ->  run_config.py            # shared config reading only
+    generate_tk.py (Tk GUI, deprecated)  ->  run_config.py  # shared config reading only
 
 **Why a socket instead of a one-shot command.** ``start`` has to keep running after the
 command that started it returns, and a second terminal must be able to ask what happened. So
@@ -53,7 +53,7 @@ import run_config
 import logging_config
 from logging_config import log_message
 
-# v13.5.1: share the issue-timestamp registry with detection.py, exactly as generate.py does at
+# v13.5.1: share the issue-timestamp registry with detection.py, exactly as generate_tk.py does at
 # module scope. `detection.issue_timestamps` and `detection.issue_timestamps_lock` are module
 # globals initialised to None and wired up only by the GUI entry point, so a headless run that
 # hit a refusal phrase died inside `detection.is_refusal()` with "'NoneType' object does not
@@ -130,7 +130,7 @@ def workers_alive():
     """True while any worker thread of the current run is alive.
 
     ``generate.generation_running()`` is the GUI's version of this, but it lives in
-    ``generate.py`` -- which builds the whole Tk window at import time and so cannot be
+    ``generate_tk.py`` -- which builds the whole Tk window at import time and so cannot be
     imported here. The test is three lines, so it is written here rather than pulled
     across the GUI boundary.
     """
@@ -948,7 +948,7 @@ class HeadlessController:
         app_state.completed_task_ids = set(state.get('completed_task_ids', []))
         # v13.0.5: the saved progress counter, restored when the queue is rebuilt in
         # cmd_start(). Before this the headless path always restarted the bar at 0 on a resume.
-        # Deliberately a per-run attribute rather than an app_state global: generate.py uses
+        # Deliberately a per-run attribute rather than an app_state global: generate_tk.py uses
         # app_state.loaded_processed_tasks_snapshot for the GUI's own resume, and this server
         # never drives the GUI.
         if not cfg.get('api.master_duplication_mode', False):
@@ -969,7 +969,7 @@ class HeadlessController:
             app_state.quality_dropped = state.get('quality_dropped', {})
             app_state.dropped_task_ids = set(app_state.quality_dropped)
         # v14.2.1: restore the Review flags, or derive them from the restored scores
-        # for a state file written before the key existed (see generate.py).
+        # for a state file written before the key existed (see generate_tk.py).
         with app_state.quality_review_lock:
             if 'quality_review_ids' in state:
                 app_state.quality_review_ids = set(state.get('quality_review_ids') or [])
@@ -1645,5 +1645,5 @@ def _version_string():
     return GENERATOR_VERSION
 
 
-# Read lazily so a version bump touches only generate.py's label and this constant.
-GENERATOR_VERSION = "14.3.0"
+# Read lazily so a version bump touches only generate_tk.py's label and this constant.
+GENERATOR_VERSION = "15.0.0"

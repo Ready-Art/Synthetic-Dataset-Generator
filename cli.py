@@ -491,14 +491,48 @@ def verb_launch(args):
     """Start the controller: detached by default, foreground with --foreground."""
     if args.gui:
         return _launch_gui(args)
+    if getattr(args, "tk", False):
+        return _launch_tk(args)
     if args.foreground:
         return _serve(args)
     return _launch_daemon(args)
 
 
 def _launch_gui(args):
-    """Hand the terminal to the Tk application, unchanged."""
-    import generate  # noqa: F401 - imported for its side effect: it builds the UI
+    """Hand the terminal to the web application (was: the Tk application).
+
+    ``--gui`` keeps its name so scripts and ``docs/cli.md`` do not break; it now
+    means "start the web UI". The Tk window is still reachable, via ``--tk`` here
+    and via ``python generate_tk.py`` directly, until Phase 10 retires it.
+
+    ``webapp.__main__.main`` takes an **argv list**, not this namespace, so the
+    two globals that matter are translated explicitly. ``--config`` and ``--socket``
+    are the whole contract: everything else about the web app has its own default.
+
+    The import is inside the function on purpose. ``cli.py`` must stay importable
+    without ``fastapi`` (it is in ``requirements-web.txt``, not
+    ``requirements.txt``), so a missing web dependency is a message rather than a
+    traceback on every other verb.
+    """
+    try:
+        from webapp.__main__ import main as web_main
+    except ImportError as exc:
+        print(f"{PROGRAM}: the web front end is not installed ({exc}). "
+              f"Install requirements-web.txt, or run --tk for the Tk window.",
+              file=sys.stderr)
+        return control.EXIT_FAILURE
+
+    argv = []
+    if getattr(args, "config", None):
+        argv += ["--config", args.config]
+    if getattr(args, "socket", None):
+        argv += ["--socket", args.socket]
+    return web_main(argv)
+
+
+def _launch_tk(args):
+    """Hand the terminal to the Tk application (deprecated; Phase 10 removes it)."""
+    import generate_tk  # noqa: F401 - imported for its side effect: it builds the UI
     return control.EXIT_OK
 
 
@@ -662,10 +696,13 @@ def build_parser():
         sub.set_defaults(handler=handler)
         return sub
 
-    launch = add("launch", "Start the controller (background), or the Tk GUI.",
+    launch = add("launch", "Start the controller (background), or the web UI.",
                  verb_launch)
     launch.add_argument("--gui", action="store_true",
-                         help="open the Tk window instead of the headless controller")
+                         help="open the web UI instead of the headless controller")
+    launch.add_argument("--tk", action="store_true",
+                         help="open the old Tk window (deprecated; removed in "
+                              "the release after v15.0.0, use python -m webapp)")
     launch.add_argument("--foreground", action="store_true",
                          help="run the controller in this terminal (same as serve)")
     launch.add_argument("--tcp-host", metavar="HOST", default=None,

@@ -11,9 +11,9 @@
 """Dashboard / presentation layer for the Synthetic Dataset Generator (refactor step 4).
 
 The issue charts, the dashboard notebook tab, progress-bar styling, and the rate-limit / thread-status
-displays, extracted from generate.py. Reads shared runtime state + the GUI-widget handles through
-app_state (set when generate.py builds the main window); imports the existing helper modules. It does
-NOT import generate.py (one-way dependency: generate.py imports dashboard).
+displays, extracted from generate_tk.py. Reads shared runtime state + the GUI-widget handles through
+app_state (set when generate_tk.py builds the main window); imports the existing helper modules. It does
+NOT import generate_tk.py (one-way dependency: generate_tk.py imports dashboard).
 """
 import re
 import time
@@ -36,7 +36,7 @@ from api_handler import (
 )
 
 # The spacing scale lives in ui_theme.py. This is an alias, not a second copy of the
-# number, so generate.py and dashboard.py cannot drift apart again.
+# number, so generate_tk.py and dashboard.py cannot drift apart again.
 SPACING = ui_theme.SPACE_S
 
 
@@ -68,7 +68,7 @@ def _active_dashboard_tab_text():
 
     The label is returned with any count badge stripped (``ui_theme.tab_base_name``) so
     a badged tab still matches its ``ui_theme.TAB_*`` constant -- see the same helper
-    in ``generate.py`` (v14.2.1).
+    in ``generate_tk.py`` (v14.2.1).
     """
     try:
         nb = app_state.dashboard_notebook

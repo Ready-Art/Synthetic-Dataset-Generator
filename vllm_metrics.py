@@ -46,7 +46,7 @@ Two important rules
    against the wall-clock time those requests took. That is the only per-slot number that exists:
    vLLM's own metrics have no per-caller label.
 
-The poller is a daemon thread started by ``start_polling()`` from ``generate.py`` once the main
+The poller is a daemon thread started by ``start_polling()`` from ``generate_tk.py`` once the main
 window exists. It never runs in a test, the CLI or a headless run unless something calls it, and it
 only issues a GET against ``/metrics`` -- it sends no inference request and changes no config.
 
@@ -820,7 +820,7 @@ def _poller_loop(interval):
 def start_polling(interval=POLL_INTERVAL_SECONDS):
     """Start the background poller (idempotent). Returns the thread.
 
-    Called from ``generate.py`` once the main window exists. It is deliberately NOT started by
+    Called from ``generate_tk.py`` once the main window exists. It is deliberately NOT started by
     import: a test, the CLI and a headless run must not poll anything.
 
     v13.5.0: the previous run's saved history is loaded first, so the graphs open with real samples

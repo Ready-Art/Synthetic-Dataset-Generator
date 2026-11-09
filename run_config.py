@@ -22,10 +22,10 @@ Two rules make that possible, and both are load-bearing:
    ``app_state.root``. Every failure is returned as ``(False, "reason")`` (or raised as
    ``RunConfigError``) and the caller decides how to tell the user. That is what lets the
    module be imported and exercised headlessly, which is what makes it testable.
-2. **Nothing here imports ``generate.py``.** That module builds the whole Tk window at
+2. **Nothing here imports ``generate_tk.py``.** That module builds the whole Tk window at
    *import* time, so importing it from an engine-side module would make every headless path
    need a display. The dependency is one-way, exactly as ``generation.py`` already does it:
-   ``generate.py -> run_config.py -> generation.py``.
+   ``generate_tk.py -> run_config.py -> generation.py``.
 
 The config reads are a straight lift of the block that used to live inline in
 ``start_processing()``, including the v12.7.6 slop/anti-slop default-off gate and every
@@ -794,7 +794,7 @@ def count_worker_threads(api_configs, active_api_configs, master_duplication_ena
     THE one definition of the worker total. ``api.threads`` is a legacy scalar and is NOT
     the total: the workers are split per API slot, so the total is the sum over the slots
     that will actually do work. Everything that reports a thread count -- the GUI's
-    "Start processing: N threads" line, the launch loop in ``generate.py``, the CLI's
+    "Start processing: N threads" line, the launch loop in ``generate_tk.py``, the CLI's
     ``start`` plan and its ``status`` payload -- must come through here, or the number
     shown to the user stops matching the number of threads actually started.
 
