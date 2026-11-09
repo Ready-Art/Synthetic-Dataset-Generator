@@ -285,8 +285,17 @@ def install_tabs(app):
     # --- Live prompts ----------------------------------------------------
 
     @router.get('/live-prompts')
-    def live_prompts(limit: int = 0):
+    def live_prompts_route(limit: int = 0):
         """The prompts the engine has most recently sent, newest first.
+
+        **The function is `live_prompts_route`, not `live_prompts`.** A route function named
+        `live_prompts` shadows the imported `live_prompts` module for the whole body, so
+        `live_prompts.snapshot(...)` called the function itself and raised
+        `AttributeError: 'function' object has no attribute 'snapshot'`. FastAPI turned that into a
+        500 with a plain-text body, and the browser's `response.json()` reported it as
+        "Unexpected character at line 1 column 1" -- a JSON error for a bug that was never about
+        JSON. `tests/test_web_v151.py` now scans every route module for a function that shadows a
+        module it imports, so the class cannot come back.
 
         The engine calls ``update_live_prompt_preview`` before every request; the web app's hook
         (`webapp/live_prompts.py`) copies each one into a capped ring. This route hands out a

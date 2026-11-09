@@ -254,6 +254,15 @@ def build():
     def live_prompts():
         return _live_prompts()
 
+    @app.post('/api/live-prompts/clear')
+    def clear_live_prompts():
+        return {'ok': True, 'data': {'cleared': 6}}
+
+    @app.post('/api/queue/clear')
+    def clear_queue():
+        return {'ok': True, 'data': {'pending': 240, 'completed': 12, 'failed': 4,
+                                    'drained': 0, 'total': 256}}
+
     @app.get('/api/queue')
     def queue():
         return _queue()
