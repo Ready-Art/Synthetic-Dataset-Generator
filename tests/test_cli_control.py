@@ -864,7 +864,7 @@ def test_generate_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-VERSION = "15.1.0"
+VERSION = "15.1.1"
 
 
 def test_the_version_is_13_1_1_everywhere_it_is_declared():
