@@ -293,6 +293,68 @@ def test_a_huge_prompt_is_truncated_and_says_so():
         live_prompts.clear()
 
 
+# --- 3a. the shadowing bug (v15.1.1) ---------------------------------
+
+def test_no_route_function_shadows_a_module_it_imports():
+    """A route function named after a module shadows that module for its whole body.
+
+    `def live_prompts(limit: int = 0)` shadowed the imported `live_prompts` module, so
+    `live_prompts.snapshot(...)` called the function itself and raised
+    `AttributeError: 'function' object has no attribute 'snapshot'`. FastAPI turned that into a 500
+    with a plain-text body, and the browser reported it as a JSON parse error -- a message about
+    the parser for a bug that was never about JSON.
+
+    This scans every route module for the whole class, not just the one instance.
+    """
+    import ast
+    import pathlib
+
+    webapp_dir = pathlib.Path(ROOT) / 'webapp'
+    modules = {path.stem for path in webapp_dir.glob('*.py')}
+    offenders = []
+    for path in sorted(webapp_dir.glob('*_routes.py')):
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name in modules:
+                offenders.append(f'{path.name}: def {node.name}()')
+    assert not offenders, (
+        'a route function shadows a module it imports, so the module is unreachable inside '
+        f'its own body: {offenders}')
+
+
+def test_the_live_prompt_routes_answer_json():
+    """The exact symptom: a 500 with a text/plain body, read as a JSON parse error."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from webapp.tabs_routes import install_tabs
+
+    client = TestClient(install_tabs(FastAPI()), raise_server_exceptions=False)
+    for method, path in (('get', '/api/live-prompts'),
+                        ('post', '/api/live-prompts/clear')):
+        response = getattr(client, method)(path)
+        assert response.status_code == 200, (path, response.status_code, response.text[:200])
+        assert 'json' in response.headers.get('content-type', ''), (
+            f'{path} answered {response.headers.get("content-type")}; the browser would '
+            'report a JSON parse error instead of the real failure')
+        assert response.json()['ok'] is True, response.text[:200]
+
+
+def test_the_tab_client_never_parses_a_non_json_body():
+    """A 500 body is `Internal Server Error`, so `response.json()` throws a SyntaxError."""
+    source = _strip_comments(_read('tabs.js'))
+    assert 'async function readJSON' in source, source[:400]
+    block = source.split('async function readJSON', 1)[1].split('\n}', 1)[0]
+    assert "content-type" in block, block
+    assert 'includes(\'json\')' in block, block
+    # The helper must be what both callers use, or a route can bypass the guard.
+    for name in ('getJSON', 'postJSON'):
+        caller = source.split(f'async function {name}', 1)[1].split('\n}', 1)[0]
+        assert 'await readJSON(response)' in caller, (
+            f'{name} still calls response.json() directly, so a 500 surfaces as a JSON error')
+        assert 'await response.json()' not in caller, caller
+
+
 def test_the_live_prompt_tab_polls_while_mounted():
     """A debugging view that only updates on a click is not a live view."""
     source = _strip_comments(_read('tabs.js'))

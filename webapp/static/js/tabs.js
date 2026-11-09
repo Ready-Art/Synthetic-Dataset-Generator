@@ -30,6 +30,37 @@ import { lineChart, legend, rateHistory } from './chart.js';
 // --- a tiny fetch helper -------------------------------------------------
 
 /**
+ * Read a response body as JSON, **without letting a non-JSON body become a JSON error**.
+ *
+ * A route that raises an unhandled exception answers `500` with the plain text
+ * `Internal Server Error`, not JSON. Calling `response.json()` on that throws
+ * `SyntaxError: Unexpected token 'I', "Internal S..." is not valid JSON`, which is what a
+ * reader saw as "JSON parse unexpected character at line 1 column 1" -- a message about the
+ * *parser* for a bug that was a `500` from the *server*. The real cause was invisible.
+ *
+ * So a body is only parsed when the response actually claims to be JSON. Anything else becomes
+ * an Error that names the status and the body, which is the thing the reader needs to see.
+ *
+ * @param {Response} response
+ * @returns {Promise<Object>}
+ */
+async function readJSON(response) {
+  const type = (response.headers.get('content-type') || '').toLowerCase();
+  if (!type.includes('json')) {
+    const text = (await response.text().catch(() => '')).trim();
+    const detail = text.slice(0, 200) || response.statusText || 'no body';
+    throw new Error(
+      `The server answered ${response.status} with a non-JSON body: ${detail}`);
+  }
+  try {
+    return await response.json();
+  } catch (error) {
+    throw new Error(
+      `The server answered ${response.status} with a body that is not valid JSON.`);
+  }
+}
+
+/**
  * Fetch JSON from an API route.
  *
  * A 401 means the session expired, so the page goes to the login screen rather than showing a
@@ -41,7 +72,7 @@ async function getJSON(path) {
     window.location.href = '/login';
     throw new Error('Session expired.');
   }
-  const body = await response.json();
+  const body = await readJSON(response);
   if (!body.ok) throw new Error(body.error?.message || 'The request failed.');
   return body;
 }
@@ -57,7 +88,7 @@ async function postJSON(path, payload) {
     window.location.href = '/login';
     throw new Error('Session expired.');
   }
-  const body = await response.json();
+  const body = await readJSON(response);
   if (!body.ok) throw new Error(body.error?.message || 'The request failed.');
   return body;
 }
