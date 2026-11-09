@@ -207,6 +207,8 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
   set by `generate_tk.py`, so headless it stayed `None` and the viewer was permanently empty. The same
   class of bug as the metrics poller never being started. If a feature needs a hook, `Engine.start()`
   installs it and `Engine.stop()` removes it, and a test asserts both.
+- **A route function named after a module shadows that module for its whole body.** `def live_prompts(limit: int = 0)` shadowed the imported `live_prompts` module, so `live_prompts.snapshot(...)` called the function itself and raised `AttributeError: 'function' object has no attribute 'snapshot'`. FastAPI turned that into a `500` with a plain-text body, and the browser reported it as a **JSON parse error** — a message about the parser for a bug that was never about JSON. `tests/test_web_v151.py` scans every `*_routes.py` for a function whose name matches a module, so the whole class is caught. Name a route function `<thing>_route`.
+- **`response.json()` on a non-JSON body is a `SyntaxError`, not the failure.** A `500` answers `Internal Server Error` as text, so an unguarded `response.json()` replaces the real error with "Unexpected character at line 1 column 1". `tabs.js` `readJSON()` checks `Content-Type` first; every new fetch helper must go through it.
 - **`app_state.estimated_cost` is never written by a run.** It is declared and reset, and the only
   writer was the Tk dashboard's label refresh. Compute a derived figure where it is read.
 
