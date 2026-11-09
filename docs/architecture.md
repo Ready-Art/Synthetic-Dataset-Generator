@@ -107,7 +107,7 @@ Every module here is behind the session gate except the static assets, `/login`,
 | `webapp/app.py` | The FastAPI app: the route table, the error shape, the static mount and the lazy engine accessor |
 | `webapp/__main__.py` | `python -m webapp` — takes the control socket, then hands the app to uvicorn |
 | `webapp/config.py` | `WebConfig`: the two deployment shapes (`local` and `proxied`) and the loopback check |
-| `webapp/engine.py` | The engine seam: `Engine`, `EngineError` and `BROWSER_COMMANDS`, the one connection to the generator |
+| `webapp/engine.py` | The engine seam: `Engine`, `EngineError` and `BROWSER_COMMANDS`, the one connection to the generator. `Engine.start()` also starts the vLLM metrics poller (`vllm_metrics.start_polling`), because the web app has no Tk window to do it — without that the Metrics table fills in and every graph stays empty. `start_metrics=False` is for tests |
 | `webapp/theme.py` | Design tokens and the whole stylesheet — the **Storm** palette, in one place so it cannot drift |
 | `webapp/security/` | `policy.py` (password rules), `session.py` (argon2id + signed cookie), `ratelimit.py` (per-IP lockout), `routes.py` (the login/setup pages and the gate) |
 | `webapp/config_tree.py` | The config tree: the storage model behind the Config editor, and the comment-preserving writer |
@@ -172,6 +172,7 @@ network connection: each builds its own app over a temporary directory.
 | `tests/test_web_dataset_routes.py` | download, clear and the backup list |
 | `tests/test_web_profiles.py` | the Profiles panel's save, spliced load and name safety |
 | `tests/test_web_overview.py` | the Overview layout rules |
+| `tests/test_web_ui_regressions.py` | the four v15.0.1 Web UI defects: the `recent` entry shape, the metrics poller, the download preflight, and the two clipped panels |
 | `tests/test_web_review.py` | the Review screen's list/detail split and the drop action |
 | `tests/test_web_tabs.py` | the six data screens, and that no secret reaches a payload |
 | `tests/test_web_polish.py` | toasts, empty states, keyboard navigation, emoji verification |

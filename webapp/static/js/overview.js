@@ -148,17 +148,46 @@ function actionBar(run) {
  * A plain navigation, not a fetch: the route answers with an attachment, so the
  * browser's own download handling is what names and saves the file. Reading it into
  * JS first would hold the whole dataset in memory for no reason.
+ *
+ * **The preflight is the point.** `/api/dataset/download` answers 404 with a JSON
+ * error when there is nothing to send, and a plain navigation would replace the whole
+ * app with that raw JSON -- which is exactly what "Download dataset is a 404 page"
+ * looked like. `GET /api/dataset` is a cheap row count, so the button can say "there
+ * is no dataset yet" in a toast and stay on the page instead of navigating into an
+ * error document.
  */
-function downloadDataset(button) {
+async function downloadDataset(button) {
   button.disabled = true;
-  // The route is a GET, so a hidden link is enough and the browser keeps its own
-  // download UI. The anchor is removed on the next tick.
-  const link = el('a', { href: '/api/dataset/download', download: '' });
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  toast('Preparing the dataset download…', 'info');
-  window.setTimeout(() => { button.disabled = false; }, 1500);
+  try {
+    const response = await fetch('/api/dataset', { credentials: 'same-origin' });
+    if (response.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    if (!response.ok) {
+      toast('Could not check the dataset. Try again.', 'danger');
+      return;
+    }
+    const summary = await response.json();
+    const rows = Number(summary.total_rows || 0);
+    if (!rows) {
+      toast('There is no dataset to download yet. Start a run first.', 'warn', 6000);
+      return;
+    }
+    // The route is a GET, so a hidden link is enough and the browser keeps its own
+    // download UI. The anchor is removed on the next tick.
+    const link = el('a', { href: '/api/dataset/download', download: '' });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast(`Preparing ${num(rows)} row(s) for download…`, 'info');
+  } catch (error) {
+    toast(error.message || 'Could not start the download.', 'danger');
+  } finally {
+    // Re-enable on a short delay: the browser needs a moment to pick up the
+    // attachment, and a second click before that would start a duplicate download.
+    window.setTimeout(() => { button.disabled = false; }, 1500);
+  }
 }
 
 /**
@@ -347,11 +376,12 @@ function issueTable(rows) {
   const tbody = el('tbody', {});
   // Newest first: the most recent issue is the one a reader wants.
   for (const row of [...rows].reverse()) {
+    const entry = normaliseIssue(row);
     tbody.append(el('tr', {},
-      el('td', { title: String(row.time ?? '') }, String(row.time ?? '—')),
-      el('td', {}, row.api === undefined ? '—' : `#${Number(row.api) + 1}`),
-      el('td', { title: String(row.phrase ?? '') }, String(row.phrase ?? '—')),
-      el('td', { title: String(row.context ?? '') }, String(row.context ?? '—')),
+      el('td', { title: entry.time }, entry.time || '—'),
+      el('td', {}, entry.api >= 0 ? `#${entry.api + 1}` : '—'),
+      el('td', { title: entry.phrase }, entry.phrase || '—'),
+      el('td', { title: entry.context }, entry.context || '—'),
     ));
   }
   table.append(tbody);
@@ -439,14 +469,17 @@ function graphPanel(stats) {
   // Draw only once the panel is in the document. `lineChart` reads the palette
   // from `getComputedStyle`, which returns empty strings for a detached node, so a
   // draw before insertion produces an invisible chart rather than an error.
-  requestAnimationFrame(() => {
-    if (!panel.isConnected) return;
-    lineChart(host, {
-      labels: log.map((entry) => String(entry.time ?? '')),
-      series,
-      empty: 'The issue graph fills in as a run produces issues.',
-    });
-  });
+  //
+  // **A frame is not guaranteed.** A background tab, a throttled renderer or a
+  // headless capture may not produce one for seconds, and the old code drew *only*
+  // from `requestAnimationFrame`, so the graph stayed blank until something else
+  // forced a paint. The timeout is the fallback: whichever fires first draws, and the
+  // second call is a no-op because the host already has content.
+  drawWhenReady(panel, host, () => lineChart(host, {
+    labels: log.map((entry) => String(entry.time ?? '')),
+    series,
+    empty: 'The issue graph fills in as a run produces issues.',
+  }));
 
   return panel;
 }
@@ -458,6 +491,46 @@ function graphPanel(stats) {
  * is built by walking the per-issue timestamps in order and counting up. That is what
  * the Tk graph shows: how the count grew over the run, not an instantaneous rate.
  */
+/**
+ * Run `draw` once `panel` is in the document, on the next frame or shortly after.
+ *
+ * `lineChart` needs the node connected (it reads the palette from `getComputedStyle`),
+ * and it needs a layout pass. `requestAnimationFrame` gives both -- but only if the
+ * browser produces a frame, which a background tab or a throttled renderer may not do
+ * for a long time. The timeout is the safety net, and `host.childElementCount` makes
+ * the second caller a no-op so the chart is never drawn twice.
+ */
+function drawWhenReady(panel, host, draw) {
+  let done = false;
+  const attempt = () => {
+    if (done || !panel.isConnected || host.childElementCount) return;
+    done = true;
+    draw();
+  };
+  requestAnimationFrame(attempt);
+  window.setTimeout(attempt, 250);
+}
+
+function normaliseIssue(raw) {
+  // The engine sends `{time, phrase, context, api}`. This still accepts a bare
+  // `[phrase, context, api]` array, because a payload from a process started before the
+  // engine switched to dicts is a real possibility and a blank table is the worst outcome.
+  if (Array.isArray(raw)) {
+    return {
+      time: '',
+      phrase: String(raw[0] ?? ''),
+      context: String(raw[1] ?? ''),
+      api: Number.isInteger(raw[2]) ? raw[2] : -1,
+    };
+  }
+  return {
+    time: String(raw?.time ?? ''),
+    phrase: String(raw?.phrase ?? ''),
+    context: String(raw?.context ?? ''),
+    api: Number.isInteger(raw?.api) ? raw.api : -1,
+  };
+}
+
 function cumulativeSeries(stats, key, length) {
   const entry = (stats.detected || {})[key] || {};
   const recent = entry.recent || [];

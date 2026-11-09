@@ -95,6 +95,7 @@ readyart-dataset-generator/
 ├── tools/
 │   ├── check_gui_layout.py  # GUI layout testing utility for small displays
 │   ├── check_dataset_hub.py # Opt-in live Hugging Face Hub reader check
+│   ├── ui_harness.py       # Serve the real static bundle against seeded JSON, so a layout bug can be seen in a browser (not part of the app)
 │   ├── gemma4_thought_fix.py # OUT OF SCOPE: axolotl helper for Gemma 4 fine-tunes by Karki (Discord); see docs/gemma4-chat-template.md
 │   └── cleaner_pipeline/    # OPTIONAL standalone JSONL post-processor (not imported, not tested); see docs/cleaner-pipeline.md
 │       ├── run_all.sh       # Runs the nine stages in order (--from N, $SOURCE)

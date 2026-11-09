@@ -45,16 +45,17 @@ WS_TICK_SECONDS = 1.0
 INDEX_HTML = os.path.join(STATIC_DIR, 'index.html')
 
 
-def create_app(config=None, controller_factory=None, serve_socket=True):
+def create_app(config=None, controller_factory=None, serve_socket=True, start_metrics=True):
     """Build and return the FastAPI app.
 
     ``config`` is a :class:`webapp.config.WebConfig`; it is optional so a test can build an
     app with the defaults and never bind anything.
 
-    ``controller_factory`` and ``serve_socket`` are for tests: a fake controller lets
-    ``tests/test_web_engine.py`` drive every verb with no config file, no database and no
-    network, and ``serve_socket=False`` skips the control socket so a test process cannot
-    collide with a real one.
+    ``controller_factory``, ``serve_socket`` and ``start_metrics`` are for tests: a fake
+    controller lets ``tests/test_web_engine.py`` drive every verb with no config file, no
+    database and no network, ``serve_socket=False`` skips the control socket so a test process
+    cannot collide with a real one, and ``start_metrics=False`` keeps the vLLM metrics poller
+    from making HTTP requests during a test.
     """
     config = config or WebConfig()
     app = FastAPI(
@@ -104,7 +105,8 @@ def create_app(config=None, controller_factory=None, serve_socket=True):
     # dependency graph and of any socket.
     app.state.engine = None
     app.state.engine_factory = (lambda: build_engine(
-        config, controller_factory=controller_factory, serve_socket=serve_socket))
+        config, controller_factory=controller_factory, serve_socket=serve_socket,
+        start_metrics=start_metrics))
 
     _install_api(app)
 

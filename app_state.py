@@ -19,6 +19,7 @@ dependency graph (generate_tk.py / generation.py / dashboard.py import it, never
 """
 import os
 import threading
+import time
 from threading import Lock
 from config_loader import ConfigLoader
 import json
@@ -242,6 +243,35 @@ BASE_OUTPUT_FILE_PATH = os.path.join(OUTPUT_DIR, 'output')
 BASE_DEBUG_LOG_PATH = os.path.join(OUTPUT_DIR, 'debug_prompt')
 estimated_cost = 0.0
 MAX_RECENT = 10 # Max number of recent issues to store and display
+
+
+def record_recent(bucket, phrase, context, api_slot_idx=-1, now=None):
+    """Append one issue to a ``recent_*_total`` ring, as a dict with a real timestamp.
+
+    Every detection site used to append a bare ``(phrase, context, api_slot_idx)`` tuple and
+    leave the time out entirely, so the dashboard's Time column had nothing to show and the
+    Web UI rendered an em dash for every row. A tuple also has no field names, so the browser
+    had to guess that element 0 was the phrase -- which is why the whole table came out blank.
+
+    One helper, one shape: ``{time, phrase, context, api}``. ``api`` is ``-1`` for a task-level
+    error that is not tied to a slot, which the dashboard already used to mean "Totals only".
+
+    The ring is capped at ``MAX_RECENT`` here rather than at each of the ~20 call sites, so a
+    new detection cannot forget to trim and grow the list without bound.
+    """
+    if bucket is None:
+        return None
+    entry = {
+        'time': time.strftime('%H:%M:%S', time.localtime(time.time() if now is None else now)),
+        'phrase': str(phrase if phrase is not None else ''),
+        'context': str(context if context is not None else ''),
+        'api': int(api_slot_idx) if api_slot_idx is not None else -1,
+    }
+    bucket.append(entry)
+    overflow = len(bucket) - MAX_RECENT
+    if overflow > 0:
+        del bucket[:overflow]
+    return entry
 anti_slop_counts_per_api = {i: 0 for i in range(7)}
 API_CIRCUIT_BREAKER = {
     "max_consecutive_failures": 5,

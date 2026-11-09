@@ -106,7 +106,7 @@ conversations, after a confirmation and with a backup zip taken first). |
 | **APIs** | Per-API issue panels, with a slot selector. |
 | **Quality** | The dimension summary and the latest-50 scores. |
 | **Regex Watch** | The patterns and their hits. |
-| **Metrics** | The per-slot vLLM table and its graphs. |
+| **Metrics** | The per-slot vLLM table and its graphs. The table is written by the generation threads; the graphs read a separate ring that only the vLLM poller appends to, so `Engine.start()` starts that poller — without it the table fills in and every graph stays empty. |
 | **Prompts** | The live prompt preview, with search and copy. |
 | **Queue** | The pending and failed tables, with purge, retry and export. |
 | **Config** | The config editor. See below. |

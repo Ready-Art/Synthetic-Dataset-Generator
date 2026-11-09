@@ -226,6 +226,36 @@ DETECTION_COUNTERS = (
 )
 
 
+def _recent_entry(raw):
+    """One ``recent`` item as ``{time, phrase, context, api}``, whatever shape it arrived in.
+
+    The engine now writes dicts (``app_state.record_recent``), but a process that started before
+    that change still holds the old tuples, and a caller may hand-build a payload. Normalising
+    here means the browser has exactly one shape to read, and the Time column is never blank.
+
+    The old shapes were ``(phrase, context, api_slot)`` for a totals ring and
+    ``(phrase, context)`` for a per-API ring, so a 2-tuple has no slot of its own -- it belongs
+    to the slot it was filed under, which the caller supplies.
+    """
+    if isinstance(raw, dict):
+        return {
+            'time': str(raw.get('time') or ''),
+            'phrase': str(raw.get('phrase') or ''),
+            'context': str(raw.get('context') or ''),
+            'api': int(raw.get('api', -1)) if raw.get('api') is not None else -1,
+        }
+    if isinstance(raw, (list, tuple)):
+        parts = list(raw) + [None, None, None]
+        phrase, context, api = parts[0], parts[1], parts[2]
+        return {
+            'time': '',
+            'phrase': str(phrase if phrase is not None else ''),
+            'context': str(context if context is not None else ''),
+            'api': int(api) if isinstance(api, int) else -1,
+        }
+    return {'time': '', 'phrase': str(raw), 'context': '', 'api': -1}
+
+
 def _counter_payload(key, with_recent=True):
     """One detection counter as ``{total, per_api, recent, recent_per_api}``."""
     entry = _counter_entry(key)
@@ -238,9 +268,11 @@ def _counter_payload(key, with_recent=True):
     if with_recent:
         recent = list(getattr(app_state, entry[4], []) or [])
         recent_per_api = getattr(app_state, entry[5], {}) or {}
-        payload['recent'] = recent[-app_state.MAX_RECENT:]
+        payload['recent'] = [_recent_entry(item)
+                             for item in recent[-app_state.MAX_RECENT:]]
         payload['recent_per_api'] = {
-            str(slot): list(value)[-app_state.MAX_RECENT:]
+            str(slot): [_recent_entry(item)
+                        for item in list(value)[-app_state.MAX_RECENT:]]
             for slot, value in sorted(recent_per_api.items())}
     return payload
 
@@ -1646,4 +1678,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate_tk.py's label and this constant.
-GENERATOR_VERSION = "15.0.0"
+GENERATOR_VERSION = "15.0.1"

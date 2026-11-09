@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v15.0.0
+# ReadyArt Synthetic Dataset Generator v15.0.1
 
 A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs. It runs in your browser (`python -m webapp`) or headless from a shell (`python -m cli`). Both front ends drive the same engine against the same `config/config.yml` and write the same output, so a run is identical either way.
 
