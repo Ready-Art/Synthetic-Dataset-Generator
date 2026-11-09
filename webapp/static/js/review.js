@@ -138,10 +138,54 @@ async function act(path, body, confirmText) {
   }
 }
 
+/**
+ * Export the flagged rows **to the reader's browser**, not just to the server's disk.
+ *
+ * The old button POSTed to `/api/review/export`, which wrote a file in the output directory and
+ * answered with its path. Nothing reached the browser, so from a reader's point of view the button
+ * did nothing but toast a path they could not open -- and on a machine reached over nginx that path
+ * is not even on their computer.
+ *
+ * `GET /api/review/export/download` answers with `Content-Disposition: attachment`, so a plain
+ * navigation is enough and the browser's own download handling names and saves the file. The
+ * preflight is the point, exactly as it is for the dataset download: a navigation to a 404 would
+ * replace the whole app with a raw JSON error document, so an empty export is reported in a toast
+ * and the page stays put.
+ */
 async function onExport() {
-  const data = await act('/api/review/export', {});
-  if (!data) return;
-  toast(data.message, data.exported ? 'ok' : 'warn', 6000);
+  try {
+    const response = await fetch('/api/review/export/download', {
+      credentials: 'same-origin',
+    });
+    if (response.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    if (response.status === 404) {
+      const body = await response.json().catch(() => ({}));
+      toast(body.error?.message || 'There is nothing flagged to export.', 'warn', 6000);
+      return;
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      toast(body.error?.message || 'Could not export the flagged rows.', 'danger');
+      return;
+    }
+    // The route sets `X-Export-Rows`, so the toast can say how many rows are on their way
+    // without reading the body twice.
+    const rows = Number(response.headers.get('X-Export-Rows') || 0);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = el('a', { href: url, download: 'quality_review_flagged.jsonl' });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Revoking immediately can cancel the download in some browsers; a tick is enough.
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast(`Downloaded ${num(rows)} flagged conversation(s).`, 'ok', 6000);
+  } catch (error) {
+    toast(String(error.message || error), 'danger');
+  }
 }
 
 async function onDismiss() {

@@ -385,6 +385,28 @@ def _task_progress():
     }
 
 
+def _estimated_cost(cfg):
+    """The run's estimated spend, from the tokens actually counted and the configured price.
+
+    ``(input + output) * cost_per_1k_tokens / 1000`` -- byte for byte the expression in
+    ``generation.check_budget_limit()``, so the Overview card and the budget stop agree. A
+    price of 0 (the shipped default) gives 0.0, which is the honest answer: the operator has
+    not told the generator what a token costs, so there is nothing to estimate from.
+
+    Read from the config on every call rather than cached, so a price edited in the Config tab
+    takes effect on the next tick instead of at the next restart.
+    """
+    try:
+        price_per_1k = float(cfg.get('api.pricing.cost_per_1k_tokens', 0) or 0)
+    except (TypeError, ValueError):
+        price_per_1k = 0.0
+    if price_per_1k <= 0:
+        return 0.0
+    tokens = (int(getattr(app_state, 'total_input_tokens', 0) or 0)
+              + int(getattr(app_state, 'total_output_tokens', 0) or 0))
+    return round(tokens * (price_per_1k / 1000.0), 6)
+
+
 def _quality_summary():
     """``quality.get_quality_stats()`` plus the flags a reader needs to interpret it."""
     try:
@@ -468,7 +490,16 @@ def build_stats_payload(config=None, include_recent=True, generator=None):
         'tokens': {
             'input': app_state.total_input_tokens,
             'output': app_state.total_output_tokens,
-            'estimated_cost': float(getattr(app_state, 'estimated_cost', 0.0) or 0.0),
+            # v15.1.0: COMPUTED here, not read from `app_state.estimated_cost`.
+            #
+            # `app_state.estimated_cost` is declared and reset but **never written by a run**:
+            # the only code that ever set it was the Tk dashboard's own label refresh, which
+            # does not exist headless. So the Overview's "Est. cost" card read 0.0000 forever
+            # and looked broken, because it was. The formula is the same one
+            # `generation.check_budget_limit()` and the Tk dashboard use -- total tokens times
+            # the price per 1k -- so the number the browser shows is the number the budget
+            # check acts on, rather than a second opinion.
+            'estimated_cost': _estimated_cost(cfg),
         },
         'attempts': {
             'total': app_state.total_attempts_global,
@@ -1678,4 +1709,4 @@ def _version_string():
 
 
 # Read lazily so a version bump touches only generate_tk.py's label and this constant.
-GENERATOR_VERSION = "15.0.1"
+GENERATOR_VERSION = "15.1.0"

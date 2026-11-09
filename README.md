@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v15.0.1
+# ReadyArt Synthetic Dataset Generator v15.1.0
 
 A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs. It runs in your browser (`python -m webapp`) or headless from a shell (`python -m cli`). Both front ends drive the same engine against the same `config/config.yml` and write the same output, so a run is identical either way.
 
@@ -60,7 +60,7 @@ The README is a master index: each topic below lives in its own file under [`doc
 | [Requirements & Installation](docs/installation.md) | Python/PostgreSQL/Valkey requirements, both dependency files, first run, `input/` setup |
 | [Configuration](docs/configuration.md) | `config/config.yml`: dataset sources and prompt variables, the 6 API slots and compatibility profiles, generation settings |
 | [Usage](docs/usage.md) | Starting a run, resuming and crash recovery, duplication vs. collaborative mode, dashboards, queue management, prompt preview, connection tests |
-| [Web Front End](docs/webapp.md) | The browser UI: `python -m webapp`, the password login, the eleven screens, the Config editor, nginx vs. local-only, and what to do when it will not start |
+| [Web Front End](docs/webapp.md) | The browser UI: `python -m webapp`, the password login, the twelve screens, the Config editor, nginx vs. local-only, and what to do when it will not start |
 | [Command Line](docs/cli.md) | Headless / CLI control: launch, start, stop, pause, stats (including what is being filtered), save/export, clear, shutdown. JSON output and exit codes for scripts and LLM agents, plus the `control:` config block |
 
 ### Configuration reference

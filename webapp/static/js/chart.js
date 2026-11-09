@@ -12,14 +12,32 @@
  * A small hand-rolled SVG line chart.
  *
  * **Why not Chart.js**: the whole point of this
- * stack is no build step and no vendored bundle, and the three graphs here are a polyline, a
+ * stack is no build step and no vendored bundle, and the graphs here are a polyline, a
  * grid and a legend. A 200 KB charting library for that would be the largest file in the repo.
  *
  * Colours come from the CSS custom properties, so there is no hex literal here and the chart
  * cannot drift from the palette.
+ *
+ * **The viewBox is measured, not fixed (v15.1.0).** The first version drew into a hard-coded
+ * `640x160` viewBox with `preserveAspectRatio="none"`, so the browser stretched the whole drawing
+ * to the panel's width. A panel narrower than 640px therefore squashed every glyph horizontally and
+ * the y-axis numbers ran into each other -- the "squeezed together" axis labels. The chart now
+ * measures its host and uses a viewBox whose width **is** the host's width in CSS pixels, with
+ * `preserveAspectRatio="xMinYMin meet"`, so one user unit is one pixel and text is never scaled.
+ * A `ResizeObserver` redraws when the panel changes width.
  */
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Used only before the host has a layout (a hidden tab, a headless capture). The observer
+// replaces it with the real width on the first resize.
+const FALLBACK_WIDTH = 640;
+const MIN_WIDTH = 220;
+
+// How wide a character is relative to the font size, for the axis gutter. A monospace-ish
+// estimate is fine here: it only decides how much room the labels get, and the gutter is
+// rounded up.
+const CHAR_RATIO = 0.62;
 
 function svg(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -37,6 +55,35 @@ function token(name, fallback) {
   return value || fallback;
 }
 
+/** The host's width in CSS pixels, or the fallback when it has no layout yet. */
+function hostWidth(host) {
+  const width = Math.round(host.clientWidth || 0);
+  return width >= MIN_WIDTH ? width : FALLBACK_WIDTH;
+}
+
+function textWidth(text, fontSize) {
+  return String(text).length * fontSize * CHAR_RATIO;
+}
+
+/** A whole-number tick label. A fractional top would print `0.5` and `1.5` on a count axis. */
+function formatTick(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/**
+ * A round top for the axis, in whole steps.
+ *
+ * `steps` gridlines means `steps + 1` labels including zero, so the step is the top divided by
+ * the number of steps and is rounded UP to a whole number. That is what keeps every label an
+ * integer on a token or request count, which is the only kind of value these charts carry.
+ */
+function axisTop(maxValue, steps) {
+  const safe = Math.max(1, Number(maxValue) || 1);
+  const step = Math.max(1, Math.ceil(safe / steps));
+  return step * steps;
+}
+
 /**
  * Draw a multi-series line chart into `host`, replacing its contents.
  *
@@ -44,15 +91,17 @@ function token(name, fallback) {
  * @param {Object} options
  * @param {string[]} options.labels - x-axis labels, oldest first
  * @param {Array<{name: string, colour: string, values: number[]}>} options.series
- * @param {number} [options.height] - viewBox height in user units
+ * @param {number} [options.height] - height in CSS pixels
  * @param {string} [options.empty] - text to show when there is no data
+ * @param {string} [options.label] - the accessible name for the image
  */
 export function lineChart(host, options) {
   const {
     labels = [],
     series = [],
-    height = 160,
+    height = 132,
     empty = 'No data yet.',
+    label = 'Metric graph',
   } = options || {};
 
   host.replaceChildren();
@@ -63,26 +112,39 @@ export function lineChart(host, options) {
       className: 'empty',
       textContent: empty,
     }));
+    watchResize(host, options);
     return;
   }
 
-  const width = 640;
-  const padding = { top: 10, right: 8, bottom: 18, left: 34 };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
+  const width = hostWidth(host);
+  const fontSize = 10;
 
+  // The gutter is sized to the widest label, so a four-digit token count cannot overlap the
+  // plot. This is the fix for the squeezed axis: the labels get the room they need.
+  const steps = height < 110 ? 3 : 4;
   const maxValue = Math.max(
     1,
     ...series.flatMap((entry) => (entry.values || []).map((v) => Number(v) || 0)),
   );
-  // Round the top of the axis up so the gridlines land on whole numbers.
-  const top = Math.max(1, Math.ceil(maxValue));
+  const top = axisTop(maxValue, steps);
+  const tickLabels = [];
+  for (let index = 0; index <= steps; index += 1) {
+    tickLabels.push(formatTick(top * (1 - index / steps)));
+  }
+  const gutter = Math.ceil(Math.max(...tickLabels.map((t) => textWidth(t, fontSize)))) + 10;
+
+  const padding = { top: 10, right: 10, bottom: 18, left: gutter };
+  const plotWidth = Math.max(1, width - padding.left - padding.right);
+  const plotHeight = Math.max(1, height - padding.top - padding.bottom);
 
   const root = svg('svg', {
     viewBox: `0 0 ${width} ${height}`,
-    preserveAspectRatio: 'none',
+    // Never `none`: a non-uniform scale is what squashed the axis text. With the viewBox
+    // matching the host's own width there is no scaling at all, and `meet` keeps it that way
+    // if the panel is resized before the observer fires.
+    preserveAspectRatio: 'xMinYMin meet',
     role: 'img',
-    'aria-label': 'Issue graph',
+    'aria-label': label,
     class: 'chart',
   });
 
@@ -90,19 +152,18 @@ export function lineChart(host, options) {
   const muted = token('--muted', 'currentColor');
 
   // --- horizontal gridlines and y labels ---------------------------------
-  const steps = 4;
   for (let index = 0; index <= steps; index += 1) {
     const y = padding.top + (plotHeight * index) / steps;
     root.append(svg('line', {
       x1: padding.left, y1: y, x2: width - padding.right, y2: y,
       stroke: grid, 'stroke-width': 1, 'shape-rendering': 'crispEdges',
     }));
-    const label = svg('text', {
-      x: padding.left - 6, y: y + 3,
-      'text-anchor': 'end', 'font-size': 9, fill: muted,
+    const text = svg('text', {
+      x: padding.left - 6, y: y + fontSize / 3,
+      'text-anchor': 'end', 'font-size': fontSize, fill: muted,
     });
-    label.textContent = String(Math.round(top * (1 - index / steps)));
-    root.append(label);
+    text.textContent = tickLabels[index];
+    root.append(text);
   }
 
   // --- one polyline per series ------------------------------------------
@@ -123,21 +184,20 @@ export function lineChart(host, options) {
       'stroke-width': 1.6,
       'stroke-linejoin': 'round',
       'stroke-linecap': 'round',
-      'vector-effect': 'non-scaling-stroke',
     }));
   }
 
   // --- x labels, first and last only ------------------------------------
   if (labels.length) {
     const first = svg('text', {
-      x: padding.left, y: height - 5, 'font-size': 9, fill: muted,
+      x: padding.left, y: height - 5, 'font-size': fontSize, fill: muted,
     });
     first.textContent = labels[0];
     root.append(first);
     if (labels.length > 1) {
       const last = svg('text', {
         x: width - padding.right, y: height - 5,
-        'text-anchor': 'end', 'font-size': 9, fill: muted,
+        'text-anchor': 'end', 'font-size': fontSize, fill: muted,
       });
       last.textContent = labels[labels.length - 1];
       root.append(last);
@@ -145,6 +205,39 @@ export function lineChart(host, options) {
   }
 
   host.append(root);
+  watchResize(host, options);
+}
+
+// --- resize ---------------------------------------------------------------
+
+// One observer per host. The options are kept so a resize can redraw with the same
+// data rather than needing the caller to notice.
+const watchers = new WeakMap();
+
+function watchResize(host, options) {
+  if (typeof ResizeObserver === 'undefined') return;
+  let entry = watchers.get(host);
+  if (!entry) {
+    entry = { width: hostWidth(host), options };
+    entry.observer = new ResizeObserver(() => {
+      // A host that has been replaced is finished with; stop observing it so the
+      // observer cannot keep a detached screen alive.
+      if (!host.isConnected) {
+        entry.observer.disconnect();
+        watchers.delete(host);
+        return;
+      }
+      const next = hostWidth(host);
+      // The threshold matters: a redraw changes the SVG's size, which fires the
+      // observer again. Under 8px is the same chart, so this cannot loop.
+      if (Math.abs(next - entry.width) < 8) return;
+      entry.width = next;
+      lineChart(host, entry.options);
+    });
+    watchers.set(host, entry);
+    entry.observer.observe(host);
+  }
+  entry.options = options;
 }
 
 /**
@@ -164,4 +257,35 @@ export function legend(series) {
     host.append(item);
   }
   return host;
+}
+
+/**
+ * Turn a cumulative counter's history into a per-minute rate history.
+ *
+ * `delta / seconds * 60`, and `None` for a sample where the counter went backwards (a
+ * restarted server zeroed it) so the graph shows a gap rather than a spike. This is the same
+ * rule `vllm_metrics._delta()` and the Tk panel apply.
+ *
+ * @param {Array<Object>} history - samples carrying `time` and `key`
+ * @param {string} key - the cumulative counter to differentiate
+ * @returns {Array<{time: number, rate: number|null}>}
+ */
+export function rateHistory(history, key) {
+  const out = [];
+  let previous = null;
+  let previousTime = null;
+  for (const sample of history || []) {
+    const value = sample[key];
+    let rate = null;
+    if (value !== null && value !== undefined && previous !== null
+        && previousTime !== null) {
+      const elapsed = sample.time - previousTime;
+      const delta = value - previous;
+      if (elapsed > 0 && delta >= 0) rate = (delta / elapsed) * 60;
+    }
+    out.push({ time: sample.time, rate });
+    previous = value === undefined ? null : value;
+    previousTime = sample.time;
+  }
+  return out;
 }

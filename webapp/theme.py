@@ -883,6 +883,100 @@ table.grid tbody tr.selected { background: var(--raised); }
 .pill.danger { color: var(--danger); }
 .pill.muted { color: var(--muted); }
 
+/* --- Switches --------------------------------------------------------- */
+
+/* A checkbox styled as a track-and-thumb switch. The real `<input>` stays in the DOM and keeps
+   its own focus and keyboard behaviour -- it is only visually replaced -- so a switch is still a
+   checkbox to a screen reader and to the space bar. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.switch:hover { color: var(--text); }
+
+.switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.switch-track {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  transition: background 140ms ease, border-color 140ms ease;
+  flex: 0 0 auto;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%%;
+  background: var(--muted);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.switch-input:checked + .switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch-input:checked + .switch-track .switch-thumb {
+  transform: translateX(16px);
+  background: var(--accent-fg);
+}
+
+.switch-input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.switch-input:checked ~ .switch-label { color: var(--text); }
+
+.metrics-switches {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+/* A heading between groups inside one tab body. The section headers inside a panel are 11px
+   uppercase; this is the same voice one level up, so a tab with three groups reads as three
+   groups rather than one long stack. */
+.section-heading {
+  font-size: var(--size-section);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-section);
+  color: var(--muted);
+  margin: 6px 0 -2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
 /* --- Controls --------------------------------------------------------- */
 
 button, .btn {
@@ -1768,5 +1862,240 @@ input:focus, select:focus, textarea:focus {
   }
 
   .profiles-list { max-height: 140px; }
+}
+
+/* --- Live Prompts ----------------------------------------------------- */
+
+/* The list scrolls on its own so the preview beside it never moves. `min-height: 0` is what
+   lets a flex/grid child actually scroll instead of growing its parent. */
+.live-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.live-list-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.live-list { border: 0; border-radius: 0; }
+
+.live-preview {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The turns stack inside the preview. Each one is a card so a long prompt reads as a
+   conversation rather than a wall of text. */
+.live-turns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.live-turns .turn {
+  background: var(--raised);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+}
+
+.live-turns .turn-text {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* --- Queue ------------------------------------------------------------ */
+
+/* Three tables that each scroll inside their own panel. The old layout stacked them and let a
+   pending list of thousands of rows grow the page, which squashed the two short tables into
+   slivers and pushed them off the screen. `minmax(0, 1fr)` per row plus `overflow: auto` on each
+   body keeps every column at its declared width. */
+.queue-grid {
+  /* `minmax(0, 1fr)`, not `minmax(120px, 1fr)`: a 120px floor is a floor on the row, and three
+     of them plus the gaps can exceed a short viewport, which clipped the third panel. `0` lets a row
+     shrink and the panel's own body scroll instead. */
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  min-height: 0;
+  /* `flex-basis: 0`, not `auto`. With `auto` the basis is the grid's CONTENT height, so three
+     tall tables made the grid taller than the tab body and the third panel was clipped no matter what
+     the rows said. A zero basis makes it take only the leftover space, which is what a full-height
+     grid means. */
+  flex: 1 1 0;
+  align-content: stretch;
+  overflow: hidden;
+}
+
+.queue-grid > .panel { min-height: 0; }
+
+/* A queue table can be thousands of rows, so its body is the scroller and the panel header stays
+   put. Without this the table grew the panel and pushed the next one off the screen. */
+.queue-grid > .panel > .panel-body { overflow-y: auto; }
+
+/* --- Depth and polish -------------------------------------------------- */
+
+/* The shell is deliberately quiet: one soft radial wash behind the page so the flat #232830 has
+   some depth, and a hairline highlight along the top of the bar. Both are `background-image`, not
+   new colours, so the palette stays the single source of truth and the contrast table is unaffected. */
+body {
+  background-image:
+    radial-gradient(1100px 520px at 12%% -10%%, rgba(122, 166, 247, 0.09), transparent 62%%),
+    radial-gradient(900px 480px at 96%% 4%%, rgba(95, 191, 127, 0.06), transparent 58%%);
+  background-attachment: fixed;
+}
+
+.topbar {
+  position: relative;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent);
+}
+
+/* A 1px accent line under the header, so the bar reads as a surface rather than a gap. */
+.topbar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.brand {
+  background-image: linear-gradient(92deg, var(--text), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Cards lift slightly on hover. A transform only, so nothing reflows and no colour changes. */
+.card {
+  transition: transform 140ms ease, border-color 140ms ease;
+}
+
+.card:hover {
+  transform: translateY(-1px);
+  border-color: var(--muted);
+}
+
+/* The selected tab gets an accent underline as well as the raised background, so the current
+   section is legible at a glance even when the tab strip is crowded. */
+.tab {
+  position: relative;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.tab[aria-selected="true"]::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* Panels get a very soft top highlight so a stack of them has visible edges. */
+.panel {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 42%%);
+}
+
+.panel-head {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+}
+
+/* A primary button reads as the one action to take. The gradient is over the accent token, so it
+   cannot introduce a hue the palette does not already have. */
+.btn-primary {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset;
+}
+
+/* The phase pill in the action bar gets a dot, so "running" is visible without reading. */
+.action-bar > .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-bar > .pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+/* A live run's dot pulses. `prefers-reduced-motion` turns it off, because a pulsing dot is
+   decoration and decoration must never override an accessibility setting. */
+.action-bar > .pill.ok::before {
+  animation: phase-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes phase-pulse {
+  0%%, 100%% { opacity: 1; }
+  50%% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action-bar > .pill.ok::before { animation: none; }
+  .card { transition: none; }
+  .progress-fill { transition: none; }
+  .switch-track, .switch-thumb { transition: none; }
+}
+
+/* Scrollbars, styled to the palette. The default light scrollbar on a dark page is the single
+   most jarring thing in the whole UI, and `scrollbar-color` is supported everywhere that matters. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+
+/* A table header stays put while its body scrolls (the base rule already sets `position:
+   sticky`); the z-index is what keeps it above the rows it scrolls over. */
+table.grid thead th { z-index: 1; }
+
+/* Below 1100px twelve tabs do not fit one row, and a horizontally scrolled tab strip hides the
+   section you are looking for. The bar wraps to a second row instead: `.app` is
+   `grid-template-rows: auto 1fr`, so a taller header simply takes its share and the screens below
+   still get the rest -- no viewport arithmetic, and nothing to keep in step with the header height. */
+@media (max-width: 1100px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .topbar .tabs {
+    order: 3;
+    flex-basis: 100%%;
+    overflow-x: visible;
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .topbar .spacer { display: none; }
+}
+
+/* The chart's own text is SVG, so it needs an explicit font stack rather than inheriting the
+   page's. Without this a serif fallback makes the axis labels look like a different app. */
+.chart text {
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
 }
 """ % {'variables': _css_variables()}
