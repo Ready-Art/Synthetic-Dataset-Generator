@@ -14,9 +14,14 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
-**Read this when:** you are adding a config field to the editor, or fixing editor layout/readability.
+**Read this when:** you are adding a config field to the **deprecated Tk** editor, or fixing its layout/readability.
 
-**Related:** [`docs/agents/config.md`](config.md), [`docs/agents/generate-ui.md`](generate-ui.md)
+> **The web Config editor is the only editor (v15.0.0).** It covers the whole config tree, not the
+> 151 curated keys this file describes, and it lives in `webapp/config_schema.py` (labels, help,
+> enums, validators) and `webapp/config_text.py` (the comment-preserving writer). Read
+> [`docs/agents/webapp.md`](webapp.md) instead unless you are specifically touching the Tk window.
+
+**Related:** [`docs/agents/config.md`](config.md), [`docs/agents/generate-ui.md`](generate-ui.md), [`docs/agents/webapp.md`](webapp.md)
 
 ## Contents
 

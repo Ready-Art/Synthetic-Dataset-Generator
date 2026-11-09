@@ -22,7 +22,7 @@ This project is licensed under the GNU Affero General Public License, version 3 
 
 Very early versions of this project were released under the MIT license by **Sleep Deprived** and **FrenzyBiscuit (WestFox35)**. That is the only MIT-era code that has ever existed here.
 
-The generator has changed to such an extent since then that it is unlikely any of the original MIT code survived. The worker engine, detection layer, quality scoring, dashboard, dataset bindings, config editor and GUI were all written or rewritten after the relicense, and `generate.py` was split into `app_state.py`, `generation.py`, `dashboard.py` and the `dataset_*.py` modules.
+The generator has changed to such an extent since then that it is unlikely any of the original MIT code survived. The worker engine, detection layer, quality scoring, dashboard, dataset bindings, config editor and GUI were all written or rewritten after the relicense, and `generate_tk.py` was split into `app_state.py`, `generation.py`, `dashboard.py` and the `dataset_*.py` modules.
 
 **Unless you hold a copy of the original MIT-era code to compare against, treat every file here as AGPLv3-only.** Do not assume MIT terms apply to any part of the current generator. The old MIT notice is retained in [`LICENSE-MIT`](../LICENSE-MIT) for provenance only, and says as much at the top.
 

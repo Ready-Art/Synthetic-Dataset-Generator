@@ -10,7 +10,7 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# Main window (`generate.py`)
+# Main window (`generate_tk.py`)
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
@@ -20,14 +20,14 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ## Contents
 
-- `generate.py`
+- `generate_tk.py`
 - `tests/test_regex_watch_tab_ui.py`
 - `tests/test_worker_launch.py`
 - Tasks that touch these files
 
 ---
 
-### `generate.py` [11]
+### `generate_tk.py` [11]
 **Purpose:** Main UI, Tkinter app, worker thread management, queue setup
 **Key:** `start_processing()`, `worker()` launch, UI widgets, `ConfigEditor`
 **Edit for:**
@@ -44,14 +44,14 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - **Table row heights (v11.6.1)** → a `ttk.Treeview` with no explicit style inherits the theme's default `Treeview`, whose `rowheight` Tk falls back to a flat 20px for a 10pt font (17px linespace). That 3px of slack clips glyph ascenders/descenders and makes a table read as scrunched, overlapping text — the Review, Queue and Regex Watch tables each hit this. Every table needs its own style with an explicit `font` and a `rowheight` derived from `font.metrics('linespace') + padding`. Regex Watch uses `REGEX_TREE_STYLE` (`'RegexWatch.Treeview'`) plus the module-level `REGEX_TREE_BODY_FONT` / `REGEX_TREE_HEADING_FONT` constants, configured once by `_configure_regex_tree_style()` (called just above the `for tab_name in tab_names:` loop, so it runs before any tab is built) and applied to both trees via `style=REGEX_TREE_STYLE`. Columns are sized by `_configure_regex_tree_columns(tree, columns, widths=..., stretch_columns=...)`, which never lets a column fall below the width its own heading text needs. `tests/test_regex_watch_tab_ui.py` guards all of this
 - Queue logic → Task tuple structure + `enqueue_opening_tasks()`
 - **Version label (v12.9)** → the `version_label` in the header frame is ONE of the FOUR sites a release bump must touch: the GUI label here, the `README.md` title, the `docs/changelog-v12.md` heading and the `docs/version-history.md` index row (`(**current: vX.Y**)`). Bumping only the changelog leaves the other three stale — v12.8.3 did exactly that, and v12.8.3's own entry had already missed two of them. **Do not bump it for a code change that ships no release**, and do not retag the historical `(v12.8.2)` markers, which annotate when a feature landed.
-- **Async-judge wiring in `start_processing()` (v12.9.1)** → `generation._install_quality_write_handler()` must be called through the **module object**, so `generate.py` carries a plain `import generation` alongside its `from generation import ...` lines. `from generation import worker` binds `worker` and **not** `generation`; v12.9 shipped without the module import and every async-scoring run died on the first Start click with `NameError: name 'generation' is not defined`, inside the Tk callback. The branch is gated on `quality.async_scoring` **and** `quality.use_llm_scoring`, so no default run, import-time check or test reached it. `tests/test_undefined_globals.py` now fails on any global a function references but the module never binds — add it to your mental checklist whenever you introduce a new module-object call (`<module>.<attr>()`) in this file
+- **Async-judge wiring in `start_processing()` (v12.9.1)** → `generation._install_quality_write_handler()` must be called through the **module object**, so `generate_tk.py` carries a plain `import generation` alongside its `from generation import ...` lines. `from generation import worker` binds `worker` and **not** `generation`; v12.9 shipped without the module import and every async-scoring run died on the first Start click with `NameError: name 'generation' is not defined`, inside the Tk callback. The branch is gated on `quality.async_scoring` **and** `quality.use_llm_scoring`, so no default run, import-time check or test reached it. `tests/test_undefined_globals.py` now fails on any global a function references but the module never binds — add it to your mental checklist whenever you introduce a new module-object call (`<module>.<attr>()`) in this file
 - DB export → `export_db_to_jsonl()`, `clear_database()`
 - Quality tab layout → `_rebuild_quality_roleplay_layout()` builds the summary labels + score-table columns from `quality.active_scoring_dimensions()` (the toggle is read at build time and re-checked each tick, so a change in the Config Editor mid-run re-lays-out the Quality tab automatically; `update_quality_tab()` fills rows in that column order)
 
 ---
 
 ### `tests/test_regex_watch_tab_ui.py`
-**Purpose:** Display-dependent regression test for the `Regex Watch` dashboard tab layout (builds the REAL `generate.py` UI; skips cleanly without a display)
+**Purpose:** Display-dependent regression test for the `Regex Watch` dashboard tab layout (builds the REAL `generate_tk.py` UI; skips cleanly without a display)
 **Key:** both tables use `REGEX_TREE_STYLE` (not the theme's default `Treeview`); the style's `rowheight` fits the body font's linespace plus `MIN_ROW_SLACK`; the rendered rows really are that tall; no column is narrower than its own heading text needs; both stacked tables share one row height
 **Run:** `python -B tests/test_regex_watch_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
 **Edit for:** Add tab-layout cases; keep it free of source data, generation runs, network and model APIs
@@ -59,7 +59,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ---
 
 ### `tests/test_worker_launch.py` [21]
-**Purpose:** AST-level regression check that the worker launch in `generate.py` matches the `worker()` signature in `generation.py`
+**Purpose:** AST-level regression check that the worker launch in `generate_tk.py` matches the `worker()` signature in `generation.py`
 **Key:** Rebuilds the `worker()` signature from its AST, extracts the actual `threading.Thread(target=worker, args=..., kwargs=...)` call from `start_processing()`, and binds them via `inspect.Signature.bind()`; then asserts the OOC kwargs (`current_ooc_phrases`/`current_ooc_fixes`/`current_ooc_enabled`) are supplied by keyword from same-named locals (never positionally) — no app config, GUI, or network code is evaluated. Also pins the reported thread total: the `Start processing:` line must name `total_threads`, must NOT name `num_threads`, must be logged after the total is resolved through `run_config.count_worker_threads()`, and the launch loop must be `range(total_threads)`
 **Run:** `python -B tests/test_worker_launch.py`
 **Edit for:** Extend per-kwarg source assertions when new params are moved into / added to the `kwargs=` dict at the launch site
@@ -68,7 +68,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ### `tests/test_undefined_globals.py`
 **Purpose:** Headless guard against a global name a function USES but the module never BINDS — the v12.9.1 `NameError: name 'generation' is not defined` class of bug
-**Key:** walks the `symtable` of every application module and fails on any global that is referenced but never bound at module level (assignment, import, `def`/`class`, `global` declaration or builtin); then pins the async-judge wiring specifically — the `generation._install_quality_write_handler()` call in `start_processing()` resolves to a module-level name bound to the module object, that object really defines the attribute, and `generate.py` imports the module rather than only names from it
+**Key:** walks the `symtable` of every application module and fails on any global that is referenced but never bound at module level (assignment, import, `def`/`class`, `global` declaration or builtin); then pins the async-judge wiring specifically — the `generation._install_quality_write_handler()` call in `start_processing()` resolves to a module-level name bound to the module object, that object really defines the attribute, and `generate_tk.py` imports the module rather than only names from it
 **Run:** `python -B tests/test_undefined_globals.py` (headless: the modules are parsed from source, never imported, so it needs no display, config, network or model)
 **Edit for:** add a module to `CHECKED_MODULES` when you add a new top-level module; extend the wiring cases when a new module-object call is added to a gated branch
 
@@ -87,5 +87,5 @@ states are in [`ui-theme.md`](ui-theme.md)** — read that before changing any v
 | Task | Files to edit |
 |------|---------------|
 | Change a colour, font, spacing value, tab name, emoji icon or empty state | [`ui-theme.md`](ui-theme.md) — `ui_theme.py` only, never a raw `#rrggbb` / bare font family / tab-name string |
-| Call a module object (`<module>.<attr>()`) from `generate.py` | `generate.py` — add the plain `import <module>`, not only `from <module> import x`; a `from ... import` never binds the module name and the call fails with `NameError` on whichever branch reaches it. `tests/test_undefined_globals.py` guards it |
-| Fix a cramped / clipped Treeview table | `generate.py` — give the table its own style with an explicit `font` + `rowheight` from `font.metrics('linespace')`, and size columns from the heading text. Regex Watch does this via `REGEX_TREE_STYLE`, `_configure_regex_tree_style()`, `_configure_regex_tree_columns()`; guarded by `tests/test_regex_watch_tab_ui.py` |
+| Call a module object (`<module>.<attr>()`) from `generate_tk.py` | `generate_tk.py` — add the plain `import <module>`, not only `from <module> import x`; a `from ... import` never binds the module name and the call fails with `NameError` on whichever branch reaches it. `tests/test_undefined_globals.py` guards it |
+| Fix a cramped / clipped Treeview table | `generate_tk.py` — give the table its own style with an explicit `font` + `rowheight` from `font.metrics('linespace')`, and size columns from the heading text. Regex Watch does this via `REGEX_TREE_STYLE`, `_configure_regex_tree_style()`, `_configure_regex_tree_columns()`; guarded by `tests/test_regex_watch_tab_ui.py` |

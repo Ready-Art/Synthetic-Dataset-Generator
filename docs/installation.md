@@ -16,7 +16,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **PostgreSQL** (optional, for database storage)
 - **Valkey or Redis** (optional, for response caching)
 
-An older interpreter is rejected at startup: `generate.py` checks `sys.version_info` and exits with a message telling you to install Python 3.11+.
+An older interpreter is rejected at startup: `generate_tk.py` checks `sys.version_info` and exits with a message telling you to install Python 3.11+.
 
 ## Python Dependencies
 
@@ -35,7 +35,30 @@ ttkbootstrap
 psycopg2-binary
 ```
 
-**Note:** `tkinter` is usually included with Python installations but may need to be installed separately on some Linux distributions (e.g., `sudo apt-get install python3-tk`).
+**Note:** `tkinter` is usually included with Python installations but may need to be installed separately on some Linux distributions (e.g., `sudo apt-get install python3-tk`). It is only needed for the deprecated Tk window (`python generate_tk.py`).
+
+## Web Front End Dependencies
+
+The GUI is a web application, so it needs three more packages. Install them alongside the ones
+above:
+
+```
+pip install -r requirements-web.txt
+```
+
+```
+fastapi
+uvicorn[standard]
+argon2-cffi
+python-multipart
+```
+
+`python-multipart` is a hard dependency, not an optional extra: the login and setup
+routes read the password form with `await request.form()`, and FastAPI raises at request
+time without it.
+
+There is **no Node toolchain and no build step** — the front end is plain ES modules served
+straight from `webapp/static/`. See [Web Front End](webapp.md).
 
 ## 🚀 Installation
 
@@ -58,8 +81,13 @@ psycopg2-binary
 
 4. **Run the application:**
    ```bash
-   python generate.py
+   python -m webapp          # the web UI, at http://127.0.0.1:8765
    ```
+
+   The first start prints a one-time setup token to the console; open the URL, paste the token and
+   choose a password. See [Web Front End](webapp.md).
+
+   The old Tk window still works for one deprecation release: `python generate_tk.py`.
 
 5. **Set up directories:**
    The application automatically creates `input/` and `output/` directories on first run.

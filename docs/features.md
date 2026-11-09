@@ -23,14 +23,14 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **Questions File Mode** — Use a predefined list of questions instead of LLM-generated ones
 
 ## Quality Scoring (NEW in v9.4.0)
-- **Hybrid Scoring Engine** — Scores every completed conversation across seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical) using a fast heuristic pass plus optional LLM-based evaluation, and optionally two further opt-in dimension groups behind GUI toggles: three roleplay-specific dimensions (voice distinctiveness, grounding, persona alignment) and the v11.7 tic-density dimension
+- **Hybrid Scoring Engine** — Scores every completed conversation across seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical) using a fast heuristic pass plus optional LLM-based evaluation, and optionally three further opt-in dimension groups behind GUI toggles: three roleplay-specific dimensions (voice distinctiveness, grounding, persona alignment), the v11.7 tic-density dimension, and the v12.0 cast-continuity dimension
 - **Composite Score (0–100)** — Weighted combination of all active dimension scores; weights configurable per dimension
 - **Heuristic Dimensions** — Diversity (type-token ratio, sentence length variance, trigram repetition, paragraph structure) and Technical (quote balance, stray asterisks, em dashes, whitespace, all-lowercase detection) run without any API call
 - **Optional LLM Scoring** — Coherence, naturalness, engagement, and consistency can be scored by a dedicated LLM (separate API endpoint) for deeper evaluation; falls back to heuristic estimates if the LLM call fails
 - **Threshold Flagging** — Conversations scoring below a configurable minimum threshold are automatically flagged for human review
-- **Quality Review Tab** — Dedicated dashboard tab listing all flagged conversations with score, lowest dimension, flags, source file, and timestamp; supports filtering, single-click transcript view, export to JSONL, bulk dismiss, and (v12.8.2) **dropping the selected conversation from the dataset** — the action for flagged output that is simply bad data. A drop removes only the selected task's rows (output file, per-API duplication rows and database row) after a confirmation, and never falls back to the whole set
+- **Quality Review screen** — Dedicated screen listing all flagged conversations with score, lowest dimension, flags, source file, and timestamp; supports filtering, single-click transcript view, export to JSONL, bulk dismiss, and (v12.8.2) **dropping the selected conversation from the dataset** — the action for flagged output that is simply bad data. A drop removes only the selected task's rows (output file, per-API duplication rows and database row) after a confirmation, and never falls back to the whole set
 - **Quality Metrics Bar** — Real-time average composite score (color-coded green/amber/red), count of below-threshold conversations, and most frequent flag displayed in the main metrics area
-- **Quality Score Table** — Dashboard tab showing the latest 50 scored conversations with per-dimension breakdown and method used
+- **Quality Score Table** — The Quality screen shows the latest 50 scored conversations with per-dimension breakdown and method used
 - **Output Filtering** — Optional flag to mark below-threshold conversations for post-processing (score metadata attached to exported JSONL)
 - **vLLM Judge Priority** (v11.8) — Optional `priority` field (**-10 to 10**, lower = earlier; **-10 is highest**, 0 the default, **10 lowest**) on every judge request for vLLM's priority scheduling, so the judge can be parked behind the generation traffic or pushed ahead of it. Off by default, because backends without priority support reject the unknown field and vLLM rejects a non-zero priority when the served model is not priority-scheduled
 - **Quality State Persistence** — Scores and review flags are saved in the generation state file for crash recovery
@@ -88,6 +88,15 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **Not part of the application** — nothing imports it, no config key controls it, no test runs it, and it adds no dependency. The per-turn cleanup above and the detection layer are unchanged and independent of it
 - **It is a starting point, not a product** — its rules were reverse-engineered from one corpus's defects and step 01 assumes every turn contains quoted dialogue, so it can drop an entire prose dataset. Read [Cleaner Pipeline](cleaner-pipeline.md) before you run it
 
+## Dataset Sources (NEW in v14.4.0)
+- **Bind a dataset instead of `input/*.txt`** — A run can draw its prompt variables from a real dataset rather than from text files. Seven source kinds: `csv`, `tsv`, `json`, `jsonl`, `parquet` (via optional `pyarrow`), `huggingface` (Hub) and `hf_disk` (a saved `DatasetDict`). Install `requirements-datasets.txt` for the last three
+- **`{{ds:alias}}` placeholders** — Map a column to a bare alias and write it into any prompt. The alias is what the prompt sees, so renaming a column upstream is one edit in the Datasets screen, not a prompt rewrite
+- **Names only, never values** — `datasets.sources[]` holds selectors, column names and aliases. Record values and credentials never go into config, and the Datasets screen never shows a cell value. That is what makes the config safe to commit
+- **One row frozen per task** — Each task gets its own immutable binding, so a run cannot drift mid-flight when the source file changes underneath it. Exhaustion and invalid data are reported, never silently cycled or skipped
+- **Column visibility** — `visible_columns` narrows which columns the picker offers: `null` means all (including columns imported later), `[]` means none, and a list is honoured in schema order
+- **Import columns** — Read a source's column names in a background thread and cache them, with a schema fingerprint so a changed file is detected rather than trusted
+- **Datasets screen** — A two-pane list and detail, the alias editor, column visibility and import, all in the web UI. See [Dataset bindings](dataset-bindings.md)
+
 ## Output Metadata (NEW in v9.9.0)
 - **Provenance per Record** — Every output row can carry a flat, schema-stable `metadata` block recording which character(s), emotional state, and setting produced it, plus its quality score, so datasets are self-describing and filterable after generation
 - **Trainer-Safe by Design** — The block lives at the record level (a sibling of `id` and `conversations`), never inside `conversations[]`, and uses only flat scalars (`str`/`int`/`float`/`bool`, never `null`) with identical keys and types on every row, so Hugging Face `load_dataset` and Axolotl's template mapping are unaffected
@@ -95,46 +104,5 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **Filterable Post-Generation** — Use the metadata columns to filter datasets in the training repo without regenerating (e.g. keep only rows with `quality_composite >= 80`)
 - **Toggleable & Back-Compatible** — `generation.include_metadata` (default `true`); set to `false` to restore the legacy two-field records exactly, byte-for-byte
 
-## Infrastructure & UI
-- **Budget & Cost Control** — Set a spending limit per run; generation automatically stops when the budget is reached, with real-time cost tracking
-- **Circuit Breaker** — Automatically disables API slots after consecutive failures with exponential backoff cooldown (60s → 120s → 240s → 480s → 600s max) and re-enables after cooldown
-- **Task Requeue on Host Failure** — Tasks assigned to a downed API host are automatically requeued (up to 50 times) rather than discarded, ensuring no work is lost during outages
-- **Valkey/Redis Caching** — Cache LLM responses (1-hour TTL, MD5-keyed per API slot) to avoid redundant API calls
-- **PostgreSQL Storage** — Optional database backend with connection pooling, automatic initialization at startup, and JSONL export
-- **Crash Recovery** — Automatic state saving/loading with configuration change detection and incompatibility warnings (now includes quality scores)
-- **Configuration Profiles** — Save, load, and delete named configuration profiles
-- **Configuration Editor Search** — Search bar for quickly finding tabs and LabelFrame sections by name
-- **API Compatibility Profiles** — Per-slot payload profiles (OpenAI, Mistral, xAI, Gemini, Anthropic-compat, or user-defined) that trim the request body to what each endpoint accepts, so hosted APIs don't 400/422 on sampler params they don't support; profiles are editable data in `config/api_profiles.yml`, with URL-based auto-detection
-- **API Connection Testing** — Test API connectivity directly from the configuration editor
-- **Valkey Connection Testing** — Test Valkey/Redis connectivity from the main UI with detailed success/failure feedback
-- **Real-Time Dashboard** — Monitor refusals, slop, errors, quality scores, and API response times with time-series graphs, search, and copy functionality
-- **📊 vLLM Metrics tab (v13.1.0)** — Reads every vLLM backend's own `/metrics` endpoint and shows **prompt-processing speed**, **token-generation speed** and **endpoint load** (KV-cache usage) **per API endpoint, never aggregated**: API Slots 1-4, the Slop Fixer, the Anti-Slop Fixer and the Quality Judge each get their own row and their own graph line, with two slots on one server still listed separately (and their own measured throughput still differing). Unreachable endpoints keep their row, marked as such, and nothing is polled unless the GUI is running
-- **📊 Proxy metrics for the AntiSlop-vLLM fork (v13.3.0, opt-in)** — Set `metrics.antislop_columns: true` to add **Proxy Requests**, **Bans (fixed/total)**, **Proxy Errors** and **Proxy Gen Speed** to the 📊 Metrics tab. The fork's `GET /metrics` serves its own `antislop:` counters alongside the upstream vLLM body, so one URL gives both sets of figures and the vLLM columns are unchanged. **Bans (fixed/total)** is the ban-list tuning figure: a large total with a small fixed count means the list is firing on things the model cannot avoid, and each of those costs a back-track and a restart. A fork whose upstream vLLM is down still counts as **reachable** and keeps its row, showing the proxy figures with the vLLM ones as `-`, instead of reading `unreachable`. Off by default, so a plain vLLM's tab is exactly what it was before
-- **📊 The metrics history is polled every 2 s and saved to disk (v13.5.0)** — the poller used to run
-  every 10 s, which was far too coarse: several requests finish between two polls, so a burst of bans
-  landed as one spike and a short stall vanished. It now polls every **2 s** and keeps **300** samples
-  (10 minutes), and it fetches the endpoints **concurrently** so one dead host no longer delays every
-  other endpoint's sample. The history is written to **`output/metrics_history.json`** every 30 s and once
-  on shutdown, so the figures survive the window closing — open the tab later, or read the file with
-  `jq`, and see what the endpoints were doing when the run slowed down. `metrics.save_history: false`
-  turns the file off
-- **📊 The Metrics tab was overhauled in v13.4.0** — a **four-card KPI strip** above the table (**⚡ Proxy Throughput**, **🔥 Busiest Endpoint**, **🛡️ Bans Fired**, **⚠️ Errors**) answers "is this run healthy?" without reading a row, and **three more graph panels** each answer one question: **This Slot's Achieved Throughput** (our own per-slot measurement, which the server cannot provide because vLLM's `/metrics` has no caller label), **Proxy Activity** (requests, bans and back-tracks per minute) and **Requests Running vs Waiting** (a high `waiting` line with a flat `running` one means the server is queueing, so the bottleneck is admission, not the GPU). The table grew from 14 columns to 22 and now has **wide, grabbable scrollbars** — the theme's ~6px thumb could not be dragged at all. The proxy's columns also **show themselves** when a slot is actually serving `antislop:` metrics, so pointing a slot at the fork no longer needs a config edit first
-- **Queue Management** — View pending, completed, and failed tasks; purge pending tasks, retry failed tasks, and export queue state to CSV
-- **Live Prompt Preview** — View prompts being sent to APIs in real-time with role-based color coding, search & highlight, section copy, and auto-scroll toggle
-- **Toast Notifications** — Non-blocking, auto-dismissing notification popups for status updates (success, error, warning, info)
-- **Token & Cost Tracking** — Track input/output tokens and estimate API costs with budget enforcement
-- **Debug Logging Toggle** — Enable/disable verbose debug logging from the UI with a single checkbox
-- **Adaptive GUI Updates** — Dashboard refreshes faster (500ms) during active generation and slower (2s) when idle
-- **Per-API Debug Logs** — Separate debug log files per API slot in duplication mode for easier troubleshooting (now includes quality scoring requests)
-- **Animated Progress Bars** — Color-coded progress bars that change style based on completion percentage (blue → cyan → green → amber → bright green) with pulse animations at milestones
-- **Stop & Clear Job** — Stop the current generation job, clear all progress, and reset for a fresh start
-- **Force Recovery** — Bypass configuration compatibility checks and force-load a previous generation state
-- **Clear Database** — Clear the PostgreSQL `generated_conversations` table from the UI with confirmation dialog
-- **Export DB → JSONL** — Export stored conversations from PostgreSQL to a JSONL file (runs in background thread)
-- **Rate Limit Status Display** — Real-time per-API rate limit usage indicators with color-coded status (green/orange/red)
-- **API Response Times** — Average, min, max response times and sample count per API slot displayed in the UI
-- **Thread Status Display** — Shows spawned and active thread counts in the metrics bar
-- **Dashboard Search** — Case-insensitive search across all issue panels within a dashboard tab with auto-scroll to first match
-- **Dashboard Copy All** — Copy all issue text from a dashboard tab to clipboard
-- **Clear Dashboard** — Reset all recent issue lists and graph data with a single button
-- **ttkbootstrap "superhero" Theme** — Modern dark-themed UI with custom styling for all widgets
+See [Infrastructure & UI](features-ui.md) for the dashboard, the queue, the
+cost controls and the web front end's screens.
