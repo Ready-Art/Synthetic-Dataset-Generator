@@ -17,8 +17,10 @@ The generator can run without a window. `cli.py` drives the same engine, the sam
 a cron job, or an LLM agent can launch it, start and stop generation, read the statistics, and
 export or clear the dataset.
 
-Nothing about the GUI changes. `python generate.py` still opens the window exactly as before; the
-control interface is **off by default** and opt-in.
+The GUI is now a **web application**: `python -m webapp` serves it in a browser (see
+[Web Front End](webapp.md)). `cli launch --gui` starts that. The old Tk window is still reachable for one
+deprecation release via `cli launch --tk` or `python generate_tk.py`, and its control interface is **off by
+default** and opt-in.
 
 ## Two ways to run it
 
@@ -37,7 +39,9 @@ python -m cli shutdown        # stop and exit the controller
 **Foreground.** `serve` runs the same controller in the terminal you are looking at, which is the
 mode to use under `systemd` or inside a container. `Ctrl-C` stops it.
 
-**The GUI.** `launch --gui` opens the ordinary Tk window instead of the headless controller.
+**The GUI.** `launch --gui` starts the **web application** instead of the headless controller, and
+serves it on `http://127.0.0.1:8765`. `launch --tk` opens the old Tk window, which is deprecated and
+removed in a later release.
 
 ## Machine-readable by default
 
@@ -76,7 +80,8 @@ Exit code 3 covers both "no daemon is listening" and "the daemon is idle"; the J
 
 ```bash
 python -m cli launch                     # background controller
-python -m cli launch --gui                # the Tk window instead
+python -m cli launch --gui                # the web UI instead
+python -m cli launch --tk                 # the old Tk window (deprecated)
 python -m cli launch --foreground         # same as `serve`
 python -m cli launch --tcp-host 127.0.0.1 # also listen on TCP (see below)
 ```
@@ -225,10 +230,15 @@ wants to avoid process startup for every command.
 
 ## Driving a running GUI from a terminal
 
-Set `control.enabled: true` in `config/config.yml` (or tick **Serve control commands** in
-**Edit Config → Control Interface**). The window then serves the same commands, so `status`, `stats`,
-`stop` and the rest work against the window's run. This is off by default, which is what keeps a
-default `python generate.py` unchanged.
+**The web app always serves the control socket**, so `status`, `stats`, `stop` and the rest work against a
+run started with `python -m webapp` with nothing to configure. It owns the `HeadlessController` and serves
+the socket itself, which is also what makes a second controller impossible: `cli launch` is refused with
+`already_running` while the web app is up.
+
+The old Tk window is the exception. Set `control.enabled: true` in `config/config.yml` (or tick **Serve
+control commands** in **Edit Config → Control Interface**) and it serves the same commands. This is off by
+default, which is what keeps a default `python generate_tk.py` unchanged — and it is why you should not run the
+Tk window and the web app at the same time.
 
 ## TCP instead of a Unix socket
 

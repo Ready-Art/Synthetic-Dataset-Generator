@@ -18,7 +18,7 @@ WHY these tests exist and why they are shaped this way:
   from a terminal. So the contract that matters is not "the functions return something
   sensible" but "the wire format, the exit codes and the JSON keys are exactly what a
   machine was promised". Those are what is asserted here.
-* ``generate.py`` builds its Tk UI at import, so it is **never imported** by this file.
+* ``generate_tk.py`` builds its Tk UI at import, so it is **never imported** by this file.
   Anything that would need a display is checked statically (by reading the source) or
   through ``control``/``run_config``, which are GUI-free by design.
 * No network, no model, no PostgreSQL server, no display. Everything runs in a temp
@@ -81,17 +81,19 @@ def _write_config(base, mutate):
 def test_control_layer_never_imports_the_gui_module():
     """``run_config``/``control``/``cli`` must not import ``generate``.
 
-    ``generate.py`` builds every Tk widget at module scope, so importing it from the
+    ``generate_tk.py`` builds every Tk widget at module scope, so importing it from the
     control layer would make the CLI require a display and defeat the entire feature.
     Checked by source scan because the failure is an import-time side effect that would
     otherwise only show up as a crash on a headless machine.
     """
     import ast
 
-    # ``cli._launch_gui()`` is the ONE place allowed to import generate: opening the
+    # ``cli._launch_tk()`` is the ONE place allowed to import generate_tk: opening the
     # window is that command's entire job. Every other import of it would make a
-    # headless verb require a display.
-    allowed = {("cli.py", "_launch_gui")}
+    # headless verb require a display. Since the web front end landed, ``--gui`` reaches the web app and
+    # ``--tk`` is the deprecated escape hatch to the window, so the allowance moved
+    # from ``_launch_gui`` to ``_launch_tk`` with it.
+    allowed = {("cli.py", "_launch_tk")}
     offenders = []
 
     for name in ("run_config.py", "control.py", "cli.py"):
@@ -111,7 +113,7 @@ def test_control_layer_never_imports_the_gui_module():
             elif isinstance(node, ast.ImportFrom):
                 targets = [node.module or ""]
             for target in targets:
-                if target.split(".")[0] != "generate":
+                if target.split(".")[0] != "generate_tk":
                     continue
                 owner = parent_function.get(id(node), "<module level>")
                 if (name, owner) in allowed:
@@ -119,8 +121,8 @@ def test_control_layer_never_imports_the_gui_module():
                 offenders.append(f"{name}:{owner}: import {target}")
 
     assert not offenders, (
-        "The control layer must stay GUI-free (generate.py builds Tk at import), "
-        "but it imports generate.py outside the one allowed GUI-launch path: "
+        "The control layer must stay GUI-free (generate_tk.py builds Tk at import), "
+        "but it imports generate_tk.py outside the one allowed GUI-launch path: "
         + "; ".join(offenders))
 
 
@@ -294,7 +296,7 @@ def test_the_gui_and_the_cli_read_the_same_config_keys():
     """
     import re
 
-    generate_source = (ROOT / "generate.py").read_text(encoding="utf-8")
+    generate_source = (ROOT / "generate_tk.py").read_text(encoding="utf-8")
     start = generate_source.index("def start_processing():")
     end = generate_source.index("\ndef ", start + 10)
     gui_keys = set(re.findall(r"global_config\.get\(\s*'([^']+)'",
@@ -796,7 +798,7 @@ def test_serve_forever_returns_when_the_server_is_stopped():
 # ---------------------------------------------------------------------------
 
 def test_the_control_interface_is_off_by_default():
-    """``python generate.py`` must behave exactly as it did before v13.0."""
+    """``python generate_tk.py`` must behave exactly as it did before v13.0."""
     with TempWorkspace() as base:
         import yaml
         with open(base / "config" / "config.yml", "r", encoding="utf-8") as handle:
@@ -812,10 +814,10 @@ def test_the_control_interface_is_off_by_default():
 def test_generate_starts_the_control_server_only_when_enabled():
     """The GUI hook must be opt-in and must never be able to stop the GUI opening.
 
-    Checked statically: ``generate.py`` builds Tk at import, so it cannot be executed
+    Checked statically: ``generate_tk.py`` builds Tk at import, so it cannot be executed
     here. The assertions are the three properties that make the hook safe.
     """
-    source = (ROOT / "generate.py").read_text(encoding="utf-8")
+    source = (ROOT / "generate_tk.py").read_text(encoding="utf-8")
 
     assert "def start_control_server_if_enabled(" in source
     assert "def stop_control_server(" in source
@@ -843,14 +845,14 @@ def test_generate_delegates_database_work_to_the_shared_layer():
     """
     import ast
 
-    source = (ROOT / "generate.py").read_text(encoding="utf-8")
+    source = (ROOT / "generate_tk.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     functions = {node.name: node for node in ast.walk(tree)
                  if isinstance(node, ast.FunctionDef)}
 
     for function in ("clear_database", "export_db_to_jsonl", "init_database_pool"):
         node = functions.get(function)
-        assert node is not None, f"generate.py has no {function}()"
+        assert node is not None, f"generate_tk.py has no {function}()"
         # Slice the source by the node's real line span, not by searching for "def ".
         body = "\n".join(source.splitlines()[node.lineno - 1:node.end_lineno])
         assert "run_config." in body, (
@@ -862,7 +864,7 @@ def test_generate_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-VERSION = "14.3.0"
+VERSION = "15.0.0"
 
 
 def test_the_version_is_13_1_1_everywhere_it_is_declared():
@@ -875,9 +877,9 @@ def test_the_version_is_13_1_1_everywhere_it_is_declared():
     import control
     assert control.GENERATOR_VERSION == VERSION, control.GENERATOR_VERSION
 
-    generate_source = (ROOT / "generate.py").read_text(encoding="utf-8")
+    generate_source = (ROOT / "generate_tk.py").read_text(encoding="utf-8")
     assert f'text="v{VERSION}"' in generate_source, (
-        f"generate.py version label is not v{VERSION}")
+        f"generate_tk.py version label is not v{VERSION}")
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     titles = [line for line in readme.splitlines()
@@ -937,6 +939,77 @@ def _set_parallel(base, relative, threads_per_api):
     with open(path, "w", encoding="utf-8") as handle:
         yaml.safe_dump(data, handle, sort_keys=False)
     return data
+
+
+# ---------------------------------------------------------------------------
+# --gui is the web app
+# ---------------------------------------------------------------------------
+
+def test_gui_launches_the_web_app_not_tk():
+    """``--gui`` must reach the web app, and ``--tk`` must be the Tk escape hatch.
+
+    Checked statically: ``generate_tk.py`` builds Tk at import, so neither path can be
+    executed here. The three properties that matter are that ``_launch_gui`` imports
+    ``webapp.__main__`` and not ``generate``, that it translates ``--config`` and
+    ``--socket`` into an argv list, and that ``--tk`` still reaches the window.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "cli.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+
+    gui = functions["_launch_gui"]
+    gui_imports = set()
+    for node in ast.walk(gui):
+        if isinstance(node, ast.Import):
+            gui_imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            gui_imports.add(node.module or "")
+    assert "webapp.__main__" in gui_imports, (
+        "--gui does not import the web app, so it still opens Tk: " + repr(gui_imports))
+    assert "generate_tk" not in gui_imports, (
+        "--gui still imports generate_tk.py, which builds the Tk window")
+
+    # The two globals that matter are translated into an argv list, because
+    # webapp.__main__.main() parses a list rather than this namespace.
+    gui_source = ast.get_source_segment(
+        (ROOT / "cli.py").read_text(encoding="utf-8"), gui) or ""
+    assert "--config" in gui_source, "the web launcher drops --config"
+    assert "--socket" in gui_source, "the web launcher drops --socket"
+
+    tk = functions["_launch_tk"]
+    tk_imports = set()
+    for node in ast.walk(tk):
+        if isinstance(node, ast.Import):
+            tk_imports.update(alias.name for alias in node.names)
+    assert "generate_tk" in tk_imports, (
+        "--tk is the escape hatch and must still reach the Tk window")
+
+
+def test_the_launch_verb_accepts_both_gui_and_tk():
+    """``--gui`` keeps its name (docs/cli.md, scripts) and ``--tk`` is added."""
+    source = (ROOT / "cli.py").read_text(encoding="utf-8")
+    assert 'launch.add_argument("--gui"' in source, "--gui was renamed"
+    assert 'launch.add_argument("--tk"' in source, "--tk was not added"
+
+
+def test_a_missing_web_dependency_is_a_message_not_a_traceback():
+    """``fastapi`` is in requirements-web.txt, not requirements.txt.
+
+    So ``--gui`` on a Tk-only install must print a message and exit 1, rather than
+    raise ImportError out of a command whose whole job is to be helpful.
+    """
+    import ast
+
+    source = (ROOT / "cli.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui = next(node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "_launch_gui")
+    body = ast.get_source_segment(source, gui) or ""
+    assert "except ImportError" in body, (
+        "a missing fastapi would escape as a traceback instead of a message")
+    assert "EXIT_FAILURE" in body, "the failure must carry an exit code"
 
 
 def main():

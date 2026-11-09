@@ -14,9 +14,13 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
-**Read this when:** you are changing any colour, font, spacing value, tab name, emoji icon, empty state or widget style. Every one of them lives in `ui_theme.py`.
+**Read this when:** you are changing any colour, font, spacing value, tab name, emoji icon, empty state or widget style **in the deprecated Tk window**. Every one of them lives in `ui_theme.py`.
 
-**Related:** [`docs/agents/generate-ui.md`](generate-ui.md) (the window these tokens dress), [`docs/agents/review-tab.md`](review-tab.md) (the Review tab's count badge)
+> **The web UI's tokens are `webapp/theme.py` (v15.0.0).** Same rule, new home: no raw
+> `#rrggbb` outside it, and the contrast table is asserted by `tests/test_web_theme.py`. Read
+> [`docs/agents/webapp.md`](webapp.md) for anything in the web front end.
+
+**Related:** [`docs/agents/generate-ui.md`](generate-ui.md) (the window these tokens dress), [`docs/agents/review-tab.md`](review-tab.md) (the Review tab's count badge), [`docs/agents/webapp.md`](webapp.md) (the web equivalent)
 
 ## Contents
 
@@ -51,7 +55,7 @@ name is the bug this replaced.
 `font.metrics('linespace') + slack`. ttk leaves `rowheight` empty on every theme, so a `Treeview` with no
 explicit style is a flat 20px for a 10pt font whose linespace is 17px — that clips ascenders and descenders.
 
-### The style builders (all in `ui_theme.py`, all called once from `generate.py`)
+### The style builders (all in `ui_theme.py`, all called once from `generate_tk.py`)
 
 | Builder | Configures | Notes |
 |---------|-----------|-------|
@@ -87,7 +91,7 @@ that counts `get_children()` to decide "is this table empty" would now count the
 | Task | Files to edit |
 |------|---------------|
 | Change a colour, font, spacing value or tab name | `ui_theme.py` only. Never write a raw `#rrggbb`, a bare font family or a tab-name string anywhere else |
-| Restyle a widget class | `ui_theme.py` — add or extend a `configure_*_styles()` builder, then call it from `generate.py` beside the other four |
+| Restyle a widget class | `ui_theme.py` — add or extend a `configure_*_styles()` builder, then call it from `generate_tk.py` beside the other four |
 | Add an emoji as an icon | `ui_theme.EMOJI_FALLBACKS` (both the VS16 and bare form) + wrap the caption in `icon_text()` / `icon()` |
 | Add or change a tab count badge | `ui_theme.tab_badge()` / `tab_base_name()` — see [`review-tab.md`](review-tab.md) |
 | Fix a cramped / clipped Treeview table | give the table its own style with an explicit `font` + `rowheight` from `font.metrics('linespace')`, and size columns from the heading text. Regex Watch does this via `REGEX_TREE_STYLE`, `_configure_regex_tree_style()`, `_configure_regex_tree_columns()`; guarded by `tests/test_regex_watch_tab_ui.py` |

@@ -12,11 +12,26 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 # 🎮 Usage
 
+## Starting the application
+
+The GUI is a **web application**. Start it and open the URL:
+
+```bash
+python -m webapp            # then open http://127.0.0.1:8765
+```
+
+The first start prints a one-time setup token to the console; paste it at `/setup` and choose a
+password. See [Web Front End](webapp.md) for the flags, the login, nginx and the screens.
+
+`cli launch --gui` starts the same web app. The old Tk window is still reachable for one
+deprecation release via `cli launch --tk` or `python generate_tk.py`, but the web app is the
+supported GUI.
+
 ## Starting a Generation Run
 
 1. Place source `.txt` files in the `input/` directory (or create `input/questions.txt` for predefined questions). Opening mode also runs with no input files. It refuses to start with the questions file or duplication mode on.
-2. Configure APIs and settings via **Edit Config**
-3. Click **Start Generation**
+2. Configure APIs and settings on the **Config** screen
+3. Click **Start Generation** in the Overview action bar
 4. If a previous state file exists, you'll be prompted to resume or start fresh
 
 ## Resuming & Crash Recovery
@@ -53,47 +68,59 @@ The state file tracks:
 
 ## Dashboard & Monitoring
 
-The four main controls (**Start Generation**, **Pause**, **Stop & Clear Job**, and
-**Edit Config**) sit in the header, next to the version label — **Start Generation**
-is the only filled, accent-coloured button, so the primary action is obvious at a
-glance. Monitoring details scroll inside the **Overview** tab, so additional API
-progress bars do not push the working area off the window. On narrow windows, a
-**View** selector replaces the tab strip; it includes every dashboard or
-configuration view, and `Ctrl+Tab` / the arrow keys still move between tabs.
+The run controls (**Start Generation**, **Pause**, **Stop & Clear**) sit in the Overview
+action bar — **Start Generation** is the only filled, accent-coloured button, so the primary
+action is obvious at a glance. The **Config** screen is a tab, not a modal.
+
+**Every screen fits 1440x900 and 900x600 with no page scroll.** The tabs are
+keyboard-operable (arrow keys, Home, End), the selected tab survives a reload, and a
+dropped connection says `reconnecting…` and re-primes itself from the server, so a long run
+that outlives the browser tab is never lost.
 
 The real-time dashboard provides:
 
-- **Overview tab** — Run controls and progress bars first, then the metric cards, then the aggregate issue panels and the time-series graph of issues over the last 60 minutes (10-minute bins). The database/cache status, API response times and **Tools** section (export, recovery, database maintenance, Clear Dashboard, Debug Logs, Pause UI Updates, Quit Application) are folded into one collapsed **Diagnostics** section, because they are only interesting when something looks wrong
-- **APIs tab** — Per-slot statistics and recent issues for each generation slot, behind a slot selector
-- **Quality tab** — Quality scoring summary, dimension averages, and a table of the latest 50 scored conversations
-- **Review tab** — Flagged conversations (below threshold) with filter, export, dismiss, and detail view
-- **Prompts tab** — Real-time view of prompts being sent to APIs with rich formatting
-- **Queue tab** — Live view of pending, completed, and failed tasks with management actions
+- **Overview** — Six metric cards in one row with the rest behind a **more metrics**
+disclosure, one progress row per slot, the aggregate issue panels, and the time-series graph
+of issues over the last 60 minutes (10-minute bins). The database/cache status and API response
+times are folded into one collapsed **Diagnostics** section, because they are only interesting
+when something looks wrong
+- **Review** — Flagged conversations on the left, the conversation detail on the right, with a
+score footer (Coherence / Character / Prose / Overall) colour-coded by threshold, plus export,
+drop and dismiss. Selecting a row never navigates away
+- **APIs** — Per-slot statistics and recent issues for each generation slot, behind a slot selector
+- **Quality** — Quality scoring summary, dimension averages, and a table of the latest 50 scored conversations
+- **Regex Watch** — The patterns and their hits
+- **Metrics** — The per-slot vLLM table and its graphs
+- **Prompts** — Real-time view of prompts being sent to APIs with rich formatting
+- **Queue** — Live view of pending and failed tasks with purge, retry and export
+- **Config** — The config editor, covering the whole config tree
+- **Datasets** — Dataset sources, aliases and column visibility
+- **Profiles** — Save and load a copy of the whole config
 
 Every table says something when it is empty rather than showing a blank box, and every
-button shows a hover and keyboard-focus state. If no colour-emoji font is installed, the
-emoji icons are replaced by plain ASCII markers (`[>] Start Generation`) instead of
-rendering as empty boxes.
+button shows a hover and keyboard-focus state. The web UI draws **no emoji at all**, so there
+is no font to be missing.
 - **Overview metrics** — Refusal rate, user speaking rate, slop rate, error rate, token count, estimated cost
 - **Quality metrics** — Average composite score (color-coded), below-threshold count, top flag
 - **Budget indicator** — Current spend vs. budget limit with color-coded status (turns red when exceeded)
 - **Rate limit status** — Current usage vs. limit per API slot with color-coded indicators (green/orange/red based on usage percentage)
 - **API response times** — Average, min, max response times and sample count per slot
 - **Thread status** — Shows spawned and active thread counts
-- **Search** — Search across all issue panels in a tab with case-insensitive matching and auto-scroll to first result
-- **Copy All** — Copy all issue text from a tab to clipboard
-- **Clear Dashboard** button — Resets all recent issue lists and graph data
+- **Search** — The Prompts screen has a search box; the Datasets column picker has its own
+filter, which is the difference between a list and a scroll on a wide source. The browser's
+`Ctrl+F` covers the rest of the page, so the Tk per-panel search bar and **Copy All** were
+dropped rather than reimplemented
 
 ## Quality Dashboard & Review
 
-The **Quality** and **🔍 Review** tabs provide post-generation quality analysis:
+The **Quality** and **Review** screens provide post-generation quality analysis:
 
-**Quality Tab:**
+**Quality screen:**
 - **Quality Summary panel** — Average score per dimension with visual bar indicators
 - **Recent Scores table** — Latest 50 scored conversations showing Task ID, composite score, per-dimension scores (Coherence, Naturalness, Engagement, Diversity, Consistency, Technical), flags, and scoring method
 - **Metrics bar indicators** — Average composite score with color coding (green ≥ 80, amber ≥ 60, red < 60), count of conversations below threshold, and most frequent flag
 
-**🔍 Review Tab:**
+**Review screen:**
 - **Flagged Conversations table** — All conversations below the minimum score threshold, showing Task ID, score, lowest-scoring dimension, flags, source file, and timestamp
 - **Color coding** — Critical (red) for scores below 40, warning (amber) for scores 40–threshold
 - **Filter** — Type a search term to filter flagged items by task ID
@@ -104,13 +131,13 @@ The **Quality** and **🔍 Review** tabs provide post-generation quality analysi
 - **🗑 Drop Selected** — Permanently removes the **one** selected conversation from the dataset: its output row, its per-API duplication rows and its database row. This is the action for a flagged conversation that is simply bad data and should not be trained on. It asks for confirmation first, refuses to act on an empty selection (it never falls back to the whole set), and leaves every other conversation — including one whose task id happens to be a prefix of the dropped one — untouched. If the conversation has no output row yet (it may never have been written) the flag is cleared and nothing is deleted. Export first if you want a copy
 - **✅ Dismiss All** — Clears all review flags after manual handling (does not delete output data)
 - **🔄 Refresh** — Manually refreshes the flagged items list
-- **Tab badge** — The Review tab label shows a count of currently flagged items (e.g., "Review (7)"); the count line also reports how many conversations the quality judge dropped and, separately, how many you dropped yourself. The badge is a label decoration only — the table below it always lists the same items, and the count survives a resume along with the flags themselves
+- **Count line** — Reports how many conversations are currently flagged, how many the quality judge dropped and, separately, how many you dropped yourself. The count survives a resume along with the flags themselves
 
 > **Dropped conversations never appear here.** A conversation the judge rejected (invalid JSON, a `logic` score of 0, or every retry failed) is not written to the dataset, so there is nothing to review — the log records the reason.
 
 ## Queue Management
 
-The **📦 Queue** tab in the dashboard provides real-time visibility and control over task processing:
+The **Queue** screen provides real-time visibility and control over task processing:
 
 - **Pending panel** — Tasks currently in the queue waiting to be processed
 - **Completed panel** — Tasks that have been successfully processed
@@ -142,7 +169,7 @@ When a milestone (25%, 50%, 75%, 90%, 100%) is crossed, the progress bar briefly
 
 ## Live Prompt Preview
 
-A dedicated **🔍 Prompt Viewer** tab in the dashboard shows the exact messages being sent to the API in real-time, with rich formatting and utility controls:
+The **Prompts** screen shows the exact messages being sent to the API in real-time, with rich formatting and utility controls:
 
 **Display Features:**
 - **Role-based color coding** — System (purple), User (blue), Assistant (green) with bold role headers

@@ -865,7 +865,7 @@ def _calls(node, name):
 
 
 def test_generate_wiring():
-    with open(os.path.join(REPO, "generate.py"), encoding="utf-8") as f:
+    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as f:
         generate_tree = ast.parse(f.read())
     with open(os.path.join(REPO, "generation.py"), encoding="utf-8") as f:
         generation_tree = ast.parse(f.read())

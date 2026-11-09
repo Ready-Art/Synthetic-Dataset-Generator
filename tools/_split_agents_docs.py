@@ -34,7 +34,7 @@ TOPICS = [
      'you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, '
      '`logging_config.py`, `text_utils.py`, `ui_layout.py` or `style_metrics.py`.',
      ['generation.md', 'quality.md']),
-    ('generate-ui.md', 'Main window (`generate.py`)',
+    ('generate-ui.md', 'Main window (`generate_tk.py`)',
      'you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, '
      'table styles, the Review tab or the Regex Watch tab.',
      ['generation.md', 'dashboard.md', 'config-editor.md']),
@@ -75,7 +75,7 @@ MODULE_MAP = {
     'text_utils.py': 'core-modules.md',
     'ui_layout.py': 'core-modules.md',
     'style_metrics.py': 'core-modules.md',
-    'generate.py': 'generate-ui.md',
+    'generate_tk.py': 'generate-ui.md',
     'config_editor.py': 'config-editor.md',
     'dashboard.py': 'dashboard.md',
     'generation.py': 'generation.md',
@@ -364,7 +364,7 @@ def fix_pointers(lines):
     text = '\n'.join(lines)
     text = text.replace('File Reference below names one',
                         'topic file for that module names one')
-    text = text.replace('(see\n  `generate.py` below)', '(see `docs/agents/generate-ui.md`)')
+    text = text.replace('(see\n  `generate_tk.py` below)', '(see `docs/agents/generate-ui.md`)')
     text = text.replace('(see Tools)', '(see `docs/agents/tools-and-docs.md`)')
     return text.split('\n')
 

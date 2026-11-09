@@ -42,7 +42,7 @@ The generator was then relicensed to the AGPLv3 and has remained there. Since th
 relicense it has grown from a single script into a multi-module application — the
 worker engine, detection layer, quality scoring, dashboard, dataset bindings, config
 editor and GUI were all written or rewritten after the relicense. Whole files were
-split out of `generate.py` into `app_state.py`, `generation.py`, `dashboard.py` and
+split out of `generate_tk.py` into `app_state.py`, `generation.py`, `dashboard.py` and
 the `dataset_*.py` modules; the parts that were not split out were edited heavily in
 place.
 

@@ -25,7 +25,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **Every request fails with HTTP 400/422** (e.g. `top_k sampling is not supported`) | The endpoint rejects a sampler param the payload sends. Set that slot's **API Compatibility** profile (API tab) to a matching provider, or click **Detect**. See [API Compatibility Profiles](configuration.md#api-compatibility-profiles). |
 | **API slot circuit opens frequently** | Check the API endpoint health; circuit opens after 5 consecutive failures and auto-recovers with exponential backoff (60s–600s) |
 | **Malformed responses** | Adjust `max_newlines_malformed` and `max_text_length_malformed` in generation settings |
-| **Threads stuck/frozen** | Use **Stop & Clear Job** to reset; check rate limits aren't causing excessive waits |
+| **Threads stuck/frozen** | Use **Stop & Clear** on the Overview action bar to reset; check rate limits aren't causing excessive waits |
 | **Database connection failed** | Verify PostgreSQL is running and credentials are correct; check that the database exists |
 | **Valkey connection failed** | Click **Test Valkey** to diagnose; caching will be disabled automatically if unavailable |
 | **Open file limit warning** | Reduce number of threads or increase system ulimit (`ulimit -n`) |
@@ -34,9 +34,13 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **Budget exceeded unexpectedly** | Review `cost_per_1k_tokens` setting; ensure it matches your API provider's pricing |
 | **API connection test fails** | Verify URL format (must include scheme like `https://`), model name, and API key |
 | **Resume incompatibility warning** | Critical settings changed since last run; choose to start fresh or proceed with caution |
-| **Need to force resume** | Click **🔄 Force Recovery** to bypass config checks and reload state |
-| **Want to clear all data** | Use **Stop & Clear Job** to reset progress, or **Clear Database** for PostgreSQL data |
-| **Debug logs too verbose** | Uncheck **🐛 Debug Logs** checkbox in **Overview → Tools** to disable verbose logging |
+| **Need to force resume** | Use **Force Recovery** (`cli launch --force-recovery`) to bypass config checks and reload state |
+| **Want to clear all data** | Use **Clear dataset** on the Overview action bar to delete the stored conversations (a backup zip is taken first, and it does not stop a run), or **Stop & Clear** to stop the run as well. `cli clear --yes` does the same from a shell |
+| **Downloaded dataset is empty or has fewer rows than expected** | **Download dataset** consolidates the per-API files, so a row count lower than the Overview's total means a file is still being written. Stop the run first, then download. If the count is still low, check `output/log.txt` for a `drop_reason` |
+| **Download dataset does nothing** | It is a GET that streams an attachment, so a browser that blocks downloads silently drops it. Check the browser's download settings, then retry; the row count is also sent as the `X-Row-Count` header |
+| **Clear dataset refused** | It needs `confirm: true` in the request body, so a stale tab cannot wipe a dataset. Reload the page and confirm again |
+| **A cleared dataset cannot be recovered** | **Clear dataset** takes a backup zip first, listed by `GET /api/dataset/backups` (newest first). Unzip it into `output/` to restore. Only `backup: false` skips it |
+| **Debug logs too verbose** | Uncheck **Debug logs** in the Overview screen's Diagnostics section to disable verbose logging |
 | **Tasks being lost during outages** | Normal behavior — tasks are requeued up to 50 times when an API host is down; if issue persists, check circuit breaker logs |
 | **Logit bias not working** | Ensure `logit_bias` is valid JSON (e.g., `{"15": 100}`); check debug logs for JSON parse errors |
 | **Reasoning models outputting thinking blocks** | Set `enable_thinking` to `"disable"` in samplers config to add `chat_template_kwargs` to API payload. This applies to the question/answer/continuation/opening-mode requests and is the fallback for the fixers and the judge |
@@ -49,7 +53,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
 | **Anti-slop not triggering** | Verify `detection.anti_slop.enabled: true` (it ships `false` since v12.7.6), that `anti_slop.phrases` is populated, and that API Slot 6 is configured — or skip the fixer entirely and use the fork's [dev branch](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) (see [Slop & Anti-Slop](slop-and-antislop.md)) |
 | **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
-| **Progress bars not animating** | Ensure ttkbootstrap is installed; progress bars use color-coded styles that change with completion percentage |
+| **Progress rows not moving** | Each slot has its own row, so a stuck row means that slot is not being fed. Check its rate limit and circuit state; the deprecated Tk window needs `ttkbootstrap` installed, the web UI does not |
 | **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
 | **Inner persona never shows up** | The persona is intentionally withheld until `persona_breakthrough_turn` (default 2), so on a 1-turn conversation you will only ever see the outward profile. Bump `generation.num_turns` above the breakthrough slot, or set `persona_breakthrough_turn: 1`, to expose the persona sooner |
 | **Persona or emotional state missing from the system prompt in the Prompt Viewer** | With the default `depth0` placement they are not in the system prompt: they are at the end of the last USER message of each Answer (and Greeting) request. Question and User Continuation requests never carry them, and the persona appears only from `persona_breakthrough_turn`. Set `persona_breakthrough_placement` or `emotional_states.placement` to `system` to send them in the system prompt, at the cost of prefix-cache reuse |
@@ -59,102 +63,42 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **Slop fixer breaking quotes** | This is expected behavior — the fixer checks for unbalanced quotes after each rewrite and skips replacements that would break quote structure |
 | **Characters with empty names** | Characters with empty or whitespace-only names are automatically skipped with a warning; ensure all character entries have valid names |
 | **Character ages out of range** | The editor validates ages to be between 18 and 60; invalid ages are auto-corrected at runtime |
-| **Tasks stuck in Failed state** | Use **🔄 Retry Failed** in the Queue tab to re-queue them, or **🗑️ Purge Queue** to discard pending tasks |
-| **Queue tab not updating** | Click **🔄 Refresh View** in the Queue tab; the view auto-updates during active processing |
-| **Quality scoring not running** | Verify `quality.enabled: true` in config; check that the Quality tab in the dashboard shows scores |
+| **Tasks stuck in Failed state** | Use **Retry failed** in the Queue screen to re-queue them, or **Purge pending** to discard pending tasks |
+| **Queue screen not updating** | Click **Refresh** in the Queue screen; the view auto-updates during active processing |
+| **Quality scoring not running** | Verify `quality.enabled: true` in config; check that the Quality screen shows scores |
 | **`Scene continuity violation ... fixes exhausted` on almost every reply** | Before v14.3, a character scheduled to arrive on reply N was still `absent` when reply N's cast note was built (the state only flips after the reply comes back), so `_cast_names_for_slot()` put it in the **blocked** list *and* the **expected** list on the same reply. The note said `Dani ARRIVES in this reply` and the check then flagged the model for writing exactly that, so every arrival reply was regenerated to exhaustion. Upgrade to v14.3+, or set `detection.scene_continuity.enabled: false` to stop the check entirely. If it still happens on v14.3+, check `output/log.txt` for the character named in the finding — a name that is genuinely blocked is a real violation |
 | **A conversation vanished from the dataset with `scene_continuity` as its drop reason** | This is v14.3 behaviour and it is deliberate. A scene-continuity violation that survived `detection.scene_continuity.max_rounds` rewrites is the one check that does **not** keep its best-effort text: the reply has a character who has left the scene still speaking or acting, so writing it would put a row in the dataset that argues with itself. A style miss (slop, a repeated opener) is kept; a cast contradiction is dropped. To keep such rows anyway, set `detection.scene_continuity.enabled: false` (the check then never fires) or raise `max_rounds` so the fix rounds get more chances. The drop is recorded in `quality_dropped` and the task is still credited for progress |
 | **A character is flagged for acting when someone else did it** | Before v14.3, `find_character_actions()` charged the next action verb in the sentence to a name that was the **object of a preposition** — `She looks at Dani and smiles` flagged Dani. Upgrade to v14.3+ |
 | **Every reply is dropped when quality scoring is on** | Before v12.3, enabling `quality.cast_continuity` made `score_conversation()` raise `KeyError: 'cast_continuity'` while weighting the composite; the worker's error handler turned that into a `judge_failed` drop for **every** row, and the log said the judge had failed even though the judge was never called successfully. Upgrade to v12.3+ (see the changelog). If it still happens on v12.3+, check `output/log.txt` for the real `drop_reason` — `judge_failed` means the judge endpoint itself is unreachable, `invalid_json` means its replies are unparsable |
 | **Quality LLM scoring failing** | Check `quality.scoring_api` URL/model/key are correct; the system falls back to heuristic estimates and logs a warning |
-| **Too many conversations flagged for review** | Increase `quality.min_score_threshold` or improve prompt quality; use the Review tab to inspect flagged items |
+| **Too many conversations flagged for review** | Increase `quality.min_score_threshold` or improve prompt quality; use the Review screen to inspect flagged items |
 | **Quality scores seem too low** | Heuristic-only scoring (no LLM) gives conservative estimates for coherence/naturalness/engagement; enable `use_llm_scoring` for more accurate scores |
-| **Review tab empty but scores exist** | The Review tab only shows conversations below `min_score_threshold`; check the Quality tab for all scores |
+| **Review screen empty but scores exist** | The Review screen only shows conversations below `min_score_threshold`; check the Quality screen for all scores |
 | **Quality scoring slow** | LLM scoring adds an API call per conversation; disable `use_llm_scoring` for heuristic-only (instant) scoring, or use a fast/cheap model for the scoring API |
 | **A fine-tuned Gemma 4 stopped thinking** | This is an axolotl/template problem, not a generator problem — see [Gemma 4 Chat Template Fix for axolotl](#gemma-4-chat-template-fix-for-axolotl-outside-this-project). Gemma's template writes the empty thought block only for the reply being generated, so axolotl trains every reply without it |
 
-## GUI Layout Testing
+## The web front end
 
-The `tools/check_gui_layout.py` utility tests the GUI layout on various display sizes to ensure compatibility with smaller screens:
+| Issue | Solution |
+|-------|----------|
+| **`python -m webapp` will not start** | It needs `requirements-web.txt` as well as `requirements.txt`. `python-multipart` is a hard dependency: the login and setup routes read the password form with `await request.form()`, and FastAPI raises at request time without it. Install both files, then retry |
+| **I lost the first-run setup token** | It is printed to the console **once**, never over HTTP. Stop the process and start it again with no `webapp/state/auth.json` present, and a fresh token is printed. Delete that file to re-open setup deliberately |
+| **Locked out after failed logins** | Five failed attempts lock that address for five minutes, in memory. Restarting the process clears the lockout; there is no unlock command, and the lockout is per-IP so a different address is unaffected |
+| **The session expires every 12 hours** | Expected: the cookie has a 12-hour TTL. Log in again. The cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` only when the request actually arrived over HTTPS |
+| **Login loops forever behind nginx** | The cookie is marked `Secure` from `X-Forwarded-Proto`, so a proxy that does not set it over HTTPS produces a cookie the browser refuses to store. Set the header in nginx, and pass `--trust-proxy` so the header is believed |
+| **A non-loopback bind refuses to start** | Deliberate: binding off loopback without `--trust-proxy` is refused, because the forwarded header would be spoofable and every client would share one rate-limit bucket. Add `--trust-proxy` once the proxy really sets the header |
+| **A screen needs a scrollbar at 1440x900** | The layout is wrong, not the screen. Every screen must fit 1440x900 and 900x600 with no page scroll, and `tests/test_web_overview.py` asserts it |
+| **The page says `reconnecting…` and stops updating** | The stats socket dropped (a server restart, a proxy that buffers the upgrade, a laptop waking). The page falls back to polling `/api/stats` and retries with a backoff, so it recovers on its own; a reload re-primes it from the server |
+| **A tab shows a stale list after a run** | Each screen re-fetches on mount and on **Refresh**, so leaving and returning to a screen re-fetches. Nothing is cached in the page: the state lives on the server, because a run outlives the tab |
+| **A config save is rejected and nothing is written** | The validators run server-side **before** the write, so a rejected save changes nothing. The error names every bad field at once; fix them all and save again |
+| **A config save dropped my comments** | It should not: the writer splices only the changed spans, so an unchanged save is byte-identical. If comments vanish, the save went through `yaml.dump` somewhere else — use the Config screen, not a hand edit, and check `git diff` |
+| **An `/api/*` call returns 401 in a script** | Every route except `/login`, `/setup`, `/logout` and `/api/health` needs the session cookie. Log in first and send the cookie; there is no API token |
 
-```bash
-# Test with default sizes (900×600 through 1916×1126)
-python tools/check_gui_layout.py --check --config-editor --screenshots
+## GUI Layout Testing (deprecated Tk window)
 
-# Test specific sizes (excluding title bars)
-python tools/check_gui_layout.py --check --config-editor --size 760x520 --size 1366x700
-
-# Test with maximum character count (100 profiles)
-python tools/check_gui_layout.py --check --config-editor --character-count 100 --screenshots
-
-# Custom output directory
-python tools/check_gui_layout.py --check --config-editor --output /path/to/results
-```
-
-**Features:**
-- Tests primary controls, dashboard space, view selection, and scrolling
-- Exercises the configuration editor's page navigation, resizing, editing, adding, removing, and searching
-- Validates prompt text box behavior (mouse clicks, keyboard navigation, Ctrl+Tab focus movement)
-- Records actual window sizes, fonts, Tk scaling, and dependency versions
-- Generates screenshots and a detailed report in `layout-check/` (or custom `--output` path)
-- Exits with nonzero code if any assertion fails (when `--check` is used)
-
-**Notes:**
-- Window minima are DPI-aware and limited to available screen area
-- Use `--scale` to change Tk's pixels-per-point setting for diagnostics
-- On Linux, run under `xvfb-run -a` when Xvfb is available for headless testing
-- Application configuration and generation state are not modified
-
-This opens the actual GUI with temporary fixture configuration, exercises idle,
-single-API, and four-API progress layouts, and resizes from 900×600 through
-1024×700, 1366×700, and 1916×1126 before returning to the smallest size. It checks
-primary controls, dashboard space, view selection, scrolling, and the editor's
-Save/Validate footer. The editor fixture includes 10 character profiles and checks
-page navigation, resizing, editing, adding, removing, searching, and reloading.
-Prompt checks exercise mouse clicks and text editing without moving the outer
-form, as well as keyboard navigation to fields outside the visible area.
-It does not start generation or connect to APIs/databases.
-Application configuration and generation state are not saved.
-
-The report and optional screenshots are written to `layout-check/`; use
-`--output PATH` to choose another directory. `--check` exits with a nonzero code
-if an assertion fails. To target particular client sizes (excluding title bars),
-repeat `--size`, for example:
-
-```bash
-python tools/check_gui_layout.py --check --config-editor --size 760x520 --size 1366x700
-```
-
-Clicking a prompt box leaves the outer form in place so the insertion cursor
-stays at the clicked text. Keyboard navigation still brings the destination
-control into view. In a prompt text box, Ctrl+Tab moves focus forward and
-Ctrl+Shift+Tab moves it backward; Tab retains its text-editing behavior.
-
-Character Profiles displays up to three cards per page. Use Previous, Next, or
-the page selector to reach the remaining cards; unsaved edits are retained when
-changing pages, and Save includes every profile. Adding a character opens its
-page. This bounds the height of native drawing surfaces: stacking large numbers
-of full cards in one frame can terminate Tk on Linux/X11 with
-`BadAlloc` or `BadValue` from `X_CreatePixmap`, even when the visible window is
-small. To test the supported maximum collection size:
-
-```bash
-python tools/check_gui_layout.py --check --config-editor --character-count 100 --screenshots
-```
-
-`--character-count` accepts 1–100 and uses synthetic profiles in temporary files;
-it does not load or change your saved characters. The report records the largest
-native widget dimensions on each page as well as checking that every profile is
-reachable and that off-page edits are included when gathering configuration data.
-
-Window minima are DPI-aware and limited to the available screen area. The report
-records actual sizes, fonts, Tk scaling, and dependency versions, so a clamped
-size is not mistaken for a successful test at the requested size. `--scale`
-changes Tk's pixels-per-point setting for diagnostics; it does not emulate
-Windows display scaling. Validate on Windows at the affected display scaling,
-including moving the application between monitors, before claiming native DPI
-coverage. On Linux, the same check can run under `xvfb-run -a` when Xvfb is
-installed.
+The `tools/check_gui_layout.py` utility and its flags are documented in
+[Tk GUI layout testing](tk-layout-testing.md). It does not test the web UI,
+which is checked by `tests/test_web_overview.py` instead.
 
 ## Gemma 4 Chat Template Fix for axolotl (outside this project)
 
@@ -210,6 +154,6 @@ export API_PROFILE_1="openai"   # optional: API compatibility profile for slot 1
 The application supports two levels of logging:
 
 - **Normal** — INFO, WARNING, ERROR, and CRITICAL messages are always logged
-- **Debug** — Verbose DEBUG messages are hidden by default; enable with the **🐛 Debug Logs** checkbox in **Overview → Tools**
+- **Debug** — Verbose DEBUG messages are hidden by default; enable with **Debug logs** in the Overview screen's Diagnostics section
 
 All logs are written to `output/log.txt` regardless of the debug toggle.

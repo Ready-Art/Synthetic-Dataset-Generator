@@ -10,9 +10,9 @@ it is unlikely any of that code survives. Unless you have the original MIT-era c
 compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 -->
 
-# ReadyArt Synthetic Dataset Generator v14.3.0
+# ReadyArt Synthetic Dataset Generator v15.0.0
 
-A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs, driven either by a Tkinter GUI (`python generate.py`) or by a headless CLI (`python -m cli`) that speaks JSON and exit codes over a local control socket. Both front ends run the same engine against the same `config/config.yml` and write the same output.
+A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs. It runs in your browser (`python -m webapp`) or headless from a shell (`python -m cli`). Both front ends drive the same engine against the same `config/config.yml` and write the same output, so a run is identical either way.
 
 The engine orchestrates up to six API slots — four generation slots plus a dedicated Slop Fixer and Anti-Slop Fixer, with an optional seventh for the quality judge — in **duplication mode** (the same conversation generated across several models, for dataset diversity) or **collaborative mode** (one shared queue, for throughput). Each slot carries its own thread count, rate limit and payload compatibility profile, behind a circuit breaker, budget enforcement and Valkey/Redis response caching.
 
@@ -20,7 +20,7 @@ Around that engine sit three layers:
 
 - **Detection & repair** — out-of-character replies and scene-continuity violations are caught and regenerated out of the box; refusal, user-impersonation, non-Latin-script, foreign-word, Regex Watch, slop and anti-slop checks are configurable and ship off or with empty phrase lists. Unbalanced quotes are repaired deterministically, and the slop and anti-slop fixers can rewrite a flagged reply through their own API slots.
 - **A character engine** — multi-character scenes with a generator-owned cast schedule (characters join and leave on a plan the model only narrates), emotional states and multi-turn arcs, persona breakthrough, lore, and a run-wide `{style}` deck dealt without replacement so openings stop repeating across rows.
-- **A hybrid quality scorer** — heuristic measurements plus an optional LLM judge over seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical), with opt-in roleplay, tic-density and cast-continuity dimensions; below-threshold conversations are flagged in a Review tab or dropped from the dataset.
+- **A hybrid quality scorer** — heuristic measurements plus an optional LLM judge over seven core dimensions (coherence, naturalness, engagement, diversity, consistency, logic, technical), with opt-in roleplay, tic-density and cast-continuity dimensions; below-threshold conversations are flagged in the Review screen or dropped from the dataset.
 
 Inputs come from `input/*.txt` or from bound dataset sources (CSV, TSV, JSON, JSONL, Parquet, Hugging Face) mapped to prompt variables. Output is trainer-safe ShareGPT JSONL with a flat provenance-and-quality `metadata` block, optionally mirrored to PostgreSQL. Real-time dashboards cover throughput, cost, issues, quality scores and per-endpoint vLLM metrics, and the run survives a crash through state save/resume.
 
@@ -30,32 +30,37 @@ Inputs come from `input/*.txt` or from bound dataset sources (CSV, TSV, JSON, JS
 
 ## 🚀 Quick Start
 
-1. **Install** — Python 3.11+ and `pip install -r requirements.txt`. Full details in
-   [Requirements & Installation](docs/installation.md).
-2. **Add input** — drop `.txt` files into `input/` (or add `input/questions.txt`). The
-   format is described in [the `input/` folder](docs/input-folder.md).
-3. **Configure** — click **Edit Config**, or edit `config/config.yml`. Start with the API
-   slots in [Configuration](docs/configuration.md).
-4. **Run** — `python generate.py`, then **Start Generation**. Usage, dashboards and crash
-   recovery are in [Usage](docs/usage.md).
-5. **Collect output** — JSONL in `output/`, plus an optional PostgreSQL table. The row
-   format and the metadata block are in [Output Formats](docs/output-formats.md).
+1. **Install** — Python 3.11+ and the dependencies. The web UI needs both requirement files:
+
+   ```bash
+   python -m pip install -r requirements.txt -r requirements-web.txt
+   ```
+
+   Full details in [Requirements & Installation](docs/installation.md).
+2. **Start it** — `python -m webapp`, then open `http://127.0.0.1:8765`. The first start prints a one-time setup token to the console; paste it and choose a password. See [Web Front End](docs/webapp.md).
+3. **Add input** — drop `.txt` files into `input/`. The format is described in [the `input/` folder](docs/input-folder.md).
+4. **Configure** — use the **Config** screen in the browser, or edit `config/config.yml`. Start with the API slots in [Configuration](docs/configuration.md).
+5. **Run** — press **Start Generation**. Usage, dashboards and crash recovery are in [Usage](docs/usage.md).
+6. **Collect output** — **Download dataset** on the Overview action bar streams the whole dataset back as one JSONL file; it also lands in `output/`, plus an optional PostgreSQL table. **Clear dataset** deletes it again (after a confirmation, with a backup zip taken first) so you can start fresh without stopping a run. The row format and the metadata block are in [Output Formats](docs/output-formats.md).
+
+Prefer a terminal? Every step above has a headless equivalent — see [Command Line](docs/cli.md).
 
 ---
 
 ## 📚 Documentation Map
 
-The README used to hold everything. It is now a master index: each topic below lives in its
-own file under [`docs/`](docs/), so you can read only the page you need.
+The README is a master index: each topic below lives in its own file under [`docs/`](docs/), so you can read only the page you need.
 
 ### Getting started
 
 | Page | What it covers |
 |------|----------------|
-| [Features](docs/features.md) | Everything the generator does: generation, quality scoring, detection, character engine, post-processing, metadata, UI |
-| [Requirements & Installation](docs/installation.md) | Python/PostgreSQL/Valkey requirements, dependency list, first run, `input/` setup |
+| [Features](docs/features.md) | Generation, quality scoring, detection, the character engine, post-processing, dataset sources, metadata |
+| [Features — Infrastructure & UI](docs/features-ui.md) | The dashboard, the queue, cost controls, crash recovery, and the web front end's screens |
+| [Requirements & Installation](docs/installation.md) | Python/PostgreSQL/Valkey requirements, both dependency files, first run, `input/` setup |
 | [Configuration](docs/configuration.md) | `config/config.yml`: dataset sources and prompt variables, the 6 API slots and compatibility profiles, generation settings |
 | [Usage](docs/usage.md) | Starting a run, resuming and crash recovery, duplication vs. collaborative mode, dashboards, queue management, prompt preview, connection tests |
+| [Web Front End](docs/webapp.md) | The browser UI: `python -m webapp`, the password login, the eleven screens, the Config editor, nginx vs. local-only, and what to do when it will not start |
 | [Command Line](docs/cli.md) | Headless / CLI control: launch, start, stop, pause, stats (including what is being filtered), save/export, clear, shutdown. JSON output and exit codes for scripts and LLM agents, plus the `control:` config block |
 
 ### Configuration reference
@@ -83,7 +88,8 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 
 | Page | What it covers |
 |------|----------------|
-| [Troubleshooting](docs/troubleshooting.md) | Symptom → fix table, GUI layout testing, the Gemma 4 template helper, environment variables, debug logging |
+| [Troubleshooting](docs/troubleshooting.md) | Symptom → fix table for the engine, the web UI and the dataset, the Gemma 4 template helper, environment variables, debug logging |
+| [Tk GUI layout testing](docs/tk-layout-testing.md) | `tools/check_gui_layout.py` and its flags, for the deprecated Tk window only |
 | [Performance Tips](docs/performance.md) | Throughput, caching, database choice, and cost tuning |
 
 ### Project
@@ -91,7 +97,8 @@ own file under [`docs/`](docs/), so you can read only the page you need.
 | Page | What it covers |
 |------|----------------|
 | [Version History](docs/version-history.md) | Index of the changelogs |
-| [Changelog — v14.x](docs/changelog-v14.md) | Current release notes |
+| [Changelog — v15.x](docs/changelog-v15.md) | Current release notes |
+| [Changelog — v14.x](docs/changelog-v14.md) | v14.x release notes |
 | [Changelog — v13.x](docs/changelog-v13.md) | v13.x release notes |
 | [Changelog — v12.x](docs/changelog-v12.md) | v12.x release notes |
 | [Changelog — v11.x and earlier](docs/changelog-v11.md) | The rest of the history |
@@ -101,6 +108,7 @@ Deeper, task-specific pages also live in `docs/`:
 
 - [`input-folder.md`](docs/input-folder.md) — the accepted format of `input/*.txt`
 - [`dataset-bindings.md`](docs/dataset-bindings.md) — dataset sources and `{{ds:alias}}` variables
+- [`docs/agents/datasets-model.md`](docs/agents/datasets-model.md) — the Datasets subsystem's data model and pure model layer, for anyone changing it
 - [`scene-cast.md`](docs/scene-cast.md) — the Scene Cast design notes
 - [`dataset-comparison.md`](docs/dataset-comparison.md) — what `depth0` vs. `system` placement does to the generated prompts, from a two-dataset comparison (preliminary: promising initial results, needs further testing to be conclusive)
 - [`postgresql.md`](docs/postgresql.md) — the optional database backend
@@ -113,76 +121,57 @@ Deeper, task-specific pages also live in `docs/`:
 
 ## 🏗 At a Glance
 
-Two front ends drive one engine. The window and the terminal are equal
-citizens: `python generate.py` opens the GUI, `python -m cli` drives the same run
-from a shell, and both read the same `config/config.yml` and write the same output.
+Three front ends drive one engine. The browser and the terminal are equal citizens: `python -m webapp` serves the whole application at `http://127.0.0.1:8765`, `python -m cli` drives the same run from a shell, and both read the same `config/config.yml` and write the same output. `python generate_tk.py` still opens the old Tk window for one deprecation release, but it is no longer the supported GUI.
 
 ```
-┌─────────────────────────────┐   ┌─────────────────────────────┐
-│  Tkinter GUI (Main Thread)   │   │  CLI (cli.py)                │
-│  ┌──────────┐ ┌───────────┐  │   │  launch / start / stop       │
-│  │ Controls  │ │ Dashboard │  │   │  stats / save / clear        │
-│  │ & Toasts  │ │ & Config  │  │   │  JSON + exit codes          │
-│  └──────────┘ └───────────┘  │   └──────────────┬──────────────┘
-└──────────────┬──────────────┘                  │
-               │  control.py: Unix socket, one   │
-               │  JSON object per line          │
-               └───────────────┬─────────────────┘
-                               ▼
-                     ┌───────────────────┐
-                     │  run_config.py    │
-                     │  config -> run    │
-                     └─────────┬─────────┘
-                               ▼
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-    ┌──────────┐ ┌──────────┐ ┌──────────┐
-    │ Worker 0 │ │ Worker 1 │ │ Worker N │  (Thread Pool)
-    └────┬─────┘ └────┬─────┘ └────┬─────┘
-         │             │             │
-         ▼             ▼             ▼
-    ┌──────────────────────────────────────┐
-    │           Task Queue (FIFO)          │
-    └──────────────────┬───────────────────┘
-                       │
-         ┌─────────────┼─────────────┐
-         ▼             ▼             ▼
-    ┌─────────┐  ┌─────────┐  ┌──────────┐
-    │ API 1-4 │  │ API 5   │  │  API 6   │
-    │ (Gen)   │  │(SlopFix)│  │(AntiSlop)│
-    └────┬────┘  └────┬────┘  └────┬─────┘
-         │             │             │
-         └─────────────┼─────────────┘
-                       │
-         ┌─────────────┼─────────────┐
-         ▼             ▼             ▼
-    ┌─────────┐  ┌─────────┐  ┌──────────┐
-    │ JSONL   │  │PostgreSQL│  │  Valkey  │
-    │ Files   │  │  (Opt.)  │  │  Cache   │
-    └─────────┘  └─────────┘  └──────────┘
+┌──────────────────────────────────────┐
+│  python -m webapp       (browser)    │
+│  python -m cli          (shell)      │
+│  python generate_tk.py  (deprecated) │
+└──────────────────────────────────────┘
+                    │  control.py: Unix socket,
+                    │  one JSON object per line
+                    ▼
+┌──────────────────────────────────────┐
+│  run_config.py                       │
+│  config → run settings               │
+└──────────────────────────────────────┘
+                    ▼
+┌──────────────────────────────────────┐
+│  Worker 0 … Worker N                 │
+│  (thread pool)                       │
+└──────────────────────────────────────┘
+                    ▼
+┌──────────────────────────────────────┐
+│  Task Queue (FIFO)                   │
+└──────────────────────────────────────┘
+                    ▼
+┌──────────────────────────────────────┐
+│  API 1-4  generation                 │
+│  API 5    Slop Fixer                 │
+│  API 6    Anti-Slop Fixer            │
+│  API 7    quality judge (optional)   │
+└──────────────────────────────────────┘
+                    ▼
+┌──────────────────────────────────────┐
+│  JSONL files                         │
+│  PostgreSQL  (optional)              │
+│  Valkey      (cache)                 │
+└──────────────────────────────────────┘
 ```
 
-The full diagram, the module table and the dependency rule are in
-[Architecture & Modules](docs/architecture.md). See
-[Command Line](docs/cli.md) for the terminal front end.
+The web app owns the `HeadlessController` and serves the control socket, so a second controller is refused rather than racing the first. The full diagram, the module table and the dependency rule are in [Architecture & Modules](docs/architecture.md). See [Command Line](docs/cli.md) for the terminal front end.
 
 ---
 
 ## 🧑‍💻 Contributing
 
-- **Developers / LLM agents:** start at [`AGENTS.md`](AGENTS.md), the short hub. It holds
-  only the rules that apply to every change and a table telling you which topic file in
-  [`docs/agents/`](docs/agents/) to open for the code you are editing.
-- **Tests:** run them from the repository root, e.g. `python -B tests/test_api_profiles.py`,
-  or all of them with `for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done`.
-- **License headers:** `python -B tools/add_license_header.py` writes or refreshes them;
-  `--check` exits non-zero if any file lacks one.
+- **Developers / LLM agents:** start at [`AGENTS.md`](AGENTS.md), the short hub. It holds only the rules that apply to every change and a table telling you which topic file in [`docs/agents/`](docs/agents/) to open for the code you are editing.
+- **Tests:** run them from the repository root, e.g. `python -B tests/test_api_profiles.py`, or all of them with `for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done`.
+- **License headers:** `python -B tools/add_license_header.py` writes or refreshes them; `--check` exits non-zero if any file lacks one.
 
 ---
 
 ## 📜 License
 
-All code in this repository is **AGPLv3**, and has been for some time. See
-[`LICENSE`](LICENSE) for the full text, [`LICENSE-AGPLv3`](LICENSE-AGPLv3) for the project
-notice, and [License & Credits](docs/license-and-credits.md) for the early-MIT provenance, the
-file-header policy, the credits and the third-party code.
+All code in this repository is **AGPLv3**, and has been for some time. See [`LICENSE`](LICENSE) for the full text, [`LICENSE-AGPLv3`](LICENSE-AGPLv3) for the project notice, and [License & Credits](docs/license-and-credits.md) for the early-MIT provenance, the file-header policy, the credits and the third-party code.

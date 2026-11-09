@@ -15,7 +15,7 @@ recent-event ring buffers, locks, run flags, and shared handles (root window, ta
 Import it as a namespace and reference attributes (``import app_state`` / ``app_state.total_input_tokens += 1``)
 so mutations are visible app-wide; do NOT ``from app_state import x`` for the scalars (that copies the
 binding and breaks cross-module updates). This module imports nothing project-local, to stay a leaf in the
-dependency graph (generate.py / generation.py / dashboard.py import it, never the reverse).
+dependency graph (generate_tk.py / generation.py / dashboard.py import it, never the reverse).
 """
 import os
 import threading
@@ -281,12 +281,12 @@ quality_write_failures = set()
 # conversation" rewrite takes the SAME lock as a write and cannot interleave with one
 # (v12.8.2). A per-run Lock local to start_processing() would have been invisible to it.
 output_data_lock = Lock()
-master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate.py at GUI build
-live_prompt_preview_hook = None  # set by generate.py; generation.py calls it for the live preview
+master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate_tk.py at GUI build
+live_prompt_preview_hook = None  # set by generate_tk.py; generation.py calls it for the live preview
 
 # --- dashboard widget handles (step 4) ---
 
-slot_widgets = {}        # per-API response-time labels, keyed by name (was generate.py globals())
+slot_widgets = {}        # per-API response-time labels, keyed by name (was generate_tk.py globals())
 budget_label = None
 cost_label = None
 dashboard_notebook = None
@@ -304,9 +304,9 @@ non_latin_label = None
 # v13.1.0: the 📊 Metrics tab's status line (what was polled, which endpoint is unreachable).
 # The per-slot rows themselves live in the tab's own registry entry.
 metrics_status_label = None
-# ^ dashboard widget handles — assigned in generate.py when the main window is built
+# ^ dashboard widget handles — assigned in generate_tk.py when the main window is built
 
 
-# --- GUI-runtime handles: constructed in generate.py once the main window exists; None until then ---
-root = None              # ttkbs.Window(...) — assigned in generate.py
-db_status_widgets = None # dict of DB/Valkey status widgets — assigned in generate.py after the widgets exist
+# --- GUI-runtime handles: constructed in generate_tk.py once the main window exists; None until then ---
+root = None              # ttkbs.Window(...) — assigned in generate_tk.py
+db_status_widgets = None # dict of DB/Valkey status widgets — assigned in generate_tk.py after the widgets exist

@@ -22,7 +22,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 fix lists are still present, so switching a layer on restores the saved list rather than
 losing it.
 
-**The gate in `generate.py`.** The test reads `generate.py` from disk and asserts the
+**The gate in `generate_tk.py`.** The test reads `generate_tk.py` from disk and asserts the
 `current_slop_phrases` / `current_anti_slop_phrases` assignments are conditional on the
 enabled flags, and that `current_slop_to_anti_slop_fallback` requires **both** layers. It
 does not import the Tk app.

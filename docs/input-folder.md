@@ -13,7 +13,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 # The `input/` folder
 
 The `input/` folder is where the generator looks for its source text. The application creates the
-folder on first run (`generate.py`, `app_state.INPUT_DIR`); it is not in `.gitignore`, so anything you
+folder on first run (`generate_tk.py`, `app_state.INPUT_DIR`); it is not in `.gitignore`, so anything you
 put there is a candidate for being committed. **Only put text there that you have the right to use.**
 
 There are two ways to feed a run, and they are mutually exclusive:
@@ -32,7 +32,7 @@ also runs with an empty folder, and it refuses to start with the questions file 
 
 ### Which files are picked up
 
-`generate.py` builds the file list with
+`generate_tk.py` builds the file list with
 
 ```python
 input_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('.txt') and f != os.path.basename(QUESTIONS_FILE_PATH)]

@@ -80,7 +80,7 @@ TOAST_WARNING = '#ffc107'
 TOAST_INFO = '#17a2b8'
 
 # --- Per-issue highlight colours -----------------------------------------
-# Keyed by the issue key used in generate.py's panel loop.
+# Keyed by the issue key used in generate_tk.py's panel loop.
 ISSUE_REFUSALS = '#ff4d6d'
 ISSUE_USER_SPEAK = '#4dabf7'
 ISSUE_SLOP = '#9775fa'
@@ -667,7 +667,7 @@ def configure_notebook_styles(style, root):
 
 
 # --- Tab names ------------------------------------------------------------
-# The dashboard notebook's tab labels live here, not as literals in generate.py and
+# The dashboard notebook's tab labels live here, not as literals in generate_tk.py and
 # dashboard.py. Five separate hard-coded copies of "🔍 Review" existed before this;
 # importing one constant is what stops a rename from half-breaking.
 TAB_OVERVIEW = 'Overview'

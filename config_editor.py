@@ -10,10 +10,10 @@
 
 """Configuration Editor window for the Synthetic Dataset Generator.
 
-Extracted from generate.py (refactor step 1). The ConfigEditor Toplevel is self-contained (no module
+Extracted from generate_tk.py (refactor step 1). The ConfigEditor Toplevel is self-contained (no module
 globals): its config instance, the two shared main-window tk.BooleanVars it syncs with
 (master_duplication_enabled_var / no_user_impersonation_var), and the post-save dashboard refresh
-(on_config_saved) are injected by the caller (see generate.py: open_config_editor()).
+(on_config_saved) are injected by the caller (see generate_tk.py: open_config_editor()).
 """
 import os
 import json
@@ -47,7 +47,7 @@ SPACING = ui_theme.SPACE_S
 # shipped default; the main Samplers-tab dropdown offers the other three only.
 THINKING_MODE_CHOICES = ("inherit", "default", "enable", "disable")
 assert THINKING_MODE_CHOICES == THINKING_MODES, "Thinking Mode choices must match api_handler.THINKING_MODES"
-QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate.py (UI label only)
+QUESTIONS_FILE_PATH = os.path.join('input', 'questions.txt')  # mirrors generate_tk.py (UI label only)
 
 # ttk.Spinbox needs an explicit field colour on a dark theme. The theme configures the
 # Spinbox text but leaves `fieldbackground` unset, so the field falls back to the platform's
@@ -3429,7 +3429,7 @@ class ConfigEditor(tk.Toplevel):
             self.refusal_phrases_text.delete(1.0, tk.END); self.refusal_phrases_text.insert(tk.END, "\n".join(refusal_conf.get('phrases', [])))
             self.refusal_fixes_text.delete(1.0, tk.END); self.refusal_fixes_text.insert(tk.END, "\n".join(refusal_conf.get('fixes', [])))
 
-            # OOC drift detection loading (default enabled: True, matching generate.py)
+            # OOC drift detection loading (default enabled: True, matching generate_tk.py)
             ooc_conf = detection_conf.get('out_of_character', {})
             self.ooc_enabled_var_editor.set(bool(ooc_conf.get('enabled', True)))
             self.ooc_phrases_text.delete(1.0, tk.END)

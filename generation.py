@@ -10,11 +10,11 @@
 
 """Generation engine for the Synthetic Dataset Generator (refactor step 3b).
 
-The worker loop and all LLM-call/answer-generation logic, extracted from generate.py. Shares runtime
+The worker loop and all LLM-call/answer-generation logic, extracted from generate_tk.py. Shares runtime
 state through app_state (counters, circuit breaker, config, path constants) and calls the existing helper
 modules (api_handler / detection / text_utils / logging_config). The only call back toward the GUI — the
-live prompt preview — is routed through app_state.live_prompt_preview_hook (registered by generate.py),
-so this module never imports generate.py: the dependency is one-way (generate.py imports generation).
+live prompt preview — is routed through app_state.live_prompt_preview_hook (registered by generate_tk.py),
+so this module never imports generate_tk.py: the dependency is one-way (generate_tk.py imports generation).
 """
 import hashlib
 import json
@@ -341,7 +341,7 @@ def first_reply_opener_fix(rejected_openings):
 
 
 def update_live_prompt_preview(messages_list, metadata=None):
-    """Engine-side shim: forward the live prompt preview to the GUI if generate.py registered a hook."""
+    """Engine-side shim: forward the live prompt preview to the GUI if generate_tk.py registered a hook."""
     hook = app_state.live_prompt_preview_hook
     if hook:
         hook(messages_list, metadata)
@@ -2027,7 +2027,7 @@ def worker(thread_id, q, output_data_lock, use_questions_file_local,
                 # bar past its true value. _credit_task_progress is now the only writer.
                 if master_duplication_enabled_local and hasattr(q, 'processed_tasks_lock'):
                     with q.processed_tasks_lock:
-                        # Duplication mode keeps its own per-API counter (see FIX-PLAN §7).
+                        # Duplication mode keeps its own per-API counter.
                         increment_amount = current_num_turns
                         for api_idx_skip, api_conf_skip in enumerate(all_api_configs_local):
                             if api_idx_skip < 4 and api_conf_skip.get('enabled', False): # Only for enabled generation APIs

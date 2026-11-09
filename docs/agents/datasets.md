@@ -85,7 +85,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 **Purpose:** Attach optional dataset values to the generator's existing task identities. One attachment service per existing queue; original task tuples/IDs/retry rules untouched; in-memory only
 **Key:** `configure_queue_datasets()`, `bind_task_datasets()`, `render_task_inputs()`, `validate_task_templates()`, `render_question_task()` (v11.9.0: expands a questions-file task's line, returning `(task_id, file_name, index, line) + task[4:]` so identity/retries/resume are untouched), `DatasetTaskAttachments`
 **Edit for:**
-- Queue wiring → `configure_queue_datasets()` called from `generate.py` at processing start; readers opened lazily by the first worker that needs a binding; `_OwnedReader` closes each reader once at queue lifetime end (an old worker finishing its queue is never cut off by a replacement run)
+- Queue wiring → `configure_queue_datasets()` called from `generate_tk.py` at processing start; readers opened lazily by the first worker that needs a binding; `_OwnedReader` closes each reader once at queue lifetime end (an old worker finishing its queue is never cut off by a replacement run)
 - Task metadata entry → A *reference* to the immutable binding, not a mutable global "current row"
 
 ---
@@ -174,9 +174,24 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ### `docs/input-folder.md` [42]
 **Purpose:** User guide to the `input/` folder: which files chunk mode picks up, encoding/BOM rules, the `sanitize_input()` character strip, the `len > context_size` minimum-size rule, how a chunk is cut (random character offsets, not sentence boundaries), `questions.txt` line format, dataset variables in a questions-file line (v11.9.0: `{{ds:alias}}` placeholders and the single appended alias, and why chunk-mode `.txt` is deliberately not rendered), original worked examples, a pre-flight check snippet and a troubleshooting table
-**Edit for:** Update when the `input/` discovery rule in `generate.py` (`os.listdir` + `.endswith('.txt')` + the `questions.txt` exclusion), `read_book()`/`read_txt()`, `sanitize_input()`, `render_question_line()` / `render_question_task()` or the `prompts.questions_dataset.*` settings, or the `generation.subject_size` / `context_size` / `num_random_chunks` / `sanitize_input_max_length` defaults change
+**Edit for:** Update when the `input/` discovery rule in `generate_tk.py` (`os.listdir` + `.endswith('.txt')` + the `questions.txt` exclusion), `read_book()`/`read_txt()`, `sanitize_input()`, `render_question_line()` / `render_question_task()` or the `prompts.questions_dataset.*` settings, or the `generation.subject_size` / `context_size` / `num_random_chunks` / `sanitize_input_max_length` defaults change
 
 ---
+
+## Deeper reference
+
+The data model and the module-by-module detail are split across three pages, so each
+stays readable on its own:
+
+| Page | Covers |
+|------|--------|
+| [`datasets-model.md`](datasets-model.md) | the names-only data model, `dataset_settings.py` (the pure model layer), `dataset_column_menu.py` |
+| [`datasets-bindings.md`](datasets-bindings.md) | `dataset_templates.py`, `dataset_bindings.py`, `dataset_tasks.py` |
+| [`datasets-panel-reference.md`](datasets-panel-reference.md) | `datasets_panel.py`, the direct answers, the FastAPI surface |
+
+Read the one page that owns the code you are editing. The port has already landed
+in `webapp/datasets_routes.py`, so these are a reference for changing it, not a work
+order.
 
 ## Tasks that touch these files
 
@@ -184,5 +199,5 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 |------|---------------|
 | Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list), `tests/test_dataset_sources.py` (or `tests/test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
 | Modify dataset placeholder rendering | `dataset_templates.py` (`render_template()` / `render_with_native_placeholders()` / `validate_alias()`); worker-side call sites in `generation.py` (`render_task_inputs()`) |
-| Add/modify dataset variables in `input/questions.txt` (v11.9.0) | `dataset_templates.py` (`render_question_line()`, `DEFAULT_QUESTION_SEPARATOR`), `dataset_tasks.py` (`render_question_task()`), `generation.py` (the `use_questions_file_local` branch + `validate_task_templates(task[3], ...)` in the binding block), `generate.py` (read `prompts.questions_dataset.*` at Start + the two worker kwargs), `config/config.yml` (defaults), `config_editor.py` (Prompts tab panel + module-level escape/value helpers + save/load/validate), `docs/input-folder.md`, `tests/test_dataset_templates.py` / `tests/test_dataset_tasks.py` / `tests/test_questions_dataset_ui.py` / `tests/test_dataset_compatibility.py` — keep chunk-mode source `.txt` unrendered (a chunk is cut at a random offset and could split a placeholder) |
+| Add/modify dataset variables in `input/questions.txt` (v11.9.0) | `dataset_templates.py` (`render_question_line()`, `DEFAULT_QUESTION_SEPARATOR`), `dataset_tasks.py` (`render_question_task()`), `generation.py` (the `use_questions_file_local` branch + `validate_task_templates(task[3], ...)` in the binding block), `generate_tk.py` (read `prompts.questions_dataset.*` at Start + the two worker kwargs), `config/config.yml` (defaults), `config_editor.py` (Prompts tab panel + module-level escape/value helpers + save/load/validate), `docs/input-folder.md`, `tests/test_dataset_templates.py` / `tests/test_dataset_tasks.py` / `tests/test_questions_dataset_ui.py` / `tests/test_dataset_compatibility.py` — keep chunk-mode source `.txt` unrendered (a chunk is cut at a random offset and could split a placeholder) |
 | Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |

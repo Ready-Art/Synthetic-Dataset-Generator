@@ -16,7 +16,8 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 readyart-dataset-generator/
 ├── README.md                # Master README: overview + index of the docs/ pages
 ├── AGENTS.md                # Developer docs HUB for LLM agents (setup, tests, boundaries, architecture)
-├── generate.py              # Main application (GUI, orchestration, worker threads)
+├── webapp/                  # v15.0: the web front end (the GUI). app.py, engine.py, theme.py, security/, static/, *_routes.py
+├── generate_tk.py              # DEPRECATED Tk GUI (orchestration, worker threads); one release only
 ├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
 ├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, quotes, non-Latin script)
 ├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal, repeated-word collapse)
@@ -40,7 +41,8 @@ readyart-dataset-generator/
 │   ├── test_persona_arc.py  # Unit tests for the persona-breakthrough + emotional-arc helpers
 │   └── ...                  # Remaining suites: dataset_*, quality_roleplay, random_settings, worker_launch
 ├── docs/                    # User documentation (one page per topic; README.md is the index)
-│   ├── features.md          # Everything the generator does
+│   ├── features.md          # generation, quality, detection, characters
+│   ├── features-ui.md       # dashboard, queue, cost, crash recovery, web screens
 │   ├── architecture.md      # Runtime diagram + module dependency table
 │   ├── installation.md      # Requirements, dependencies, first run
 │   ├── configuration.md     # config.yml reference: datasets, API slots, generation settings
@@ -52,7 +54,8 @@ readyart-dataset-generator/
 │   ├── cli.md               # Headless / CLI control (v13.0): verbs, JSON, exit codes
 │   ├── output-formats.md    # ShareGPT rows + the record metadata block
 │   ├── how-it-works.md      # Pipelines and fix/fallback flows
-│   ├── troubleshooting.md   # Symptom -> fix table, GUI layout testing, env vars, logging
+│   ├── troubleshooting.md   # Symptom -> fix table, env vars, logging
+│   ├── tk-layout-testing.md # check_gui_layout.py flags (deprecated Tk window)
 │   ├── performance.md       # Throughput and cost tuning
 │   ├── key-configuration-details.md  # Injection formats and storage details
 │   ├── version-history.md   # Index of the changelogs
@@ -71,7 +74,7 @@ readyart-dataset-generator/
 │   ├── gemma4-chat-template.md  # Out-of-scope axolotl helper
 │   └── agents/              # Developer docs TOPIC FILES (read the one for your area)
 │       ├── task-index.md    # "how do I add X?" -> files to edit
-│       ├── generate-ui.md   # generate.py (tabs, worker launch, table styles)
+│       ├── generate-ui.md   # generate_tk.py (tabs, worker launch, table styles)
 │       ├── ui-theme.md     # ui_theme.py (colours, fonts, spacing, tab names, emoji, empty states)
 │       ├── review-tab.md   # the Review tab, its count badge and the flagged-id set
 │       ├── cli.md          # cli.py / control.py / run_config.py (headless control)
@@ -85,6 +88,9 @@ readyart-dataset-generator/
 │       ├── config.md        # config/config.yml + api_profiles.yml reference
 │       ├── core-modules.md  # app_state, api_handler, config_loader, state/locks
 │       ├── datasets.md      # dataset_*.py, datasets_panel.py
+│       ├── datasets-model.md # the datasets config subtree + dataset_settings.py
+│       ├── datasets-bindings.md # templates, bindings, task attachment
+│       ├── datasets-panel-reference.md # datasets_panel.py + the FastAPI surface
 │       └── tools-and-docs.md # tools/*.py, user docs
 ├── tools/
 │   ├── check_gui_layout.py  # GUI layout testing utility for small displays

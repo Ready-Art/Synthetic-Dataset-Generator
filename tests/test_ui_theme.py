@@ -11,7 +11,7 @@
 """Headless tests for the design-token module.
 
 ``ui_theme`` must be importable without a display and without creating any Tk
-object, because ``generate.py`` builds its whole window at import time and every
+object, because ``generate_tk.py`` builds its whole window at import time and every
 test that imports it would otherwise pay for a second Tk root.
 """
 import os
@@ -89,7 +89,7 @@ def test_every_emoji_in_the_source_has_a_fallback():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     emoji = re.compile('[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]')
     missing = {}
-    for filename in ('generate.py', 'config_editor.py', 'dashboard.py'):
+    for filename in ('generate_tk.py', 'config_editor.py', 'dashboard.py'):
         path = os.path.join(repo, filename)
         with open(path, encoding='utf-8') as handle:
             source = handle.read()
@@ -133,7 +133,7 @@ def test_icon_text_substitutes_when_emoji_are_missing():
 def test_minimum_window_size_is_one_token():
     """The main window, the Config Editor and the harness must agree on the floor.
 
-    fit_window() was called with the literal (760, 520) in generate.py and
+    fit_window() was called with the literal (760, 520) in generate_tk.py and
     config_editor.py, and tools/check_gui_layout.py asserted against its own copy.
     Raising the app's minimum without raising the harness's bound made the harness
     pass a window it should have failed.
@@ -146,7 +146,7 @@ def test_minimum_window_size_is_one_token():
     assert isinstance(minimum, tuple) and len(minimum) == 2
     assert all(isinstance(value, int) and value > 0 for value in minimum)
 
-    for filename in ('generate.py', 'config_editor.py'):
+    for filename in ('generate_tk.py', 'config_editor.py'):
         path = os.path.join(repo, filename)
         with open(path, encoding='utf-8') as handle:
             source = handle.read()
@@ -165,8 +165,8 @@ def test_minimum_window_size_is_one_token():
 def test_spacing_aliases_are_the_token_not_a_copy():
     """The three SPACING constants must alias SPACE_S, not repeat the number.
 
-    generate.py, dashboard.py and config_editor.py each used to define their own
-    ``SPACING = 8``. Two of them were labelled "mirrors generate.py", which is
+    generate_tk.py, dashboard.py and config_editor.py each used to define their own
+    ``SPACING = 8``. Two of them were labelled "mirrors generate_tk.py", which is
     exactly the kind of comment that stops being true. They are now aliases, so this
     test fails the moment someone writes a literal back in.
     """
@@ -174,7 +174,7 @@ def test_spacing_aliases_are_the_token_not_a_copy():
     import os
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for filename in ('generate.py', 'dashboard.py', 'config_editor.py'):
+    for filename in ('generate_tk.py', 'dashboard.py', 'config_editor.py'):
         path = os.path.join(repo, filename)
         with open(path, encoding='utf-8') as handle:
             tree = ast.parse(handle.read(), filename=path)

@@ -309,7 +309,7 @@ def test_default_style_variants_are_beginning_instructions():
 
 def _worker_kwarg_names():
     """The kwargs start_processing passes to generation.worker(), parsed from the AST."""
-    with open(os.path.join(REPO, "generate.py"), encoding="utf-8") as handle:
+    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as handle:
         tree = ast.parse(handle.read())
 
     def find(node, name):
@@ -527,7 +527,7 @@ def test_app_state_has_the_deck_and_resets_it():
     app_state.styles_pool_key = ("k",)
     # The reset is a line in generate.reset_all_stats_and_history(); assert the attribute
     # names it clears so a rename cannot silently leave the deck populated across runs.
-    with open(os.path.join(REPO, "generate.py"), encoding="utf-8") as handle:
+    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as handle:
         source = handle.read()
     check("reset_all_stats_and_history clears the style deck",
           "app_state.style_deck = []" in source

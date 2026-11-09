@@ -54,7 +54,7 @@ Three things worth knowing before you type a verb:
   row is still written); `filtered` means dropped and never written; `detection_config`
   means which checks are armed. Do not conflate them.
 
-`python generate.py` still opens the ordinary Tk window, and `control.enabled` is `false`
+`python generate_tk.py` still opens the ordinary Tk window, and `control.enabled` is `false`
 by default, so nothing above changes a default GUI run.
 
 If you are editing the control layer rather than using it, the topic file is
@@ -65,10 +65,11 @@ If you are editing the control layer rather than using it, the topic file is
 | [`docs/agents/task-index.md`](docs/agents/task-index.md) | you know WHAT you want to change and need the list of files to edit. |
 | [`docs/agents/config.md`](docs/agents/config.md) | you are changing `config/config.yml`, `config/api_profiles.yml` or the dependency pins. |
 | [`docs/agents/core-modules.md`](docs/agents/core-modules.md) | you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py` or `style_metrics.py`. |
-| [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the main Tk window: tabs, metric cards, issue panels, worker launch, table styles or the Regex Watch tab. |
-| [`docs/agents/ui-theme.md`](docs/agents/ui-theme.md) | you are changing any colour, font, spacing value, tab name, emoji icon, empty state or widget style — **all of which live in `ui_theme.py`**. |
+| [`docs/agents/webapp.md`](docs/agents/webapp.md) | you are touching **the web front end** (`webapp/`): the login, the theme, the config editor, Datasets, Profiles, or `cli launch --gui`. **This is the GUI.** |
+| [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the **deprecated** Tk window: tabs, metric cards, issue panels, worker launch, table styles or the Regex Watch tab. |
+| [`docs/agents/ui-theme.md`](docs/agents/ui-theme.md) | you are changing any colour, font, spacing value, tab name, emoji icon, empty state or widget style **in the deprecated Tk window** — all in `ui_theme.py`. The web equivalent is `webapp/theme.py`. |
 | [`docs/agents/review-tab.md`](docs/agents/review-tab.md) | you are touching the Review tab, its count badge, the flagged-id set, or any code that identifies a tab by its label. |
-| [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the editor, or fixing editor layout/readability. |
+| [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the **deprecated Tk** editor, or fixing its layout. The web editor is `webapp/config_schema.py`. |
 | [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
 | [`docs/agents/vllm-metrics.md`](docs/agents/vllm-metrics.md) | you are touching `vllm_metrics.py`, the 📊 Metrics tab, the per-endpoint vLLM graph, or the per-slot token accounting that feeds it. |
 | [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, prompts, cast/arc helpers, metadata or output writing. |
@@ -76,7 +77,7 @@ If you are editing the control layer rather than using it, the topic file is
 | [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check, or the v12.7.6 slop/anti-slop default-off gate ([`slop-antislop-default-off.md`](docs/agents/slop-antislop-default-off.md)). |
 | [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
 | [`docs/agents/quality-queue.md`](docs/agents/quality-queue.md) | you are touching the scoring queue, the judge's concurrency (`quality.judge_concurrency`), its rate-limit slot (`quality.scoring_api.slot_idx`) or the cost of one judge conversation. |
-| [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. |
+| [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `webapp/datasets_routes.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. Its three deeper pages (`datasets-model.md`, `datasets-bindings.md`, `datasets-panel-reference.md`) hold the module-by-module reference. |
 | [`docs/agents/cli.md`](docs/agents/cli.md) | you are touching `cli.py`, `control.py`, `run_config.py`, the control socket/protocol, the `control:` config block, or the GUI's control-server hook. |
 | [`docs/agents/tools-and-docs.md`](docs/agents/tools-and-docs.md) | you are touching `tools/*.py`, `docs/gemma4-chat-template.md` or `docs/scene-cast.md`. |
 
@@ -91,7 +92,7 @@ All test scripts live in `tests/` (run them from the repository root, e.g. `pyth
 Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_persona_arc.py`,
 `tests/test_dataset_compatibility.py`) or the Datasets panel need Tk; `tests/test_datasets_panel.py` and
 `tests/test_dataset_column_menu.py` also need a display; `tests/test_review_tab_ui.py` and
-`tests/test_regex_watch_tab_ui.py` need a display too (they build the real `generate.py` UI) and skip
+`tests/test_regex_watch_tab_ui.py` need a display too (they build the real `generate_tk.py` UI) and skip
 cleanly without one. `tests/test_quality_judge_settings_ui.py`, `tests/test_missing_quotations_ui.py`
 and `tests/test_user_emotional_states_ui.py` also need a display (they build the real `ConfigEditor`)
 and skip cleanly without one, as does `tests/test_editor_readability_ui.py` (it also needs the
@@ -147,14 +148,14 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
   `git status --porcelain` before you finish.
 - **Ask before changing the wording of a shipped prompt** in `config/config.yml` (`prompts.*`). The prompts are
   short and general on purpose, and every output row depends on them.
-- **New worker options go in the `kwargs=` dict** of the worker launch in `generate.py`, never in `args=` (see `docs/agents/generate-ui.md`).
+- **New worker options go in the `kwargs=` dict** of the worker launch in `generate_tk.py`, never in `args=` (see `docs/agents/generate-ui.md`).
 - **Dataset settings hold names only.** Source selectors, column names and aliases go in `datasets.sources[]`;
   record values and credentials never do, and the Datasets panel never shows cell values (`dataset_settings.py`,
   `datasets_panel.py` docstrings).
 
 ## Core Architecture
 ```
-generate.py (UI entry) → generation.py (worker logic) → api_handler.py (API calls)
+generate_tk.py (Tk UI, deprecated) → generation.py (worker logic) → api_handler.py (API calls)
                     ↓                              ↓
               app_state.py (shared state) ← detection.py (issue checks)
                     ↓
@@ -202,7 +203,7 @@ counter, a lock or a timestamp key.
 - **Keep features opt-in by default** — a default run must stay byte-identical to the
   previous release.
 - **Slop/Anti-Slop are OFF by default (v12.7.6)** — `detection.{slop,anti_slop}.enabled` ship `false`
-  and `generate.py` gates the phrase lists on them. Never make a phrase list its own enable condition (a
+  and `generate_tk.py` gates the phrase lists on them. Never make a phrase list its own enable condition (a
   saved list must survive a toggle). Slop docs point at the fork's **`dev`** branch, never `main`.
 - **All code is AGPLv3 (never MIT/dual); every text/code file carries the SPDX header.** New
   file? `python -B tools/add_license_header.py` (`--check` to verify). The tool owns that
@@ -219,18 +220,18 @@ quick start, documentation map) and holds no reference material of its own. The
 reference pages live in `docs/` — `configuration.md`, `prompts-and-characters.md`,
 `detection-and-quality.md`, `samplers-and-infrastructure.md`, `usage.md`,
 `output-formats.md`, `how-it-works.md`, `troubleshooting.md`, `performance.md`,
-`key-configuration-details.md`, `features.md`, `architecture.md`, `installation.md`,
+`key-configuration-details.md`, `features.md`, `features-ui.md`, `architecture.md`, `installation.md`,
 `file-structure.md`, `license-and-credits.md`, `cleaner-pipeline.md`, `dataset-comparison.md` (the
 `depth0` vs `system` output comparison — **preliminary findings; it needs further testing to be
 conclusive**, so do not cite it as settled or tune defaults to it), plus `version-history.md` over
 `changelog-v12.md` / `changelog-v11.md`. A feature change updates the ONE user page
 that owns it (and the matching `docs/agents/` topic file); a new user-visible feature
-also needs a changelog entry. Keep `README.md` an index: if a page grows past ~25,000
+also needs a changelog entry. Keep `README.md` an index: if a page grows past ~24,000
 characters, split it along its own headings and add the new page to the README map
 and to `docs/file-structure.md`.
 
 Size budget: keep this hub under ~10,000 characters (the mandatory license header is
-not counted) and every topic file under ~18,000. The largest topic files (`config.md`, `generation.md`, `quality.md`,
-`detection.md`) are near that ceiling; if one grows past it, split it along the
-module lines in its `## Contents` list rather than appending more prose. Do not
+not counted) and every topic file under ~24,000. The largest topic files (`config.md`,
+`generation.md`, `quality.md`, `detection.md`) are near that ceiling; if one grows past it, split it
+along the module lines in its `## Contents` list rather than appending more prose. Do not
 re-merge the files — one big document is what this layout exists to avoid.

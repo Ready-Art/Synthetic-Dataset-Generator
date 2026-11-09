@@ -26,7 +26,7 @@ toggle (GUI checkbox in the Configuration Editor). They carry heuristic base sco
 inner persona signal placement) and are refined by the LLM judge when available.
 
 The composite score is a weighted 0-100 value over the active dimensions.
-Reads shared state through app_state; never imports generate.py (one-way dependency).
+Reads shared state through app_state; never imports generate_tk.py (one-way dependency).
 """
 
 import json

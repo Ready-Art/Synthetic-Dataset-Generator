@@ -1,0 +1,95 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+ReadyArt Synthetic Dataset Generator
+Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+
+All code here is AGPLv3, and has been for some time. Very early versions were MIT by
+Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
+it is unlikely any of that code survives. Unless you have the original MIT-era code to
+compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+-->
+
+# 📝 Changelog — v15.x
+
+Newest first. [v14](changelog-v14.md) holds the rest of the history.
+
+### v15.0.0
+- **The web UI can now get the dataset out, and can start fresh.** Two buttons on the Overview action bar: **Download dataset** streams the whole dataset back as one JSONL attachment, and **Clear dataset** deletes the stored conversations. Neither existed before — the Queue tab's Export writes the *queue*, not the dataset, and the only way to clear was `cli clear --yes` or Stop & Clear, which also stops a run. The routes are `GET /api/dataset/download`, `POST /api/dataset/clear`, `GET /api/dataset` (the file list and row counts) and `GET /api/dataset/backups`, all behind the session gate
+- **Download consolidates rather than serving a file.** The rows are spread over one file per API slot, so the route goes through `run_config.consolidate_jsonl` into a temporary file and streams that, which is the same function `cli export` uses. The temporary file is deleted once the response is sent, so a download does not leave a copy behind and does not get swept into the next export. A path is never taken from the request, so there is no traversal surface
+- **Clear needs `confirm`, and is not Stop & Clear.** `POST /api/dataset/clear` refuses without `confirm: true` in the body, so a stale tab cannot wipe a dataset. It takes the same `target` (`db`/`jsonl`/`both`/`state`) and `backup` arguments as `control.cmd_clear`, and takes a backup zip first unless `backup` is false — but it never touches a run, so a finished dataset can be cleared while the app is idle
+- **No config key changed and no change to what is sent or written**, so a default run is byte-identical
+- **The Tk entry point is retired: `generate.py` is now `generate_tk.py`.** The rename is the whole change, and it is what closes the last gap in the two-controller guard. `python generate_tk.py` still opens the old window, `cli launch --tk` still reaches it, and both carry a deprecation notice saying so — but the supported GUI is `python -m webapp`, and the Tk window is removed in the release after v15.0.0. Nothing about a run changed: the two front ends drive the same engine, so what is sent to an API and written to an output file is identical either way
+- **Why the rename closes the guard.** The web app owns the `HeadlessController` and serves the control socket, so a second controller is refused by `ControlServer._prepare_socket_path`. The one hole was that the Tk window only takes the socket when `control.enabled` is true, so `python generate.py` could start a second controller beside a running web app. With the Tk entry point renamed and the flag the only way to reach it, the socket is the only way to own a controller and the guard is total
+- **Every reference moved with it** — the module docstrings, the `import generate` in `cli._launch_tk()`, the `generate.py` reads in `tests/test_python311_target.py`, `test_slop_antislop_default_off.py`, `test_worker_launch.py`, `test_undefined_globals.py`, `test_ui_theme.py` and `test_cli_control.py`, and the prose in `AGENTS.md`, `docs/architecture.md`, `docs/file-structure.md`, `docs/cli.md`, `docs/usage.md`, `docs/installation.md`, `docs/licensing.md`, `docs/license-and-credits.md`, `docs/cleaner-pipeline.md`, `docs/input-folder.md`, `docs/scene-cast.md` and the `docs/agents/` topic files. The historical changelogs (`changelog-v11`..`v14`) are records and were **not** rewritten
+- **Four tests had to change with it, and each was a real assertion rather than a string match:** `test_cli_control.py` now asserts `--gui` does not import `generate_tk` and `--tk` does, and its GUI-free allowlist matches `generate_tk`; `test_web_engine.py`'s `sys.modules` check now looks for `generate_tk` (it looked for `generate`, so it passed whether or not the Tk window had been imported — a green that measured nothing); `test_web_config_schema.py`'s renderer check now looks for `generate_tk` instead of stripping `generation`/`generator` out of the source first, which is the same check without the false-negative
+- **No config key changed and no change to what is sent or written**, so a default run is byte-identical to v14.3.0
+- **Version stays at v15.0.0** — this lands inside the v15.0.0 release, not after it
+- **The Tk GUI is replaced by a web front end.** `python -m webapp` serves the whole
+  application in a browser on `http://127.0.0.1:8765` — no display, no Tk, no
+  `ttkbootstrap`, and the same engine underneath. `cli launch --gui` now starts this instead
+  of the Tk window; `cli launch --tk` (and `python generate_tk.py`) still reach the old window
+  for one deprecation release. The CLI itself is unchanged: every verb, flag, exit code and
+  JSON shape is the same, and it still drives the same controller over the same socket
+- **Nothing about a run changed.** `generation.py`, `detection.py`, `quality.py`,
+  `api_handler.py`, `run_config.py`, `app_state.py`, `vllm_metrics.py` and
+  `config/config.yml` are untouched, so a default run is byte-identical to v14.3.0. The web
+  app is a **second client of the same engine**, not a rewrite of it: it owns a
+  `HeadlessController` in-process and serves the control socket, exactly as the Tk window did
+  when `control.enabled` was true
+- **New: a password login.** One password, no username, no multi-user. It is stored as an
+  **argon2id** hash in `webapp/state/auth.json` (mode `0600`, gitignored) and the session is
+  an **HMAC-SHA256 signed cookie** with a 12-hour TTL — `HttpOnly`, `SameSite=Lax`, and
+  `Secure` only when the request actually arrived over HTTPS. Weak passwords are refused when
+  they are **set**, not only when they are tried: a minimum of 12 characters, at least two
+  character classes, and a rejection list covering common passwords, one repeated character,
+  keyboard/alphabet runs and the app's own name. Five failed attempts lock an address out for
+  five minutes. On first start the server prints a one-time setup token **to the console** —
+  never over HTTP — so an unauthenticated visitor cannot claim the instance
+- **New: `webapp/`** — `app.py` (the shell and the auth gate), `engine.py` (the in-process
+  controller wrapper), `theme.py` (the Storm palette and the whole stylesheet, the only place a
+  hex literal is allowed), `security/` (policy, session, rate limiter, routes), the six route
+  modules, and `static/` with vanilla ES modules and no build step. `requirements-web.txt`
+  lists the three new dependencies (`fastapi`, `uvicorn[standard]`, `argon2-cffi`);
+  `requirements.txt` is untouched, so the Tk app still installs
+- **New: the Storm palette**, `#232830` base. Every foreground/background pair was measured
+  rather than chosen by eye, and two values from the mockup were **corrected** because they
+  failed WCAG AA on the surface they are actually drawn on: the accent `#6b9bf5` was 4.42:1 and
+  the danger `#e06c75` was 3.81:1 against the raised card surface, and became `#7aa6f7`
+  (5.00:1) and `#e8838a` (4.66:1). `tests/test_web_theme.py` recomputes the whole contrast
+  table from the token constants and fails on any pair under 4.5:1, so the palette cannot drift
+  from the measurement
+- **Fixed: the "massive text" Overview.** The Tk bug was structural, not a font size: a 22px
+  value inside a `wraplength=220` label inside a 180px grid cell, so `Threads: 0 spawned, 0
+  active` wrapped into a block inside a card too narrow for it. The web Overview shows **six
+  metric cards in one row** with the rest behind a "more metrics" disclosure, and a card sizes to
+  its content while a long value ellipsizes with a `title` tooltip. Every screen fits 1440x900
+  and 900x600 with no page scroll, asserted by a browser probe rather than by eye
+- **New: the whole dashboard as eleven screens** — Overview (metric cards, per-slot progress,
+  issue panels, issue graph, collapsible diagnostics), Review (two-pane flagged list and
+  conversation detail with a colour-coded score footer, plus export/drop/dismiss), APIs, Quality,
+  Regex Watch, Metrics, Prompts, Queue, Config, Datasets and Profiles. Toasts, empty states,
+  keyboard-navigable tabs and a remembered tab are shared across all of them
+- **New: the Config editor covers the whole tree.** The Tk editor's 151 curated keys become a
+  schema-driven renderer over **all 1,291 leaves**, with a 12-section left nav instead of a tab
+  strip, labels and help text from `config_schema.py`, native `<select>` for enums, and the
+  validators running **server-side before a save** so a rejected save writes nothing and every
+  bad field is reported at once. Saving splices only the changed spans, so an unchanged save is
+  byte-identical to the file on disk and a one-key edit is a four-line diff — `yaml.dump` would
+  have deleted all 113 comment lines including the SPDX header
+- **New: the Datasets and Profiles panels** as dedicated screens rather than raw config groups.
+  Datasets is a two-pane source list and detail with an alias editor, a column visibility picker
+  (filter, Invert, Only matching / Hide matching) and import; Profiles saves and loads a copy of
+  the whole config with a diff preview before a destructive load
+- **Deployment is optional nginx.** Local-only on `127.0.0.1` is a first-class zero-config mode
+  with no TLS, no proxy headers and no warnings. Behind nginx, `--trust-proxy` is required before
+  `X-Forwarded-For` / `X-Forwarded-Proto` are believed, because both are client-spoofable; the
+  `Secure` cookie flag is derived from the actual request scheme, so a local-only user never gets a
+  cookie that cannot stick. A non-loopback bind without TLS is refused unless
+  `--allow-insecure-http` is passed out loud
+- **The two-controller hazard is closed without a lock file.** The web app starts the control
+  socket, so a second `python -m webapp` and a `cli launch` are both refused with
+  `already_running` by the guard `control.py` already had
+- **Version bumped to v15.0.0** — a **major** bump: the front end is replaced. No config key was
+  added, removed or redefaulted, and no change was made to what is sent to an API or written to an
+  output file, so a default run is byte-identical to v14.3.0

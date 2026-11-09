@@ -44,7 +44,7 @@ The four sites that must use the helper:
    (`_update_review_table()`, `update_quality_tab()`, `_update_regex_watch_tab()`,
    `_update_metrics_tab()`).
 2. `dashboard._active_dashboard_tab_text()` — feeds the issue panels and the graph.
-3. The tab-strip reorder loop in `generate.py`.
+3. The tab-strip reorder loop in `generate_tk.py`.
 4. The badge writer in `update_quality_display()` — which also froze at its last value,
    because it looked its own tab up by the label it had just changed.
 
@@ -138,7 +138,7 @@ Export found nothing to write.
 ---
 
 ### `tests/test_review_tab_ui.py`
-**Purpose:** Display-dependent regression test for the v11.4 Review tab (builds the REAL `generate.py` UI; skips cleanly without a display)
+**Purpose:** Display-dependent regression test for the v11.4 Review tab (builds the REAL `generate_tk.py` UI; skips cleanly without a display)
 **Key:** full-task-id Treeview items + single-click selection; transcript rendered from the output JSONL; the detail pane is read-only and scrollable; a refresh tick keeps the selection and the scroll position; Export Flagged → JSONL writes every row with `_quality_score`; the filter narrows and restores the list; (v12.8.2) the tab offers a **Drop Selected** action, and a drop removes ONLY the selected task's rows — a task whose id is a strict PREFIX of the dropped one survives, the task's `_api` duplication rows go with it, a corrupt (non-JSON) line is copied through, and cancelling the confirmation or dropping with an empty selection changes nothing; (v14.2.1) the count badge does not hide the list, `_active_dashboard_tab_text()` returns the base name in BOTH modules, the badge helpers round-trip, and the flags survive a state round-trip (including the derived fallback for a pre-v14.2.1 state file)
 **Run:** `python -B tests/test_review_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
 **Edit for:** Add Review-tab behaviour cases; keep it free of source data, generation runs, network and model APIs
@@ -149,6 +149,6 @@ Export found nothing to write.
 
 | Task | Files to edit |
 |------|---------------|
-| Change the Review tab | `generate.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_drop_review_conversation()` + `_drop_task_output_rows()` / `_drop_task_db_rows()`, `_iter_review_records()`, the `elif tab_name == ui_theme.TAB_REVIEW` layout block), `tests/test_review_tab_ui.py` |
+| Change the Review tab | `generate_tk.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_drop_review_conversation()` + `_drop_task_output_rows()` / `_drop_task_db_rows()`, `_iter_review_records()`, the `elif tab_name == ui_theme.TAB_REVIEW` layout block), `tests/test_review_tab_ui.py` |
 | Add or change a tab count badge, or identify a tab by its label | `ui_theme.py` (`tab_badge()`, `tab_base_name()`, `TAB_BADGE_TEMPLATE`) + every label comparison listed above; `tests/test_review_tab_ui.py::test_05a` / `test_05c` |
-| Persist or restore a per-task quality set across a resume | `generation.py` (`_build_generation_state_data()`, `_review_ids_snapshot()`, `_derive_review_ids()`), `generate.py` (`load_generation_state()`), `control.py` (resume path), `tests/test_review_tab_ui.py::test_05d` |
+| Persist or restore a per-task quality set across a resume | `generation.py` (`_build_generation_state_data()`, `_review_ids_snapshot()`, `_derive_review_ids()`), `generate_tk.py` (`load_generation_state()`), `control.py` (resume path), `tests/test_review_tab_ui.py::test_05d` |

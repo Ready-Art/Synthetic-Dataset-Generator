@@ -30,10 +30,10 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ```
 cli.py  ->  control.py  ->  run_config.py  ->  generation.py / quality.py / app_state.py
-generate.py (GUI)  ->  run_config.py
+generate_tk.py (Tk GUI, deprecated)  ->  run_config.py
 ```
 
-**`run_config.py`, `control.py` and `cli.py` must NEVER import `generate.py`.** `generate.py`
+**`run_config.py`, `control.py` and `cli.py` must NEVER import `generate_tk.py`.** `generate_tk.py`
 builds the entire Tk UI at module scope, so importing it from the control layer would make every
 headless verb require a display. The one exception is `cli._launch_gui()`, which imports `generate`
 for its side effect because opening the window is that command's entire job.
@@ -41,16 +41,16 @@ for its side effect because opening the window is that command's entire job.
 
 **Consequence: `control.py` must wire up the `detection` module globals itself (v13.5.1).**
 `detection.issue_timestamps` and `detection.issue_timestamps_lock` are module globals initialised to
-`None` and set by **`generate.py` at module scope** — which the control layer cannot import. Before
+`None` and set by **`generate_tk.py` at module scope** — which the control layer cannot import. Before
 v13.5.1 the headless path never set them, so any refusal-phrase hit died inside
 `detection.is_refusal()` with `'NoneType' object does not support the context manager protocol` and
 killed the turn. `control.py` now does the same two assignments at module scope, right after its
 imports, from the same `app_state` the controller already owns. **If you add another module global
-that `generate.py` wires up for `detection`, wire it in `control.py` too** — the headless path is not
+that `generate_tk.py` wires up for `detection`, wire it in `control.py` too** — the headless path is not
 allowed to import the GUI entry point to get it.
 scanning the source with `ast`.
 
-`generation.py` is already GUI-free (it never imports `generate.py`); its only GUI callback is
+`generation.py` is already GUI-free (it never imports `generate_tk.py`); its only GUI callback is
 `app_state.live_prompt_preview_hook`, which is None-safe. `quality.py` has no Tk usage at all.
 
 ---
@@ -105,7 +105,7 @@ in the test, not bugs.
   on it on every write path, so `HeadlessController` installs `control.StaticVar` before any worker
   runs. Without it every headless run raises `AttributeError` on its first successful conversation.
 - **`generation.save_generation_state()` and `generation.worker()` are imported by name in
-  `generate.py`**, so the control layer uses the module attribute (`generation.save_generation_state()`)
+  `generate_tk.py`**, so the control layer uses the module attribute (`generation.save_generation_state()`)
   rather than importing the symbol.
 - **`api_handler.py` is CRLF.** `replace_file_content` normalises newlines and will not match it; patch
   it with a small Python script that opens in binary and writes bytes back. Keep the file CRLF.

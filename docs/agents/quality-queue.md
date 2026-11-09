@@ -109,7 +109,7 @@ The writer is **injected** with `set_quality_write_handler(handler)`; `generatio
 registers it at run start, before `initialize_quality_queue()`. It is injected rather than imported
 because `generation.py` already imports `quality`, so `quality` importing `generation` would be circular.
 
-**`generate.py` must import the generation MODULE, not only names from it.** The call site is
+**`generate_tk.py` must import the generation MODULE, not only names from it.** The call site is
 `generation._install_quality_write_handler()`, and `from generation import worker, ...` binds `worker`
 but never the name `generation`. v12.9 shipped without the plain `import generation` and every async
 run died on the first Start click with `NameError: name 'generation' is not defined` inside the Tk

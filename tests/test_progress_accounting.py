@@ -540,7 +540,7 @@ def test_resume_paths_seed_the_credited_set():
             return False
         return "progress_credited_task_ids" in ast.unparse(found[0])
 
-    with open(os.path.join(REPO, "generate.py"), encoding="utf-8") as f:
+    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as f:
         generate_tree = ast.parse(f.read())
     with open(os.path.join(REPO, "control.py"), encoding="utf-8") as f:
         control_tree = ast.parse(f.read())

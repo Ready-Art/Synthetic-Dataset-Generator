@@ -58,7 +58,7 @@ def _signature(function):
 class WorkerLaunchTests(unittest.TestCase):
     def test_start_processing_binds_worker_arguments(self):
         signature = _signature(_read_function("generation.py", "worker"))
-        start = _read_function("generate.py", "start_processing")
+        start = _read_function("generate_tk.py", "start_processing")
         launches = []
         for node in ast.walk(start):
             if not (isinstance(node, ast.Call)
@@ -106,7 +106,7 @@ class WorkerLaunchTests(unittest.TestCase):
         and the launch loop must read ONE resolved total, and that total must come from
         ``run_config.count_worker_threads`` (the same helper the CLI uses).
         """
-        start = _read_function("generate.py", "start_processing")
+        start = _read_function("generate_tk.py", "start_processing")
 
         # 1. The total is resolved through the shared helper, not from the scalar.
         resolves = [

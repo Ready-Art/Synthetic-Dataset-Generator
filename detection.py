@@ -17,7 +17,7 @@ import time
 
 import style_metrics
 
-# These will be set by generate.py after import
+# These will be set by generate_tk.py after import
 issue_timestamps = None
 issue_timestamps_lock = None
 
