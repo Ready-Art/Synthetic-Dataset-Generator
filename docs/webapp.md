@@ -94,21 +94,23 @@ get a fresh setup token. There is no in-app password change, because there is no
 
 ## The screens
 
-Eleven screens, in the tab strip. **Every one fits 1440x900 and 900x600 with no page scroll** — if a
-screen needs a scrollbar at that size, the layout is wrong.
+Twelve screens, in the tab strip. **Every one fits 1440x900 and 900x600 with no page scroll** — if a
+screen needs a scrollbar at that size, the layout is wrong. Below 1100px the tab strip wraps to a second
+row rather than scrolling sideways, because twelve tabs do not fit one row at 900px.
 
 | Screen | What it is |
 |--------|------------|
 | **Overview** | Six metric cards in one row (the rest behind a "more metrics" disclosure), one progress row per slot, the issue panels, the issue graph, and a collapsible Diagnostics section with the database status and API response times. Start / Pause / Stop & Clear are in the action bar, plus **Download dataset**
 (the whole dataset as one JSONL file) and **Clear dataset** (delete the stored
 conversations, after a confirmation and with a backup zip taken first). |
-| **Review** | Flagged conversations on the left, the conversation detail on the right. The score breakdown is a footer strip (Coherence / Character / Prose / Overall) colour-coded by threshold, so "why was this flagged" is answerable at a glance. Export, drop and dismiss act on the selection. |
+| **Review** | Flagged conversations on the left, the conversation detail on the right. The score breakdown is a footer strip (Coherence / Character / Prose / Overall) colour-coded by threshold, so "why was this flagged" is answerable at a glance. **Export flagged → JSONL** downloads the rows in your browser; **Drop selected** removes one conversation from the dataset; **Dismiss all** clears the flags without touching the data. |
 | **APIs** | Per-API issue panels, with a slot selector. |
 | **Quality** | The dimension summary and the latest-50 scores. |
 | **Regex Watch** | The patterns and their hits. |
-| **Metrics** | The per-slot vLLM table and its graphs. The table is written by the generation threads; the graphs read a separate ring that only the vLLM poller appends to, so `Engine.start()` starts that poller — without it the table fills in and every graph stays empty. |
-| **Prompts** | The live prompt preview, with search and copy. |
-| **Queue** | The pending and failed tables, with purge, retry and export. |
+| **Metrics** | Two independent toggles. **Per-slot throughput** (on) is each API slot's own measured tokens per second — the only figure that can tell two slots on one server apart, because vLLM's `/metrics` has no caller label. **vLLM & antislop-vLLM server metrics** (off) adds the endpoint table and six graphs: server prompt/generation tok/s, KV cache load, running vs waiting, and the antislop-vllm fork's requests per minute, bans and back-tracks per minute, and generation speed. A plain vLLM serves no `antislop:` metrics, so that panel says so instead of drawing empty axes. The per-slot ring is written by the generation threads and the server rings by the vLLM poller, which `Engine.start()` starts. |
+| **Prompts** | Every prompt body in the config, with copy. |
+| **Live Prompts** | The prompts the engine has most recently **sent**, newest first, refreshed every two seconds. Metadata header (thread, slot, type, attempt, time), char and approximate-token counts, and every turn colour-coded by role. A capped ring of 40, with a *Clear history* button. This is the debugging view: it shows the exact body a request carried. |
+| **Queue** | Failed, pending and completed tables — in that order, because a pending list of thousands used to push the two short tables off the screen. Each table scrolls inside its own panel. **Clear queue** empties all three with or without a run in progress; *Purge pending* touches pending only; *Retry failed* re-queues the failed set; *Export CSV* writes the queue beside the output files. |
 | **Config** | The config editor. See below. |
 | **Datasets** | Dataset sources: a two-pane list and detail, the alias editor, column visibility and import. |
 | **Profiles** | Save and load a copy of the whole config, with a diff preview before a destructive load. |
@@ -228,6 +230,10 @@ app at the same time — the Tk window only takes the socket when `control.enabl
 | `the web front end is not installed` from `cli launch --gui` | `requirements-web.txt` is not installed. `pip install -r requirements-web.txt`, or use `--tk`. |
 | A save is rejected with several field errors | Validation runs server-side before anything is written, so nothing was saved. Fix the listed fields and save again. |
 | I forgot the password | Stop the server, delete `webapp/state/auth.json`, start it again, and use the new console setup token. |
+| **Live Prompts** says the preview is not hooked up | The engine installs the preview hook when it starts. Restart the web app (`python -m webapp`) and the viewer fills in as requests are sent. |
+| The Metrics server panels are empty but the per-slot graphs are not | The vLLM poller cannot reach any `/metrics` endpoint. Check that each `api.apis[].url` points at a vLLM server and that `metrics.enabled` is not off. The antislop panels additionally need the **antislop-vllm fork** — a plain vLLM serves no `antislop:` metrics, and the panel says so. |
+| Estimated cost stays at `$0.00` | `api.pricing.cost_per_1k_tokens` is `0`, which is the shipped default. Set a real price in the Config tab; the card and the budget stop use the same formula. |
+| The queue will not clear | *Stop & Clear* needs a live run. Use **Clear queue** on the Overview action bar or the Queue tab — it works whether or not a run is going. |
 
 ## Security notes
 
