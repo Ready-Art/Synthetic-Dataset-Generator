@@ -549,7 +549,14 @@ def _serve(args):
     def _stop(_signum, _frame):
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _stop)
+    # SIGTERM exists on Windows but ``signal.signal`` only accepts it there when the process
+    # has a console; a detached controller has none, so the call raises ValueError. The
+    # handler is a convenience for systemd and Ctrl-C, not a requirement: KeyboardInterrupt
+    # still arrives from the console, and the ``finally`` below always runs.
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (AttributeError, ValueError, OSError):
+        pass
     try:
         controller.serve_forever()
     except KeyboardInterrupt:
@@ -559,6 +566,20 @@ def _serve(args):
             controller._server.stop()
         run_config.close_db_pool()
     return control.EXIT_OK
+
+
+def _detached_kwargs():
+    """Popen keyword arguments that detach the child from this terminal, per platform.
+
+    ``start_new_session=True`` is POSIX-only and is **silently ignored** on Windows, so the
+    controller would stay attached to the console that launched it and die with it. Windows needs
+    ``DETACHED_PROCESS`` instead. Passing the wrong one is not an error either way -- it is
+    accepted and does nothing -- which is exactly why this is spelled out rather than assumed.
+    """
+    if os.name == "nt":
+        return {"creationflags": subprocess.DETACHED_PROCESS
+                                | subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
 
 
 def _launch_daemon(args):
@@ -587,8 +608,8 @@ def _launch_daemon(args):
     with open(log_path, "ab") as log:
         process = subprocess.Popen(
             command, stdout=log, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, start_new_session=True,
-            cwd=os.getcwd(), env=dict(os.environ))
+            stdin=subprocess.DEVNULL, cwd=os.getcwd(), env=dict(os.environ),
+            **_detached_kwargs())
 
     deadline = time.time() + (args.timeout or 30.0)
     while time.time() < deadline:

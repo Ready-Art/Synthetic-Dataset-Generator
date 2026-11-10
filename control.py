@@ -65,6 +65,30 @@ PROTOCOL_VERSION = 1
 # already the run's own scratch space, so a stale socket file is cleaned up with the rest.
 DEFAULT_SOCKET_NAME = "generator-control.sock"
 
+# =======================================================================================
+# Transport
+# =======================================================================================
+#
+# The channel is one JSON object per line over a stream socket. WHAT that stream is differs by
+# platform, and the difference is not cosmetic:
+#
+#   POSIX    a unix domain socket AT ``socket_path``. It is a filesystem object, so it is
+#            unreachable off-host through its permissions and is removed with output/.
+#   Windows  there is no ``socket.AF_UNIX`` at all -- not a missing class, a missing address
+#            family -- so ``socketserver.ThreadingUnixStreamServer`` does not exist either, and
+#            naming it at class-definition time was an AttributeError on import. The same channel
+#            is therefore a loopback TCP listener on an ephemeral port.
+#
+# Callers must not have to know which. ``--socket PATH`` names the same thing everywhere, so on
+# Windows the listener PUBLISHES its port in a small JSON endpoint file at that path:
+#
+#     {"transport": "tcp", "host": "127.0.0.1", "port": 51234, "pid": 1234}
+#
+# ``send_request()`` reads that file and connects accordingly, and the file's existence is the
+# singleton guard on both platforms. Nothing above this layer branches on the OS.
+
+HAS_UNIX_SOCKETS = hasattr(socket, "AF_UNIX")
+
 # Exit codes. Shared with cli.py so a script can branch on the number alone; documented in
 # docs/cli.md because they are part of the contract, not an implementation detail.
 EXIT_OK = 0
@@ -136,12 +160,69 @@ def reported_thread_count(config=None):
 
 
 def default_socket_path(config=None):
-    """Where the control socket lives, honouring ``control.socket_path``."""
+    """Where the control endpoint lives, honouring ``control.socket_path``.
+
+    The name is historical: on POSIX this path IS the unix socket, and on Windows it is the
+    JSON endpoint file that publishes the loopback port (see the Transport note above).
+    """
     cfg = app_state.global_config if config is None else config
     configured = str(cfg.get('control.socket_path', '') or '').strip()
     if configured:
         return configured
     return os.path.join(run_config.OUTPUT_DIR, DEFAULT_SOCKET_NAME)
+
+
+def read_endpoint(path):
+    """Describe what is listening at ``path``, or ``None`` when nothing is.
+
+    Returns ``{'transport': 'unix', 'path': path}`` on POSIX and
+    ``{'transport': 'tcp', 'host': ..., 'port': ..., 'pid': ...}`` on Windows, where ``path``
+    is the endpoint file the listener published. A file that exists but cannot be read or
+    parsed is treated as "nothing is listening": it is a leftover from a crash, and the
+    caller's job is to clean it up, not to fail on it.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    if HAS_UNIX_SOCKETS:
+        return {'transport': 'unix', 'path': path}
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            endpoint = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(endpoint, dict) or endpoint.get('transport') != 'tcp':
+        return None
+    if not endpoint.get('host') or not endpoint.get('port'):
+        return None
+    return endpoint
+
+
+def write_endpoint(path, host, port):
+    """Publish a loopback TCP listener at ``path`` (Windows only; a no-op on POSIX).
+
+    Written to a temporary file in the same directory and renamed, so a reader never sees a
+    half-written endpoint and concludes the controller is gone.
+    """
+    if HAS_UNIX_SOCKETS:
+        return
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    payload = {'transport': 'tcp', 'host': host, 'port': int(port), 'pid': os.getpid()}
+    temporary = f'{path}.tmp'
+    with open(temporary, 'w', encoding='utf-8') as handle:
+        json.dump(payload, handle)
+        handle.write('\n')
+    os.replace(temporary, path)
+
+
+def remove_endpoint(path):
+    """Delete the socket / endpoint file, ignoring the case where it is already gone."""
+    try:
+        if path and os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
 
 
 def _json_default(value):
@@ -1411,14 +1492,33 @@ class HeadlessController:
 # Socket server
 # =======================================================================================
 
-class _ThreadedUnixServer(socketserver.ThreadingUnixStreamServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-
 class _ThreadedTCPServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+
+if HAS_UNIX_SOCKETS:
+    class _ThreadedUnixServer(socketserver.ThreadingUnixStreamServer):
+        """The LOCAL control listener: a unix domain socket at ``socket_path``."""
+        daemon_threads = True
+        allow_reuse_address = True
+else:
+    class _ThreadedUnixServer(_ThreadedTCPServer):
+        """The LOCAL control listener on a platform with no ``AF_UNIX`` (Windows).
+
+        Same role, same handler, same wire format -- only the address family differs. The
+        class is defined HERE rather than aliased to ``None`` so that every caller and every
+        test refers to one name on every platform, and so a patch of
+        ``_ThreadedUnixServer.serve_forever`` still observes the loop that actually runs.
+
+        Naming ``socketserver.ThreadingUnixStreamServer`` in a class statement is what broke
+        the import: that attribute lookup runs at import time on every platform, and on
+        Windows the class does not exist at all.
+        """
+        # ``SO_REUSEADDR`` means something different on Windows: it lets a second socket bind a
+        # port that is already in use, which is a hijack, not a convenience. The port here is
+        # ephemeral (the OS picks a free one), so reuse buys nothing and costs safety.
+        allow_reuse_address = False
 
 
 class _ControlHandler(socketserver.StreamRequestHandler):
@@ -1483,7 +1583,11 @@ def _is_loopback_host(host):
 
 
 class ControlServer:
-    """Listens on a Unix socket (and optionally loopback TCP) and serves commands."""
+    """Serves commands on the local control channel (and optionally extra loopback TCP).
+
+    The local channel is a unix domain socket on POSIX and a loopback TCP listener on Windows;
+    ``socket_path`` names it either way (see the Transport note at the top of this module).
+    """
 
     def __init__(self, controller, socket_path=None, tcp_host=None, tcp_port=None,
                  allow_remote=False):
@@ -1493,8 +1597,9 @@ class ControlServer:
         self.tcp_port = tcp_port
         # `allow_remote` is a SAFETY limit, not a feature: with it false the TCP
         # listener refuses to bind anything but a loopback address, so enabling TCP
-        # by accident cannot expose the generator to the network. The unix socket is
-        # unaffected -- it is already unreachable off-host via filesystem permissions.
+        # by accident cannot expose the generator to the network. The local channel is
+        # unaffected -- a unix socket is unreachable off-host via filesystem permissions,
+        # and the Windows fallback is bound to 127.0.0.1 and never to a routable address.
         self.allow_remote = bool(allow_remote)
         self._unix_server = None
         self._tcp_server = None
@@ -1516,6 +1621,12 @@ class ControlServer:
             f"control.allow_remote (or --tcp-allow-remote) to permit it.")
 
     def _prepare_socket_path(self):
+        """Make sure ``socket_path`` is free, and clear a leftover from a crashed daemon.
+
+        The file is the singleton guard on both platforms: on POSIX it IS the unix socket, and
+        on Windows it is the endpoint file that publishes the port. Either way, a file that
+        still answers means another controller is live, and a file that does not is debris.
+        """
         parent = os.path.dirname(os.path.abspath(self.socket_path))
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -1532,20 +1643,44 @@ class ControlServer:
                 raise CommandError(
                     'failed', f"Could not remove stale socket {self.socket_path}: {exc}")
 
+    def _bind_local_server(self):
+        """Bind the local listener and return it, plus the address it actually took.
+
+        POSIX binds the unix socket at ``socket_path``. Windows has no ``AF_UNIX``, so it binds
+        loopback TCP on an ephemeral port (``port 0``) and the port is read back from the bound
+        socket -- never guessed, so two controllers cannot collide on a fixed number.
+        """
+        if HAS_UNIX_SOCKETS:
+            server = _ThreadedUnixServer(self.socket_path, _ControlHandler)
+            return server, None
+        server = _ThreadedUnixServer(('127.0.0.1', 0), _ControlHandler)
+        return server, server.server_address
+
     def start(self):
         """Bind and start serving in background threads."""
         self._prepare_socket_path()
-        self._unix_server = _ThreadedUnixServer(self.socket_path, _ControlHandler)
+        self._unix_server, address = self._bind_local_server()
         self._unix_server.controller = self.controller
-        try:
-            os.chmod(self.socket_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
+        if HAS_UNIX_SOCKETS:
+            # Owner-only, so another local user cannot drive a channel that can truncate the
+            # database. Windows has no mode bits; the loopback bind is the protection there.
+            try:
+                os.chmod(self.socket_path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+        else:
+            # Publish the port the OS chose, so send_request()/is_server_running() can reach
+            # it through the same --socket path a POSIX user passes.
+            write_endpoint(self.socket_path, address[0], address[1])
         thread = threading.Thread(target=self._unix_server.serve_forever,
                                   name="ControlUnix", daemon=True)
         thread.start()
         self._threads.append(thread)
-        log_message(f"Control socket listening on {self.socket_path}.", "INFO")
+        if HAS_UNIX_SOCKETS:
+            log_message(f"Control socket listening on {self.socket_path}.", "INFO")
+        else:
+            log_message(f"Control channel listening on {address[0]}:{address[1]} "
+                        f"(published at {self.socket_path}).", "INFO")
 
         if self.tcp_host:
             try:
@@ -1586,7 +1721,7 @@ class ControlServer:
         self._stopped_done.wait()
 
     def stop(self):
-        """Stop serving and remove the socket file."""
+        """Stop serving and remove the socket / endpoint file."""
         if self._stopped.is_set():
             return
         self._stopped.set()
@@ -1599,11 +1734,7 @@ class ControlServer:
                     pass
         self._unix_server = None
         self._tcp_server = None
-        try:
-            if os.path.exists(self.socket_path):
-                os.unlink(self.socket_path)
-        except OSError:
-            pass
+        remove_endpoint(self.socket_path)
         # Released LAST: this is what lets serve_forever() return, so the process can
         # actually exit instead of leaving a busy controller behind.
         self._stopped_done.set()
@@ -1619,17 +1750,26 @@ def send_request(request, socket_path=None, timeout=30.0):
 
     Raises :class:`CommandError` with code ``no_daemon`` when nothing is listening, so the CLI
     can turn "the generator is not running" into its own exit code instead of a traceback.
+
+    The transport is whatever ``read_endpoint()`` reports at ``socket_path``: a unix socket on
+    POSIX, a published loopback port on Windows. Callers pass the same path on both.
     """
     path = socket_path or default_socket_path()
-    if not os.path.exists(path):
+    endpoint = read_endpoint(path)
+    if endpoint is None:
         raise CommandError('no_daemon',
                             f"No controller is listening on {path}.")
     payload = dict(request)
     payload.setdefault('protocol', PROTOCOL_VERSION)
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    if endpoint['transport'] == 'unix':
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        address = path
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        address = (endpoint['host'], int(endpoint['port']))
     sock.settimeout(timeout)
     try:
-        sock.connect(path)
+        sock.connect(address)
     except (FileNotFoundError, ConnectionRefusedError):
         sock.close()
         raise CommandError('no_daemon', f"No controller is listening on {path}.")
@@ -1663,7 +1803,7 @@ def send_request(request, socket_path=None, timeout=30.0):
 
 
 def is_server_running(socket_path=None):
-    """True when something answers a ``status`` request on the socket."""
+    """True when something answers a ``status`` request on the control channel."""
     try:
         response = send_request({'cmd': 'status'}, socket_path=socket_path, timeout=2.0)
     except CommandError:
@@ -1677,4 +1817,4 @@ def _version_string():
 
 
 # The one place the version string lives; the web UI and the CLI both read it from here.
-GENERATOR_VERSION = "16.0.0"
+GENERATOR_VERSION = "16.0.1"
