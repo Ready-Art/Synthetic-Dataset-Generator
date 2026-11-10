@@ -236,10 +236,27 @@ screen's **Control Interface** group) and `cli launch` serves the same commands.
 the web app is the only thing that owns the socket — which is why you should not run a second
 controller and the web app at the same time.
 
+## The control channel on Windows, macOS and Linux
+
+The channel is one JSON object per line over a stream socket, and **what that stream is depends on
+the platform** — you do not have to do anything about it, but it is worth knowing which one you have:
+
+| Platform | Local channel | `--socket` names |
+|---|---|---|
+| Linux, macOS | a **unix domain socket** | the socket file itself |
+| Windows | a **loopback TCP listener** on an ephemeral port | a small JSON file that publishes the port |
+
+Windows has no unix domain sockets at all, so the generator binds `127.0.0.1` on a port the OS
+picks and writes it to the endpoint file (`{"transport": "tcp", "host": "127.0.0.1", "port": ...,
+"pid": ...}`). Every verb reads that file, so `--socket PATH` means the same thing on every
+platform and no command needs a Windows-specific flag. The file is also the singleton guard: while it
+exists and answers, a second controller is refused with `already_running`. It is removed on shutdown,
+and a leftover from a crash is cleaned up on the next launch.
+
 ## TCP instead of a Unix socket
 
-The socket is a file under `output/`, which is the right transport for anything that shares the
-filesystem. For a container that cannot mount it, add a loopback TCP listener:
+The local channel is a file under `output/`, which is the right transport for anything that shares
+the filesystem. For a container that cannot mount it, add an extra loopback TCP listener:
 
 ```bash
 python -m cli launch --tcp-host 127.0.0.1 --tcp-port 8765
@@ -271,7 +288,7 @@ The control layer adds no new state of its own. It uses what the GUI already use
 
 | Path | What it is |
 |---|---|
-| `output/generator-control.sock` | the control socket (removed on shutdown) |
+| `output/generator-control.sock` | the control channel: the unix socket on Linux/macOS, the port file on Windows (removed on shutdown) |
 | `output/control.log` | the controller's own log |
 | `output/output.jsonl` | the dataset in single-API mode |
 | `output/output_api_slot_N.jsonl` | one file per slot in duplication mode |
@@ -309,3 +326,8 @@ there when you want to look at it yourself.
 
 **`refused` / exit 5 on `launch` with a TCP host.** The address is not loopback. Set
 `control.allow_remote: true` if you really mean to listen on the network.
+
+**`no_daemon` / exit 3 on Windows while a controller is running.** Check that `--socket` names the
+same endpoint file the controller wrote. The file is `output/generator-control.sock` by default and
+holds the loopback port; deleting it while the controller is live makes the controller unreachable
+until it is restarted.

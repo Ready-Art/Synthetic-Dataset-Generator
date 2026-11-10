@@ -18,7 +18,7 @@ no desktop toolkit anywhere in the tree.
 │  python -m webapp       (browser)     │
 │  python -m cli          (shell)       │
 └──────────────────────────────────────┘
-                    │  control.py: Unix socket,
+                    │  control.py: local socket,
                     │  one JSON object per line
                     ▼
 ┌──────────────────────────────────────┐
@@ -62,7 +62,7 @@ circular imports:
 |--------|---------|--------------|
 | `webapp/` | v15.0: the web front end — FastAPI app, auth gate, in-process `HeadlessController` wrapper, the Config editor and its writer, the Datasets and Profiles panels, the ES modules | `control`, `run_config`, `dataset_settings`, `config_loader`, `review_data` (never `generation` directly) |
 | `run_config.py` | Config -> run resolution, output/DB/JSONL plumbing, optional control server | `generation`, `quality`, `app_state`, `api_profiles`, `dataset_tasks` |
-| `control.py` | Control protocol, Unix/TCP socket server, `HeadlessController` (one `cmd_*` per verb) | `run_config`, `generation`, `quality`, `app_state` |
+| `control.py` | Control protocol, local socket server (unix domain socket on Linux/macOS, loopback TCP on Windows), `HeadlessController` (one `cmd_*` per verb) | `run_config`, `generation`, `quality`, `app_state` |
 | `cli.py` | argparse surface, socket client, daemon launcher | `control` (+ `webapp.__main__` only in `_launch_gui`) |
 | `generation.py` | Worker loop, LLM calls, answer generation, task processing | `api_profiles`, `app_state`, `api_handler`, `detection`, `text_utils`, `quality`, `logging_config` |
 | `quality.py` | Quality scoring engine (hybrid: heuristic + optional LLM, 7 core + 3 opt-in dimensions) | `app_state`, `text_utils`, `api_handler`, `logging_config` |

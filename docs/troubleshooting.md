@@ -103,6 +103,8 @@ under the GNU Affero General Public License v3.0 or later. See LICENSE.
 | **A config save is rejected and nothing is written** | The validators run server-side **before** the write, so a rejected save changes nothing. The error names every bad field at once; fix them all and save again |
 | **A config save dropped my comments** | It should not: the writer splices only the changed spans, so an unchanged save is byte-identical. If comments vanish, the save went through `yaml.dump` somewhere else — use the Config screen, not a hand edit, and check `git diff` |
 | **An `/api/*` call returns 401 in a script** | Every route except `/login`, `/setup`, `/logout` and `/api/health` needs the session cookie. Log in first and send the cookie; there is no API token |
+| **`AttributeError: module 'socketserver' has no attribute 'ThreadingUnixStreamServer'` on Windows** | Fixed in v16.0.1. Windows has no unix domain sockets, so the control channel is a loopback TCP listener there and the class is only defined where the address family exists. Update to v16.0.1 or later; there is nothing to configure |
+| **`python -m cli status` says `no_daemon` on Windows while the web app is running** | The web app publishes its loopback port in `output/generator-control.sock`. Check that `--socket` names that same file, and that nothing deleted it while the controller was live |
 
 ## GUI Layout Testing
 
