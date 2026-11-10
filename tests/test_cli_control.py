@@ -767,6 +767,176 @@ def test_serve_forever_returns_when_the_server_is_stopped():
 
 
 # ---------------------------------------------------------------------------
+# Cross-platform transport (Linux, macOS, Windows)
+# ---------------------------------------------------------------------------
+
+# The control layer is documented as running on Linux, macOS AND Windows, so nothing in it may
+# assume a POSIX socket. Windows has no ``socket.AF_UNIX`` at all -- not a missing class, a
+# missing ADDRESS FAMILY -- so ``socketserver.ThreadingUnixStreamServer`` does not exist there
+# either. Naming it in a ``class`` statement executes that attribute lookup at IMPORT time, on
+# every platform, whether or not a unix socket is ever opened, which is why a Windows user got
+# ``AttributeError: module 'socketserver' has no attribute 'ThreadingUnixStreamServer'`` from
+# ``python -m webapp`` before any of the app ran.
+#
+# The simulation is done in a SUBPROCESS: ``socket.AF_UNIX`` is deleted and ``socketserver`` is
+# dropped from ``sys.modules`` so it re-imports without its unix classes. Doing that in-process
+# would poison every later test in this file.
+
+_NO_AF_UNIX_PREAMBLE = """
+import socket, sys
+for _name in ('AF_UNIX',):
+    if hasattr(socket, _name):
+        delattr(socket, _name)
+for _name in [n for n in sys.modules if n == 'socketserver' or n.startswith('socketserver.')]:
+    del sys.modules[_name]
+"""
+
+
+def _run_without_af_unix(body, timeout=90):
+    """Run ``body`` in a subprocess where the interpreter has no ``socket.AF_UNIX``."""
+    import subprocess
+
+    script = _NO_AF_UNIX_PREAMBLE + "\nimport os\nos.chdir(%r)\nsys.path.insert(0, %r)\n" % (
+        str(ROOT), str(ROOT)) + body
+    completed = subprocess.run([sys.executable, "-B", "-c", script],
+                               capture_output=True, text=True, timeout=timeout)
+    return completed
+
+
+def test_the_control_layer_imports_where_there_is_no_af_unix():
+    """The Windows import failure, pinned.
+
+    ``python -m webapp`` died on ``import control`` because ``control.py`` subclassed
+    ``socketserver.ThreadingUnixStreamServer`` at module scope. This asserts the import succeeds
+    with the address family removed, which is the whole of what a Windows interpreter offers.
+    """
+    completed = _run_without_af_unix(
+        "import control\n"
+        "assert control.HAS_UNIX_SOCKETS is False, 'the simulation did not take'\n"
+        "print('ok')\n")
+    assert completed.returncode == 0, (
+        "control.py does not import without socket.AF_UNIX (the Windows case):\n"
+        + completed.stdout + completed.stderr)
+    assert "ok" in completed.stdout, completed.stdout
+
+
+def test_the_web_app_imports_where_there_is_no_af_unix():
+    """The reported traceback was ``python -m webapp``, so the whole chain must import."""
+    completed = _run_without_af_unix(
+        "import control, cli, run_config, generation, quality\n"
+        "from webapp.app import create_app\n"
+        "from webapp.config import WebConfig\n"
+        "print('ok')\n")
+    assert completed.returncode == 0, (
+        "the web app does not import without socket.AF_UNIX:\n"
+        + completed.stdout + completed.stderr)
+    assert "ok" in completed.stdout, completed.stdout
+
+
+def test_the_local_channel_round_trips_over_loopback_tcp_without_af_unix():
+    """The fallback is a WORKING channel, not merely consequence-free.
+
+    Without ``AF_UNIX`` the local listener binds loopback TCP on an ephemeral port and publishes
+    it in a JSON endpoint file at ``socket_path``, so ``--socket`` keeps naming one thing and
+    ``send_request`` / ``is_server_running`` keep taking one path on every platform.
+    """
+    completed = _run_without_af_unix(
+        "import json, os, shutil, tempfile\n"
+        "import control\n"
+        "base = tempfile.mkdtemp(prefix='no-af-unix-')\n"
+        "shutil.copytree(os.path.join(%r, 'config'), os.path.join(base, 'config'))\n"
+        "os.makedirs(os.path.join(base, 'output'), exist_ok=True)\n"
+        "os.chdir(base)\n"
+        "path = os.path.join(base, 'output', 'test.sock')\n"
+        "server = control.ControlServer(\n"
+        "    controller=control.HeadlessController(), socket_path=path)\n"
+        "server.start()\n"
+        "try:\n"
+        "    endpoint = json.load(open(path))\n"
+        "    assert endpoint['transport'] == 'tcp', endpoint\n"
+        "    assert endpoint['host'] == '127.0.0.1', endpoint\n"
+        "    assert int(endpoint['port']) > 0, endpoint\n"
+        "    assert control.is_server_running(path), 'not reachable'\n"
+        "    reply = control.send_request({'cmd': 'version', 'args': {}},\n"
+        "                                 socket_path=path, timeout=10.0)\n"
+        "    assert reply['ok'] is True, reply\n"
+        "    assert reply['data']['version'] == control.GENERATOR_VERSION, reply\n"
+        "    reply = control.send_request({'cmd': 'frobnicate', 'args': {}},\n"
+        "                                 socket_path=path, timeout=10.0)\n"
+        "    assert reply['error']['code'] == 'unknown_command', reply\n"
+        "finally:\n"
+        "    server.stop()\n"
+        "assert not os.path.exists(path), 'the endpoint file was left behind'\n"
+        "print('ok')\n" % str(ROOT))
+    assert completed.returncode == 0, (
+        "the loopback-TCP fallback does not serve the protocol:\n"
+        + completed.stdout + completed.stderr)
+    assert "ok" in completed.stdout, completed.stdout
+
+
+def test_the_control_layer_calls_no_posix_only_api():
+    """A class guard, not a single-file patch.
+
+    The transport is now platform-aware, but a POSIX-only call added anywhere in the control
+    layer would fail on Windows at the moment that branch runs -- which is exactly the shape of
+    the bug this file is pinning lessons from. ``os.name`` / ``sys.platform`` are allowed: they
+    are how the branch is chosen.
+    """
+    import ast
+
+    forbidden = {
+        "fork", "forkpty", "setsid", "killpg", "getuid", "geteuid",
+        "getgid", "getegid", "getpgid", "mkfifo", "mknod", "chown", "lchown",
+        "symlink", "waitpid", "sched_getaffinity",
+    }
+    problems = []
+    for filename in ("control.py", "cli.py", "run_config.py"):
+        source = (ROOT / filename).read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and node.value.id == "os" and node.attr in forbidden):
+                problems.append(f"{filename}:{node.lineno} os.{node.attr}")
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and node.value.id == "signal" and node.attr in ("SIGHUP", "SIGUSR1",
+                                                                   "SIGUSR2", "SIGQUIT")):
+                problems.append(f"{filename}:{node.lineno} signal.{node.attr}")
+    assert not problems, (
+        "POSIX-only call(s) in the control layer, which must run on Windows too: "
+        + ", ".join(problems))
+
+
+def test_the_daemon_launch_detaches_on_windows_too():
+    """``start_new_session`` is POSIX-only and is SILENTLY IGNORED on Windows.
+
+    Passing it there is not an error, it does nothing -- so the controller would stay attached
+    to the console that launched it and die with it, and ``launch`` would report a controller
+    that is already gone. Windows needs ``DETACHED_PROCESS`` instead.
+    """
+    import ast
+
+    source = (ROOT / "cli.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+
+    helper = functions.get("_detached_kwargs")
+    assert helper is not None, (
+        "cli.py has no _detached_kwargs(); the daemon launch is POSIX-only again")
+    body = ast.get_source_segment(source, helper) or ""
+    assert "DETACHED_PROCESS" in body, (
+        "the Windows branch does not use DETACHED_PROCESS, so the controller stays attached")
+    assert "start_new_session" in body, "the POSIX branch lost start_new_session"
+
+    launch = functions.get("_launch_daemon")
+    assert launch is not None, "cli.py has no _launch_daemon()"
+    launch_body = ast.get_source_segment(source, launch) or ""
+    assert "_detached_kwargs()" in launch_body, (
+        "_launch_daemon() does not use the platform-aware detach helper")
+    assert "start_new_session" not in launch_body, (
+        "_launch_daemon() hard-codes the POSIX-only flag again")
+
+
+# ---------------------------------------------------------------------------
 # Default behaviour unchanged
 # ---------------------------------------------------------------------------
 
@@ -834,7 +1004,7 @@ def test_the_control_layer_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-VERSION = "16.0.0"
+VERSION = "16.0.1"
 
 
 def test_the_version_is_declared_everywhere_it_appears():
