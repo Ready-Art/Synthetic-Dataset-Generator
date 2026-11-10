@@ -11,8 +11,8 @@
 /**
  * The Profiles panel -- Phase 6d-b. The last bespoke widget.
  *
- * Replaces the Tk editor's Profiles tab: a list of saved configs on the left, the selected
- * profile's preview on the right, and a save form underneath.
+ * A list of saved configs on the left, the selected profile's preview on the right, and a
+ * save form underneath.
  *
  * **No model logic lives here.** `webapp/profiles_routes.py` does the name validation, the
  * secret masking, the candidate merge and the validation; this module only draws what it is

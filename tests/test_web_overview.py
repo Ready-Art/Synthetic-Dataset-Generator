@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the Overview screen.
 
@@ -18,7 +16,7 @@ The layout decisions are the point of this file, because they are what fixes the
 * The issue table and the progress panel sit **side by side** at `1.55fr / 1fr`.
 * Progress is **one row per slot** with a label, a track and a percentage.
 * **No `wraplength`** anywhere: that plus a 22px value inside a 180px grid cell was the
-  actual Tk bug, so a regression here would reintroduce it.
+  actual layout bug, so a regression here would reintroduce it.
 * Long values **ellipsize with a `title` tooltip** rather than wrapping.
 
 No display, no browser, no network: the JS modules are read as text and the CSS is parsed
@@ -46,7 +44,7 @@ def _strip_comments(source):
     """Drop `/* ... */` and `//` comments.
 
     Every rule here is about what the CODE does, not what a comment says. Without this,
-    a comment that explains the Tk bug ("there is no wraplength here") would fail the
+    a comment that explains the layout bug ("there is no wraplength here") would fail the
     wraplength check -- which is exactly what happened the first time this file ran.
     """
     source = re.sub(r'/\*.*?\*/', '', source, flags=re.DOTALL)
@@ -158,7 +156,7 @@ def test_progress_is_one_row_per_slot():
     assert 'progress-track' in source
     assert 'progress-fill' in source
     assert 'progress-pct' in source
-    # The Tk version stacked full-width bars; there must be no such thing here.
+    # A stacked full-width bar must not come back.
     assert 'progress-bar-full' not in source
 
 
@@ -171,7 +169,7 @@ def test_progress_rows_are_labelled():
 # --- the "massive text" fix ---------------------------------------------
 
 def test_no_wraplength_anywhere():
-    """The Tk bug was a 22px value inside wraplength=220 inside a 180px cell."""
+    """The bug was a 22px value inside wraplength=220 inside a 180px cell."""
     for name in ('overview.js', 'dom.js', 'chart.js', 'main.js', 'stats.js'):
         source = _strip_comments(_read(name))
         assert 'wraplength' not in source, f'{name} reintroduced wraplength'
@@ -189,7 +187,7 @@ def test_long_values_ellipsize_with_a_tooltip():
 
 
 def test_the_card_value_is_28px():
-    """The type scale: a 28px card value, not the Tk 22px."""
+    """The type scale: a 28px card value, not the old 22px."""
     assert theme.SIZE_CARD_VALUE == '28px'
     assert '--size-card-value: 28px' in _css()
 
@@ -255,7 +253,7 @@ def test_the_overview_has_seven_issue_panels():
 
 
 def test_the_issue_table_shows_time_api_phrase_and_context():
-    """The Overview column set, unchanged from the Tk tab."""
+    """The Overview column set."""
     source = _read('overview.js')
     block = source.split('function issueTable(', 1)[1].split('\n}', 1)[0]
     for column in ("'Time'", "'API'", "'Phrase'", "'Context'"):

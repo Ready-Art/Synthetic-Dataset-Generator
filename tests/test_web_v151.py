@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the v15.1.0 web-UI round.
 
@@ -14,12 +12,12 @@ Nine defects and two features, one section each. Every check is written against 
 rather than the fix, because the failure modes are what a future change will reintroduce:
 
 1. **The Metrics tab lost the server and proxy figures.** The tab only ever rendered
-   `slot_usage_rows()`, so the vLLM endpoint table and the antislop proxy panels -- which the Tk tab
+   `slot_usage_rows()`, so the vLLM endpoint table and the antislop proxy panels -- which the Metrics tab
    had -- were gone. Two independent toggles now switch them on, and the route carries the rows.
 2. **The y-axis labels were squeezed together.** The chart drew into a hard-coded 640-wide viewBox with
    `preserveAspectRatio="none"`, so a narrower panel squashed every glyph horizontally.
 3. **The Live Prompt Viewer was gone.** `app_state.live_prompt_preview_hook` was only ever set by
-   `generate_tk.py`, so headless it stayed `None` and nothing was captured.
+   the old front end, so headless it stayed `None` and nothing was captured.
 4. **Recent issues scrolled back to the top on every stats tick.** The Overview re-render replaced the
    panel and threw its scroll offset away.
 5. **Estimated cost read 0.0000 forever.** It read `app_state.estimated_cost`, which no run writes.
@@ -229,7 +227,7 @@ def test_the_live_prompt_hook_is_installed_and_removed_cleanly():
 
 
 def test_uninstall_leaves_someone_elses_hook_alone():
-    """A Tk window sharing the process must not have its preview silently disabled."""
+    """A second client sharing the process must not have its preview silently disabled."""
     import app_state
     import webapp.live_prompts as live_prompts
 

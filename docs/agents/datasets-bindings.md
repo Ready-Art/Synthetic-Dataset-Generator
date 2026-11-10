@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # Datasets subsystem — templates, bindings and tasks
@@ -22,8 +20,8 @@ Covers sections 3-5: `dataset_templates.py` (aliases and placeholder
 rendering), `dataset_bindings.py` (freezing one row per task) and
 `dataset_tasks.py` (attaching bindings to existing tasks).
 
-Part of the [Datasets subsystem reference](datasets-model.md). Sibling pages:
-- [Datasets subsystem — the Tk panel and the FastAPI surface](datasets-panel-reference.md)
+Part of the [Datasets subsystem reference](datasets-model.md). Sibling page:
+- [Datasets subsystem — the data model and the pure model layer](datasets-model.md)
 
 ---
 
@@ -211,7 +209,8 @@ In-memory only. Nothing here is persisted; attachments do not survive a restart.
 
 `__init__(self, settings, source_factory=open_source)` — `dataset_tasks.py:86`
 - `normalize_config(settings)` then `validate_config(normalized)` — so an invalid `datasets` subtree
-  raises at construction (this is what `generate_tk.py:2533` and `control.py:716` catch as `ValueError`).
+  raises at construction (this is what `control.py:749` catches as `ValueError` when it configures the
+  queue at run start).
 - Keeps only sources where `source["enabled"] and source["column_aliases"]`, as
   `(source_spec(source), MappingProxyType(dict(source["column_aliases"])))`.
 - `self.run_id = uuid4().hex`.

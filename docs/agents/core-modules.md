@@ -4,17 +4,15 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
-# Core modules (API calls, state, config loading, text, layout, style metrics)
+# Core modules (API calls, state, config loading, text, style metrics)
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
-**Read this when:** you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py` or `style_metrics.py`.
+**Read this when:** you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py` or `style_metrics.py`.
 
 **Related:** [`docs/agents/generation.md`](generation.md), [`docs/agents/quality.md`](quality.md)
 
@@ -29,7 +27,6 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `tests/test_api_profiles.py`
 - `text_utils.py`
 - `tests/test_repeated_words.py`
-- `ui_layout.py`
 - `style_metrics.py`
 - `tests/test_style_metrics.py`
 - `tests/test_http_connection_pool.py`
@@ -111,12 +108,13 @@ Four rules that are easy to break:
 ---
 
 ### `app_state.py` [6]
-**Purpose:** Shared runtime state, counters, locks, GUI handles
-**Key:** All globals (counters, locks, widget refs)
+**Purpose:** Shared runtime state, counters, locks, run flags
+**Key:** All globals (counters, locks, flags)
 **Edit for:**
-- Add new counter → Add to module level + init in `reset_all_stats_and_history()`
+- Add new counter → Add to module level + init in `control._reset_stats()`
 - Add new lock → `threading.Lock()` at module level
-- GUI widget refs → Assign in `generate_tk.py` after widget creation
+- `duplication_mode` → a plain `bool`, set by `control.cmd_start()`, read by `generation.py` on every write path. Never a `.get()`/`.set()` wrapper
+- `live_prompt_preview_hook` → the one front-end seam; `webapp/live_prompts.py` installs it, `generation.update_live_prompt_preview()` calls it, `None` means no consumer
 - Random-name deck (`random_name_deck`, `random_name_lock`, `random_names_pool_key`) → the pool dealt by `generation.deal_random_names()`. It is deliberately module-level run state, NOT per-worker state: every worker must deal from the same deck or the pool would be spread per worker and repeat across them. `random_names_pool_key` is the fingerprint of the pool the deck was built from, so editing the list or toggling the feature starts a fresh deck instead of dealing from a pool the user has replaced. `reset_all_stats_and_history()` clears it so a new run starts a fresh pass
 
 ---
@@ -162,15 +160,6 @@ Four rules that are easy to break:
 
 ---
 
-### `ui_layout.py` [18]
-**Purpose:** Tkinter layout helpers
-**Key:** `ScrollableFrame`, `ResponsiveGrid`, `NotebookNavigator`, `wrap_label()`
-**Edit for:**
-- Custom layout → Use `ResponsiveGrid` for reflowing widgets
-- Scrollable area → Wrap in `ScrollableFrame`
-
----
-
 ### `style_metrics.py`
 **Purpose:** (v11.7) Pure-stdlib measurement layer ported from the scotoma analysis scripts (comma habits, tail-end positivity lift, narration/dialogue segmentation, interiority density, long-range grounding, coherence defects, narration-only negation density/runs, denial-then-correction couplets, comma-appended absolute trailers, question handback). Imports NOTHING project-local and nothing third-party — it is a leaf in the dependency graph (the `app_state.py` rule), so it unit-tests headless. `response_metrics()` = one flat dict of numbers per assistant turn; `aggregate()` = means across rows, excluding `UNMEASURED` (-1.0); `UNMEASURED` is the gap token. **`TRAILER_PATTERN` is the ONE definition of the comma-appended absolute-trailer construction** — `config/config.yml` and `detection.DEFAULT_REGEX_WATCH_PATTERNS` mirror that exact string and `tests/test_regex_watch.py` asserts all three are identical, so the metric and the rewrite pass cannot drift apart. The trailer rule (from `scotoma/trailer_rate.py`) is: a comma-appended segment that carries **no finite verb** and **no speech verb** and **does** carry a predicate signal (body noun / `-ing` participle / `-ly` adverb). A comma that directly follows a speech verb, or that closes a line of dialogue, never opens a trailer. Dropping the verbless test is what made ordinary clauses like `"...the man said"` and `"...the boat is leaving"` read as absolutes. Design decisions that fix scotoma defects and must not be "simplified" away: tail lift is clamped at 10.0 (an unbounded ratio destroys means); `question_handback` uses `min_words=1` (a 5-word floor silently drops "What do you think?"); `negation_profile` is narration-only via `segments()` (asterisks invert the dialogue convention — asserted in the tests); `denial_correction_hits` rejects a negated correction tail (a negation RUN is not a denial-correction). Consumed by `quality._score_tic_density()` (the `tic_density` dimension) and `generation._style_metrics_for_record()` (the per-record `style_*` metadata block)
 **Edit for:** New measurements go here first (keep it dependency-free and Python 3.11-clean — no 3.12+ syntax such as PEP 695 `type` aliases), then wire them into `_score_tic_density` / `response_metrics` / the metadata block; covered by `tests/test_style_metrics.py`
@@ -192,15 +181,13 @@ Four rules that are easy to break:
 
 **Regex Watch log (v11.6):** `regex_watch_log` — a bounded ring buffer (`MAX_REGEX_WATCH_LOG`) of `(pattern, matched_text, api_slot_idx, status)` entries, guarded by `regex_watch_log_lock`; the `🔎 Regex Watch` tab reads it. Status is `rewritten` or `unresolved`
 
-**Cast event log (v12.0):** `cast_events_log` — a bounded ring buffer (`MAX_CAST_EVENTS_LOG` = 500) of `(task_id, event, name, api_slot_idx)` entries, guarded by `cast_events_log_lock`, filled by `app_state.record_cast_events()` and cleared by `dashboard.clear_dashboard()`. `event` is `arrived` / `exited` / `arrival_deferred` / `exit_deferred` / `arrival_forced` / `exit_cancelled`. **`exit_cancelled` is the important one**: it means the model never narrated a scheduled departure, so the character legitimately stayed — count those to measure whether the steering lands
+**Cast event log (v12.0):** `cast_events_log` — a bounded ring buffer (`MAX_CAST_EVENTS_LOG` = 500) of `(task_id, event, name, api_slot_idx)` entries, guarded by `cast_events_log_lock`, filled by `app_state.record_cast_events()` and cleared by `control.cmd_reset_stats()`. `event` is `arrived` / `exited` / `arrival_deferred` / `exit_deferred` / `arrival_forced` / `exit_cancelled`. **`exit_cancelled` is the important one**: it means the model never narrated a scheduled departure, so the character legitimately stayed — count those to measure whether the steering lands
 
 **Issue timestamp keys:** `refusals`, `user_speaking`, `slop`, `errors`, `anti_slop`, `incomplete_quotes`, `out_of_character`, `logic_issues`, `regex_watch`, `non_latin`, `scene_continuity`
 
 **First-reply opener tally:** `first_reply_first_word_counts` / `first_reply_frame_counts` / `first_reply_total`, guarded by `first_reply_opener_lock` and touched only through `record_first_reply_opener()`, `first_reply_opener_snapshot()` and `reset_first_reply_openers()`. Like the random-name deck it is RUN state shared by every worker (the collapse it measures is across conversations), cleared by `reset_all_stats_and_history()` and not saved in `generation_state.json`
 
 **Locks:** `stats_lock`, `issue_timestamps_lock`, `quality_lock`, `task_queue_ui_lock`, `api_circuit_breaker_lock`, `first_reply_opener_lock`
-
-**GUI handles:** `root`, `dashboard_notebook`, `slot_widgets`, `rate_limit_labels`, `quality_*_label`
 
 **Flags:** `stop_processing`, `pause_processing`, `processing_active`, `quality_enabled`, `quality_output_filter`, `use_conversation_history_for_fixers`
 
@@ -241,7 +228,7 @@ if lock_acquired:
 |------|---------------|
 | Fix quote balancing | `text_utils.py` (`normalize_quotes()`, `repair_straight_quotes()`) |
 | Add/modify an always-on deterministic text cleanup (v12.7.3: repeated-word collapse) | `text_utils.py` (the helper + its pre-compiled patterns at the top of the module), `generation.py` (`write_conversation()` processing loop — it goes in the always-on tail BEFORE `repair_straight_quotes`/`normalize_quotes`), `docs/features.md` (Text Post-Processing list), `docs/how-it-works.md` (step 7), `tests/test_repeated_words.py`. Keep the rule an EXCLUSION list of ordinary words (`_REPEAT_EXEMPT_WORDS`) so valid emphasis such as `no no no` survives, keep the helper idempotent and empty-input safe, and keep the comma-run-end pattern ahead of the comma-run pattern. There is no config key on purpose — do not add one |
-| Add UI metric | `app_state.py` (widget ref), `generate_tk.py` (create widget), `dashboard.py` (update) |
+| Add UI metric | `app_state.py` (the counter + its per-API dict), `control.build_stats_payload` (the wire field), `webapp/tabs_routes.py` (the route), `webapp/static/js/` (the card) |
 | Add a new outbound HTTP call, or change pooling / retries / timeouts (v14.2.0) | `api_handler.py` (`_build_session()`, `HTTP_POOL_MAXSIZE`, `HTTP_CONNECT_RETRIES`). **Bind the module's `requests` name to the SHARED `api_handler.http` facade** — never `import requests` and never a per-module `HttpClient()`, or the suite's `generation.requests.post` patches stop reaching the judge and the poller. Keep `max_retries` connect-only (`read=0`/`status=0`) so a read timeout is never silently resent. `tests/test_http_connection_pool.py` |
-| Change which requests send `chat_template_kwargs` / add a per-request `enable_thinking` override (v13.0.4) | `api_handler.py` (`resolve_thinking_mode()` / `thinking_payload_fragment()` / `apply_thinking_mode()` / `THINKING_MODES` / the `*_THINKING_KEY` constants — the ONE definition, here because both `generation.py` and `quality.py` import it and `quality.py` must not import `generation.py`), the four call sites (`generation.call_slop_fixer_llm`, `call_anti_slop_llm`, `rewrite_regex_watch_text`, `quality._call_logic_judge_once`), `config/config.yml`, `config_editor.py` (three dropdowns; `THINKING_MODE_CHOICES` is asserted equal to `api_handler.THINKING_MODES`), `tests/test_thinking_mode.py`. **The keys are SIBLINGS of `slop_fixer_params` / `anti_slop_params` / `sampler_settings`, never entries in them** — those dicts are read with an all-or-nothing `params or main_sampler_settings` fallback, so a lone extra key makes one truthy and stops it inheriting the main defaults (top_p 0.9 -> 0.95). **`inherit` is the default for the auxiliary three and must stay so.** Mechanism: `docs/samplers-and-infrastructure.md` |
+| Change which requests send `chat_template_kwargs` / add a per-request `enable_thinking` override (v13.0.4) | `api_handler.py` (`resolve_thinking_mode()` / `thinking_payload_fragment()` / `apply_thinking_mode()` / `THINKING_MODES` / the `*_THINKING_KEY` constants — the ONE definition, here because both `generation.py` and `quality.py` import it and `quality.py` must not import `generation.py`), the four call sites (`generation.call_slop_fixer_llm`, `call_anti_slop_llm`, `rewrite_regex_watch_text`, `quality._call_logic_judge_once`), `config/config.yml`, `webapp/config_schema.py` (three dropdowns; the choices are asserted equal to `api_handler.THINKING_MODES`), `tests/test_thinking_mode.py`. **The keys are SIBLINGS of `slop_fixer_params` / `anti_slop_params` / `sampler_settings`, never entries in them** — those dicts are read with an all-or-nothing `params or main_sampler_settings` fallback, so a lone extra key makes one truthy and stops it inheriting the main defaults (top_p 0.9 -> 0.95). **`inherit` is the default for the auxiliary three and must stay so.** Mechanism: `docs/samplers-and-infrastructure.md` |
 | Add a style measurement / style metadata column | `style_metrics.py` (keep it dependency-free, Python 3.11-clean — no 3.12+ syntax such as PEP 695 `type` aliases), then `quality._score_tic_density()` (if it feeds the dimension) and/or `generation._style_metrics_for_record()` (it flows into the `style_*` block automatically via `response_metrics()`/`aggregate()`); `tests/test_style_metrics.py` |

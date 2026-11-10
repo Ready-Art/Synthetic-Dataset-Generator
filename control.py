@@ -3,25 +3,22 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""Headless control surface for the generator (v13.0).
+"""Control surface for the generator: the engine both front ends drive.
 
-Runs a generation job with no Tk window, and exposes it over a local socket so a human at a
+Runs a generation job with no display, and exposes it over a local socket so a human at a
 terminal -- or an LLM driving one -- can start it, stop it, save it, clear it and read its
-statistics. ``cli.py`` is the client; this module is the server and the backend.
+statistics. ``cli.py`` is one client; the web app (``webapp/engine.py``) is the other, and it
+serves the same socket. This module is the server and the backend.
 
-**Why this module does not import ``generate_tk.py``.** That module builds the entire Tk window
-at *import* time, so importing it here would make every headless path need a display and make
-this whole feature untestable. Everything a run needs already lives in GUI-free modules
-(``run_config`` for the config, ``generation`` for the worker, ``quality`` for the judge), so
-the controller is built on those and the GUI is left alone. The dependency stays one-way:
+**Everything a run needs is a plain module.** ``run_config`` reads the config, ``generation``
+runs the worker, ``quality`` runs the judge, ``app_state`` holds the shared counters. Nothing
+here imports a GUI toolkit, so the whole control surface is testable with no display:
 
     cli.py  ->  control.py  ->  run_config.py  ->  generation.py / quality.py / app_state.py
-    generate_tk.py (Tk GUI, deprecated)  ->  run_config.py  # shared config reading only
+    webapp/engine.py  ->  control.py            # the second client of the same engine
 
 **Why a socket instead of a one-shot command.** ``start`` has to keep running after the
 command that started it returns, and a second terminal must be able to ask what happened. So
@@ -29,10 +26,10 @@ one process owns the run and a local socket is how you talk to it. The wire form
 object per line each way -- trivial to emit from a shell, trivial to parse from a script, and
 trivial for an LLM to read.
 
-**What is deliberately NOT here.** No widget, no ``toast``, no ``messagebox``, no
-``app_state.root``. Every command returns a plain dict; the CLI decides how to print it. That
-is what lets ``tests/test_cli_control.py`` exercise every verb with no display, no network and
-no database server.
+**What is deliberately NOT here.** No widget, no ``toast``, no ``messagebox``, no window
+handle of any kind. Every command returns a plain dict; the caller decides how to present it.
+That is what lets ``tests/test_cli_control.py`` exercise every verb with no display, no network
+and no database server.
 """
 
 import json
@@ -53,11 +50,11 @@ import run_config
 import logging_config
 from logging_config import log_message
 
-# v13.5.1: share the issue-timestamp registry with detection.py, exactly as generate_tk.py does at
-# module scope. `detection.issue_timestamps` and `detection.issue_timestamps_lock` are module
-# globals initialised to None and wired up only by the GUI entry point, so a headless run that
-# hit a refusal phrase died inside `detection.is_refusal()` with "'NoneType' object does not
-# support the context manager protocol". The controller owns the same app_state, so it can wire
+# v13.5.1: share the issue-timestamp registry with detection.py. `detection.issue_timestamps`
+# and `detection.issue_timestamps_lock` are module globals initialised to None and wired up by
+# the entry point that owns the run, so a run that hit a refusal phrase died inside
+# `detection.is_refusal()` with "'NoneType' object does not support the context manager
+# protocol". The controller owns the run, so it wires
 # them up the same way.
 detection.issue_timestamps = app_state.issue_timestamps
 detection.issue_timestamps_lock = app_state.issue_timestamps_lock
@@ -107,32 +104,11 @@ class CommandError(Exception):
         self.message = message
 
 
-class StaticVar:
-    """The minimal stand-in for a ``tk.BooleanVar``.
-
-    ``generation.py`` reads ``app_state.master_duplication_enabled_var.get()`` on every write
-    path (to pick the per-API output file name). With no Tk window that attribute is ``None``,
-    so the headless controller installs one of these before any worker starts. Same ``get()``
-    contract, no display.
-    """
-
-    def __init__(self, value=False):
-        self.value = bool(value)
-
-    def get(self):
-        return self.value
-
-    def set(self, value):
-        self.value = bool(value)
-
-
 def workers_alive():
     """True while any worker thread of the current run is alive.
 
-    ``generate.generation_running()`` is the GUI's version of this, but it lives in
-    ``generate_tk.py`` -- which builds the whole Tk window at import time and so cannot be
-    imported here. The test is three lines, so it is written here rather than pulled
-    across the GUI boundary.
+    ``generation`` has no equivalent helper: the run's liveness is the thread list, and that is
+    the only thing this needs to look at.
     """
     return bool(app_state.threads) and any(
         thread.is_alive() for thread in app_state.threads if thread)
@@ -196,7 +172,7 @@ def dumps(payload):
 # `recent_logic_total` / `recent_regex_total`. Deriving a name from a stem silently
 # produced an empty `per_api: {}` for four of the ten counters, which reads as "nothing
 # detected" instead of "wrong attribute". One table, so a new counter cannot be added to
-# the dashboard and forgotten here.
+# app_state and forgotten here.
 #
 # (key, label, total attribute, per-api attribute, recent-total attribute,
 #  recent-per-api attribute)
@@ -465,9 +441,7 @@ def build_stats_payload(config=None, include_recent=True, generator=None):
             'threads': reported_thread_count(cfg),
             'alive_threads': sum(1 for thread in app_state.threads
                                  if thread and thread.is_alive()),
-            'duplication_mode': bool(
-                getattr(app_state, 'master_duplication_enabled_var', None)
-                and app_state.master_duplication_enabled_var.get()),
+            'duplication_mode': bool(app_state.duplication_mode),
             'tasks': {
                 'pending': len(app_state.pending_task_ids),
                 'completed': len(app_state.completed_task_ids),
@@ -492,13 +466,11 @@ def build_stats_payload(config=None, include_recent=True, generator=None):
             'output': app_state.total_output_tokens,
             # v15.1.0: COMPUTED here, not read from `app_state.estimated_cost`.
             #
-            # `app_state.estimated_cost` is declared and reset but **never written by a run**:
-            # the only code that ever set it was the Tk dashboard's own label refresh, which
-            # does not exist headless. So the Overview's "Est. cost" card read 0.0000 forever
-            # and looked broken, because it was. The formula is the same one
-            # `generation.check_budget_limit()` and the Tk dashboard use -- total tokens times
-            # the price per 1k -- so the number the browser shows is the number the budget
-            # check acts on, rather than a second opinion.
+            # `app_state.estimated_cost` is declared and reset but **never written by a run**,
+            # so reading it would leave the Overview's "Est. cost" card at 0.0000 forever. The
+            # formula here is the same one `generation.check_budget_limit()` uses -- total
+            # tokens times the price per 1k -- so the number the browser shows is the number
+            # the budget check acts on, rather than a second opinion.
             'estimated_cost': _estimated_cost(cfg),
         },
         'attempts': {
@@ -560,11 +532,10 @@ class HeadlessController:
             app_state.global_config.path = config_path
         app_state.global_config.load()
 
-        # The engine reads this on every write path to pick the output file name. With no Tk
-        # window it is None, which would raise AttributeError inside the worker.
-        if app_state.master_duplication_enabled_var is None:
-            app_state.master_duplication_enabled_var = StaticVar(
-                app_state.global_config.get('api.master_duplication_mode', False))
+        # The engine reads this on every write path to pick the output file name. Seed it from
+        # the config so a `start` that never goes through cmd_start() still has an answer.
+        app_state.duplication_mode = bool(
+            app_state.global_config.get('api.master_duplication_mode', False))
 
         log_message(f"Headless controller ready (config: {app_state.global_config.path}).",
                      "INFO")
@@ -768,10 +739,9 @@ class HeadlessController:
         app_state.stop_processing = False
         app_state.pause_processing = False
         app_state.processing_active = True
-        app_state.master_duplication_enabled_var.set(
-            settings.master_duplication_enabled)
+        app_state.duplication_mode = bool(settings.master_duplication_enabled)
 
-        # A fresh queue per run, exactly as the GUI builds one per Start.
+        # A fresh queue per run.
         app_state.task_queue = Queue()
         app_state.task_queue.api_widgets = {}
         try:
@@ -1011,9 +981,8 @@ class HeadlessController:
         app_state.completed_task_ids = set(state.get('completed_task_ids', []))
         # v13.0.5: the saved progress counter, restored when the queue is rebuilt in
         # cmd_start(). Before this the headless path always restarted the bar at 0 on a resume.
-        # Deliberately a per-run attribute rather than an app_state global: generate_tk.py uses
-        # app_state.loaded_processed_tasks_snapshot for the GUI's own resume, and this server
-        # never drives the GUI.
+        # Deliberately a per-run attribute rather than an app_state global: it belongs to this
+        # controller's run, and a second controller would have its own.
         if not cfg.get('api.master_duplication_mode', False):
             self._loaded_processed_tasks = state.get('processed_tasks_snapshot')
         # v13.0.5: which tasks' turns the snapshot already counts (older state files have no
@@ -1032,7 +1001,7 @@ class HeadlessController:
             app_state.quality_dropped = state.get('quality_dropped', {})
             app_state.dropped_task_ids = set(app_state.quality_dropped)
         # v14.2.1: restore the Review flags, or derive them from the restored scores
-        # for a state file written before the key existed (see generate_tk.py).
+        # for a state file written before the key existed.
         with app_state.quality_review_lock:
             if 'quality_review_ids' in state:
                 app_state.quality_review_ids = set(state.get('quality_review_ids') or [])
@@ -1087,9 +1056,8 @@ class HeadlessController:
             if isinstance(per_api, dict):
                 for slot in per_api:
                     per_api[slot] = 0
-            # Clear the recent ring buffers by REPLACING them, the way the GUI's
-            # reset_all_stats_and_history() does: rebinding the attribute is what the
-            # dashboard re-reads, so no stale entry survives.
+            # Clear the recent ring buffers by REPLACING them: rebinding the attribute is what
+            # the stats payload re-reads, so no stale entry survives.
             setattr(app_state, entry[4], [])
             recent_per_api = getattr(app_state, entry[5], None)
             if isinstance(recent_per_api, dict):
@@ -1708,5 +1676,5 @@ def _version_string():
     return GENERATOR_VERSION
 
 
-# Read lazily so a version bump touches only generate_tk.py's label and this constant.
-GENERATOR_VERSION = "15.1.1"
+# The one place the version string lives; the web UI and the CLI both read it from here.
+GENERATOR_VERSION = "16.0.0"

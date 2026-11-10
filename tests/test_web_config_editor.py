@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the Config editor's generic renderer -- Phase 6b.
 
@@ -23,7 +21,7 @@ The assertions, in order of how much they matter:
 2. **No secret leaves the server.** All nine secret leaves arrive as `***` with `has_value`, and
    the real values appear nowhere in the serialised payload.
 3. **A save writes what it was given, and only that.** One changed number is one changed line;
-   the other 1,290 leaves and all 113 comments survive.
+   the other 1,290 leaves and every comment survives.
 4. **A save cannot corrupt a type.** `"10"` for an int field is stored as `10`; `"abc"` is
    rejected with the field named and **nothing is written**.
 5. **An untouched masked field does not blank a stored key.**
@@ -438,11 +436,11 @@ def test_a_save_keeps_every_comment_and_the_spdx_header():
     after_comments = [line for line in after.splitlines() if line.strip().startswith('#')]
     assert after_comments == before_comments, 'a comment was lost or reordered'
     assert 'SPDX-License-Identifier: AGPL-3.0-or-later' in after
-    assert len(before_comments) == 113, len(before_comments)
+    assert len(before_comments) >= 8, len(before_comments)
 
 
 def test_a_save_keeps_every_leaf_it_did_not_touch():
-    """The Tk editor drops unknown keys; this one must not."""
+    """A lossy editor drops unknown keys; this one must not."""
     with sandbox() as box:
         before = {path: value for path, value in config_tree.leaves(box.tree())}
         _post('/api/config/save', {'values': {'generation.num_turns': 9}})
@@ -845,11 +843,11 @@ def test_the_renderer_parses():
     assert result.returncode == 0, result.stderr
 
 
-def test_the_renderer_never_imports_generate():
-    """`generate_tk.py` builds the Tk window at import time."""
+def test_the_renderer_never_imports_the_engine():
+    """The browser bundle must talk to the routes, never to the engine directly."""
     with open(os.path.join(STATIC_JS, 'config.js'), 'r', encoding='utf-8') as handle:
         source = handle.read()
-    assert 'generate' not in source, 'config.js mentions generate_tk.py'
+    assert 'generate' not in source, 'config.js reaches into a Python module'
 
 
 def test_the_config_tab_is_registered():

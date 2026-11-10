@@ -1,6 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
+
 __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+input/
 output/
 layout-check/
+
+# Web front end: the session secret and the password hash. Never commit either.
+webapp/state/

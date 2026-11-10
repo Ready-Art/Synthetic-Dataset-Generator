@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Tests for the v12.9 async judge queue (`quality.async_scoring`).
 
@@ -409,7 +407,7 @@ def test_async_writer_takes_the_output_lock():
     # phrasing is what hid it: a judge needs no lock, a writer does.
     #
     # Parsed with ``ast`` rather than imported: this file is headless by contract, and
-    # importing generation.py needs Tk.
+    # importing generation.py is not needed here.
     import ast
     source = open(os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generation.py"),

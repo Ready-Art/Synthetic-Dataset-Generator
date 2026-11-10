@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the v13.2.0 ``{style}`` variable and its run-wide deck.
 
@@ -308,8 +306,11 @@ def test_default_style_variants_are_beginning_instructions():
 # --- 5. the plumbing ----------------------------------------------------------
 
 def _worker_kwarg_names():
-    """The kwargs start_processing passes to generation.worker(), parsed from the AST."""
-    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as handle:
+    """The kwargs control passes to generation.worker(), parsed from the AST.
+
+    ``control.HeadlessController._worker_kwargs`` returns the dict directly.
+    """
+    with open(os.path.join(REPO, "control.py"), encoding="utf-8") as handle:
         tree = ast.parse(handle.read())
 
     def find(node, name):
@@ -318,27 +319,16 @@ def _worker_kwarg_names():
                 return child
         return None
 
-    start = find(tree, "start_processing")
-    passed = set()
-    for call in ast.walk(start):
-        if not isinstance(call, ast.Call):
-            continue
-        # threading.Thread(...) is an Attribute call; a bare Thread(...) is a Name call.
-        func = call.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if name != "Thread":
-            continue
-        for kw in call.keywords:
-            if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
-                passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
-    return passed
+    start = find(tree, "_worker_kwargs")
+    returned = next(node for node in ast.walk(start) if isinstance(node, ast.Return)).value
+    return {k.value for k in returned.keys if isinstance(k, ast.Constant)}
 
 
 def test_the_worker_is_launched_with_the_style_kwargs():
     passed = _worker_kwarg_names()
-    check("start_processing passes style_enabled_local to the worker",
+    check("control passes style_enabled_local to the worker",
           "style_enabled_local" in passed)
-    check("start_processing passes style_list_local to the worker",
+    check("control passes style_list_local to the worker",
           "style_list_local" in passed)
 
 
@@ -525,9 +515,9 @@ def test_app_state_has_the_deck_and_resets_it():
 
     app_state.style_deck = ["x"]
     app_state.styles_pool_key = ("k",)
-    # The reset is a line in generate.reset_all_stats_and_history(); assert the attribute
-    # names it clears so a rename cannot silently leave the deck populated across runs.
-    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as handle:
+    # The reset is a line in control._reset_stats(); assert the attribute names it clears
+    # so a rename cannot silently leave the deck populated across runs.
+    with open(os.path.join(REPO, "control.py"), encoding="utf-8") as handle:
         source = handle.read()
     check("reset_all_stats_and_history clears the style deck",
           "app_state.style_deck = []" in source

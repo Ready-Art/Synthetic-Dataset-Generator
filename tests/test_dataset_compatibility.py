@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Compare the requests the worker sends for dataset-bound inputs with those for the same values typed in.
 
@@ -265,7 +263,7 @@ def _trace(candidate, scenario, destination):
     state.quality_enabled = scenario == "quality_profile"
     state.quality_output_filter = False
     state.use_conversation_history_for_fixers = True
-    state.master_duplication_enabled_var = harness.Var(scenario == "duplication")
+    state.duplication_mode = scenario == "duplication"
     g.MAX_TASK_REQUEUES = 2
     harness.CONFIG.update({
         "generation.max_slop_sentence_fix_iterations": 5,

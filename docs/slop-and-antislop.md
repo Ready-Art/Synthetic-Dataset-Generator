@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🚨 Slop & Anti-Slop — Read This Before You Configure Them
@@ -138,7 +136,7 @@ equivalent: a phrase that does not tokenize the way you assumed silently never m
 
 `auto_unslop.py` runs generate → analyse → update banlists → repeat, comparing against a human writing profile and
 emitting DPO pairs. The generator's lists are hand-maintained: the only feedback loop is you, reading the dashboard and
-typing more phrases into a Tk text box.
+typing more phrases into the Config editor's text box.
 
 ### 10. The fork produces training data; the generator only removes it
 
@@ -229,7 +227,7 @@ detection:
     fixes: ["Rephrase to avoid this pattern."]
 ```
 
-or tick **Enable Slop Detection** / **Enable Anti-Slop Detection** in the Config Editor's Detection tab.
+or tick **Enable Slop Detection** / **Enable Anti-Slop Detection** in the Config editor's Detection panel.
 
 Then, in order of how much pain they save:
 

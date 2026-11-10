@@ -486,7 +486,7 @@ function vllmServerPanels(data) {
 
   const labels = (endpoints.find((row) => (row.history || []).length)?.history || [])
     .map((sample) => {
-      // A relative label is what the Tk panel shows ("seconds ago"), and it is the only one
+      // A relative label ("seconds ago") is the only one
       // that stays readable when the ring is a rolling window.
       const newest = sample.time;
       return String(newest ?? '');

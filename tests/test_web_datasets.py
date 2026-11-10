@@ -3,16 +3,13 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the Datasets panel -- Phase 6d-a.
 
-The Tk panel is 696 lines and its model layer (`dataset_settings.py`) is already GUI-free.
-This file proves the web panel is a **thin client over that same model**, not a second
-implementation of it:
+The model layer (`dataset_settings.py`) is GUI-free by design. This file proves the web
+panel is a **thin client over that same model**, not a second implementation of it:
 
 1. **The persisted shape is the model's.** Every write goes through
    `dataset_settings.normalize_config`, so a source has exactly the 13 keys and an unknown
@@ -941,22 +938,22 @@ def test_no_route_is_reachable_by_a_get_that_writes():
 
 @check('test_the_renderer_has_no_hex_literal')
 def test_the_renderer_has_no_hex_literal():
-    """No hex literal outside `theme.py`, the same rule `ui_theme.py` records."""
+    """No hex literal outside `theme.py`; the palette is the only place a colour lives."""
     import re
     source = open(os.path.join(STATIC_JS, 'datasets.js'), encoding='utf-8').read()
     assert not re.search(r'#[0-9a-fA-F]{3,8}\b', source), 'a hex literal in datasets.js'
 
 
-@check('test_the_renderer_never_mentions_generate')
-def test_the_renderer_never_mentions_generate():
-    """Importing `generate_tk.py` builds the whole Tk window.
+@check('test_the_renderer_never_imports_a_gui_toolkit')
+def test_the_renderer_never_imports_a_gui_toolkit():
+    """The renderer must never reach a GUI toolkit.
 
     The assertion is on the **import**, not on the word: the renderer's own prose says "rows already
-    generated from it", which is a sentence about the user's data, not a reference to the module.
+    generated from it", which is a sentence about the user's data, not a reference to a module.
     """
     source = open(os.path.join(STATIC_JS, 'datasets.js'), encoding='utf-8').read()
-    assert 'import generate_tk' not in source, 'datasets.js imports generate'
-    assert 'generate_tk.py' not in source, 'datasets.js mentions generate_tk.py'
+    for toolkit in ('tkinter', 'ttkbootstrap', 'matplotlib'):
+        assert f'import {toolkit}' not in source, f'datasets.js imports {toolkit}'
 
 
 @check('test_the_renderer_does_not_recompute_the_status')

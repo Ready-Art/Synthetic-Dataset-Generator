@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🧹 Cleaner Pipeline (optional)
@@ -21,9 +19,9 @@ datasets. You point it at a `.jsonl` file, it writes a cleaned copy plus a repor
 record it changed or dropped, and you train on the result.
 
 **The generator does not run it, import it or test it.** It is a separate program that ships
-in `tools/` so you do not need a second checkout. A default run of `generate_tk.py` behaves
-exactly as it did before this tool was added — nothing in the generation path, the config
-schema, the GUI or the dependency list changed.
+in `tools/` so you do not need a second checkout. A default run behaves exactly as it did
+before this tool was added — nothing in the generation path, the config schema, the GUI or
+the dependency list changed.
 
 ---
 
@@ -286,9 +284,9 @@ pattern-finding work an LLM is good at. The intended workflow, in short:
 ## Where it fits in a generator workflow
 
 ```
-input/*.txt ──> generate_tk.py ──> output/*.jsonl ──> tools/cleaner_pipeline ──> train
-                (generate)      (one row per          (optional, on a copy)
-                                 conversation)
+input/*.txt ──> control.HeadlessController ──> output/*.jsonl ──> tools/cleaner_pipeline ──> train
+                (generate)                    (one row per          (optional, on a copy)
+                                               conversation)
 ```
 
 The generator already applies its own post-processing to each turn (`text_utils.py`: reasoning
@@ -333,6 +331,6 @@ Everything lives in [`tools/cleaner_pipeline/`](../tools/cleaner_pipeline/):
 | `01_quote_guard.py` … `09_drop_unbalanced_quotes.py` | The nine stages, each independently runnable |
 | `README.md` | The tool's own full reference: per-stage rationale, the complete "what this will not clean" list, the adaptation loop, design rules and FAQ |
 
-**Not part of the application:** nothing in `generate_tk.py`, `generation.py`, `config_loader.py` or any other
+**Not part of the application:** nothing in `control.py`, `generation.py`, `config_loader.py` or any other
 module imports this package, no config key controls it, no test in `tests/` runs it, and it is not in
 `requirements.txt`. It is a script collection you run by hand, after a run, on a copy of the output.

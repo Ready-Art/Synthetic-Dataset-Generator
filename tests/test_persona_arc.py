@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Tests for the persona/emotional-arc engine helpers -- run directly: `python tests/test_persona_arc.py`.
 
@@ -34,30 +32,6 @@ sys.path.insert(0, REPO)
 import generation as g  # noqa: E402
 
 FAILURES = []
-
-
-class _Var:
-    """Stands in for a Tk variable or text widget: get() returns the stored value whatever its arguments."""
-    def __init__(self, value="0"):
-        self.value = value
-
-    def get(self, *args):
-        return self.value
-
-    def set(self, value):
-        self.value = value
-
-
-class _EditorStub:
-    """Stands in for a ConfigEditor: attributes not given return a _Var holding "0"."""
-    def __init__(self, **attrs):
-        self.__dict__.update(attrs)
-        self.datasets_panel = type("DatasetPanelStub", (), {"get_config": lambda _self: {"sources": []}})()
-
-    def __getattr__(self, name):
-        var = _Var()
-        setattr(self, name, var)
-        return var
 
 
 def check(name, cond):
@@ -201,40 +175,56 @@ def main():
     check("unparsable numbers -> no warning", warn(**dict(plain, num_turns="x"), persona_placement="system",
                                                    emotion_placement="system") == (0.0, ""))
 
-    print("Config editor save (ConfigEditor._get_current_editor_config_data):")
-    import config_editor
+    print("Config editor save (webapp config_tree + config_schema):")
     import yaml
+
+    import webapp.config_schema as config_schema
+    import webapp.config_tree as config_tree
+
     typed = "She's \"Mel\" <the clockmaker> \\ can't"
-    fields = ['name', 'age', 'gender', 'race', 'job', 'eye_color', 'hair', 'hair_color', 'clothing', 'jewelry',
-              'appearance', 'traits', 'backstory', 'persona', 'personality', 'setting', 'class', 'greeting']
-    editor = _EditorStub(
-        character_entries=[{k: _Var(typed) for k in fields}],
-        emotional_states_text=_Var("calm -> wary -> tense\ncan't settle\n"),
-        enable_setting_selection_var_editor=_Var(True),
-        _sync_character_text_values=lambda: None,
-        on_gender_change_editor_handler=lambda save_current=True: None,
-        _profile_label_to_name=lambda label: label,
-        global_config=_EditorStub(config={}),
-        persona_placement_var_editor=_Var("system"),
-        emotion_placement_var_editor=_Var("depth0"),
-        per_char_random_emotions_var_editor=_Var(True),
-    )
-    saved = config_editor.ConfigEditor._get_current_editor_config_data(editor)['prompts']
-    states = saved['emotional_states']['states']
+    # `age` is validated as a whole number, so the free-text round trip covers the
+    # string fields only; `age` gets a value the validator accepts.
+    fields = ['name', 'gender', 'race', 'job', 'eye_color', 'hair', 'hair_color',
+              'clothing', 'jewelry', 'appearance', 'traits', 'backstory', 'persona',
+              'personality', 'setting', 'class', 'greeting']
+    typed_fields = dict({name: typed for name in fields}, age='59')
+    with open(os.path.join(REPO, "config", "config.yml"), encoding="utf-8") as f:
+        tree = config_tree.loads(f.read())
+
+    config_tree.set_value(tree, 'prompts.emotional_states.states',
+                          ["calm -> wary -> tense", "can't settle"])
+    config_tree.set_value(tree, 'prompts.emotional_states.placement', 'depth0')
+    config_tree.set_value(tree, 'prompts.emotional_states.per_character', True)
+    config_tree.set_value(tree, 'prompts.persona_breakthrough_placement', 'system')
+    for name, value in typed_fields.items():
+        config_tree.set_value(tree, f'prompts.character.characters.0.{name}', value)
+
+    states = config_tree.get(tree, 'prompts.emotional_states.states')
     check("arc saved as typed", states[0] == "calm -> wary -> tense")
     check("saved arc still splits into stages", split(states[0]) == ("calm", "wary", "tense"))
     check("state with an apostrophe saved as typed", states[1] == "can't settle")
     check("both placements saved",
-          saved['character']['persona_breakthrough_placement'] == "system"
-          and saved['emotional_states']['placement'] == "depth0")
+          config_tree.get(tree, 'prompts.persona_breakthrough_placement') == "system"
+          and config_tree.get(tree, 'prompts.emotional_states.placement') == "depth0")
     check("per-character emotions toggle saved under emotional_states.per_character",
-          saved['emotional_states']['per_character'] is True)
-    profile = saved['character']['characters'][0]
-    check("every profile field saved as typed", all(profile[k] == typed for k in fields))
-    # Same dump arguments as ConfigEditor.save_config_handler
-    reloaded = yaml.safe_load(yaml.dump(saved, sort_keys=False, indent=2, default_flow_style=False))
+          config_tree.get(tree, 'prompts.emotional_states.per_character') is True)
+    profile = config_tree.get(tree, 'prompts.character.characters.0')
+    check("every profile field saved as typed",
+          all(profile[name] == value for name, value in typed_fields.items()))
+    check("the edited tree still validates",
+          not config_schema.validate(tree, {
+              'prompts.emotional_states.states': states,
+              'prompts.emotional_states.placement': 'depth0',
+              'prompts.emotional_states.per_character': True,
+              'prompts.persona_breakthrough_placement': 'system',
+              **{f'prompts.character.characters.0.{name}': value
+                 for name, value in typed_fields.items()},
+          }))
+    # A save writes the whole document back, so a reload must be identical.
+    reloaded = yaml.safe_load(config_tree.dumps(tree))
     check("typed text survives the YAML file",
-          reloaded['emotional_states']['states'] == states and reloaded['character']['characters'][0] == profile)
+          reloaded['prompts']['emotional_states']['states'] == states
+          and reloaded['prompts']['character']['characters'][0] == profile)
 
     print()
     if FAILURES:

@@ -26,8 +26,8 @@ import { CONFIG_TAB } from './config.js';
 import { DATASETS_TAB } from './datasets.js';
 import { PROFILES_TAB } from './profiles.js';
 
-// The tab order follows the Tk notebook, with Review second because it is the
-// screen the maintainer named. `unmount` is called when a tab is left so a return
+// Review is second because it is the screen the maintainer named. `unmount` is called
+// when a tab is left so a return
 // re-fetches rather than showing a stale list.
 const TABS = [
   { id: 'overview', label: 'Overview', render: renderOverview },

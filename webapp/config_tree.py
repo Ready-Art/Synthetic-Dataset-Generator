@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """The config tree -- the storage model behind the web Config editor.
 
@@ -17,11 +15,11 @@ neither, so this module holds the tree and the schema is only decoration on top 
 
 Why this exists at all
 ---------------------
-``config_editor.py`` builds a **fresh** ``config_data = {...}`` literal in
-``_get_current_editor_config_data()`` and ``save_config_handler`` dumps it over ``config.yml`` with
-**no merge**. Every key the Tk editor does not know about is silently dropped on save. This module
-does the opposite: it loads the file into a dict, edits that dict in place, and writes the whole dict
-back, so a round trip is lossless. ``tests/test_web_config_tree.py`` asserts that byte for byte.
+A naive editor builds a **fresh** ``config_data = {...}`` literal and dumps it over
+``config.yml`` with **no merge**, so every key it does not know about is silently dropped on save.
+This module does the opposite: it loads the file into a dict, edits that dict in place, and writes
+the whole dict back, so a round trip is lossless. ``tests/test_web_config_tree.py`` asserts that
+byte for byte.
 
 Why it is not just ``yaml.dump``
 -------------------------------

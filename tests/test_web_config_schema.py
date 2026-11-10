@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the Config editor's schema -- Phase 6c.
 
@@ -580,9 +578,10 @@ def test_the_renderer_still_has_no_hex_literal():
     assert not re.search(r'#[0-9a-fA-F]{3,8}\b', source), 'a hex colour leaked into config.js'
 
 
-def test_the_renderer_never_imports_generate():
+def test_the_renderer_never_imports_a_gui_toolkit():
     source = _renderer()
-    assert 'generate_tk' not in source, 'config.js mentions the Tk window'
+    for toolkit in ('tkinter', 'ttkbootstrap', 'matplotlib'):
+        assert toolkit not in source, f'config.js mentions {toolkit}'
 
 
 def test_the_renderer_parses():
@@ -604,10 +603,11 @@ def test_the_schema_module_has_no_hex_literal():
     assert not re.search(r'#[0-9a-fA-F]{6}\b', source)
 
 
-def test_the_schema_does_not_import_generate():
+def test_the_schema_does_not_import_a_gui_toolkit():
     with open(os.path.join(REPO, 'webapp', 'config_schema.py'), encoding='utf-8') as handle:
         source = handle.read()
-    assert 'import generate_tk' not in source
+    for toolkit in ('tkinter', 'ttkbootstrap', 'matplotlib'):
+        assert f'import {toolkit}' not in source, f'config_schema.py imports {toolkit}'
 
 
 def test_every_schema_entry_has_a_label():

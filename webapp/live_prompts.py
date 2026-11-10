@@ -3,17 +3,14 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """The Live Prompt Viewer's data layer -- a ring of the last prompts sent to an API.
 
-``generation.py`` already calls ``update_live_prompt_preview(messages, metadata)`` before every
-request, and that shim forwards to whatever ``app_state.live_prompt_preview_hook`` holds. The Tk
-window registers a hook that writes into a Text widget. The web app has no widget, so it
-registers this module's :func:`record` instead and the browser reads a route.
+``generation.py`` calls ``update_live_prompt_preview(messages, metadata)`` before every
+request, and that shim forwards to whatever ``app_state.live_prompt_preview_hook`` holds. The web
+app registers this module's :func:`record` as that hook, and the browser reads a route.
 
 **Why a ring and not a queue.** This is a debugging view of what is being sent *right now*. A
 reader who opens the tab wants the most recent request, not a backlog from ten minutes ago, and
@@ -31,7 +28,6 @@ has nothing to do with the API. Every entry point catches.
 
 What this module must never do
 ------------------------------
-* **Never import ``generate_tk.py``.** It builds the whole Tk window at import time.
 * **Never keep a reference to the caller's list.** ``generation.py`` reuses its ``messages`` list
   across attempts in some paths, so a stored reference would silently rewrite history.
 """
@@ -41,8 +37,8 @@ import time
 
 import app_state
 
-# How many prompts the viewer keeps. The Tk tab showed one at a time; a ring of 40 is enough to
-# see a retry sequence without holding a whole run in memory.
+# How many prompts the viewer keeps. A ring of 40 is enough to see a retry sequence without
+# holding a whole run in memory.
 RING_LENGTH = 40
 
 # The largest body a single entry will carry. A prompt is normally a few KB; a runaway one
@@ -127,7 +123,7 @@ def record(messages, metadata=None):
                 'attempt': metadata.get('attempt'),
                 'turns': turns,
                 'chars': total_chars,
-                # The Tk tab's own estimate, kept identical so the two views agree.
+                # A rough estimate, good enough to compare one prompt against another.
                 'approx_tokens': total_chars // 4,
                 'truncated': truncated,
             }
@@ -172,8 +168,8 @@ def install():
 def uninstall():
     """Detach the hook, but only if it is still ours.
 
-    A test (or a future Tk window sharing the process) may have replaced it; clearing someone
-    else's hook would silently disable their preview.
+    A test may have replaced it; clearing someone else's hook would silently disable their
+    preview.
     """
     global _installed
     if app_state.live_prompt_preview_hook is record:

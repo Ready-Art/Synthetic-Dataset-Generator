@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 #api_handler.py
 import atexit
@@ -186,7 +184,7 @@ atexit.register(close_http_session)
 # fixers and the judge too, without configuring anything new.
 THINKING_MODES = ("inherit", "default", "enable", "disable")
 
-# The per-request thinking settings, in one place so the config editor, the docs and
+# The per-request thinking settings, in one place so the Config editor, the docs and
 # the tests agree on the spelling.
 #
 # These are deliberately SIBLING keys, NOT entries inside `slop_fixer_params` /
@@ -204,7 +202,7 @@ def _normalise_thinking_mode(value):
     """Map a raw config value onto one of THINKING_MODES.
 
     Accepts the pre-v11 boolean form as well (True meant "send disable", False
-    meant "send nothing"), matching what the config editor does on load, and falls
+    meant "send nothing"), matching what the Config editor does on load, and falls
     back to ``inherit`` for anything unrecognised so a typo cannot silently turn
     thinking back on for a model the user asked to keep quiet.
     """

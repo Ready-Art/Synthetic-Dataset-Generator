@@ -3,17 +3,14 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""The Profiles panel's routes -- Phase 6d-b.
+"""The Profiles panel's routes.
 
-The last bespoke widget. The Tk editor's Profiles tab is three buttons over
-`ConfigLoader.list_profiles` / `save_profile` / `delete_profile` /
-`load_profile_to_main_config`; this module is the same three operations, plus the preview a
-destructive load needs and the two safety rules the model layer does not have.
+The panel is three operations over `ConfigLoader.list_profiles` / `save_profile` /
+`delete_profile` / `load_profile_to_main_config`, plus the preview a destructive load needs
+and the two safety rules the model layer does not have.
 
 Why this is not a thin wrapper over `ConfigLoader`
 --------------------------------------------------
@@ -30,14 +27,13 @@ methods are unsafe informationaly:
   argument, so `name = '../../config/config'` resolves to the live `config.yml` -- a delete
   of the running config, or a load of it. `_check_name` closes that here by requiring the
   name to survive `ConfigLoader`'s own sanitization **unchanged** and by checking the
-  resolved path's parent. The underlying `config_loader.py` bug is not fixed here: that file
-  is shared with the Tk editor.
+  resolved path's parent. The underlying `config_loader.py` bug is not fixed here.
 
 Why a profile is written with the secrets masked
 ------------------------------------------------
-`config_editor._get_current_editor_config_data` puts `key` into `api.apis.*` and
-`quality.scoring_api`, so a profile is a **whole config document including the 9 secret
-leaves** -- and `config/profiles/` is not gitignored. A profile saved from here therefore
+A profile is a **whole config document including the 9 secret leaves** -- `key` in
+`api.apis.*` and in `quality.scoring_api` -- and `config/profiles/` is not gitignored. A profile
+saved from here therefore
 holds `***` where a secret was, and a load puts the *current* real value back through
 `config_tree.merge_secrets`. That keeps a key out of a directory that can be committed
 without blanking the key when the profile is applied.
@@ -525,7 +521,7 @@ async def _json_body(request: Request):
 
     The parameter must be annotated ``Request``: an unannotated one is read by FastAPI as a
     **query** field, so every request would be rejected with a 422 before the body was looked
-    at. That is the trap Phase 6b found on the first live save.
+    at. That is a trap found on the first live save.
     """
     import json
 

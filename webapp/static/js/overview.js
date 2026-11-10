@@ -19,8 +19,8 @@
  *   page fits 1440x900 with no scrolling.
  * - Progress is **one row per slot** with a label, a track and a percentage -- not a stack of
  *   full-width bars.
- * - Long values **ellipsize with a `title` tooltip** and the card grows. The Tk bug was a
- *   22px value inside `wraplength=220` inside a 180px grid cell; there is no wraplength here.
+ * - Long values **ellipsize with a `title` tooltip** and the card grows, so a long value can
+ *   never be clipped by a fixed-width cell.
  *
  * Every screen must fit 1440x900 with no page scroll. If it needs one, the layout is wrong.
  */
@@ -50,8 +50,8 @@ const SECONDARY_METRICS = [
   { key: 'scene_continuity', caption: 'Cast drift' },
 ];
 
-// The seven Overview issue panels, in the Tk order, with Errors excluded (the old
-// "Totals" set). The key matches `detected.<key>` in the stats payload.
+// The seven Overview issue panels, with Errors excluded (the "Totals" set). The key
+// matches `detected.<key>` in the stats payload.
 const ISSUE_PANELS = [
   { key: 'refusals', title: 'Refusals', colour: 'danger' },
   { key: 'user_speaking', title: 'User speaking', colour: 'warn' },
@@ -62,7 +62,7 @@ const ISSUE_PANELS = [
   { key: 'regex_watch', title: 'Regex watch', colour: 'accent' },
 ];
 
-// The graph series, in the Tk order. Colours come from the palette tokens.
+// The graph series. Colours come from the palette tokens.
 const GRAPH_SERIES = [
   { key: 'refusals', name: 'Refusals', token: '--danger' },
   { key: 'out_of_character', name: 'OOC', token: '--warn' },
@@ -603,8 +603,8 @@ function graphPanel(stats) {
  * A cumulative series for one counter.
  *
  * The payload's `recent` list is the last 50 issues, not a time series, so the graph
- * is built by walking the per-issue timestamps in order and counting up. That is what
- * the Tk graph shows: how the count grew over the run, not an instantaneous rate.
+ * is built by walking the per-issue timestamps in order and counting up. That shows how
+ * the count grew over the run, not an instantaneous rate.
  */
 /**
  * Run `draw` once `panel` is in the document, on the next frame or shortly after.

@@ -3,14 +3,12 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the Profiles panel -- Phase 6d-b.
 
-The Tk Profiles tab is three buttons over `ConfigLoader`. This file proves the web panel is
+The Profiles panel is three buttons over `ConfigLoader`. This file proves the web panel is
 the same three operations **without the two hazards the model layer carries**:
 
 1. **A load does not `yaml.dump` `config.yml`.** `load_profile_to_main_config` does, and that
@@ -673,10 +671,10 @@ def test_the_renderer_has_no_hex_literal():
 
 @check('test_the_renderer_never_mentions_generate')
 def test_the_renderer_never_mentions_generate():
-    """Importing `generate_tk.py` builds the whole Tk window."""
+    """The renderer must never reach a GUI toolkit."""
     source = open(os.path.join(STATIC_JS, 'profiles.js'), encoding='utf-8').read()
-    assert 'import generate_tk' not in source, 'profiles.js imports generate'
-    assert 'generate_tk.py' not in source, 'profiles.js mentions generate_tk.py'
+    for toolkit in ('tkinter', 'ttkbootstrap', 'matplotlib'):
+        assert f'import {toolkit}' not in source, f'profiles.js imports {toolkit}'
 
 
 @check('test_the_renderer_does_not_reimplement_the_name_rule')

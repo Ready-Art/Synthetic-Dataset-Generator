@@ -3,22 +3,17 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""The Review tab's data layer, with no Tk in it.
+"""The Review tab's data layer.
 
-The Review tab is the one screen the maintainer named by hand, and it is the one screen
-``control.py`` cannot serve: ``HeadlessController`` has no verb for "list the flagged
-conversations", "read this one", "drop it" or "dismiss them all". Those four operations
-live in ``generate_tk.py`` today, which builds the whole Tk window at import time and so cannot
-be reached from the web app.
+The Review tab is the one screen ``control.py`` cannot serve: ``HeadlessController`` has no verb
+for "list the flagged conversations", "read this one", "drop it" or "dismiss them all". Those
+four operations live here, and ``webapp/review_routes.py`` is the only caller.
 
-This module is the GUI-free home for them. It is the same logic, moved rather than
-rewritten, and it is what ``webapp/review_routes.py`` calls. ``generate_tk.py`` keeps its own
-copy for now; Phase 10 removes the Tk entry point and this becomes the only one.
+This module is deliberately GUI-free: it reads and writes ``app_state`` and returns plain dicts,
+so it can be exercised with no display and no running server.
 
 **Why this is a separate module and not a ``control.py`` verb.** ``control.py`` is the
 engine seam and its verb list is a contract the CLI depends on. Adding four verbs there
@@ -140,7 +135,7 @@ def find_record(task_id):
 def format_conversation(record):
     """A readable transcript of one output row: ShareGPT ``conversations[]`` or ``messages[]``.
 
-    Returns a list of ``(label, text)`` pairs, with the role mapped to the label the Tk
+    Returns a list of ``(label, text)`` pairs, with the role mapped to the label the Review
     tab shows (``USER`` / ``ASSISTANT`` / ``SYSTEM``).
     """
     turns = []
@@ -183,7 +178,7 @@ def list_flagged(filter_text=''):
 
     Each row is ``{task_id, display_id, composite, lowest_dim, lowest_value, flags,
     source_file, scored_at, severity}``. ``severity`` is ``critical`` below 40 and
-    ``warning`` otherwise -- the same two tags the Tk table colours.
+    ``warning`` otherwise -- the two severities the Review table colour-codes.
     """
     with app_state.quality_review_lock:
         review_ids = sorted(app_state.quality_review_ids)

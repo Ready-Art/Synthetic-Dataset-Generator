@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Regression tests for the four Web UI bugs found after v15.0.0.
 
@@ -20,7 +18,7 @@ missing -- so each test asserts the thing that was actually broken, not a proxy 
 2. **The Metrics graphs were empty while the table had data.** The table is written by
    the generation threads (`note_slot_usage`), but the ring the graphs draw is only
    appended to by the vLLM poller -- and the web app never started it, because
-   `start_polling()` lived in `generate_tk.py`.
+   `start_polling()` used to be started by the front end itself.
 3. **Download dataset was a 404 page.** The route is correct; the button navigated the
    whole tab to it, so a run with no rows yet replaced the app with a raw JSON error.
 4. **Two panels were clipped.** The graph panel and the Review detail header were both
@@ -109,7 +107,7 @@ def test_record_recent_caps_the_ring():
 
 
 def test_record_recent_keeps_the_task_level_sentinel():
-    """`-1` means "not tied to a slot", which the dashboard already used."""
+    """`-1` means "not tied to a slot", which the web UI already used."""
     bucket = []
     app_state.record_recent(bucket, 'task error', '', -1)
     assert bucket[0]['api'] == -1, bucket[0]
@@ -132,21 +130,6 @@ def test_the_stats_payload_sends_recent_as_objects():
         assert entry['time'], 'the Time column would be blank'
     finally:
         app_state.recent_refusals_total = saved
-
-
-def test_the_tk_dashboard_understands_the_dict_shape():
-    """The Tk dashboard reads the same rings, so it must not be left behind.
-
-    Changing the ring shape without updating `dashboard.update_modern_issue_panel` would have
-    moved the bug from the browser to the Tk window: every row would read "N/A".
-    """
-    source = open(os.path.join(os.path.dirname(os.path.abspath(theme.__file__)), '..',
-                               'dashboard.py'), encoding='utf-8').read()
-    block = source.split('def update_modern_issue_panel', 1)[1].split('def _fit_issue_graph', 1)[0]
-    assert 'isinstance(item, dict)' in block, (
-        'the Tk issue panel does not handle the dict shape, so it would show N/A')
-    for field in ('phrase', 'context', 'api', 'time'):
-        assert f'"{field}"' in block, f'the Tk panel does not read {field!r}'
 
 
 def test_the_stats_payload_normalises_a_legacy_tuple():
@@ -193,7 +176,7 @@ def test_the_issue_table_renders_the_time_column():
 # --- 2. the metrics poller runs in the web app ----------------------------
 
 def test_the_engine_starts_the_metrics_poller():
-    """The web app has no Tk window, so it must start the poller itself."""
+    """The web app has no separate GUI process, so it must start the poller itself."""
     source = _read('../../engine.py')
     assert 'vllm_metrics' in source, 'the engine does not import the metrics module'
     assert 'start_polling' in source, (

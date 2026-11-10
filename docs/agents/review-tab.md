@@ -4,112 +4,113 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
-# Review tab and tab badges
+# Review tab and its count line
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
-**Read this when:** you are touching the Review tab, its count badge, the flagged-id set, or any code that identifies a dashboard tab by its label.
+**Read this when:** you are touching the Review tab, its count line, the flagged-id set, or `review_data.py`.
 
-**Related:** [`docs/agents/generate-ui.md`](generate-ui.md) (the rest of the Tk window), [`docs/agents/quality.md`](quality.md) (what produces a flag), [`docs/agents/dashboard.md`](dashboard.md)
+**Related:** [`docs/agents/webapp.md`](webapp.md) (the routes, the tab registry and the theme), [`docs/agents/quality.md`](quality.md) (what produces a flag)
 
 ## Contents
 
-- Tab labels are mutable — compare the BASE name
+- The count is a separate element, never part of the tab label
 - The Review tab
-- Drop Selected
+- Drop selected
 - Dropped conversations
 - Review flags persist
-- `tests/test_review_tab_ui.py`
+- `tests/test_web_review.py`
 - Tasks that touch these files
 
 ---
 
-## Tab labels are mutable — compare the BASE name (v14.2.1)
+## The count is a separate element, never part of the tab label (v14.2.1)
 
-The Review tab's label carries a live count: `"Review"` at zero, `"Review (5)"` once five
-conversations are flagged. **Any code that identifies a dashboard tab by comparing
-`notebook.tab(id, "text")` to a `ui_theme.TAB_*` constant must go through
-`ui_theme.tab_base_name()`.** The badge string itself comes from
-`ui_theme.tab_badge(name, count)` / `TAB_BADGE_TEMPLATE`; never build it inline.
+The Review screen shows a live count — `0 flagged`, `5 flagged` — in a `<span class="review-count">`
+in its toolbar. **It is its own element, and the tab's label stays the constant string `Review`.**
 
-The four sites that must use the helper:
+That separation is the fix for the v14.2.1 bug. When the count was folded into the tab label, the
+moment it appeared the screen decided it was no longer the visible one and stopped rebuilding: the
+tab read `Review (5)` above an empty list, while Export — which reads `quality_review_ids` directly,
+not the rendered list — still wrote all five rows. Nothing was lost; the list simply stopped being
+drawn.
 
-1. `generate._active_dashboard_tab_text()` — feeds every gated per-tick refresher
-   (`_update_review_table()`, `update_quality_tab()`, `_update_regex_watch_tab()`,
-   `_update_metrics_tab()`).
-2. `dashboard._active_dashboard_tab_text()` — feeds the issue panels and the graph.
-3. The tab-strip reorder loop in `generate_tk.py`.
-4. The badge writer in `update_quality_display()` — which also froze at its last value,
-   because it looked its own tab up by the label it had just changed.
+The same rule holds in the web UI for a different reason: `webapp/static/js/main.js` keys its
+screens by `id` (`review`), and `webapp/static/js/tabs.js`'s `makeTab()` re-fetches on mount. A label
+is display text; an identifier is an id. Never derive one from the other.
 
-**This is the v14.2.1 bug.** `_active_dashboard_tab_text()` returned the raw label, so the
-moment the badge appeared the Review table decided it was not the visible tab and stopped
-rebuilding. The tab showed `Review (5)` above an empty list, while Export (which reads
-`quality_review_ids` directly, not the table) still wrote all five rows. Nothing was lost —
-the list simply stopped being drawn.
-
-Guarded by `tests/test_review_tab_ui.py::test_05a_badge_does_not_hide_the_list` (the exact
-refresh → badge → tick sequence) and `test_05c_tab_badge_helpers_round_trip` (the helpers,
-including that a real bracketed tab name such as `"Metrics (vLLM)"` is left alone).
+Guarded by `tests/test_web_review.py::test_the_counts_report_the_two_drop_reasons_apart` (the two
+drop reasons stay apart) and `test_the_selection_survives_a_stats_tick` (the screen refreshes on
+mount, not on every tick).
 
 ---
 
 ## The Review tab (v11.4)
 
-A fixed, non-scrolling split view (`page_scroll.grid_remove()` + a `review_page` frame),
-because nesting a scrolling table and a scrolling Text in the page's `ScrollableFrame` made
-both unusable.
+A fixed, non-scrolling two-pane split at `1fr / 1.15fr` — the flagged list on the left, the
+conversation detail on the right, the detail slightly wider because it holds prose. Both panes carry
+`min-height: 0` so each scrolls on its own; without it a long transcript pushes the footer strip off
+the screen. The split collapses to one column on a narrow screen.
 
-Widget registry keys: `review_page`, `review_tree`, `review_filter_var`,
-`review_count_label`, `detail_text`, `review_signature`, `review_detail_task`.
+`webapp/static/js/review.js` holds the screen: `renderReview()` / `unmountReview()` (the tab registry
+calls them), `refresh()`, `loadDetail()`, `select()`, `act()`, and the pane builders. The selection and
+the loaded detail live at **module scope**, so a stats tick repaints the panes instead of resetting the
+reader's place in a conversation. A slower detail response for a row the reader has already left is
+dropped (`if (state.selected !== taskId) return`), so it cannot overwrite the newer one.
 
-Helpers: `_record_belongs_to_task()` (id matching, `_api` suffix for duplication rows),
-`_review_output_files()` / `_iter_review_records()` (main output + per-API files + database),
-`_find_review_record()`, `_format_review_conversation()` (ShareGPT `conversations[]` or
-`messages[]`), `_review_signature()` / `_update_review_table(force=False)` (rebuild only on
-change so a tick never clears the selection), `_show_review_detail(review_tree, force=False)`
-(skips re-render of the same selection so the scroll position survives),
-`_export_flagged_review()`, `_drop_review_conversation()`.
+`review_data.py` is the data layer and is deliberately GUI-free: it reads and writes `app_state` and
+returns plain dicts, so it can be exercised with no display and no running server. It is a separate
+module rather than a `control.py` verb because `control.py`'s verb list is a contract the CLI depends
+on, and adding four browser-only verbs would change that contract and the socket protocol.
 
-**The Treeview item id is the FULL task id** — never reintroduce a truncated display id in
-the item id or in the detail lookup. `<<TreeviewSelect>>` (single click) opens the
-transcript; the detail pane must keep its own scrollbar and stay out of the page canvas.
+Helpers: `record_belongs_to_task()` (id matching, `_api` suffix for duplication rows),
+`output_files()` / `iter_records()` (main output + per-API files + database), `find_record()`,
+`format_conversation()` (ShareGPT `conversations[]` or `messages[]`), `signature()` / `list_flagged()`
+(the list, filtered by task id), `counts()`, `detail()`, `export_flagged()`, `dismiss_all()`, `drop()`.
+
+**The row's key is the FULL task id** — never reintroduce a truncated display id in the row key or in
+the detail lookup. Selecting a row only re-renders the detail pane; it never navigates away, and the
+detail pane keeps its own scrollbar.
+
+The score breakdown is a **footer strip** pinned below the transcript (Coherence / Character / Prose /
+Overall, plus the method), colour-coded by threshold: below 50 is danger, below 70 warn, otherwise ok,
+and an unknown value is muted. It only appears when there is a score.
 
 ---
 
-## 🗑 Drop Selected (v12.8.2)
+## 🗑 Drop selected (v12.8.2)
 
-The only Review action that CHANGES the dataset (Export copies elsewhere, Dismiss All only
-clears flags). `_drop_review_conversation()` acts on the Treeview selection and nothing
-else — an empty selection is a no-op message, never a dataset-wide delete — behind a
-`messagebox.askyesno` confirmation.
+The only Review action that CHANGES the dataset (Export copies elsewhere, Dismiss All only clears
+flags). `review_data.drop(task_id)` acts on the selected task id and nothing else — an empty selection
+is a message in the browser, never a dataset-wide delete — behind a `window.confirm()` in `review.js`.
+The route does not rely on that confirmation: **drop is a POST with the task id in the path**
+(`POST /api/review/{task_id}/drop`), so a link, a prefetch or a stale tab cannot fire it.
 
 Helpers:
 
 - `_drop_task_output_rows(task_id)` rewrites each output JSONL to a `.droptmp` neighbour and
-  `os.replace()`s it into place. A corrupt/undecodable line is copied through, never
-  discarded, because it cannot be attributed to the task.
+  `os.replace()`s it into place. A corrupt/undecodable line is copied through, never discarded,
+  because it cannot be attributed to the task.
 - `_drop_task_db_rows(task_id)` deletes
   `task_id = %s OR substring(task_id from 1 for len+4) = '<task_id>_api'` — **deliberately
   no `LIKE`**, since a task id comes from a source file name and an unescaped `%`/`_` pattern
   could match another task.
 
-Both use the `_record_belongs_to_task()` rule, so a task whose id is a PREFIX of the dropped
-one survives. The whole rewrite runs under **`app_state.output_data_lock`** (shared state, not
-the per-run local `start_processing()` used to create — the drop must take the same lock as a
-worker's append), then the task is recorded in `quality_dropped` as
-`quality.DROP_REASON_MANUAL`, added to `dropped_task_ids`, removed from `quality_scores` and
-`quality_review_ids`, and `save_generation_state()` is called. The count line reports manual
-drops separately (`dropped by you`) from judge drops.
+Both use the `record_belongs_to_task()` rule, so a task whose id is a PREFIX of the dropped one
+survives. The whole rewrite runs under **`app_state.output_data_lock`** (shared state, not the per-run
+local `start_processing()` used to create — the drop must take the same lock as a worker's append),
+then the task is recorded in `quality_dropped` as `quality.DROP_REASON_MANUAL`, added to
+`dropped_task_ids`, removed from `quality_scores` and `quality_review_ids`, and
+`save_generation_state()` is called. `counts()` reports manual drops separately (`dropped by you`)
+from judge drops, because mixing them made the line read as if the judge had rejected a row the user
+removed by hand.
 
-`tests/test_review_tab_ui.py` guards the scope: prefix-id row survives, duplication rows go,
-corrupt line survives, cancel/empty selection drop nothing.
+`tests/test_web_review.py` guards the scope: prefix-id row survives, duplication rows go, corrupt line
+survives, cancel/empty selection drop nothing.
 
 ---
 
@@ -125,10 +126,9 @@ and never enter `quality_review_ids`.
 
 `quality_review_ids` is saved as a sorted list via `generation._review_ids_snapshot()` (which
 takes `quality_review_lock`; iterating the live set from a judge thread raises
-`RuntimeError: Set changed size during iteration`) and restored by both loaders
-(`generate.load_generation_state()` and `control.py`'s resume path).
+`RuntimeError: Set changed size during iteration`) and restored by `control.py`'s `_load_state()`.
 
-A state file written before this release has no such key, so both fall back to
+A state file written before this release has no such key, so the loader falls back to
 `generation._derive_review_ids(scores, dropped)` — below `quality.min_score_threshold` and not
 dropped, the same rule the scoring path applies.
 
@@ -137,10 +137,10 @@ Export found nothing to write.
 
 ---
 
-### `tests/test_review_tab_ui.py`
-**Purpose:** Display-dependent regression test for the v11.4 Review tab (builds the REAL `generate_tk.py` UI; skips cleanly without a display)
-**Key:** full-task-id Treeview items + single-click selection; transcript rendered from the output JSONL; the detail pane is read-only and scrollable; a refresh tick keeps the selection and the scroll position; Export Flagged → JSONL writes every row with `_quality_score`; the filter narrows and restores the list; (v12.8.2) the tab offers a **Drop Selected** action, and a drop removes ONLY the selected task's rows — a task whose id is a strict PREFIX of the dropped one survives, the task's `_api` duplication rows go with it, a corrupt (non-JSON) line is copied through, and cancelling the confirmation or dropping with an empty selection changes nothing; (v14.2.1) the count badge does not hide the list, `_active_dashboard_tab_text()` returns the base name in BOTH modules, the badge helpers round-trip, and the flags survive a state round-trip (including the derived fallback for a pre-v14.2.1 state file)
-**Run:** `python -B tests/test_review_tab_ui.py` (needs a display, e.g. under `xvfb-run`)
+### `tests/test_web_review.py`
+**Purpose:** Headless regression test for the Review tab: the route table, `review_data.py` and the browser module's source. No display, no server, no real `output/`.
+**Key:** the two-pane split is `1fr / 1.15fr` and both panes can shrink so each scrolls on its own; selecting a row only reloads the detail pane and never changes the URL; a repaint replaces the panes rather than the page, so the filter input's focus and the list's scroll survive; the selection survives a stats tick; a slow detail response cannot overwrite a newer selection; the footer strip has the four dimensions plus the method, is colour-coded by threshold, is pinned below the transcript, and only appears when there is a score; **drop is a POST with the task id in the path**, acts on the selection only, asks before destroying data and refuses to guess a target; dismiss and export are separate routes; the export button downloads in the browser and the download route answers an attachment; the counts report the two drop reasons apart; `record_belongs_to_task()` does not widen `abc` into `abcdef`; a non-JSON line is never discarded by a drop; `drop()` records `quality_dropped[task_id] == 'manual'` and clears the score; `dismiss_all()` clears the flags and deletes no data; `export_flagged()` always rewrites the file and reports the ids it could not find
+**Run:** `python -B tests/test_web_review.py`
 **Edit for:** Add Review-tab behaviour cases; keep it free of source data, generation runs, network and model APIs
 
 ---
@@ -149,6 +149,6 @@ Export found nothing to write.
 
 | Task | Files to edit |
 |------|---------------|
-| Change the Review tab | `generate_tk.py` (`_update_review_table()`, `_show_review_detail()`, `_export_flagged_review()`, `_drop_review_conversation()` + `_drop_task_output_rows()` / `_drop_task_db_rows()`, `_iter_review_records()`, the `elif tab_name == ui_theme.TAB_REVIEW` layout block), `tests/test_review_tab_ui.py` |
-| Add or change a tab count badge, or identify a tab by its label | `ui_theme.py` (`tab_badge()`, `tab_base_name()`, `TAB_BADGE_TEMPLATE`) + every label comparison listed above; `tests/test_review_tab_ui.py::test_05a` / `test_05c` |
-| Persist or restore a per-task quality set across a resume | `generation.py` (`_build_generation_state_data()`, `_review_ids_snapshot()`, `_derive_review_ids()`), `generate_tk.py` (`load_generation_state()`), `control.py` (resume path), `tests/test_review_tab_ui.py::test_05d` |
+| Change the Review tab | `webapp/static/js/review.js` (the panes, the toolbar, the actions), `webapp/review_routes.py` (the six routes), `review_data.py` (`list_flagged()`, `detail()`, `drop()` + `_drop_task_output_rows()` / `_drop_task_db_rows()`, `dismiss_all()`, `export_flagged()`), `tests/test_web_review.py` |
+| Change the count line or the flagged list's filter | `review_data.py` (`counts()`, `list_flagged()`), `webapp/static/js/review.js` (`countLine()`), `tests/test_web_review.py` |
+| Persist or restore a per-task quality set across a resume | `generation.py` (`_build_generation_state_data()`, `_review_ids_snapshot()`, `_derive_review_ids()`), `control.py` (`_load_state()`), `tests/test_web_review.py` |

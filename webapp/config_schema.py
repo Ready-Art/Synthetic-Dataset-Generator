@@ -3,12 +3,10 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""The Config editor's schema -- Phase 6c, decoration and validation.
+"""The Config editor's schema: decoration and validation.
 
 **This is not the storage model.** The tree in :mod:`webapp.config_tree` is the source of truth
 and every leaf in it renders whether or not it has an entry here.
@@ -17,11 +15,9 @@ What this module adds is the two things the generic renderer cannot know:
 * **Decoration** -- a human label, a help line, and for a fixed-choice field the list of choices,
   so the editor stops showing ``judge_structured_output`` and starts showing "Judge Structured
   Output" with a dropdown.
-* **Validation** -- the 60-odd range, enum, URL, regex and cross-field checks that
-  ``config_editor.py:validate_config_handler`` runs before ``save_config_handler`` writes. That
-  method is the only thing standing between a typo and a run that fails an hour in, so it has to
-  survive the move to the browser. **The validators are the real work here, not the
-  labels.**
+* **Validation** -- the 60-odd range, enum, URL, regex and cross-field checks that run
+  server-side before a save writes anything. That gate is the only thing standing between a typo
+  and a run that fails an hour in. **The validators are the real work here, not the labels.**
 
 A missing entry is never a missing field
 ---------------------------------------
@@ -57,19 +53,19 @@ NOTE_PLACEMENTS = ('depth0', 'system')
 # `generation.CAST_TRANSITION_MODES`. How a scene-cast entrance/exit is detected.
 CAST_TRANSITION_MODES = ('evidence', 'name', 'always')
 
-# `api_handler.THINKING_MODES`, via `config_editor.THINKING_MODE_CHOICES`.
+# `api_handler.THINKING_MODES`.
 THINKING_MODES = ('inherit', 'default', 'enable', 'disable')
 
-# `config_editor.py`'s scene-cast shape dropdown.
+# The scene-cast shape dropdown's choices.
 SCENE_CAST_SHAPES = ('minimal', 'churn', 'none')
 
-# The judge's structured-output modes (`config_editor.py:validate_config_handler`).
+# The judge's structured-output modes.
 JUDGE_STRUCTURED_OUTPUT = ('auto', 'off', 'json_object', 'json_schema')
 
 # `run_config.py` reads `gender` to pick the user-speaking phrase set.
 GENDERS = ('female', 'male', 'neutral')
 
-# `generation.py` writes sharegpt only; the Tk editor shows it as a fixed label.
+# `generation.py` writes sharegpt only; the editor shows it as a fixed label.
 OUTPUT_FORMATS = ('sharegpt',)
 
 
@@ -801,9 +797,8 @@ def label_for(path, fallback=''):
 def encode_escape_sequence(text):
     """Show control characters as their two-character escapes, for a single-line input.
 
-    Ported from `config_editor.encode_escape_sequence`. A browser `<input>` cannot hold a real
-    newline, so the separator is shown as ``\\n`` and decoded on save -- the same rule the Tk
-    editor applies, so a value means the same thing in both.
+    A browser `<input>` cannot hold a real newline, so the separator is shown as ``\\n`` and
+    decoded on save, so a value means the same thing in the editor and in the file.
     """
     if not isinstance(text, str):
         return ''
@@ -816,7 +811,7 @@ def encode_escape_sequence(text):
 def decode_escape_sequence(text):
     """Turn typed ``\\n`` / ``\\t`` / ``\\r`` / ``\\\\`` back into real characters.
 
-    Ported from `config_editor.decode_escape_sequence`. Only those four escapes are recognised;
+    Only those four escapes are recognised;
     anything else, including a lone trailing backslash, is kept exactly as typed, so an unusual
     separator is never silently mangled.
     """
@@ -907,16 +902,15 @@ def describe(path, kind):
 
 # --- validation ----------------------------------------------------------
 #
-# These are the checks `config_editor.py:validate_config_handler` performs, ported so they run
-# **server-side before a save** exactly as they gate `save_config_handler` today. A
-# rejected save writes nothing, and every bad field is reported at once.
+# These are the checks that run **server-side before a save**. A rejected save writes
+# nothing, and every bad field is reported at once.
 
 def _is_blank(value):
     return value is None or (isinstance(value, str) and not value.strip())
 
 
 def _check_url(value, _tree):
-    """`config_editor.validate_url`: an http(s) scheme and a host."""
+    """An http(s) scheme and a host."""
     if _is_blank(value):
         return None
     from urllib.parse import urlparse
@@ -942,7 +936,7 @@ def _check_alias(value, _tree):
 
 
 def _check_json(value, _tree):
-    """`json.loads` on a non-empty value, as the Tk editor does for logit bias."""
+    """`json.loads` on a non-empty value, as the editor does for logit bias."""
     if _is_blank(value):
         return None
     import json
@@ -1004,7 +998,7 @@ def _check_choices(path, value, field):
 
     This is the check that makes an `enum` worth having: without it the dropdown is decoration and
     a hand-written request could store a value the worker silently rewrites -- which is exactly
-    the failure `config_editor.py` guards against for the scene-cast shape and the judge's
+    the failure this check guards against for the scene-cast shape and the judge's
     structured-output mode.
     """
     if _is_blank(value):
@@ -1035,7 +1029,7 @@ def _check_bounds(path, value, field):
 # state the user is asking for rather than the state on disk.
 
 def _rule_append_alias(tree):
-    """`config_editor.py`: an append alias only applies while the questions file is enabled."""
+    """An append alias only applies while the questions file is enabled."""
     alias = _get(tree, 'prompts.questions_dataset.append_alias')
     if _is_blank(alias):
         return None

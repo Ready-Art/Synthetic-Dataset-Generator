@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🌐 Web Front End
@@ -111,7 +109,7 @@ conversations, after a confirmation and with a backup zip taken first). |
 | **Prompts** | Every prompt body in the config, with copy. |
 | **Live Prompts** | The prompts the engine has most recently **sent**, newest first, refreshed every two seconds. Metadata header (thread, slot, type, attempt, time), char and approximate-token counts, and every turn colour-coded by role. A capped ring of 40, with a *Clear history* button. This is the debugging view: it shows the exact body a request carried. |
 | **Queue** | Failed, pending and completed tables — in that order, because a pending list of thousands used to push the two short tables off the screen. Each table scrolls inside its own panel. **Clear queue** empties all three with or without a run in progress; *Purge pending* touches pending only; *Retry failed* re-queues the failed set; *Export CSV* writes the queue beside the output files. |
-| **Config** | The config editor. See below. |
+| **Config** | The Config editor. See below. |
 | **Datasets** | Dataset sources: a two-pane list and detail, the alias editor, column visibility and import. |
 | **Profiles** | Save and load a copy of the whole config, with a diff preview before a destructive load. |
 
@@ -123,7 +121,7 @@ the page.
 ## The Config editor
 
 The web Config editor is the **only** editor, and it covers the **whole config tree** — all 1,291 leaves,
-not the 151 the old Tk editor curated. The left nav has one entry per section; a field is two columns with
+not the 151 a curated editor covered. The left nav has one entry per section; a field is two columns with
 its help text underneath.
 
 Three things are worth knowing:
@@ -134,7 +132,7 @@ Three things are worth knowing:
 - **Validation runs on the server before anything is written.** A rejected save writes nothing and reports
   every bad field at once, rather than saving half a file.
 - **A secret is never sent to the browser.** An API key field shows as masked; the value stays in
-  `os.environ` on the server, exactly as the Tk editor did.
+  `os.environ` on the server, never in the page.
 
 A field with no schema entry still renders, generically, from its value's type — so a key added to
 `config/config.yml` tomorrow is editable today.
@@ -202,8 +200,8 @@ each one is a real failure if it is wrong:
 
 ## The CLI still works
 
-The web app **owns the engine**: it constructs the `HeadlessController` and serves the control socket, exactly
-as the Tk window did. So the CLI attaches to it and every verb keeps working while the web app is running:
+The web app **owns the engine**: it constructs the `HeadlessController` and serves the control socket, because
+it owns the controller. So the CLI attaches to it and every verb keeps working while the web app is running:
 
 ```bash
 python -m webapp &            # the web app owns the controller
@@ -211,13 +209,12 @@ python -m cli status          # attaches to the same controller
 python -m cli stats           # the same statistics the browser shows
 ```
 
-`cli launch --gui` now starts the **web app**; `cli launch --tk` reaches the old Tk window for one
-deprecation release. Every other verb, flag, exit code and JSON shape is unchanged.
+`cli launch --gui` starts the **web app**. Every other verb, flag, exit code and JSON shape is unchanged.
 
 **A second controller is refused, and no lock file is involved.** The control socket is the guard: a second
 `python -m webapp` and a `cli launch` both fail with `already_running`, because `control.py` already refuses
-to serve a socket another process is listening on. That is also why you should not run the Tk window and the web
-app at the same time — the Tk window only takes the socket when `control.enabled` is true.
+to serve a socket another process is listening on. That is also why you cannot run two web apps at once: the
+second one only takes the socket when `control.enabled` is true, and by default it is.
 
 ## Troubleshooting
 
@@ -227,7 +224,7 @@ app at the same time — the Tk window only takes the socket when `control.enabl
 | The login page reloads forever and never logs in | A `Secure` cookie on plain HTTP never sticks. This cannot happen with the shipped code — `Secure` is derived from the actual request scheme — but a proxy that rewrites the scheme without `--trust-proxy` will do it. |
 | `already_running` on startup | Another controller owns the socket. Run `python -m cli status` to see it, then `python -m cli shutdown`, or start the web app with a different `--socket`. |
 | The page says `reconnecting…` and stops updating | The WebSocket dropped. Behind nginx this is almost always a missing `Upgrade` header or a `proxy_read_timeout` under the length of your run. The page re-primes itself when the connection returns. |
-| `the web front end is not installed` from `cli launch --gui` | `requirements-web.txt` is not installed. `pip install -r requirements-web.txt`, or use `--tk`. |
+| `the web front end is not installed` from `cli launch --gui` | `requirements-web.txt` is not installed. `pip install -r requirements-web.txt`. |
 | A save is rejected with several field errors | Validation runs server-side before anything is written, so nothing was saved. Fix the listed fields and save again. |
 | I forgot the password | Stop the server, delete `webapp/state/auth.json`, start it again, and use the new console setup token. |
 | **Live Prompts** says the preview is not hooked up | The engine installs the preview hook when it starts. Restart the web app (`python -m webapp`) and the viewer fills in as requests are sent. |

@@ -3,15 +3,13 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Tests for opening mode -- run directly: `python tests/test_opening_mode.py`.
 
-No test framework, network or display. `import generation` still needs Tk installed (it imports
-tkinter). The script copies config/ into a temporary directory and runs there, so it writes only
+No test framework, network or display: `generation` imports no GUI toolkit. The script
+copies config/ into a temporary directory and runs there, so it writes only
 to that directory's output/. The real worker and request functions run against a fake
 OpenAI-compatible server (a replacement for requests.post) that records every request and picks
 each reply from the request's content, so retries cannot shift which reply goes where.
@@ -572,12 +570,8 @@ def test_opening_task_helpers():
     check("opening mode refuses duplication mode", "duplication" in (conflict(True, False, True) or ""))
     check("opening mode with both reports one conflict", conflict(True, True, True) is not None)
 
-    mismatch = g.opening_mode_mismatch
-    check("snapshot without the key is compatible with opening mode off", mismatch({}, False) is None)
-    check("snapshot without the key is not compatible with opening mode on", mismatch({}, True) is not None)
-    check("matching saved opening mode is compatible", mismatch({'prompts.opening_mode': True}, True) is None)
-    check("saved opening mode on, current off, is not compatible",
-          mismatch({'prompts.opening_mode': True}, False) is not None)
+    check("control._load_state compares prompts.opening_mode against the snapshot",
+          _load_state_checks_opening_mode())
 
 
 # --- (3) Opening mode through the worker ------------------------------------------------------
@@ -864,20 +858,37 @@ def _calls(node, name):
                  or (isinstance(n.func, ast.Attribute) and n.func.attr == name))]
 
 
+def _load_state_checks_opening_mode():
+    """``control._load_state`` must compare the saved opening mode, not ignore it.
+
+    The GUI used to ask the user on a mismatch; the controller has nobody to ask, so it
+    treats a mismatch as "start fresh". Either way the key has to be in the comparison,
+    or a resume would silently mix an opening-mode run with a book run.
+    """
+    with open(os.path.join(REPO, "control.py"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    load = _function(tree, "_load_state")
+    return any(isinstance(n, ast.Constant) and n.value == "prompts.opening_mode"
+               for n in ast.walk(load))
+
+
 def test_generate_wiring():
-    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as f:
-        generate_tree = ast.parse(f.read())
+    """The opening-mode plumbing, checked where it lives.
+
+    The worker launch belongs to ``control.HeadlessController`` and the queue/validation
+    work to ``run_config``, so the same invariants are asserted against those two
+    modules.
+    """
+    with open(os.path.join(REPO, "control.py"), encoding="utf-8") as f:
+        control_tree = ast.parse(f.read())
+    with open(os.path.join(REPO, "run_config.py"), encoding="utf-8") as f:
+        run_config_tree = ast.parse(f.read())
     with open(os.path.join(REPO, "generation.py"), encoding="utf-8") as f:
         generation_tree = ast.parse(f.read())
-    start = _function(generate_tree, "start_processing")
-    threads = [c for c in _calls(start, "Thread")
-               if any(k.arg == "target" and isinstance(k.value, ast.Name) and k.value.id == "worker" for k in c.keywords)]
-    passed = set()
-    for call in threads:
-        for kw in call.keywords:
-            if kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
-                passed |= {k.value for k in kw.value.keys if isinstance(k, ast.Constant)}
-    check("start_processing passes the opening, persona-breakthrough, placement, OOC and user-emotion keywords to the worker",
+    start = _function(control_tree, "_worker_kwargs")
+    returned = next(n for n in ast.walk(start) if isinstance(n, ast.Return)).value
+    passed = {k.value for k in returned.keys if isinstance(k, ast.Constant)}
+    check("control._worker_kwargs passes the opening, persona-breakthrough, placement, OOC and user-emotion keywords to the worker",
           passed == {"opening_mode_local", "greeting_prompt_local", "first_line_prompt_local", "placeholder_share_local",
                      "greeting_context_local", "first_line_styles_local", "persona_breakthrough_turn_local",
                      "persona_placement_local", "emotion_placement_local",
@@ -917,18 +928,20 @@ def test_generate_wiring():
                      # v13.5.2: foreign-word corruption check, plumbed
                      # config -> start_processing -> worker kwargs
                      "current_foreign_word_enabled", "current_foreign_word_fixes"})
-    conflict = _calls(start, "opening_mode_conflict")
-    questions_read = [c for c in _calls(start, "read_txt")]
-    check("start_processing checks opening_mode_conflict before reading the questions file",
-          conflict and questions_read and conflict[0].lineno < questions_read[0].lineno)
-    check("start_processing passes the run's duplication flag to opening_mode_conflict",
-          conflict and isinstance(conflict[0].args[2], ast.Name) and conflict[0].args[2].id == "master_duplication_enabled")
-    check("start_processing queues book-less opening tasks with enqueue_opening_tasks",
-          len(_calls(start, "enqueue_opening_tasks")) == 1)
-    check("start_processing prefixes opening chunk-task IDs with opening_",
-          any(isinstance(n, ast.Constant) and n.value == "opening_" for n in ast.walk(start)))
-    check("load_generation_state uses opening_mode_mismatch",
-          len(_calls(_function(generate_tree, "load_generation_state"), "opening_mode_mismatch")) == 1)
+    validate = _function(run_config_tree, "validate_run_shape")
+    conflict = _calls(validate, "opening_mode_conflict")
+    check("validate_run_shape checks opening_mode_conflict", len(conflict) == 1)
+    check("validate_run_shape passes the run's duplication flag to opening_mode_conflict",
+          conflict and ast.unparse(conflict[0].args[2]) == "settings.master_duplication_enabled")
+    populate = _function(run_config_tree, "populate_task_queue")
+    check("populate_task_queue queues book-less opening tasks with enqueue_opening_tasks",
+          len(_calls(populate, "enqueue_opening_tasks")) == 1)
+    check("populate_task_queue prefixes opening chunk-task IDs with opening_",
+          any(isinstance(n, ast.Constant) and n.value == "opening_" for n in ast.walk(populate)))
+    check("control._load_state compares prompts.opening_mode against the snapshot",
+          len(_calls(_function(control_tree, "_load_state"), "opening_mode_mismatch")) == 0
+          and any(isinstance(n, ast.Constant) and n.value == "prompts.opening_mode"
+                  for n in ast.walk(_function(control_tree, "_load_state"))))
     # v13.1.1: the state document is assembled by _build_generation_state_data, which
     # save_generation_state() writes. The snapshot key is asserted on the builder, which is
     # where it lives now.
@@ -1469,7 +1482,7 @@ def test_duplication_mode_async_scoring_does_not_block():
     real_async = g.quality.judge_async_enabled
     real_handler = g.quality._quality_write_handler
     app_state.quality_enabled = True
-    app_state.master_duplication_enabled_var = Var(True)
+    app_state.duplication_mode = True
 
     # A judge that BLOCKS until released: if the worker waits for it, run_worker never
     # returns and the check below fails on the elapsed time.
@@ -1519,7 +1532,7 @@ def test_duplication_mode_async_scoring_does_not_block():
         g.quality.judge_async_enabled = real_async
         g.quality.set_quality_write_handler(real_handler)
         app_state.quality_enabled = False
-        app_state.master_duplication_enabled_var = Var(False)
+        app_state.duplication_mode = False
 
 
 def main():

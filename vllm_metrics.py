@@ -3,12 +3,10 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""vLLM server metrics for the dashboard's 📊 Metrics tab (v13.1.0).
+"""vLLM server metrics for the web UI's 📊 Metrics tab (v13.1.0).
 
 The generator's four main API slots, the two fixers and the quality judge may all point at a
 vLLM server. vLLM exposes Prometheus metrics on ``/metrics`` on the SAME port as its OpenAI
@@ -46,9 +44,9 @@ Two important rules
    against the wall-clock time those requests took. That is the only per-slot number that exists:
    vLLM's own metrics have no per-caller label.
 
-The poller is a daemon thread started by ``start_polling()`` from ``generate_tk.py`` once the main
-window exists. It never runs in a test, the CLI or a headless run unless something calls it, and it
-only issues a GET against ``/metrics`` -- it sends no inference request and changes no config.
+The poller is a daemon thread started by ``start_polling()`` from ``webapp/engine.py`` when the web
+app boots. It never runs in a test or a bare CLI run unless something calls it, and it only issues a
+GET against ``/metrics`` -- it sends no inference request and changes no config.
 
 **It polls whether or not the Metrics tab is open** (v13.5.0). The tab is a *view* of the history,
 not the thing that collects it: gating the poll on the visible tab meant the graphs were empty for
@@ -820,7 +818,7 @@ def _poller_loop(interval):
 def start_polling(interval=POLL_INTERVAL_SECONDS):
     """Start the background poller (idempotent). Returns the thread.
 
-    Called from ``generate_tk.py`` once the main window exists. It is deliberately NOT started by
+    Called from ``webapp/engine.py`` when the app starts. It is deliberately NOT started by
     import: a test, the CLI and a headless run must not poll anything.
 
     v13.5.0: the previous run's saved history is loaded first, so the graphs open with real samples

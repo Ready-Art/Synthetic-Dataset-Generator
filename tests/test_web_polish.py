@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for Phase 8 -- polish.
 
@@ -19,8 +17,8 @@ here is written so that a *cosmetic* regression fails a test rather than passing
 * **A tablist must be operable without a mouse.** Arrow keys, Home and End, a roving tabindex
   and a `tabpanel` on the other end of `aria-controls`. A tablist that only responds to clicks
   is a list of buttons wearing the wrong role.
-* **An empty state must say what is empty.** A bare grey line reads as a bug; the lesson from
-  the Tk front end was that a blank area is indistinguishable from a broken one.
+* **An empty state must say what is empty.** A bare grey line reads as a bug; a blank area is
+  indistinguishable from a broken one.
 * **A reload must not lose the reader's place, and must not invent one.** The tab is remembered;
   nothing else is, because a run outlives the browser tab.
 * **The first paint comes from the server.** A reload during a run must not show an empty
@@ -61,7 +59,7 @@ def _strip_comments(source):
     """Drop `/* ... */` and `//` comments.
 
     Every rule below is about what the CODE does, not what a comment says. Without this, a
-    comment that explains the Tk toast bug (\"it vanished while being read\") would fail the
+    comment that explains the toast bug (\"it vanished while being read\") would fail the
     hover-pause check -- the same trap `test_web_overview.py` documents for `wraplength`.
     """
     source = re.sub(r'/\*.*?\*/', '', source, flags=re.DOTALL)
@@ -124,10 +122,10 @@ def test_a_failure_is_announced_and_a_success_is_not():
         'the toast role does not depend on the level')
 
 
-def test_both_the_tk_and_the_web_level_vocabulary_are_styled():
-    """The Tk `ToastManager` said success/error/warning; the web callers say ok/warn/danger.
+def test_both_the_old_and_the_web_level_vocabulary_are_styled():
+    """The older callers said success/error/warning; the web callers say ok/warn/danger.
 
-    A caller written against the Tk vocabulary must not get an unstyled toast -- an unstyled
+    A caller written against the older vocabulary must not get an unstyled toast -- an unstyled
     toast is the silent-failure class this front end keeps finding.
     """
     source = _strip_comments(_read('dom.js'))
@@ -357,9 +355,8 @@ def _non_ascii_in_front_end():
 def test_the_front_end_draws_no_emoji():
     """The browser's own fallback is fine for punctuation; emoji are the thing to verify.
 
-    An emoji here means someone added a glyph that needs a colour-emoji font, which is the
-    exact situation `EMOJI_FALLBACKS` exists for on the Tk side. The web front end has no
-    such fallback, so an emoji would be a tofu box on a machine without the font.
+    An emoji here means someone added a glyph that needs a colour-emoji font. The web front
+    end has no fallback, so an emoji would be a tofu box on a machine without the font.
     """
     offenders = {}
     for char, where in _non_ascii_in_front_end().items():

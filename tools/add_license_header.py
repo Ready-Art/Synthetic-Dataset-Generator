@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Add or refresh the AGPLv3 license header on every text/code file in this repository.
 
@@ -17,7 +15,8 @@ Run from the repository root:
     python -B tools/add_license_header.py --verbose  # list every file it looked at
 
 The header is a plain comment block, so it is invisible to every parser this project
-uses (Python, YAML, Markdown, the test scripts). It is inserted at the very top of the
+uses (Python, YAML, Markdown, the test scripts). Every file in the repository is
+AGPLv3-only, so the header says so plainly. It is inserted at the very top of the
 file, but after a shebang line and after a PEP 263 encoding declaration when those
 exist, so a module docstring stays the first statement and ``__doc__`` keeps working.
 
@@ -27,7 +26,6 @@ a file whose header block is out of date has just that block replaced.
 Deliberately skipped:
 
 * ``LICENSE`` — the verbatim FSF text; the AGPL forbids modifying it.
-* ``LICENSE-AGPLv3`` / ``LICENSE-MIT`` — they *are* the license notices.
 * ``gemma4_thought_fix.py`` and ``tools/gemma4_thought_fix.py`` — written by Karki
   (a user on Discord), not by this repository. Stamping this project's license on
   someone else's script would be a misattribution (see AGENTS.md).
@@ -47,14 +45,17 @@ HEADER_LINES = [
     "ReadyArt Synthetic Dataset Generator",
     "Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors",
     "",
-    "All code here is AGPLv3, and has been for some time. Very early versions were MIT by",
-    "Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that",
-    "it is unlikely any of that code survives. Unless you have the original MIT-era code to",
-    "compare against, treat this file as AGPLv3-only. See docs/licensing.md.",
+    "This file is part of the ReadyArt Synthetic Dataset Generator and is licensed",
+    "under the GNU Affero General Public License v3.0 or later. See LICENSE.",
 ]
 
 MARKER = "SPDX-License-Identifier: AGPL-3.0-or-later"
-END_MARKER = "docs/licensing.md."
+END_MARKER = "See LICENSE."
+
+# The closing line of the pre-v16 header, which ended with a docs/licensing.md
+# pointer. A file that still carries it is re-stamped rather than left alone, so one
+# run of this tool migrates the whole tree.
+LEGACY_END_MARKERS = ("docs/licensing.md.",)
 
 # Extensions commented with '#'. Deliberately excludes .json/.jsonl, which have no comments.
 HASH_EXTENSIONS = {".py", ".yml", ".yaml", ".txt", ".cfg", ".ini", ".toml", ".sh"}
@@ -65,8 +66,6 @@ HASH_FILENAMES = {".gitignore"}
 
 SKIP_PATHS = {
     "LICENSE",
-    "LICENSE-AGPLv3",
-    "LICENSE-MIT",
     # Third-party script: written by Karki (Discord), not by this repository.
     "gemma4_thought_fix.py",
     "tools/gemma4_thought_fix.py",
@@ -138,6 +137,9 @@ def strip_existing_header(body, is_markdown):
         return body
 
     # Hash comment: the managed block is a contiguous run of '#' lines at the top.
+    # A run may hold the current block AND a stale one (an older header that a
+    # previous version of this tool wrote), so strip the whole run and let the
+    # caller write the one current block back.
     end = -1
     for index, line in enumerate(body):
         if not line.strip().startswith("#"):
@@ -146,7 +148,7 @@ def strip_existing_header(body, is_markdown):
     if end < 0:
         return body
     block = body[: end + 1]
-    if not any(MARKER in entry for entry in block) or not any(END_MARKER in entry for entry in block):
+    if not any(MARKER in entry for entry in block):
         return body
     rest = body[end + 1:]
     if rest and rest[0].strip() == "":
@@ -175,6 +177,13 @@ def process(rel, full, check_only):
     is_markdown = os.path.splitext(rel)[1].lower() in MD_EXTENSIONS
     prefix, body = split_preamble(lines)
     body = strip_existing_header(body, is_markdown)
+    # Loop: a file that picked up two headers (an older tool prepended one without
+    # stripping the previous) must come out with exactly one.
+    while True:
+        stripped = strip_existing_header(body, is_markdown)
+        if stripped == body:
+            break
+        body = stripped
 
     new_lines = prefix + comment_block(rel) + ([""] if body else []) + body
     new_text = newline.join(new_lines)

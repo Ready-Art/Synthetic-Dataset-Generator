@@ -3,19 +3,21 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""Shared runtime state for the Synthetic Dataset Generator (refactor step 2).
+"""Shared runtime state for the Synthetic Dataset Generator.
 
 Single source of truth for the cross-module mutable globals — counters, per-API stat dicts, the
-recent-event ring buffers, locks, run flags, and shared handles (root window, task queue, db pool).
-Import it as a namespace and reference attributes (``import app_state`` / ``app_state.total_input_tokens += 1``)
-so mutations are visible app-wide; do NOT ``from app_state import x`` for the scalars (that copies the
-binding and breaks cross-module updates). This module imports nothing project-local, to stay a leaf in the
-dependency graph (generate_tk.py / generation.py / dashboard.py import it, never the reverse).
+recent-event ring buffers, locks, run flags, and shared handles (task queue, db pool, live-prompt
+hook). Import it as a namespace and reference attributes (``import app_state`` /
+``app_state.total_input_tokens += 1``) so mutations are visible app-wide; do NOT
+``from app_state import x`` for the scalars (that copies the binding and breaks cross-module
+updates). This module imports nothing project-local, to stay a leaf in the dependency graph:
+``generation.py``, ``quality.py``, ``control.py`` and the web package import it, never the reverse.
+
+There are no GUI objects here. The only front-end seam is ``live_prompt_preview_hook``, a plain
+callable the web app installs and ``generation.py`` calls; it is ``None`` for a CLI-only run.
 """
 import os
 import threading
@@ -131,8 +133,8 @@ foreign_word_counts_per_api = {i: 0 for i in range(7)}
 scene_continuity_count_total = 0
 scene_continuity_counts_per_api = {i: 0 for i in range(7)}
 # --- Regex Watch (v11.6) ---
-# Every pattern hit that led to a rewrite, kept for the Regex Watch dashboard area so the user
-# can see WHICH pattern fires and what it matched. Bounded ring buffer, guarded by
+# Every pattern hit that led to a rewrite, kept for the Regex Watch panel so the user can see
+# WHICH pattern fires and what it matched. Bounded ring buffer, guarded by
 # regex_watch_lock. Entries are (pattern, matched_text, api_slot_idx, rewrite_status).
 regex_watch_log = []
 regex_watch_log_lock = Lock()
@@ -249,12 +251,12 @@ def record_recent(bucket, phrase, context, api_slot_idx=-1, now=None):
     """Append one issue to a ``recent_*_total`` ring, as a dict with a real timestamp.
 
     Every detection site used to append a bare ``(phrase, context, api_slot_idx)`` tuple and
-    leave the time out entirely, so the dashboard's Time column had nothing to show and the
-    Web UI rendered an em dash for every row. A tuple also has no field names, so the browser
+    leave the time out entirely, so the Web UI's Time column had nothing to show and rendered an
+    em dash for every row. A tuple also has no field names, so the browser
     had to guess that element 0 was the phrase -- which is why the whole table came out blank.
 
     One helper, one shape: ``{time, phrase, context, api}``. ``api`` is ``-1`` for a task-level
-    error that is not tied to a slot, which the dashboard already used to mean "Totals only".
+    error that is not tied to a slot, which the Web UI already used to mean "Totals only".
 
     The ring is capped at ``MAX_RECENT`` here rather than at each of the ~20 call sites, so a
     new detection cannot forget to trim and grow the list without bound.
@@ -297,7 +299,7 @@ quality_review_lock = Lock()
 # --- Judge drops (v11.4) ---
 # Conversations the quality judge rejected (invalid JSON, a logic score of 0, or every
 # retry exhausted). They are never written to the dataset; the reasons are kept so the
-# dashboard can report them. Guarded by quality_lock.
+# Web UI can report them. Guarded by quality_lock.
 quality_dropped = {}  # {task_id: reason}
 dropped_task_ids = set()
 # --- Async judge write failures (v12.9) ---
@@ -311,32 +313,13 @@ quality_write_failures = set()
 # conversation" rewrite takes the SAME lock as a write and cannot interleave with one
 # (v12.8.2). A per-run Lock local to start_processing() would have been invisible to it.
 output_data_lock = Lock()
-master_duplication_enabled_var = None  # tk.BooleanVar — assigned in generate_tk.py at GUI build
-live_prompt_preview_hook = None  # set by generate_tk.py; generation.py calls it for the live preview
+# Duplication mode (``api.master_duplication_mode``). A plain bool, set by ``control.py`` when a
+# run starts and read by ``generation.py`` on every write path to pick the per-API output file
+# name. It is a module global rather than a parameter because the worker reads it deep inside the
+# answer-writing helpers; ``control.HeadlessController`` owns the assignment.
+duplication_mode = False
 
-# --- dashboard widget handles (step 4) ---
-
-slot_widgets = {}        # per-API response-time labels, keyed by name (was generate_tk.py globals())
-budget_label = None
-cost_label = None
-dashboard_notebook = None
-error_percent_label = None
-refusal_percent_label = None
-slop_label = None
-status_bar = None
-thread_status_label = None
-token_label = None
-user_speaking_label = None
-ooc_label = None
-logic_label = None
-regex_watch_label = None
-non_latin_label = None
-# v13.1.0: the 📊 Metrics tab's status line (what was polled, which endpoint is unreachable).
-# The per-slot rows themselves live in the tab's own registry entry.
-metrics_status_label = None
-# ^ dashboard widget handles — assigned in generate_tk.py when the main window is built
-
-
-# --- GUI-runtime handles: constructed in generate_tk.py once the main window exists; None until then ---
-root = None              # ttkbs.Window(...) — assigned in generate_tk.py
-db_status_widgets = None # dict of DB/Valkey status widgets — assigned in generate_tk.py after the widgets exist
+# The live prompt preview seam. ``generation.update_live_prompt_preview()`` calls this before every
+# request; the web front end installs a recorder (``webapp/live_prompts.py``) and removes it on
+# shutdown. ``None`` means "no preview consumer", which is the CLI-only case.
+live_prompt_preview_hook = None

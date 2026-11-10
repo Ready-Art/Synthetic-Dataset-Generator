@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 📊 Performance Tips
@@ -63,7 +61,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **Match `quality.judge_concurrency` to the judge server, not to your thread count** — the judge is a gate: a worker waits for its verdict before it may write, so judge throughput caps the whole run. `judge_concurrency` defaults to `1`, which caps the judge at one request at a time; with `T` generation threads and `L` seconds of judge latency the last waiter waits about `(T / 1) × L`, and once that passes `quality.result_timeout` (600 s) healthy conversations are dropped as `judge_failed`. The target is `concurrency >= threads * judge_latency / seconds_per_conversation`, capped at what the judge server can really serve in parallel. **A local vLLM that slows down past 2-3 concurrent sequences wants `2` or `3`, not `8`** — more only moves the queue into vLLM's scheduler, where it is harder to see and costs the same latency, and a judge request is large (conversation + character profile) so wide concurrency can exhaust KV cache and trigger preemption. Lower `judge_max_attempts` and `judge_json_repair_attempts` before raising concurrency: at the defaults one flaky conversation can occupy the judge for ~723 s, longer than `result_timeout` itself.
 - **Export flagged conversations** — Use **📤 Export Flagged → JSONL** in the Review screen to get a clean file of low-quality outputs for manual inspection or re-processing
 - **Dismiss reviewed items** — After manually handling flagged conversations, use **✅ Dismiss All** to clear the review queue and keep the screen focused on new items
-- **Test GUI layouts** — Use `tools/check_gui_layout.py` to validate the **deprecated Tk window** on smaller display sizes. The web UI is checked differently: every screen must fit 1440x900 and 900x600 with no page scroll, and `tests/test_web_overview.py` asserts it
+- **Test GUI layouts** — Every screen must fit 1440x900 and 900x600 with no page scroll, and `tests/test_web_overview.py` asserts it
 - **Clear the dataset without stopping the run** — **Clear dataset** on the Overview action bar deletes the stored conversations and takes a backup zip first. Use it instead of **Stop & Clear** when the run is already finished and you only want a fresh dataset; Stop & Clear also stops a run, so using it on an idle app is a needless stop
 - **Download the dataset from the browser** — **Download dataset** streams the whole dataset back as one JSONL file, consolidated from the per-API files. It is a GET that consolidates into a temporary file, so it is safe to click twice and it never doubles the next export. Use it instead of `cli export` when you are already in the browser and the file is on the same machine
 - **Point at a dataset instead of `input/*.txt` when the prompts come from a table** — a bound dataset source gives one frozen row per task, so a run cannot drift when the file changes underneath it. Import the columns once, then map the ones you need to bare aliases with `{{ds:alias}}`. The Datasets screen never shows a cell value, so the config stays safe to commit. See [Dataset bindings](dataset-bindings.md)

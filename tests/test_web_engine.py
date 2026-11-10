@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the engine seam and the routes.
 
@@ -19,7 +17,7 @@ The gate has four parts, and all four are here:
    regression test for "the CLI remains".
 3. **A second controller is refused** with ``already_running`` -- the socket is the singleton
    guard, and there is no lock file.
-4. **``generate_tk.py`` is never imported.** Asserted by inspecting ``sys.modules`` after importing
+4. **No GUI toolkit is imported.** Asserted by inspecting ``sys.modules`` after importing
    and exercising the whole web package, and by grepping the source for the import.
 """
 
@@ -417,20 +415,26 @@ def test_engine_start_is_idempotent():
             engine.stop()
 
 
-# --- 4. generate_tk.py is never imported ----------------------------------
+# --- 4. no GUI toolkit is imported ----------------------------------------
 
-def test_generate_is_never_imported():
-    """Importing and exercising the web package must not import generate_tk.py.
+GUI_TOOLKITS = ('tkinter', 'ttkbootstrap', 'matplotlib', 'PyQt5', 'PyQt6',
+                'PySide2', 'PySide6', 'wx')
 
-    ``generate_tk.py`` builds the whole Tk window at import time, so importing it here would
-    make every headless path need a display.
+
+def test_no_gui_toolkit_is_imported():
+    """Importing and exercising the web package must not import a GUI toolkit.
+
+    A toolkit imported here would make every headless path need a display, and the web UI
+    is the GUI -- it must never pull one in.
     """
-    assert 'generate_tk' not in sys.modules, (
-        'generate_tk.py was imported; it builds the Tk window at import time')
+    loaded = sorted(name for name in sys.modules
+                    if name.split('.')[0] in GUI_TOOLKITS)
+    assert not loaded, f'a GUI toolkit was imported: {loaded}'
 
 
-def test_no_webapp_module_imports_generate():
+def test_no_webapp_module_imports_a_gui_toolkit():
     """Grep the source: a static import would fail before the runtime check above."""
+    import ast
     offenders = []
     for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, 'webapp')):
         dirnames[:] = [d for d in dirnames if d != '__pycache__']
@@ -439,22 +443,27 @@ def test_no_webapp_module_imports_generate():
                 continue
             path = os.path.join(dirpath, name)
             with open(path, 'r', encoding='utf-8') as handle:
-                for number, line in enumerate(handle, 1):
-                    stripped = line.strip()
-                    if stripped.startswith('#'):
-                        continue
-                    if 'import generate_tk' in stripped or 'from generate' in stripped:
-                        offenders.append(f'{os.path.relpath(path, ROOT)}:{number}')
-    assert not offenders, f'webapp imports generate_tk.py: {offenders}'
+                tree = ast.parse(handle.read())
+            for node in ast.walk(tree):
+                targets = []
+                if isinstance(node, ast.Import):
+                    targets = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    targets = [node.module or '']
+                for target in targets:
+                    if target.split('.')[0] in GUI_TOOLKITS:
+                        offenders.append(
+                            f'{os.path.relpath(path, ROOT)}: import {target}')
+    assert not offenders, f'webapp imports a GUI toolkit: {offenders}'
 
 
-def test_the_engine_does_not_import_the_tk_modules():
-    """The engine seam must not reach the Tk front end through any module."""
+def test_the_engine_does_not_import_a_gui_toolkit():
+    """The engine seam must not reach a GUI toolkit through any module."""
     import webapp.engine as engine_module
     source = open(engine_module.__file__, 'r', encoding='utf-8').read()
-    for forbidden in ('import generate_tk', 'import dashboard', 'import config_editor',
-                      'import datasets_panel'):
-        assert forbidden not in source, f'webapp/engine.py contains {forbidden!r}'
+    for forbidden in GUI_TOOLKITS:
+        assert f'import {forbidden}' not in source, (
+            f'webapp/engine.py imports {forbidden!r}')
 
 
 # --- the websocket ------------------------------------------------------

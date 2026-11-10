@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 💻 Command Line
@@ -17,10 +15,9 @@ The generator can run without a window. `cli.py` drives the same engine, the sam
 a cron job, or an LLM agent can launch it, start and stop generation, read the statistics, and
 export or clear the dataset.
 
-The GUI is now a **web application**: `python -m webapp` serves it in a browser (see
-[Web Front End](webapp.md)). `cli launch --gui` starts that. The old Tk window is still reachable for one
-deprecation release via `cli launch --tk` or `python generate_tk.py`, and its control interface is **off by
-default** and opt-in.
+The GUI is a **web application**: `python -m webapp` serves it in a browser (see
+[Web Front End](webapp.md)), and `cli launch --gui` starts that. There is no desktop toolkit
+dependency.
 
 ## Two ways to run it
 
@@ -40,8 +37,7 @@ python -m cli shutdown        # stop and exit the controller
 mode to use under `systemd` or inside a container. `Ctrl-C` stops it.
 
 **The GUI.** `launch --gui` starts the **web application** instead of the headless controller, and
-serves it on `http://127.0.0.1:8765`. `launch --tk` opens the old Tk window, which is deprecated and
-removed in a later release.
+serves it on `http://127.0.0.1:8765`.
 
 ## Machine-readable by default
 
@@ -81,7 +77,6 @@ Exit code 3 covers both "no daemon is listening" and "the daemon is idle"; the J
 ```bash
 python -m cli launch                     # background controller
 python -m cli launch --gui                # the web UI instead
-python -m cli launch --tk                 # the old Tk window (deprecated)
 python -m cli launch --foreground         # same as `serve`
 python -m cli launch --tcp-host 127.0.0.1 # also listen on TCP (see below)
 ```
@@ -235,10 +230,11 @@ run started with `python -m webapp` with nothing to configure. It owns the `Head
 the socket itself, which is also what makes a second controller impossible: `cli launch` is refused with
 `already_running` while the web app is up.
 
-The old Tk window is the exception. Set `control.enabled: true` in `config/config.yml` (or tick **Serve
-control commands** in **Edit Config → Control Interface**) and it serves the same commands. This is off by
-default, which is what keeps a default `python generate_tk.py` unchanged — and it is why you should not run the
-Tk window and the web app at the same time.
+`control.enabled` (default `false`) is the opt-in for a standalone controller that is not the web
+app: set it in `config/config.yml` (or tick **Serve control commands** in the Configuration
+screen's **Control Interface** group) and `cli launch` serves the same commands. Leave it off and
+the web app is the only thing that owns the socket — which is why you should not run a second
+controller and the web app at the same time.
 
 ## TCP instead of a Unix socket
 

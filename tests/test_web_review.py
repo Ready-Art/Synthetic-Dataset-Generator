@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the Review tab.
 
@@ -256,7 +254,7 @@ def test_repaint_replaces_the_panes_rather_than_the_page():
 def test_the_selection_survives_a_stats_tick():
     """The selection lives at module scope, so a tick does not reset the reader's place.
 
-    This is the v11.4 bug the Tk tab records: rebuilding the list on every tick made reading a
+    This is the v11.4 bug this tab exists to avoid: rebuilding the list on every tick made reading a
     flagged conversation impossible.
     """
     source = _strip_comments(_read('review.js'))
@@ -278,7 +276,7 @@ def test_a_slow_detail_response_cannot_overwrite_a_newer_selection():
 # --- the score footer strip ---------------------------------------------
 
 def test_the_footer_strip_has_the_four_dimensions():
-    """Coherence / Character / Prose / Overall, in the Tk order."""
+    """Coherence / Character / Prose / Overall."""
     source = _strip_comments(_read('review.js'))
     block = source.split('const FOOTER_DIMENSIONS = [', 1)[1].split('];', 1)[0]
     keys = re.findall(r"key: '([a-z_]+)'", block)

@@ -3,25 +3,25 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""Generation engine for the Synthetic Dataset Generator (refactor step 3b).
+"""Generation engine for the Synthetic Dataset Generator.
 
-The worker loop and all LLM-call/answer-generation logic, extracted from generate_tk.py. Shares runtime
-state through app_state (counters, circuit breaker, config, path constants) and calls the existing helper
-modules (api_handler / detection / text_utils / logging_config). The only call back toward the GUI — the
-live prompt preview — is routed through app_state.live_prompt_preview_hook (registered by generate_tk.py),
-so this module never imports generate_tk.py: the dependency is one-way (generate_tk.py imports generation).
+The worker loop and all LLM-call/answer-generation logic. Shares runtime state through
+``app_state`` (counters, circuit breaker, config, path constants) and calls the helper modules
+(``api_handler`` / ``detection`` / ``text_utils`` / ``logging_config``).
+
+This module is headless: it imports no GUI toolkit and needs no display. The one outward call —
+the live prompt preview — goes through ``app_state.live_prompt_preview_hook``, which the web
+front end registers (``webapp/live_prompts.py``). When no hook is installed the call is a no-op,
+so a CLI-only run behaves identically.
 """
 import hashlib
 import json
 import random
 import threading
 import time
-import tkinter as tk
 
 import api_profiles
 import app_state
@@ -62,7 +62,7 @@ REGEX_WATCH_MAX_ROUNDS = 3
 
 # Non-Latin script check (v11.10.0): the instruction appended to the system prompt when a reply
 # comes back with characters from another script. Used when `detection.non_latin.fixes` is empty,
-# so switching the check on in the config editor works without also authoring a fix list. Defined
+# so switching the check on in the Config editor works without also authoring a fix list. Defined
 # at module scope because the retry loop reads it and tests assert on it.
 DEFAULT_NON_LATIN_FIX = (
     "Write the entire reply in English using only the Latin alphabet. Do not use characters "
@@ -74,7 +74,7 @@ DEFAULT_NON_LATIN_FIX = (
 # contains a word from another LANGUAGE written in Latin letters ("green olhos", "brown ojos") or two
 # words fused with a capital in the middle ("visiblyTrembling", "blueEyes"). The non-Latin check above
 # cannot see either, because every character is plain Latin. Used when `detection.foreign_word.fixes`
-# is empty, so switching the check on in the config editor works without also authoring a fix list.
+# is empty, so switching the check on in the Config editor works without also authoring a fix list.
 DEFAULT_FOREIGN_WORD_FIX = (
     "Write every word in English. Do not use a word from another language, even when it means the "
     "same thing in that language. Do not join two words together: put a space between them, and "
@@ -341,7 +341,12 @@ def first_reply_opener_fix(rejected_openings):
 
 
 def update_live_prompt_preview(messages_list, metadata=None):
-    """Engine-side shim: forward the live prompt preview to the GUI if generate_tk.py registered a hook."""
+    """Forward the live prompt preview to whichever front end installed a hook.
+
+    ``app_state.live_prompt_preview_hook`` is ``None`` unless a front end registered one (the web
+    app does, in ``webapp/live_prompts.py``). With no hook this is a no-op, which is what a
+    CLI-only run wants.
+    """
     hook = app_state.live_prompt_preview_hook
     if hook:
         hook(messages_list, metadata)
@@ -541,18 +546,6 @@ def opening_mode_conflict(opening_mode, use_questions_file, duplication_enabled)
         return "Opening mode and the questions file cannot both be on."
     if duplication_enabled:
         return "Opening mode and master duplication mode cannot both be on."
-    return None
-
-
-def opening_mode_mismatch(saved_snapshot, current_opening_mode):
-    """Return a resume-incompatibility line if the saved run's opening mode differs, or None.
-
-    State files written before opening mode existed have no key; they count as opening mode off.
-    """
-    saved = bool(saved_snapshot.get('prompts.opening_mode', False))
-    current = bool(current_opening_mode)
-    if saved != current:
-        return f"Opening Mode (Saved: {saved}, Current: {current})"
     return None
 
 
@@ -952,7 +945,7 @@ def _persona_block_for_characters(numbered_personas, char_count_label=True):
 
 
 # --- Scene Cast helpers (v12.0) ------------------------------------------------------------
-# Pure functions: no Tk, no network, no app_state mutation, so they unit-test headlessly. They
+# Pure functions: no network, no app_state mutation, so they unit-test headlessly. They
 # mirror the emotional-arc helpers above (_split_emotional_arc_entry / _expand_emotional_arc).
 
 
@@ -3923,7 +3916,7 @@ def generate_question(system_prompt, question_prompt_template, subject, context,
             # entry is only built when tracing is on: assembling it walks the whole message
             # list, which is not free at 40 threads even when the write is skipped.
             if logging_config.debug_prompt_logging_enabled():
-                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.duplication_mode else BASE_DEBUG_LOG_PATH + ".jsonl"
                 logging_config.write_debug_prompt(current_debug_log_path, {
                     "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "question_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1,
                     "api_url": api_url_local, "model": model_name_local,
@@ -4282,7 +4275,7 @@ def generate_user_continuation(system_prompt, conversation_history_for_llm, user
 
             # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
             if logging_config.debug_prompt_logging_enabled():
-                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.duplication_mode else BASE_DEBUG_LOG_PATH + ".jsonl"
                 logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "user_continuation_request", "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url_local, "model": model_name_local, "messages": messages, "payload_dict": payload_dict})
 
             # NEW: Apply rate limiting before making the API call
@@ -4638,7 +4631,7 @@ def _request_opening_message(messages, max_tokens_key, log_type, preview_type, c
 
         # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
         if logging_config.debug_prompt_logging_enabled():
-            debug_log_path = BASE_DEBUG_LOG_PATH + (f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else ".jsonl")
+            debug_log_path = BASE_DEBUG_LOG_PATH + (f"_api_slot_{api_slot_idx}.jsonl" if app_state.duplication_mode else ".jsonl")
             logging_config.write_debug_prompt(debug_log_path, {
                 "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": log_type,
                 "api_slot_idx": api_slot_idx, "attempt": attempt_num + 1, "source_file": file_name,
@@ -5164,7 +5157,7 @@ def call_slop_fixer_llm(text_context, slop_phrase,
 
             # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
             if logging_config.debug_prompt_logging_enabled():
-                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx_slop_fixer}.jsonl" if app_state.duplication_mode else BASE_DEBUG_LOG_PATH + ".jsonl"
                 logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "slop_fix_request", "api_slot_idx": api_slot_idx_slop_fixer, "attempt": attempt_num + 1, "source_file": file_name, "api_url": api_url, "model": model_name, "messages": messages, "payload_data": payload_data })
 
             # NEW: Apply rate limiting before making the API call
@@ -5777,7 +5770,7 @@ def generate_answer_with_retries(base_system_prompt, conversation_history_for_ll
 
                 # Prompt trace (opt-in): see logging_config.debug_prompt_logging_enabled.
                 if logging_config.debug_prompt_logging_enabled():
-                    current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.master_duplication_enabled_var.get() else BASE_DEBUG_LOG_PATH + ".jsonl"
+                    current_debug_log_path = BASE_DEBUG_LOG_PATH + f"_api_slot_{api_slot_idx}.jsonl" if app_state.duplication_mode else BASE_DEBUG_LOG_PATH + ".jsonl"
                     logging_config.write_debug_prompt(current_debug_log_path, {"timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "thread_id": thread_id, "type": "answer_request", "api_slot_idx": api_slot_idx, "outer_attempt": attempt +1, "inner_api_call_attempt": api_call_attempt_num + 1, "source_file": file_name, "fix_attempts_specific": fix_attempts_specific, "current_system_prompt_iter_len": len(current_system_prompt_iter), "messages_len": len(messages), "payload_dict_ans": payload_dict_ans})
 
                 global_rate_limiter.wait_if_needed(api_slot_idx)
@@ -7144,7 +7137,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
         processed_conversation_turns.insert(0, {"from": "human", "value": leading_placeholder})
 
     output_data_id = task_id_for_output
-    if is_duplication_turn and app_state.master_duplication_enabled_var.get(): # Check global var for safety
+    if is_duplication_turn and app_state.duplication_mode: # Check global var for safety
         output_data_id = f"{task_id_for_output}_api{api_slot_idx_for_output_file}_turn{turn_number_for_duplication}"
 
     output_data = {
@@ -7202,7 +7195,7 @@ def write_conversation(output_file_path_base, # Not used directly, BASE_OUTPUT_F
 
     # --- FILE WRITING (Only reached if DB is DISABLED or pool failed to init) ---
     actual_output_file_path = ""
-    if api_slot_idx_for_output_file is not None and app_state.master_duplication_enabled_var.get():
+    if api_slot_idx_for_output_file is not None and app_state.duplication_mode:
         actual_output_file_path = f"{BASE_OUTPUT_FILE_PATH}_api_slot_{api_slot_idx_for_output_file}.jsonl"
     else:
         actual_output_file_path = BASE_OUTPUT_FILE_PATH + ".jsonl"

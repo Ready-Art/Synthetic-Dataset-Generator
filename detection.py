@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 # detection.py
 import collections
@@ -17,7 +15,7 @@ import time
 
 import style_metrics
 
-# These will be set by generate_tk.py after import
+# Wired up by control.HeadlessController before a run starts (see its v13.5.1 note).
 issue_timestamps = None
 issue_timestamps_lock = None
 
@@ -233,7 +231,7 @@ def is_out_of_character(answer, ooc_phrases_list):
 
     Mirrors the existing is_*() shape: returns (bool, [(phrase, sentence), ...]) and,
     on a hit, appends a timestamp to ``issue_timestamps['out_of_character']`` (1-hour
-    rolling window) so the dashboard picks it up automatically.
+    rolling window) so the stats payload picks it up automatically.
     """
     PUNCTUATION = '.,!?\"\'*()[]{};:'
     def clean_sentence_for_match(sentence):
@@ -254,7 +252,7 @@ def is_out_of_character(answer, ooc_phrases_list):
 
     processed_phrases = [p.lower().strip() for p in ooc_phrases_list if p.strip()]
     # Match only against the narration view (quoted dialogue blanked out); keep the
-    # original sentence for reporting so the dashboard shows the real line.
+    # original sentence for reporting so the stats payload shows the real line.
     cleaned_sentences = [clean_sentence_for_match(_strip_quoted_dialogue(s)) for s in processed_original_sentences]
 
     # Compiled once per phrase list; only phrases that could match are searched
@@ -278,7 +276,7 @@ def is_out_of_character(answer, ooc_phrases_list):
 # A phrase list cannot express a *shape* of prose ("it is not just X, it is Y"). Regex Watch
 # lets the end user keep a small, editable set of regular expressions that describe those
 # shapes. It mirrors the slop checks: same (bool, [(label, sentence), ...]) return shape, same
-# 1-hour timestamp bookkeeping, so the dashboard picks hits up automatically.
+# 1-hour timestamp bookkeeping, so the stats payload picks hits up automatically.
 #
 # Patterns are matched against the WHOLE answer (a rewrite target can span a clause boundary),
 # not sentence by sentence, so the reporting sentence is the one that contains the match.
@@ -387,7 +385,7 @@ def _sentence_around(text, start, end):
 def find_regex_matches(text, patterns):
     """Return ``[(pattern, sentence, matched_text), ...]`` for every pattern that matches *text*.
 
-    Invalid patterns are skipped silently: the config editor validates on save, and a pattern
+    Invalid patterns are skipped silently: the Config editor validates on save, and a pattern
     that breaks at run time must never stop generation. The first match per pattern is
     reported, which is enough to drive one rewrite round; the caller re-runs the check after
     each rewrite.
@@ -414,7 +412,7 @@ def is_regex_watch(text, patterns, record_timestamp=True):
     """Detects user-supplied regex shapes ("not just X, but Y") in *text*.
 
     Same contract as the other ``is_*()`` checks: ``(bool, [(pattern, sentence), ...])``, plus a
-    timestamp in ``issue_timestamps['regex_watch']`` (1-hour rolling window) so the dashboard's
+    timestamp in ``issue_timestamps['regex_watch']`` (1-hour rolling window) so the stats payload's
     Regex Watch area and issue graph update on their own. ``record_timestamp=False`` is for
     callers that only want to probe the text (e.g. a re-check after a rewrite).
     """
@@ -532,7 +530,7 @@ def is_non_latin(text):
     otherwise. ASCII replies are the fast path -- ``text.isascii()`` returns immediately.
 
     Same contract as the other ``is_*()`` checks: ``(bool, [(label, sentence), ...])`` plus a
-    timestamp in ``issue_timestamps['non_latin']`` (1-hour rolling window) so the dashboard's
+    timestamp in ``issue_timestamps['non_latin']`` (1-hour rolling window) so the stats payload's
     metric card, issue panel and graph update on their own.
     """
     if not text or not str(text).strip():
@@ -758,7 +756,7 @@ def is_foreign_word(text, names=None):
     homograph, so it does not reject a good reply and burn a regeneration on it.
 
     Same contract as the other ``is_*()`` checks: ``(bool, [(label, sentence), ...])`` plus a timestamp
-    in ``issue_timestamps['foreign_word']`` (1-hour rolling window) so the dashboard's metric card,
+    in ``issue_timestamps['foreign_word']`` (1-hour rolling window) so the stats payload's metric card,
     issue panel and graph update on their own.
     """
     if not text or not str(text).strip():
@@ -849,7 +847,7 @@ def is_missing_quotation(text):
     case is handled by ``normalize_quotes`` and unbalanced ones by ``is_incomplete_quote``),
     pure narration with no speech attribution, single-word fragments, and empty input.
     Mirrors the other ``is_*()`` shape; it records no timestamp because it is an
-    experimental, opt-in retry trigger rather than a dashboard-tracked issue type.
+    experimental, opt-in retry trigger rather than a stats-tracked issue type.
     """
     if not text or not str(text).strip():
         return False, []
@@ -1078,7 +1076,7 @@ def check_scene_continuity(text, blocked_names, expected_names=()):
     ``exited_speaks`` / ``exited_acts`` (hard: the caller regenerates) or
     ``expected_missing`` (soft: the cast state machine handles it for free). On a hard hit a
     timestamp is appended to ``issue_timestamps['scene_continuity']`` (1-hour rolling window)
-    so the dashboard picks it up like every other issue type.
+    so the stats payload picks it up like every other issue type.
     """
     findings = []
     blocked = [str(n).strip() for n in (blocked_names or []) if str(n).strip()]
@@ -1317,7 +1315,7 @@ def is_repeated_opener(text, previous_texts, min_shared_words=3):
     repetition, and staying quiet only suppresses a retry, which is the safe direction.
 
     Deliberately records NO timestamp: like ``is_missing_quotation()`` this is an opt-in
-    retry trigger, not a dashboard-tracked issue type. The operator's own sample shows the tic
+    retry trigger, not a stats-tracked issue type. The operator's own sample shows the tic
     compounding down a conversation (28.6% of first replies, 69.9% of fourth replies), so
     counting it as a per-conversation defect would swamp the issue graph with the normal case.
     """
@@ -1397,7 +1395,7 @@ def is_repeated_reply(text, previous_texts, min_chars=REPEATED_REPLY_MIN_CHARS,
     replies can coincide innocently and a false positive costs a wasted retry.
 
     Deliberately records NO timestamp: like ``is_missing_quotation()`` and ``is_repeated_opener()`` this is
-    an opt-in retry trigger, not a dashboard-tracked issue type. It is also a consequence rather than a
+    an opt-in retry trigger, not a stats-tracked issue type. It is also a consequence rather than a
     defect of the text -- a constant answer prompt produces it -- so counting it per conversation would
     report the operator's prompt rather than the dataset.
     """
@@ -1482,7 +1480,7 @@ def is_overused_opener(text, first_word_counts, frame_counts, total,
 
     Returns ``(True, [(label, snippet), ...])`` in the same shape as the other ``is_*()`` checks; the
     snippet is the reply's opening words as written, for the fix instruction. Records NO timestamp,
-    like ``is_repeated_opener()``: it is an opt-in retry trigger, not a dashboard-tracked issue type.
+    like ``is_repeated_opener()``: it is an opt-in retry trigger, not a stats-tracked issue type.
     """
     try:
         total = int(total)

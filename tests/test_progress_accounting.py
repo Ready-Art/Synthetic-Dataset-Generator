@@ -3,15 +3,13 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Tests for the v13.0.5 progress accounting fix (FIX-PLAN.md).
 
 Run directly: ``python -B tests/test_progress_accounting.py``. No model and no display are
-needed; ``import generation`` still needs Tk installed (it imports tkinter). The script runs in
+needed: ``generation`` imports no GUI toolkit. The script runs in
 a temporary directory, so it writes only to that directory's ``output/``. The judge is stubbed
 exactly as ``tests/test_quality_async_queue.py`` stubs it, and the main API is a fake
 OpenAI-compatible server, as in ``tests/test_opening_mode.py``.
@@ -540,17 +538,9 @@ def test_resume_paths_seed_the_credited_set():
             return False
         return "progress_credited_task_ids" in ast.unparse(found[0])
 
-    with open(os.path.join(REPO, "generate_tk.py"), encoding="utf-8") as f:
-        generate_tree = ast.parse(f.read())
     with open(os.path.join(REPO, "control.py"), encoding="utf-8") as f:
         control_tree = ast.parse(f.read())
 
-    check("generate.load_generation_state seeds it from the state file",
-          seeds(generate_tree, "load_generation_state"))
-    check("generate.start_processing seeds it on a resume",
-          seeds(generate_tree, "start_processing"))
-    check("generate.reset_all_stats_and_history clears it",
-          seeds(generate_tree, "reset_all_stats_and_history"))
     check("control's headless resume path seeds it",
           seeds(control_tree, "_load_state"))
     check("control's headless resume path restores the saved counter",
@@ -558,6 +548,10 @@ def test_resume_paths_seed_the_credited_set():
           "processed_tasks_snapshot" in ast.unparse(
               [n for n in ast.walk(control_tree)
                if isinstance(n, ast.FunctionDef) and n.name == "_load_state"][0]))
+    check("control's reset path clears it",
+          "progress_credited_task_ids" in ast.unparse(
+              [n for n in ast.walk(control_tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "_reset_stats"][0]))
 
     # The speculative increment and the refund must be GONE: they are the bug.
     with open(os.path.join(REPO, "generation.py"), encoding="utf-8") as f:

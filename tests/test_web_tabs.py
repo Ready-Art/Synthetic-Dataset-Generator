@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the six data tabs.
 
@@ -21,7 +19,7 @@ what it must not"**. Four rules get the most attention:
   a run by holding a reference.
 * **The queue actions are scoped.** Purge touches pending only; Retry touches failed only; Export
   writes a CSV and changes nothing.
-* **No route imports `generate_tk.py`**, which builds the whole Tk window at import time.
+* **No route imports a GUI toolkit**, which would need a display at import time.
 
 Everything runs against a fake `app_state` in a temporary directory. The real `output/` is never
 opened and no server is started.
@@ -260,12 +258,13 @@ def test_the_queue_actions_are_posts():
 
 
 def test_the_tabs_never_import_generate():
-    """`generate_tk.py` builds the whole Tk window at import time."""
+    """A GUI toolkit would need a display at import time."""
     import webapp.tabs_routes as tabs
 
     with open(tabs.__file__, 'r', encoding='utf-8') as handle:
         source = handle.read()
-    assert 'import generate_tk' not in source
+    for toolkit in ('tkinter', 'ttkbootstrap', 'matplotlib'):
+        assert f'import {toolkit}' not in source, f'{toolkit} imported by a route module'
     assert 'from generate' not in source
 
 

@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # CLI / headless control (`cli.py`, `control.py`, `run_config.py`)
@@ -16,7 +14,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 **Read this when:** you are adding a CLI verb, a control command, a statistics field, or anything that touches the config→run path without the GUI.
 
-**Related:** [`docs/agents/generate-ui.md`](generate-ui.md), [`docs/agents/config.md`](config.md), [`docs/agents/core-modules.md`](core-modules.md), [`docs/agents/generation.md`](generation.md)
+**Related:** [`docs/agents/webapp.md`](webapp.md), [`docs/agents/config.md`](config.md), [`docs/agents/core-modules.md`](core-modules.md), [`docs/agents/generation.md`](generation.md)
 
 ## Contents
 
@@ -30,28 +28,27 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ```
 cli.py  ->  control.py  ->  run_config.py  ->  generation.py / quality.py / app_state.py
-generate_tk.py (Tk GUI, deprecated)  ->  run_config.py
+webapp/engine.py  ->  control.HeadlessController  (in-process, no socket hop)
 ```
 
-**`run_config.py`, `control.py` and `cli.py` must NEVER import `generate_tk.py`.** `generate_tk.py`
-builds the entire Tk UI at module scope, so importing it from the control layer would make every
-headless verb require a display. The one exception is `cli._launch_gui()`, which imports `generate`
-for its side effect because opening the window is that command's entire job.
+**There is no GUI toolkit in this tree, and `run_config.py`, `control.py` and `cli.py` must stay that
+way.** They are the headless core: the CLI, the web app and every test import them with no display
+attached. `cli._launch_gui()` is the one place that reaches a front end, and it imports
+`webapp.__main__` — never a toolkit — because starting the web app is that command's entire job.
 `tests/test_cli_control.py::test_control_layer_never_imports_the_gui_module` enforces this by
+scanning the source with `ast`.
 
 **Consequence: `control.py` must wire up the `detection` module globals itself (v13.5.1).**
 `detection.issue_timestamps` and `detection.issue_timestamps_lock` are module globals initialised to
-`None` and set by **`generate_tk.py` at module scope** — which the control layer cannot import. Before
-v13.5.1 the headless path never set them, so any refusal-phrase hit died inside
-`detection.is_refusal()` with `'NoneType' object does not support the context manager protocol` and
-killed the turn. `control.py` now does the same two assignments at module scope, right after its
-imports, from the same `app_state` the controller already owns. **If you add another module global
-that `generate_tk.py` wires up for `detection`, wire it in `control.py` too** — the headless path is not
-allowed to import the GUI entry point to get it.
-scanning the source with `ast`.
+`None` and set by whichever entry point owns the run. Before v13.5.1 the headless path never set them,
+so any refusal-phrase hit died inside `detection.is_refusal()` with `'NoneType' object does not support
+the context manager protocol` and killed the turn. `control.py` now does the same two assignments at
+module scope, right after its imports, from the same `app_state` the controller already owns. **If you
+add another module global that `detection` needs wired up, wire it in `control.py` too** — the headless
+path is not allowed to import a front end to get it.
 
-`generation.py` is already GUI-free (it never imports `generate_tk.py`); its only GUI callback is
-`app_state.live_prompt_preview_hook`, which is None-safe. `quality.py` has no Tk usage at all.
+`generation.py` is GUI-free; its only front-end callback is `app_state.live_prompt_preview_hook`, which
+is None-safe and set by the web engine. `quality.py` has no front-end usage at all.
 
 ---
 
@@ -61,12 +58,12 @@ scanning the source with `ast`.
 **Edit for:**
 - **A new worker option** → add a field to `RunSettings` and a read in `build_run_settings()`, then add the name to `WORKER_POSITIONAL_FIELDS` or `WORKER_KEYWORD_FIELDS`. Nothing else. `tests/test_cli_control.py::test_run_settings_expose_every_field_the_worker_launch_needs` fails if a declared field is never assigned.
 - **A new output file kind** → add its prefix to `DERIVED_OUTPUT_PREFIXES`. That one tuple is used by BOTH `save` and `clear`, so they cannot disagree about which files are derived output. A derived file that is missing from it gets swept back in as source data and doubles the row count on every save.
-- **Thread counting** → `count_worker_threads(api_configs, active_api_configs, master_duplication_enabled)` is THE one definition: it sums the per-API `threads` of the entries that will do work, and `total_threads_for_run(settings)` is a thin wrapper over it. `api.threads` is legacy and is **not** the total — it is only the fallback for when the per-slot counts are absent, so never report it as a run's worker count. Every caller that shows or uses a thread total (the GUI's `Start processing:` line and its launch loop, the CLI's `start` plan, `control.reported_thread_count()` in the status/stats payloads) must go through this helper, or the number shown stops matching the number started (that was the v13.0.2 bug: 30 threads launched, "12 threads" logged).
+- **Thread counting** → `count_worker_threads(api_configs, active_api_configs, master_duplication_enabled)` is THE one definition: it sums the per-API `threads` of the entries that will do work, and `total_threads_for_run(settings)` is a thin wrapper over it. `api.threads` is legacy and is **not** the total — it is only the fallback for when the per-slot counts are absent, so never report it as a run's worker count. Every caller that shows or uses a thread total (the web UI's `Start processing:` line and its launch loop, the CLI's `start` plan, `control.reported_thread_count()` in the status/stats payloads) must go through this helper, or the number shown stops matching the number started (that was the v13.0.2 bug: 30 threads launched, "12 threads" logged).
 - **Config reads** → `build_run_settings()` reads `app_state.global_config`, which is a cache. A caller must `app_state.global_config.load()` first (the CLI's `cmd_start` does) or it reads whatever was loaded last.
 
 ### `control.py`
 **Purpose:** The command protocol, the socket server, and `HeadlessController` (one `cmd_*` per verb)
-**Key:** `PROTOCOL_VERSION`, `ERROR_EXIT_CODES`, `CommandError`, `StaticVar`, `build_stats_payload()`, `DETECTION_COUNTERS`, `ControlServer`, `HeadlessController`, `send_request()`, `is_server_running()`. `ControlServer` owns `_stopped` (teardown begun) and `_stopped_done` (teardown finished, released last) — see the one-accept-loop rule below
+**Key:** `PROTOCOL_VERSION`, `ERROR_EXIT_CODES`, `CommandError`, `build_stats_payload()`, `DETECTION_COUNTERS`, `ControlServer`, `HeadlessController`, `send_request()`, `is_server_running()`. `ControlServer` owns `_stopped` (teardown begun) and `_stopped_done` (teardown finished, released last) — see the one-accept-loop rule below
 **Edit for:**
 - **A new verb** → add `cmd_<verb>` to `HeadlessController` AND the name to `COMMANDS`. `handle()` dispatches on `getattr(self, f"cmd_{command}")` and rejects anything not in `COMMANDS`, so a method without a `COMMANDS` entry is unreachable over the wire (but still callable in-process, which hides the bug from a unit test that calls it directly).
 - **A new error code** → add it to `ERROR_EXIT_CODES` or the CLI falls back to exit 1. Several codes deliberately share a status (all usage errors are 2; `not_running` and `no_daemon` are both 3), so do not assume the mapping is one-to-one.
@@ -93,7 +90,7 @@ scanning the source with `ast`.
 `tests/test_cli_control.py` — 33 headless checks, no display/network/DB. It covers config
 resolution, worker-arg binding, the socket round-trip, every verb, the stats contract, exit
 codes, the `_kind`-must-not-leak rule, save idempotency, stop semantics, TCP safety,
-one-accept-loop-per-server, and default-GUI-unchanged.
+one-accept-loop-per-server, and the web app as the only GUI.
 
 **When a check in that file fails, first confirm the real signature or return shape with
 `inspect` before changing the product.** Six of the nine initial failures were wrong assumptions
@@ -101,17 +98,17 @@ in the test, not bugs.
 
 ## Traps
 
-- **`app_state.master_duplication_enabled_var` is `None` headlessly.** The engine calls `.get()`
-  on it on every write path, so `HeadlessController` installs `control.StaticVar` before any worker
-  runs. Without it every headless run raises `AttributeError` on its first successful conversation.
-- **`generation.save_generation_state()` and `generation.worker()` are imported by name in
-  `generate_tk.py`**, so the control layer uses the module attribute (`generation.save_generation_state()`)
-  rather than importing the symbol.
+- **`app_state.duplication_mode` is a plain `bool`, not a toolkit variable.** `HeadlessController`
+  sets it when a run starts and `generation.py` reads it on every write path to pick the per-API
+  output file name. Do not reintroduce a `.get()`/`.set()` wrapper or a shim object.
+- **Call `generation` through the module attribute**, not by importing the symbol
+  (`generation.save_generation_state()`, `generation.worker()`), so a test that swaps a function on
+  the module is seen by the controller.
 - **`api_handler.py` is CRLF.** `replace_file_content` normalises newlines and will not match it; patch
   it with a small Python script that opens in binary and writes bytes back. Keep the file CRLF.
 - **The rate limiter must stay interruptible.** `RateLimiter.wait_if_needed()` sleeps in 0.25 s slices
   via `_interruptible_sleep()` and returns as soon as `app_state.stop_processing` is set. A plain
   `time.sleep()` made a Stop take up to 60 s on a rate-limited slot, so the generator looked
   unstoppable.
-- **The GUI hook must never be able to stop the GUI opening.** `generate.start_control_server_if_enabled()`
-  swallows every failure to a log line. A busy port must not be a startup regression.
+- **The control socket must never be able to stop the web app opening.** `webapp/engine.py` starts the
+  socket and swallows every failure to a log line. A busy port must not be a startup regression.

@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the v13.1.1 opt-in prompt traces (``generation.debug_prompt_log``).
 
@@ -117,8 +115,8 @@ def main():
                 offenders.append(f"{module_name}:{lineno}")
     check("no unguarded debug-log open() remains", not offenders, offenders)
 
-    # --- 8. both front ends apply the key at run start ---
-    for module_name in ("generate_tk.py", "control.py"):
+    # --- 8. the one entry point applies the key at run start ---
+    for module_name in ("control.py",):
         source = (REPO / module_name).read_text(encoding="utf-8")
         check(f"{module_name} applies generation.debug_prompt_log",
               "generation.debug_prompt_log" in source)

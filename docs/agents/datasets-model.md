@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # Datasets subsystem — the data model and the pure model layer
@@ -19,7 +17,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 
 
 Covers sections 0-2: the names-only data model, `dataset_settings.py`
-(the pure model layer) and `dataset_column_menu.py`.
+(the pure model layer) and the column-visibility selection algebra.
 
 Part of the [Datasets subsystem reference](datasets-model.md). Sibling pages:
 - [Datasets subsystem — templates, bindings and tasks](datasets-bindings.md)
@@ -67,11 +65,10 @@ Verified by running `new_source([])` + `apply_schema(...)`:
 |---|---|
 | The whole subtree | `config/config.yml` key `datasets` → `datasets.sources` (a list). Default file value is `datasets: {sources: []}` (confirmed in `config/config.yml`). |
 | Named profiles | `config/profiles/<safe_name>.yml`, same `datasets` key. `ConfigLoader.profiles_dir` = `os.path.join(os.path.dirname(path), 'profiles')` (`config_loader.py:52`). |
-| Tk editor write | `config_editor.py:2601` — `config_data['datasets'] = self.datasets_panel.get_config()` |
-| Tk editor read | `config_editor.py:3056` — `self.datasets_panel.load_config(config.get('datasets', {}))` |
-| Tk editor validate | `config_editor.py:3569` — `self.datasets_panel.validate()` (first check in `validate_config_handler`) |
-| Engine consume (GUI) | `generate_tk.py:2533` — `configure_queue_datasets(app_state.task_queue, global_config.get('datasets', {}))` |
-| Engine consume (CLI/control) | `control.py:716` — same call, `cfg.get('datasets', {})` |
+| Panel write | `webapp/datasets_routes.py` `_write_sources()` — `normalize_config` then `config_tree.set_value(tree, 'datasets.sources', ...)`, with `validate_config` on the way in |
+| Panel read | `webapp/datasets_routes.py` `_sources()` — `config_tree.get(tree, 'datasets', {})` then `normalize_config(...)['sources']` |
+| Panel validate | `POST /api/datasets/validate` — the same `validate_config` call the engine makes at run start |
+| Engine consume (both front ends) | `control.py:749` — `configure_queue_datasets(app_state.task_queue, cfg.get('datasets', {}))`; the web app runs through `HeadlessController`, so this is the only call site |
 | Web schema entry | `webapp/config_schema.py:649-651` — `'datasets'` = `Field('Datasets', ...)`, `'datasets.sources'` = `_list('Sources', 'Dataset sources. Edited from the Datasets panel.')` |
 | Web config path | `webapp/config_routes.py:401` `_config_path()` → `app_state.global_config.path` |
 
@@ -82,24 +79,26 @@ becomes `kind: 'group'` with `count` and one child per index. Verified:
 `build_node([{'source_id':'a'}], 'datasets.sources', 'sources')` →
 `{'kind': 'group', 'count': 1, 'children': [{'path': 'datasets.sources.0', ...}]}`.
 So the generic editor already shows each source as a repeated group at
-`datasets.sources.<i>.<field>` — usable but flat and unvalidated. A dedicated panel is still the
+`datasets.sources.<i>.<field>` — usable but flat and unvalidated. The dedicated panel is still the
 right call, and `POST /api/config/save` accepts `{"values": {"datasets.sources": [...]}}` because
 `coerce()` (`webapp/config_routes.py:329`) for a `list` current value only requires
 `isinstance(raw, list)`, and `config_schema.validate` has no field or `RULES` entry for that path
 (`RULES` at `webapp/config_schema.py:1082` is only `_rule_append_alias`, `_rule_bad_words`,
 `_rule_scene_cast_shape`, `_rule_logic_threshold`). **Consequence: a save through the generic
 route does not run `validate_config`, so an invalid datasets subtree can be written to
-`config.yml` and will only fail later, at `configure_queue_datasets`.** A datasets panel should
-call `validate_config` server-side before writing.
+`config.yml` and will only fail later, at `configure_queue_datasets`.** That is why every write in
+`webapp/datasets_routes.py` goes through `_write_sources()`, which calls `validate_config`
+server-side before the file is touched.
 
 ---
-## 1. `dataset_settings.py` — the pure model layer (MUST port verbatim)
+## 1. `dataset_settings.py` — the pure model layer
 
-No GUI, no file I/O, no network I/O. This is the module a FastAPI backend should call directly.
+No GUI, no file I/O, no network I/O. `webapp/datasets_routes.py` calls it directly, so every rule below
+is enforced server-side.
 
 ### `class DatasetSettingsError(ValueError)` — `dataset_settings.py:31`
 Raised for structurally invalid settings or a stale active mapping. Subclass of `ValueError`,
-so `except ValueError` catches it (both `generate_tk.py:2533` and `control.py:716` rely on that).
+so `except ValueError` catches it (`control.py:749` relies on that when it configures the queue).
 
 ### `_SELECTOR_DEFAULTS` — `dataset_settings.py:35`
 ```python
@@ -145,7 +144,7 @@ Validation inside `normalize_config`:
 | `name` missing → default `"Dataset {index+1}"`; `name` must be str (empty string allowed) | `"Source name must be a string."` |
 | `columns` must be list/tuple of non-empty str, no duplicates | `"Cached columns must be a list of column names."` / `"Cached columns must contain nonempty string names."` / `"Cached columns contains duplicate column 'x'."` |
 | `column_aliases` must be a Mapping; keys non-empty str; values str | `"Column aliases must be an object."` / `"Alias mapping columns must be nonempty strings."` / `"An alias for 'a' must be a string."` |
-| alias value `""` | **dropped** — a cleared GUI entry is an unmapped column |
+| alias value `""` | **dropped** — a cleared alias field is an unmapped column |
 | `visible_columns` | see `_visibility` below |
 | `schema_selector` | if not `None`, re-normalized through `source_selector()` |
 | `schema_fingerprint` | str or `None` |
@@ -239,51 +238,36 @@ Returns a new source dict with `visible_columns` replaced; aliases untouched.
 - `[]` on a non-empty schema → `[]`; `[]` on an empty schema → `[]`.
 
 ---
-## 2. `dataset_column_menu.py` — the column-visibility picker
+## 2. Column visibility — the selection algebra
 
-### `class ColumnVisibilityMenu(ttk.Button)` — `dataset_column_menu.py:24`
+The selection is stored as `visible_columns` on the source and is **presentation only**: it never
+changes an alias mapping, and a hidden column keeps its alias active. `dataset_settings.py` owns the
+algebra; `webapp/static/js/datasets.js` only renders controls that call it.
 
-**Port the selection algebra; do NOT port the widget.**
+### `_visibility(value, columns)` — `dataset_settings.py:88`
+Canonicalizes a stored selection:
+- `None` → `None` (All, including columns imported later)
+- otherwise a list of unique non-empty names
+- a selection equal to the whole current schema → `None` (All), so a full selection collapses
+- an explicit `[]` on an **empty** schema stays `[]` (none shown)
 
-Pure logic that MUST be ported:
+`with_visible_columns()` (section 1) is the only writer: it validates the names, stores them in schema
+order and canonicalizes through `_visibility`, so a full selection collapses to `None` and a hidden
+column keeps its alias.
 
-| Member | Line | Behaviour |
-|---|---|---|
-| `__init__(self, master, on_change, **kwargs)` | 38 | `on_change` must be callable or `None` → `TypeError("on_change must be callable or None.")`. Forces `text="Columns: All ▾"` and `command=self._toggle_popup`; pops caller-supplied `text`/`textvariable`. |
-| `set_columns(self, columns, selection=None)` | 62 | Replaces schema + selection **silently** (never calls `on_change`). |
-| `get_selection(self)` | 84 | `None` for All, else `tuple` of names **in original schema order**. |
-| `toggle_column(self, name)` | 90 | Toggles one name, even if filtered out by search. |
-| `select_all(self)` | 101 | `_change_selection(None)` — the whole dataset, ignoring the search query. |
-| `clear_selection(self)` | 105 | `_change_selection(set())` — hide all, ignoring the search query. |
-| `_canonicalize(self, selected)` | 109 | `selected & column_set`; `None` if `columns` non-empty and the result equals the whole set. |
-| `_change_selection(self, selected)` | 115 | Canonicalizes; **returns early if unchanged**; else updates caption, refreshes checks, then calls `on_change(self.get_selection())`. |
+### The panel's controls — `webapp/static/js/datasets.js`
 
-`set_columns` validation (exact messages):
-- `columns` a `str` → `TypeError("Column names must be a sequence, not one string.")`
-- any non-str name → `TypeError("Column names must be strings.")`
-- duplicates → `ValueError("Column names must be unique.")`
-- `selection` a `str` → `TypeError("Selection must be a sequence of names or None.")`
-- non-str in selection → `TypeError("Selected column names must be strings.")`
+| Control | Behaviour |
+|---|---|
+| Show all | `with_visible_columns(source, None)` — the whole schema, **including columns imported later** |
+| Show none | `with_visible_columns(source, [])` — hide every column, keeping the aliases |
+| Invert | every column not currently shown becomes shown, computed against the whole schema in schema order |
+| Only matching / Hide matching | keep or drop exactly the columns matching the current filter; rendered only while a filter is typed |
 
-`toggle_column` unknown name → `ValueError("Unknown column name: 'x'.")`
-
-Caption text (`_update_caption`, line 125): `"Columns: All ▾"` when `None`, else
-`"Columns: {len(selected)} of {len(columns)} ▾"`.
-
-Row indicator (`_indicator`, line 297): `"[x]"` / `"[ ]"` — plain ASCII on purpose.
-
-**Tk-only, do NOT port:** `_pixels` (137), `_work_area` (140, Win32 `MonitorFromWindow`),
-`_place_popup` (167), `open` (197, `Toplevel` + `grab_set` + `overrideredirect`),
-`_populate_tree` (264, `ttk.Treeview` + `tkfont.measure`), `_refresh_checks` (303),
-`_all_changed` (311), `_search_changed` (317), `_row_clicked` (320), `_row_space` (330),
-`_focus_tree` (336), `_escape` (340), `_popup_clicked` (344), `_inside` (355),
-`_focus_out` (362), `_check_focus` (366), `close` (376), `_popup_destroyed` (417),
-`_destroyed` (421), `state` (426), `configure`/`config` (432/440), `destroy` (442).
-
-The popup's *behaviour* to reimplement in JS: bounded size (440×380 CSS px at 96 dpi,
-margin 8), case-insensitive substring search over names, `All` checkbox with an `alternate`
-state when partially selected, status text `"{n} columns"` or `"{n} matches / {total}"`,
-click/Space toggles, Escape / click-outside / focus-out closes, and the search field is
-focused on open (repeated `open()` calls just refocus it).
+**The filter never changes what a selection means.** Show all and Show none act on the whole schema,
+never on the filtered subset, because a control that silently acted on a subset would hide columns the
+user cannot see. The two filter-scoped buttons are named for what they do and only exist while a filter
+is typed. The filter itself is client-side only — the visibility route already accepts an arbitrary
+column list, so a 40-column source needs no new route to be filterable.
 
 ---

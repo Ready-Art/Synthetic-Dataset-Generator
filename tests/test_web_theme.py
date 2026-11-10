@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the web design tokens and the skeleton.
 
@@ -179,9 +177,9 @@ def test_no_hex_literal_outside_theme_module():
 
 
 def test_importing_theme_starts_nothing():
-    """theme.py is pure data: no socket, no server, no Tk root."""
+    """theme.py is pure data: no socket, no server, no GUI root."""
     import tkinter
-    assert tkinter._default_root is None, 'importing webapp.theme created a Tk root'
+    assert tkinter._default_root is None, 'importing webapp.theme created a GUI root'
 
 
 def test_importing_app_does_not_bind_a_port():

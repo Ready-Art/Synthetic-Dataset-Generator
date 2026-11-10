@@ -4,16 +4,14 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # The `input/` folder
 
 The `input/` folder is where the generator looks for its source text. The application creates the
-folder on first run (`generate_tk.py`, `app_state.INPUT_DIR`); it is not in `.gitignore`, so anything you
+folder on first run (`run_config.input_files()`, `app_state.INPUT_DIR`); it is not in `.gitignore`, so anything you
 put there is a candidate for being committed. **Only put text there that you have the right to use.**
 
 There are two ways to feed a run, and they are mutually exclusive:
@@ -32,7 +30,7 @@ also runs with an empty folder, and it refuses to start with the questions file 
 
 ### Which files are picked up
 
-`generate_tk.py` builds the file list with
+`run_config.input_files()` builds the file list with
 
 ```python
 input_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('.txt') and f != os.path.basename(QUESTIONS_FILE_PATH)]
@@ -145,7 +143,7 @@ Each task's ID is `"<file name>_chunk_at_<offset>"`, so:
 
 ## 2. The questions file: `input/questions.txt`
 
-Set `prompts.use_questions_file: true` (Config Editor → **Prompts** → *Use 'questions.txt' for
+Set `prompts.use_questions_file: true` (Config editor → **Prompts** → *Use 'questions.txt' for
 questions*). Subject/context chunking is switched off entirely and each line becomes one task.
 
 Format rules, from `read_txt()`:
@@ -366,7 +364,7 @@ a single chunk.
 | Dialogue and apostrophes are missing from generated text | `sanitize_input()` stripped `"` and `'` | Expected; use curly quotes if you need them to survive |
 | A run queues far fewer tasks than `num_random_chunks` | Small files, or repeated offsets already completed | Add larger files; check the file lengths |
 | `No dataset column is mapped to alias 'x'` in the log | A `{{ds:x}}` in a questions-file line has no alias on an enabled source | Map the column in the Datasets tab, or remove the placeholder |
-| The appended value never appears in the generated question | `append_alias` is empty, the questions file is off, or the row's cell is blank | Check the Config Editor's Questions File Dataset Variables panel |
+| The appended value never appears in the generated question | `append_alias` is empty, the questions file is off, or the row's cell is blank | Check the Config editor's Questions File Dataset Variables panel |
 | A `{{ds:...}}` placeholder reached the model as literal text | The line came from a chunk-mode source `.txt`, which is never rendered | Put the placeholder in `input/questions.txt` instead |
 
 ---

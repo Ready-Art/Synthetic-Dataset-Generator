@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # ⚙ Configuration
@@ -104,7 +102,7 @@ don't recognise, but several hosted APIs **reject any unknown field with HTTP 40
 that works against vLLM fails on every request against, e.g., Mistral.
 
 Each API slot picks a **compatibility profile** that trims the outgoing body to what that endpoint
-accepts. In the config editor's **API** tab each slot has an *API Compatibility* dropdown and a
+accepts. In the Config editor's **API** section each slot has an *API Compatibility* dropdown and a
 **Detect** button (guesses the profile from the URL host). Profiles are plain data in
 `config/api_profiles.yml` — add or adjust one there, no code change required.
 
@@ -164,7 +162,7 @@ my_provider:
 
 **Profile Types:**
 - `all` — Send the payload untouched (no filtering or renaming)
-- `from_config` — Use the slot's `custom_allowed_params` list from the config editor
+- `from_config` — Use the slot's `custom_allowed_params` list from the Config editor
 - `[list]` — Explicit allow-list of parameter names to include in the request
 
 **Key Renames:** The only value-aware rename is `repetition_penalty` → `frequency_penalty`, which transforms the value using `(v - 1)` clamped to `[-2, 2]`. All other renames are direct key substitutions.

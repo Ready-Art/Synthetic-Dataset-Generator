@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # AGENTS.md - Codebase Cheat Sheet (hub)
@@ -25,13 +23,34 @@ under `docs/agents/`, so you never have to hold the whole cheat sheet in context
 4. If a topic file is still long, read it in sections — its `## Contents` list is the map.
 5. Only open a second topic file when a change genuinely spans two areas.
 
-## Running the generator (read this before using it, not before editing it)
+## The two front ends
+
+The generator has exactly **two** front ends. There is no desktop toolkit dependency
+and no desktop-toolkit code anywhere in the tree.
+
+| Front end | Entry point | What it is |
+|-----------|-------------|------------|
+| **Web UI** | `python -m webapp` (or `python -m cli launch --gui`) | The GUI. A FastAPI app serving a plain-ES-module browser bundle. |
+| **CLI** | `python -m cli` | The terminal client. Talks to the controller over a local socket. |
+
+Both drive the **same engine**: `control.HeadlessController`. The web app owns the
+controller and serves the control socket in-process; the CLI is a client of that same
+socket. Neither front end reimplements generation, detection or scoring.
+
+```
+webapp/  (browser)  ->  webapp/engine.py  ->  control.HeadlessController
+cli.py   (terminal) ->  control.py (socket client) ->  control.HeadlessController
+                                                       |
+                          run_config.py -> generation.py / quality.py / app_state.py
+```
+
+## Running the generator
 
 The topic files below are for CHANGING the code. To actually RUN a generation from a
 terminal — launch it, start and stop generation, read the statistics, export or clear the
 dataset — read **[`docs/cli.md`](docs/cli.md)**, the user page for the terminal front end.
 
-The whole loop, with no display and no GUI:
+The whole loop, with no display:
 
 ```sh
 python -m cli launch              # start the background controller
@@ -54,8 +73,8 @@ Three things worth knowing before you type a verb:
   row is still written); `filtered` means dropped and never written; `detection_config`
   means which checks are armed. Do not conflate them.
 
-`python generate_tk.py` still opens the ordinary Tk window, and `control.enabled` is `false`
-by default, so nothing above changes a default GUI run.
+For the browser, `python -m webapp` serves the UI on `127.0.0.1:8765`; `python -m cli
+launch --gui` starts the same app. Both need `requirements-web.txt`.
 
 If you are editing the control layer rather than using it, the topic file is
 [`docs/agents/cli.md`](docs/agents/cli.md) — the row in the table below.
@@ -64,21 +83,17 @@ If you are editing the control layer rather than using it, the topic file is
 |------------|--------------|
 | [`docs/agents/task-index.md`](docs/agents/task-index.md) | you know WHAT you want to change and need the list of files to edit. |
 | [`docs/agents/config.md`](docs/agents/config.md) | you are changing `config/config.yml`, `config/api_profiles.yml` or the dependency pins. |
-| [`docs/agents/core-modules.md`](docs/agents/core-modules.md) | you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py`, `ui_layout.py` or `style_metrics.py`. |
-| [`docs/agents/webapp.md`](docs/agents/webapp.md) | you are touching **the web front end** (`webapp/`): the login, the theme, the config editor, Datasets, Profiles, or `cli launch --gui`. **This is the GUI.** |
-| [`docs/agents/generate-ui.md`](docs/agents/generate-ui.md) | you are touching the **deprecated** Tk window: tabs, metric cards, issue panels, worker launch, table styles or the Regex Watch tab. |
-| [`docs/agents/ui-theme.md`](docs/agents/ui-theme.md) | you are changing any colour, font, spacing value, tab name, emoji icon, empty state or widget style **in the deprecated Tk window** — all in `ui_theme.py`. The web equivalent is `webapp/theme.py`. |
-| [`docs/agents/review-tab.md`](docs/agents/review-tab.md) | you are touching the Review tab, its count badge, the flagged-id set, or any code that identifies a tab by its label. |
-| [`docs/agents/config-editor.md`](docs/agents/config-editor.md) | you are adding a config field to the **deprecated Tk** editor, or fixing its layout. The web editor is `webapp/config_schema.py`. |
-| [`docs/agents/dashboard.md`](docs/agents/dashboard.md) | you are adding a metric card, issue panel or issue-graph series. |
+| [`docs/agents/core-modules.md`](docs/agents/core-modules.md) | you are touching `api_handler.py`, `api_profiles.py`, `app_state.py`, `config_loader.py`, `logging_config.py`, `text_utils.py` or `style_metrics.py`. |
+| [`docs/agents/webapp.md`](docs/agents/webapp.md) | you are touching **the web front end** (`webapp/`): the login, the theme, the Config editor, Datasets, Profiles, Review, Live Prompts, or the tab routes. **This is the GUI.** |
+| [`docs/agents/review-tab.md`](docs/agents/review-tab.md) | you are touching the Review tab, its count badge, the flagged-id set, or `review_data.py`. |
 | [`docs/agents/vllm-metrics.md`](docs/agents/vllm-metrics.md) | you are touching `vllm_metrics.py`, the 📊 Metrics tab, the per-endpoint vLLM graph, or the per-slot token accounting that feeds it. |
 | [`docs/agents/generation.md`](docs/agents/generation.md) | you are touching the worker loop, prompts, cast/arc helpers, metadata or output writing. |
 | [`docs/agents/generation-retries.md`](docs/agents/generation-retries.md) | you are adding or moving a check that can resend an answer (it records the retry ORDER). |
 | [`docs/agents/detection.md`](docs/agents/detection.md) | you are adding or fixing a refusal/slop/OOC/Regex Watch/non-Latin/scene-continuity check, or the v12.7.6 slop/anti-slop default-off gate ([`slop-antislop-default-off.md`](docs/agents/slop-antislop-default-off.md)). |
 | [`docs/agents/quality.md`](docs/agents/quality.md) | you are touching scoring dimensions, the judge request/JSON parsing or the drop policy. |
 | [`docs/agents/quality-queue.md`](docs/agents/quality-queue.md) | you are touching the scoring queue, the judge's concurrency (`quality.judge_concurrency`), its rate-limit slot (`quality.scoring_api.slot_idx`) or the cost of one judge conversation. |
-| [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `datasets_panel.py`, `webapp/datasets_routes.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. Its three deeper pages (`datasets-model.md`, `datasets-bindings.md`, `datasets-panel-reference.md`) hold the module-by-module reference. |
-| [`docs/agents/cli.md`](docs/agents/cli.md) | you are touching `cli.py`, `control.py`, `run_config.py`, the control socket/protocol, the `control:` config block, or the GUI's control-server hook. |
+| [`docs/agents/datasets.md`](docs/agents/datasets.md) | you are touching `dataset_*.py`, `webapp/datasets_routes.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`. Its two deeper pages (`datasets-model.md`, `datasets-bindings.md`) hold the module-by-module reference. |
+| [`docs/agents/cli.md`](docs/agents/cli.md) | you are touching `cli.py`, `control.py`, `run_config.py`, the control socket/protocol, or the `control:` config block. |
 | [`docs/agents/tools-and-docs.md`](docs/agents/tools-and-docs.md) | you are touching `tools/*.py`, `docs/gemma4-chat-template.md` or `docs/scene-cast.md`. |
 
 Cross-cutting tasks (a new detection type, a new quality dimension, scene cast) are
@@ -88,26 +103,21 @@ listed in every topic file they touch.
 
 The application targets Python 3.11 (see `docs/installation.md`), so `match` and PEP 604 `X | Y` unions are
 allowed and preferred over `typing.Optional`/`Union`; nothing newer (PEP 695 `type`/`class Foo[T]`).
+`cli.py` carries the hard, early interpreter guard, and it runs before the first project import.
+
 All test scripts live in `tests/` (run them from the repository root, e.g. `python -B tests/test_api_profiles.py`).
-Tests that import `generation.py` (`tests/test_opening_mode.py`, `tests/test_persona_arc.py`,
-`tests/test_dataset_compatibility.py`) or the Datasets panel need Tk; `tests/test_datasets_panel.py` and
-`tests/test_dataset_column_menu.py` also need a display; `tests/test_review_tab_ui.py` and
-`tests/test_regex_watch_tab_ui.py` need a display too (they build the real `generate_tk.py` UI) and skip
-cleanly without one. `tests/test_quality_judge_settings_ui.py`, `tests/test_missing_quotations_ui.py`
-and `tests/test_user_emotional_states_ui.py` also need a display (they build the real `ConfigEditor`)
-and skip cleanly without one, as does `tests/test_editor_readability_ui.py` (it also needs the
-'superhero' theme, so run it under `xvfb-run`). `tests/test_questions_dataset_ui.py` (v11.9.0
-questions-file dataset variables) also needs a display and skips cleanly without one.
+Every test is headless: none needs a display, a model, a network connection or a running server.
 
 ```sh
 python -m pip install -r requirements.txt            # the application
-python -m pip install -r requirements-datasets.txt   # the application + Hugging Face, Parquet and saved-HF sources
+python -m pip install -r requirements-web.txt         # the web UI (the GUI)
+python -m pip install -r requirements-datasets.txt     # + Hugging Face, Parquet and saved-HF sources
 ```
 
-Run tests from the repository root. Every test file runs on its own and exits non-zero on a failure; none needs a
-model, a network connection or a running server. While working, run the test for the module you change, where the
-topic file for that module names one. Before finishing, and before opening a pull request, run all of them and say in
-the pull request which ones you ran and whether they passed:
+Run tests from the repository root. Every test file runs on its own and exits non-zero on a failure. While
+working, run the test for the module you change, where the topic file for that module names one. Before
+finishing, and before opening a pull request, run all of them and say in the pull request which ones you ran
+and whether they passed:
 
 ```sh
 for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
@@ -121,7 +131,7 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 - Importing `logging_config` creates `output/` in the working directory, and `logging_config.LOG_FILE_PATH` is
   relative to it, so `tests/test_api_profiles.py` appends to the repository's `output/log.txt`. `tests/test_opening_mode.py` and
   `tests/test_persona_arc.py` change into a temporary directory first.
-- `tools/check_gui_layout.py` and `tools/check_dataset_hub.py` are not part of the test run (see `docs/agents/tools-and-docs.md`).
+- `tools/check_dataset_hub.py` is not part of the test run (see `docs/agents/tools-and-docs.md`).
 - `tools/gemma4_thought_fix.py` is **outside this project**: nothing here imports, reads or tests it. It is a
   standalone axolotl helper for Gemma 4 fine-tunes, documented in `docs/gemma4-chat-template.md`. **It was written
   by Karki (a user on Discord), not by this repository** — we only applied robustness fixes, so keep his credit in
@@ -137,9 +147,8 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
 ## Boundaries
 
 - `.gitignore` covers local output: `output/` (generated rows, `log.txt`, run state), `__pycache__/`,
-  `.pytest_cache/`, `layout-check/` (once the layout tool has run), and local config copies
-  (`custom.yml`, `custom*.yml`, `config/profiles/`). Stage files by name; never `git add -A`
-  or `git add .`.
+  `.pytest_cache/`, and local config copies (`custom.yml`, `custom*.yml`, `config/profiles/`). Stage files by
+  name; never `git add -A` or `git add .`.
 - **Never commit an API key.** `config/config.yml` is tracked and ships with every `key: ''` empty.
 - **Only `config/config.yml` and `config/api_profiles.yml` ship.** A user's `custom.yml` (or any other
   saved copy) is their own working config: it holds their character cards, prompts, lore and database
@@ -148,22 +157,28 @@ for t in tests/test_*.py; do python -B "$t" || echo "FAILED: $t"; done
   `git status --porcelain` before you finish.
 - **Ask before changing the wording of a shipped prompt** in `config/config.yml` (`prompts.*`). The prompts are
   short and general on purpose, and every output row depends on them.
-- **New worker options go in the `kwargs=` dict** of the worker launch in `generate_tk.py`, never in `args=` (see `docs/agents/generate-ui.md`).
+- **New worker options go in `control._worker_kwargs()`**, never in `_worker_args()` (see `docs/agents/cli.md`).
+  `tests/test_worker_launch.py` binds both against `generation.worker`'s real signature.
 - **Dataset settings hold names only.** Source selectors, column names and aliases go in `datasets.sources[]`;
   record values and credentials never do, and the Datasets panel never shows cell values (`dataset_settings.py`,
-  `datasets_panel.py` docstrings).
+  `webapp/datasets_routes.py` docstrings).
 
 ## Core Architecture
 ```
-generate_tk.py (Tk UI, deprecated) → generation.py (worker logic) → api_handler.py (API calls)
-                    ↓                              ↓
-              app_state.py (shared state) ← detection.py (issue checks)
-                    ↓
-              dashboard.py (display updates)
+webapp/ (browser)  ->  webapp/engine.py  ->  control.HeadlessController
+cli.py             ->  control.py (socket client)  ->  control.HeadlessController
+                                                        |
+                            run_config.py -> generation.py -> api_handler.py
+                                                        |
+                                        app_state.py (shared state) <- detection.py
 ```
 
+There is no GUI toolkit in this tree. `generation.py`, `quality.py`, `control.py`,
+`cli.py` and every `webapp/` module import no display library and need no display to run
+or to test.
+
 ## API Slots Index
-Indexes count from 0 in code (`api_slot_idx`, `*_per_api` keys). The GUI, the README and most log messages count from 1, so index 4 is "API Slot 5"; debug-log file names (`_api_slot_<index>`) use the index.
+Indexes count from 0 in code (`api_slot_idx`, `*_per_api` keys). The web UI, the README and most log messages count from 1, so index 4 is "API Slot 5"; debug-log file names (`_api_slot_<index>`) use the index.
 - **0-3:** Main generation APIs (duplication mode) — API Slots 1-4
 - **4:** Slop Fixer LLM — API Slot 5
 - **5:** Anti-Slop Fixer LLM (independent) — API Slot 6
@@ -175,6 +190,10 @@ The counter / recent-list / timestamp / lock / flag inventory of `app_state.py`,
 thread-safety pattern and the `config_loader.py` paths are in
 [`docs/agents/core-modules.md`](docs/agents/core-modules.md) — read it before you add a
 counter, a lock or a timestamp key.
+
+`app_state.duplication_mode` is a plain `bool`, not a toolkit variable. `control.py` sets it
+when a run starts and `generation.py` reads it on every write path to pick the per-API output
+file name. Do not reintroduce a `.get()`/`.set()` wrapper.
 
 ## More rules that are easy to break
 
@@ -190,9 +209,6 @@ counter, a lock or a timestamp key.
   `sampler_settings`, never entries in them (those dicts use an all-or-nothing
   `params or main_sampler_settings` fallback). See `docs/agents/core-modules.md` and
   `tests/test_thinking_mode.py`.
-- **A config-editor text field must be `normal` before you write into it** — this Tk
-  build drops `delete`/`insert` on a disabled Text widget silently
-  (see `docs/agents/config-editor.md`).
 - **Keep `tools/gemma4_thought_fix.py` out of the app** — it is a third-party helper
   written by Karki (Discord), not this repository's code
   (see `docs/agents/tools-and-docs.md`).
@@ -203,9 +219,10 @@ counter, a lock or a timestamp key.
 - **Keep features opt-in by default** — a default run must stay byte-identical to the
   previous release.
 - **Slop/Anti-Slop are OFF by default (v12.7.6)** — `detection.{slop,anti_slop}.enabled` ship `false`
-  and `generate_tk.py` gates the phrase lists on them. Never make a phrase list its own enable condition (a
-  saved list must survive a toggle). Slop docs point at the fork's **`dev`** branch, never `main`.
-- **All code is AGPLv3 (never MIT/dual); every text/code file carries the SPDX header.** New
+  and `run_config.build_run_settings` gates the phrase lists on them. Never make a phrase list its own
+  enable condition (a saved list must survive a toggle). Slop docs point at the fork's **`dev`** branch,
+  never `main`.
+- **All code is AGPLv3; every text/code file carries the SPDX header.** New
   file? `python -B tools/add_license_header.py` (`--check` to verify). The tool owns that
   block and skips Karki's script. See [`docs/licensing.md`](docs/licensing.md).
 

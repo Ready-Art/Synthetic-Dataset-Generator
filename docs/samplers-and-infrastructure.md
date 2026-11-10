@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🎛 Samplers & Infrastructure
@@ -58,7 +56,7 @@ samplers:
 ```
 
 - **`logit_bias`** — JSON object mapping token IDs to bias values. Passed directly to the API payload. Leave empty (`""`) to disable.
-- **`use_bad_words` / `bad_words`** (v11.1) — When `use_bad_words: true`, every outgoing request (question, answer, user continuation, opening-mode greeting and first line, plus the Slop Fixer on API Slot 5 and the Anti-Slop Fixer on API Slot 6) gets a top-level `bad_words` list passed straight through to the endpoint, matching vLLM's `chat/completions` field of the same name. In the config editor this lives in the **Samplers** tab as a toggle above the text box, right under the Logit Bias field. Entries keep their leading whitespace exactly as typed, so `For Example` (forbids the phrase anywhere) and ` For Example` (forbids the phrase after a space — i.e., *not* at the start of a turn) can be listed independently:
+- **`use_bad_words` / `bad_words`** (v11.1) — When `use_bad_words: true`, every outgoing request (question, answer, user continuation, opening-mode greeting and first line, plus the Slop Fixer on API Slot 5 and the Anti-Slop Fixer on API Slot 6) gets a top-level `bad_words` list passed straight through to the endpoint, matching vLLM's `chat/completions` field of the same name. In the Config editor this lives in the **Samplers** section as a toggle above the text box, right under the Logit Bias field. Entries keep their leading whitespace exactly as typed, so `For Example` (forbids the phrase anywhere) and ` For Example` (forbids the phrase after a space — i.e., *not* at the start of a turn) can be listed independently:
 
   ```json
   // vLLM-equivalent request sent by the generator when use_bad_words is on
@@ -79,7 +77,7 @@ samplers:
   **This setting now reaches every request, not just the main four (v13.0.4).** Before v13.0.4 the Slop Fixer, the Anti-Slop Fixer and the Quality Judge sent **no** `chat_template_kwargs` at all, so a reasoning model thought on every rewrite and every score request no matter what this setting said — and on a local vLLM that chain of thought dominated their runtime (users reported roughly a **5x** overall generation speedup after switching thinking off). Each of those three now has its **own** `enable_thinking` key which accepts one extra value:
   - `"inherit"` (the shipped default) — Follow the `samplers.enable_thinking` above
 
-  Set them in the config editor: **Thinking Mode (Slop Fixer)** and **Thinking Mode (Anti-Slop)** at the bottom of their sampler-override groups in the **Samplers** tab, and **Judge Thinking Mode** under the Quality Scoring API fields in the **Generation** tab. `"inherit"` plus the shipped `enable_thinking: "default"` resolves to "send nothing", so a config that never mentions these keys behaves exactly as it did in v13.0.3.
+  Set them in the Config editor: **Thinking Mode (Slop Fixer)** and **Thinking Mode (Anti-Slop)** at the bottom of their sampler-override groups in the **Samplers** section, and **Judge Thinking Mode** under the Quality Scoring API fields in the **Generation** section. `"inherit"` plus the shipped `enable_thinking: "default"` resolves to "send nothing", so a config that never mentions these keys behaves exactly as it did in v13.0.3.
 
   The three keys are `samplers.slop_fixer_enable_thinking`, `samplers.anti_slop_fixer_enable_thinking` and `quality.scoring_api.enable_thinking`. **They are SIBLING keys, never entries inside `slop_fixer_params` / `anti_slop_params` / `sampler_settings`.** Those dicts are read with an all-or-nothing `params or main_sampler_settings` fallback, so a single extra key inside one makes it truthy and stops it inheriting the main sampler defaults — the Slop Fixer's `top_p` would silently jump from the main `0.9` to its hardcoded `0.95`, and `repetition_penalty` from `1.0` to `1.1`, on every rewrite. `tests/test_thinking_mode.py` pins this.
 

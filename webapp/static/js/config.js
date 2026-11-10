@@ -24,7 +24,7 @@
  *
  * **The tree is the storage model.** A save sends only the paths that changed, and the server
  * applies them to a freshly loaded tree and writes the whole tree back, so a key the editor does
- * not know about is carried through untouched. The Tk editor drops those keys; this one cannot.
+ * not know about is carried through untouched, so no key is ever dropped by a save.
  *
  * **A secret is write-only.** `api.apis.*.key` and friends arrive as `***` with a `has_value`
  * flag. Leaving a masked field alone leaves the stored key alone, because the server puts the

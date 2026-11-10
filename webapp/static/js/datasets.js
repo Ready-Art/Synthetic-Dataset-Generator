@@ -11,8 +11,8 @@
 /**
  * The Datasets panel -- Phase 6d-a.
  *
- * Replaces the Tk `datasets_panel.py` (696 lines) with a two-pane screen: the source list on
- * the left, the selected source's settings and column mapping on the right.
+ * A two-pane screen: the source list on the left, the selected source's settings and column
+ * mapping on the right.
  *
  * **No model logic lives here.** `webapp/datasets_routes.py` sends the sources already
  * normalized by `dataset_settings.normalize_config`, each with its own status line, and every
@@ -26,8 +26,8 @@
  * would be a second implementation of the one rule that decides whether a mapping can be saved.
  *
  * **An import can take seconds.** The route returns the `selector` it read with, and a result is
- * dropped when the source's selector has moved on since -- the same guard the Tk panel's
- * `token` + `selector` check provides. Without it, editing a location while a slow read runs would
+ * dropped when the source's selector has moved on since -- the `token` + `selector` check. Without
+ * it, editing a location while a slow read runs would
  * attach the old file's columns to the new location.
  *
  * **Phase 7 -- the column picker.** `dataset_column_menu.py` (445 lines) was a bounded, searchable

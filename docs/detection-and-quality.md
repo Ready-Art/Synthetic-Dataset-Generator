@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🛡 Detection & Quality Control
@@ -175,7 +173,7 @@ On a hit the reply is reported once per distinct script (with the sentence that 
 - **Generated questions, user continuations and opening-mode greetings/first lines** are re-rolled, because they are authored dataset text rather than prose to be rewritten.
 - **It reports, it does not discard silently.** Every hit bumps the `Non-Latin` metric card, fills the `Recent Non-Latin` panel on the Totals and per-API tabs, and adds a series to the issue graph.
 
-The Config Editor's **Detection** tab has a **Non-Latin Script Check** panel (toggle + fix list, the field disabled while the toggle is off). Off by default, so existing output is unchanged.
+The Config editor's **Detection** panel has a **Non-Latin Script Check** panel (toggle + fix list, the field disabled while the toggle is off). Off by default, so existing output is unchanged.
 
 ## Foreign-Word Check (v13.5.2)
 

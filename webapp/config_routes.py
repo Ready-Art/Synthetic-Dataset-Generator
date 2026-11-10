@@ -3,12 +3,10 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""The Config editor's routes -- Phase 6b, the generic renderer's server half.
+"""The Config editor's routes: the generic renderer's server half.
 
 The web Config editor is the **only** editor, so it has to reach
 every one of the 1,291 leaves in ``config/config.yml`` and be able to add new ones. This module
@@ -159,7 +157,7 @@ def install_config(app):
             except (config_tree.ConfigTreeError, ValueError) as exc:
                 errors[path] = str(exc)
 
-        # The range, enum, URL, regex and cross-field checks the Tk editor runs before it writes.
+        # The range, enum, URL, regex and cross-field checks that run before a write.
         # They run against the tree with the patch applied, so a rule sees the state the
         # user is asking for. A rejected save writes nothing, and every bad field is reported.
         if not errors:
@@ -407,9 +405,8 @@ def _reload_engine_config():
     """Re-read the config into the running engine, and re-apply the rate limits.
 
     A save that only changed the file would leave the engine running the old values until the
-    next restart, which reads as "the editor does not work". The Tk editor reloads for the same
-    reason, and pushes the API keys into ``os.environ`` because ``run_config`` reads them from
-    there first.
+    next restart, which reads as "the editor does not work". It also pushes the API keys into
+    ``os.environ`` because ``run_config`` reads them from there first.
     """
     try:
         app_state.global_config.load()
@@ -430,8 +427,7 @@ def _push_api_keys():
 
     ``run_config.build_api_configs`` prefers these environment variables over the file, so
     without this a key edited in the browser would be shadowed by a stale value in the
-    environment. The Tk editor does exactly this on save. Keys stay server-side; nothing
-    here is ever sent to the browser.
+    environment. Keys stay server-side; nothing here is ever sent to the browser.
     """
     slots = app_state.global_config.get('api.apis', []) or []
     for index, entry in enumerate(slots):

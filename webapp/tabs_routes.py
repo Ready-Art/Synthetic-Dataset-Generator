@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """The data tabs' routes: APIs, Quality, Regex Watch, Metrics, Prompts, Live Prompts, Queue.
 
@@ -27,7 +25,7 @@ that put the Review verbs in `review_data.py` applies here.
 
 What this module must never do
 -----------------------------
-* **Never import `generate_tk.py`.** It builds the whole Tk window at import time.
+* **Never import a GUI toolkit.** Nothing in this package may need a display.
 * **Never send an API key to the browser.** `api.apis.*.key` is reduced to a `has_key` boolean.
 * **Never mutate the engine's dicts in place.** Every payload is a copy, so a route cannot corrupt
   a run by holding a reference.
@@ -45,11 +43,11 @@ from fastapi import APIRouter
 from . import live_prompts
 from .app import error_response
 
-# How many recent quality scores the Quality tab shows. The Tk tab shows the latest 50; the
-# number is a display limit, not a statistic, so it lives here rather than in `quality.py`.
+# How many recent quality scores the Quality tab shows. The number is a display limit, not a
+# statistic, so it lives here rather than in `quality.py`.
 QUALITY_RECENT_LIMIT = 50
 
-# The Queue tab's three tables, in the Tk order.
+# The Queue tab's three tables, in display order.
 QUEUE_STATES = ('pending', 'completed', 'failed')
 
 
@@ -244,7 +242,7 @@ def install_tabs(app):
     def prompts():
         """Every prompt body, so the tab can preview and copy one.
 
-        This is the config's own text, unmodified. It is **not** the config editor: this tab is
+        This is the config's own text, unmodified. It is **not** the Config editor: this tab is
         read-only by design, and editing a prompt happens in the Config tab, which is the only
         editor.
         """

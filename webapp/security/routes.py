@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """The auth routes and the gate in front of every other route.
 
@@ -23,7 +21,7 @@ Four routes are public, and **nothing else is**:
 ``/static/*``
     The stylesheet and the ES modules. No secrets, and the login page needs them.
 
-Everything else -- including every ``/api/*`` route added in Phase 3 -- is gated by
+Everything else -- including every ``/api/*`` route -- is gated by
 :class:`SessionGate`, which is a middleware rather than a per-route dependency so a route added
 later cannot forget to declare it. ``tests/test_web_auth.py`` enumerates ``app.routes`` and asserts
 the public set is exactly the list above.

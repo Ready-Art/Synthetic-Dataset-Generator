@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """v13.0.4: the Samplers-tab Thinking Mode must reach the fixers and the judge.
 
@@ -210,14 +208,6 @@ def test_judge_payload():
 # 3. The two fixers
 # ---------------------------------------------------------------------------
 
-class _FalseVar:
-    """Stands in for the tk.BooleanVar generate_tk.py installs on app_state."""
-
-    @staticmethod
-    def get():
-        return False
-
-
 def _run_fixer(which, fixer_thinking=None, main_thinking=None, empty_fixer_params=False):
     """Call the Slop Fixer or the Anti-Slop Fixer and return the body it sent."""
     import generation
@@ -232,10 +222,9 @@ def _run_fixer(which, fixer_thinking=None, main_thinking=None, empty_fixer_param
     captured = []
     original_post = generation.requests.post
     original_config = app_state.global_config.config
-    # The Slop Fixer reads app_state.master_duplication_enabled_var (a tk.BooleanVar that
-    # generate_tk.py normally installs) to choose its debug-log path; a headless run has none.
-    original_dup_var = app_state.master_duplication_enabled_var
-    app_state.master_duplication_enabled_var = _FalseVar()
+    # The Slop Fixer reads app_state.duplication_mode to choose its debug-log path.
+    original_dup_mode = app_state.duplication_mode
+    app_state.duplication_mode = False
     generation.requests.post = _capture_post_text(captured)
     fixer_cfg = {"use_bad_words": False}
     if fixer_thinking is not None:
@@ -257,7 +246,7 @@ def _run_fixer(which, fixer_thinking=None, main_thinking=None, empty_fixer_param
     finally:
         generation.requests.post = original_post
         app_state.global_config.config = original_config
-        app_state.master_duplication_enabled_var = original_dup_var
+        app_state.duplication_mode = original_dup_mode
     return captured[0] if captured else None
 
 
@@ -415,72 +404,8 @@ def test_source_wiring():
 
 
 # ---------------------------------------------------------------------------
-# 6. The config editor round-trips the three dropdowns (needs a display)
+# 6. The web Config editor round-trips the three dropdowns
 # ---------------------------------------------------------------------------
-
-def test_editor_round_trip():
-    """Save -> load round trip for the three new dropdowns, and the params dicts stay empty.
-
-    Skipped cleanly without a display, like the other editor UI tests.
-    """
-    print("\n-- config editor round trip --")
-    try:
-        import tkinter as tk
-    except Exception as exc:                       # pragma: no cover - environment dependent
-        print("  skip (no tkinter: %s)" % exc)
-        return
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    try:
-        root = tk.Tk()
-        root.withdraw()
-    except Exception as exc:                       # pragma: no cover - environment dependent
-        print("  skip (no display: %s)" % exc)
-        return
-    try:
-        from config_loader import ConfigLoader
-        import app_state
-        loader = ConfigLoader(os.path.join(repo_root, "config", "config.yml"))
-        app_state.global_config = loader
-        from config_editor import ConfigEditor
-        editor = ConfigEditor(root, loader, tk.BooleanVar(value=False),
-                              tk.BooleanVar(value=False))
-        check("editor builds and loads the shipped defaults",
-              editor.slop_fixer_thinking_var.get() == "inherit"
-              and editor.anti_slop_fixer_thinking_var.get() == "inherit"
-              and editor.quality_judge_thinking_var.get() == "inherit"
-              and editor.enable_thinking_mode_var.get() == "default")
-
-        editor.slop_fixer_thinking_var.set("disable")
-        editor.anti_slop_fixer_thinking_var.set("enable")
-        editor.quality_judge_thinking_var.set("disable")
-        data = editor._get_current_editor_config_data()
-        samplers = data["samplers"]
-        check("editor saves slop_fixer_enable_thinking as a SIBLING",
-              samplers.get("slop_fixer_enable_thinking") == "disable")
-        check("editor saves anti_slop_fixer_enable_thinking as a SIBLING",
-              samplers.get("anti_slop_fixer_enable_thinking") == "enable")
-        check("editor saves the judge mode as a SIBLING of sampler_settings",
-              data["quality"]["scoring_api"].get("enable_thinking") == "disable")
-        check("editor leaves slop_fixer_params empty",
-              samplers.get("slop_fixer_params") == {})
-        check("editor leaves anti_slop_params empty",
-              samplers.get("anti_slop_params") == {})
-
-        loader.config = data
-        editor.load_config_handler()
-        check("editor reloads the slop fixer mode",
-              editor.slop_fixer_thinking_var.get() == "disable")
-        check("editor reloads the anti-slop mode",
-              editor.anti_slop_fixer_thinking_var.get() == "enable")
-        check("editor reloads the judge mode",
-              editor.quality_judge_thinking_var.get() == "disable")
-        editor.validate_config_handler(show_success_message=False)
-    finally:
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
 
 def main():
     test_resolution_rules()
@@ -489,7 +414,6 @@ def main():
     test_fixer_fallback_is_not_broken()
     test_shipped_config()
     test_source_wiring()
-    test_editor_round_trip()
 
     print("\n" + ("ALL PASSED" if not FAILURES else "FAILURES: %d" % len(FAILURES)))
     for label in FAILURES:

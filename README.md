@@ -4,13 +4,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
-# ReadyArt Synthetic Dataset Generator v15.1.1
+# ReadyArt Synthetic Dataset Generator v16.0.0
 
 A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs. It runs in your browser (`python -m webapp`) or headless from a shell (`python -m cli`). Both front ends drive the same engine against the same `config/config.yml` and write the same output, so a run is identical either way.
 
@@ -24,7 +22,7 @@ Around that engine sit three layers:
 
 Inputs come from `input/*.txt` or from bound dataset sources (CSV, TSV, JSON, JSONL, Parquet, Hugging Face) mapped to prompt variables. Output is trainer-safe ShareGPT JSONL with a flat provenance-and-quality `metadata` block, optionally mirrored to PostgreSQL. Real-time dashboards cover throughput, cost, issues, quality scores and per-endpoint vLLM metrics, and the run survives a crash through state save/resume.
 
-**LICENSE:** All code in this repository is **AGPLv3**, and has been for some time. Very early versions were MIT by Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that it is unlikely any of that code survived. Unless you have the original MIT-era code to compare against, treat every file here as AGPLv3-only. Every text and code file carries an SPDX header saying so. See [License & Credits](docs/license-and-credits.md).
+**LICENSE:** All code in this repository is **AGPLv3**. Every text and code file carries an SPDX header saying so. See [License & Credits](docs/license-and-credits.md).
 
 ---
 
@@ -89,7 +87,6 @@ The README is a master index: each topic below lives in its own file under [`doc
 | Page | What it covers |
 |------|----------------|
 | [Troubleshooting](docs/troubleshooting.md) | Symptom → fix table for the engine, the web UI and the dataset, the Gemma 4 template helper, environment variables, debug logging |
-| [Tk GUI layout testing](docs/tk-layout-testing.md) | `tools/check_gui_layout.py` and its flags, for the deprecated Tk window only |
 | [Performance Tips](docs/performance.md) | Throughput, caching, database choice, and cost tuning |
 
 ### Project
@@ -102,7 +99,7 @@ The README is a master index: each topic below lives in its own file under [`doc
 | [Changelog — v13.x](docs/changelog-v13.md) | v13.x release notes |
 | [Changelog — v12.x](docs/changelog-v12.md) | v12.x release notes |
 | [Changelog — v11.x and earlier](docs/changelog-v11.md) | The rest of the history |
-| [License & Credits](docs/license-and-credits.md) | AGPLv3, the early MIT provenance, file headers, credits, third-party code |
+| [License & Credits](docs/license-and-credits.md) | AGPLv3, file headers, credits, third-party code |
 
 Deeper, task-specific pages also live in `docs/`:
 
@@ -121,13 +118,12 @@ Deeper, task-specific pages also live in `docs/`:
 
 ## 🏗 At a Glance
 
-Three front ends drive one engine. The browser and the terminal are equal citizens: `python -m webapp` serves the whole application at `http://127.0.0.1:8765`, `python -m cli` drives the same run from a shell, and both read the same `config/config.yml` and write the same output. `python generate_tk.py` still opens the old Tk window for one deprecation release, but it is no longer the supported GUI.
+Two front ends drive one engine. The browser and the terminal are equal citizens: `python -m webapp` serves the whole application at `http://127.0.0.1:8765`, `python -m cli` drives the same run from a shell, and both read the same `config/config.yml` and write the same output. There is no desktop toolkit dependency.
 
 ```
 ┌──────────────────────────────────────┐
 │  python -m webapp       (browser)    │
 │  python -m cli          (shell)      │
-│  python generate_tk.py  (deprecated) │
 └──────────────────────────────────────┘
                     │  control.py: Unix socket,
                     │  one JSON object per line
@@ -174,4 +170,4 @@ The web app owns the `HeadlessController` and serves the control socket, so a se
 
 ## 📜 License
 
-All code in this repository is **AGPLv3**, and has been for some time. See [`LICENSE`](LICENSE) for the full text, [`LICENSE-AGPLv3`](LICENSE-AGPLv3) for the project notice, and [License & Credits](docs/license-and-credits.md) for the early-MIT provenance, the file-header policy, the credits and the third-party code.
+All code in this repository is **AGPLv3**. See [`LICENSE`](LICENSE) for the full text, [`LICENSE-AGPLv3`](LICENSE-AGPLv3) for the project notice, and [License & Credits](docs/license-and-credits.md) for the file-header policy, the credits and the third-party code.

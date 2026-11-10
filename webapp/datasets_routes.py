@@ -3,17 +3,15 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
-"""The Datasets panel's routes -- Phase 6d-a.
+"""The Datasets panel's routes.
 
-The Tk panel (`datasets_panel.py`, 696 lines) is replaced by this module plus
-`webapp/static/js/datasets.js`. **The model layer is not reimplemented**: `dataset_settings.py`
-is already GUI-free and import-clean, and it is the only thing that defines the persisted shape,
-so every route here calls into it rather than assembling a source dict by hand.
+This module plus `webapp/static/js/datasets.js` are the whole panel. **The model layer is not
+reimplemented**: `dataset_settings.py` is GUI-free and import-clean, and it is the only thing that
+defines the persisted shape, so every route here calls into it rather than assembling a source dict
+by hand.
 
 Why the model layer is reused rather than reimplemented
 -----------------------------------------------------
@@ -36,8 +34,7 @@ What this module must never do
 * **Never write an invalid subtree.** `validate_config` runs before the write, because the generic
   `/api/config/save` route does **not** validate this path (`config_schema.RULES` has no datasets entry),
   so a bad source written through it would only fail later, at `configure_queue_datasets`.
-* **Never import `datasets_panel.py`.** It imports `tkinter`, which would make the web package need a
-  display. `_KINDS` is duplicated here from `dataset_sources` instead.
+* **Never import a GUI toolkit.** Nothing in this package may need a display.
 * **Never open a source on a read.** `open_source(...).schema()` performs real I/O (it opens files and
   memory-maps parquet), so it is confined to the one import route.
 """
@@ -52,9 +49,9 @@ from dataset_sources import DatasetSourceError, open_source
 from . import config_tree
 from .app import error_response
 
-# The seven kinds, with the label the Tk combo shows. The model stores the kind, the UI shows the
-# label, exactly as `datasets_panel._KINDS` does. Duplicated from `dataset_sources._KINDS` rather
-# than imported from `datasets_panel`, because that module imports `tkinter`.
+# The seven kinds, with the label the source-kind picker shows. The model stores the kind, the UI
+# shows the label. Duplicated from `dataset_sources._KINDS` so this module imports nothing that
+# performs source I/O.
 KINDS = (
     ('csv', 'CSV'),
     ('tsv', 'TSV'),
@@ -70,15 +67,14 @@ KINDS = (
 # `column_aliases` from the alias route. Accepting them here would let the browser forge a schema.
 EDITABLE_FIELDS = ('name', 'enabled', 'kind', 'location', 'config', 'split', 'revision')
 
-# Which selector fields each kind accepts. Mirrors `datasets_panel._update_kind_controls` and, more
-# importantly, `dataset_sources.SourceSpec.__post_init__`, which rejects the others.
+# Which selector fields each kind accepts. Mirrors `dataset_sources.SourceSpec.__post_init__`,
+# which rejects the others.
 KIND_FIELDS = {
     'huggingface': ('config', 'split', 'revision'),
     'hf_disk': ('split',),
 }
 
-# The status lines the Tk panel shows, kept verbatim so the two front ends read the same. A user who
-# has used the Tk panel recognises them.
+# The status lines the panel shows.
 STATUS = {
     'empty': 'Add a dataset, import its column names, then choose aliases for the columns you need.',
     'importing': 'Reading column names. Dataset records are not displayed.',
@@ -275,7 +271,7 @@ def install_datasets(app):
 
         The response carries the `selector` the read used. A read can take seconds, and the source can
         be edited while it runs, so the client compares the returned selector against the source's
-        current one and drops the result when they differ -- the same guard the Tk panel's `token` +
+        current one and drops the result when they differ -- the same guard the import's `token` +
         `selector` check provides.
         """
         try:
@@ -410,7 +406,7 @@ def _find(sources, source_id):
 
 
 def _status_for(source):
-    """The status line for one source, in the Tk panel's own words.
+    """The status line for one source.
 
     Computed server-side because the staleness rule is the model's
     (`source_selector(source) != schema_selector`), and a second copy in JS would drift.
@@ -457,7 +453,7 @@ async def _json_body(request: Request):
 
     The parameter must be annotated ``Request``: an unannotated one is read by FastAPI as a **query**
     field, so every request would be rejected with a 422 before the body was looked at. That is the
-    trap Phase 6b found on the first live save.
+    at. That is a trap found on the first live save.
     """
     import json
 

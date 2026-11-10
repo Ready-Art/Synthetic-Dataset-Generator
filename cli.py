@@ -3,16 +3,14 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Command line interface for the generator (v13.0).
 
-The same generator, driven from a terminal instead of the Tk window. Two audiences, one
-program: a human at a shell, and an LLM issuing commands and reading the JSON back. That
-shapes every decision here.
+The same generator, driven from a terminal instead of the web UI. Two audiences, one program: a
+human at a shell, and an LLM issuing commands and reading the JSON back. That shapes every
+decision here.
 
     generator launch                 # start the background controller
     generator start                  # begin generating
@@ -50,6 +48,17 @@ import signal
 import subprocess
 import sys
 import time
+
+# The hard, early interpreter guard. Several modules in this package use PEP 604
+# ``X | None`` annotations and ``match``, which are 3.10+/3.11+ syntax, so an older
+# interpreter must fail here with a clear message instead of a SyntaxError deep inside
+# an import. This runs BEFORE the first project import on purpose: `control` and
+# `run_config` pull in `generation`, which is not 3.9-safe.
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        "The ReadyArt Synthetic Dataset Generator requires Python 3.11 or later; "
+        "this interpreter is {}.{}.{}.\n".format(*sys.version_info[:3]))
+    sys.exit(1)
 
 import control
 import run_config
@@ -491,19 +500,15 @@ def verb_launch(args):
     """Start the controller: detached by default, foreground with --foreground."""
     if args.gui:
         return _launch_gui(args)
-    if getattr(args, "tk", False):
-        return _launch_tk(args)
     if args.foreground:
         return _serve(args)
     return _launch_daemon(args)
 
 
 def _launch_gui(args):
-    """Hand the terminal to the web application (was: the Tk application).
+    """Hand the terminal to the web application.
 
-    ``--gui`` keeps its name so scripts and ``docs/cli.md`` do not break; it now
-    means "start the web UI". The Tk window is still reachable, via ``--tk`` here
-    and via ``python generate_tk.py`` directly, until Phase 10 retires it.
+    ``--gui`` means "start the web UI" -- it is the only GUI this program has.
 
     ``webapp.__main__.main`` takes an **argv list**, not this namespace, so the
     two globals that matter are translated explicitly. ``--config`` and ``--socket``
@@ -518,7 +523,7 @@ def _launch_gui(args):
         from webapp.__main__ import main as web_main
     except ImportError as exc:
         print(f"{PROGRAM}: the web front end is not installed ({exc}). "
-              f"Install requirements-web.txt, or run --tk for the Tk window.",
+              f"Install requirements-web.txt to use --gui.",
               file=sys.stderr)
         return control.EXIT_FAILURE
 
@@ -528,12 +533,6 @@ def _launch_gui(args):
     if getattr(args, "socket", None):
         argv += ["--socket", args.socket]
     return web_main(argv)
-
-
-def _launch_tk(args):
-    """Hand the terminal to the Tk application (deprecated; Phase 10 removes it)."""
-    import generate_tk  # noqa: F401 - imported for its side effect: it builds the UI
-    return control.EXIT_OK
 
 
 def _serve(args):
@@ -700,9 +699,6 @@ def build_parser():
                  verb_launch)
     launch.add_argument("--gui", action="store_true",
                          help="open the web UI instead of the headless controller")
-    launch.add_argument("--tk", action="store_true",
-                         help="open the old Tk window (deprecated; removed in "
-                              "the release after v15.0.0, use python -m webapp)")
     launch.add_argument("--foreground", action="store_true",
                          help="run the controller in this terminal (same as serve)")
     launch.add_argument("--tcp-host", metavar="HOST", default=None,

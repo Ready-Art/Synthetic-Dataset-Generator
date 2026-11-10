@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """The engine seam -- the web app's one connection to the generator.
 
@@ -18,8 +16,8 @@ the browser reads. Nothing is reshaped on the way through.
 Two rules govern this module:
 
 **The web app owns the controller AND serves the control socket.** ``Engine.start()``
-constructs the controller and starts a ``ControlServer`` on the existing socket path, exactly as
-``generate_tk.py`` does when ``control.enabled`` is true. That is what:
+constructs the controller and starts a ``ControlServer`` on the existing socket path. That is
+what:
 
 * keeps ``cli.py`` working -- ``cli status`` / ``stats`` / ``save`` attach to this socket;
 * makes the socket the singleton guard -- a second ``python -m webapp`` is refused by
@@ -27,9 +25,8 @@ constructs the controller and starts a ``ControlServer`` on the existing socket 
   **No lock file**: it would be a second, weaker copy of a guard that already exists and would
   go stale after a crash where the socket does not.
 
-**Never import ``generate_tk.py``.** It builds the entire Tk window at import time, so
-importing it here would make the whole web app need a display. ``tests/test_web_engine.py``
-asserts the import graph stays clean.
+**No GUI toolkit.** The web app needs no display, and ``tests/test_web_engine.py`` asserts the
+import graph stays clean.
 
 The controller is injectable so a test can drive a fake through every verb with no config file, no
 database and no network.
@@ -73,10 +70,10 @@ class Engine:
         self.config = config
         self._controller_factory = controller_factory or self._default_factory
         self._serve_socket = serve_socket
-        # The vLLM metrics poller. `generate_tk.py` starts it when the Tk window is built;
-        # the web app has no window, so without this the Metrics tab's table fills in (it is
-        # written by the generation threads) while every graph stays empty, because the ring
-        # the graphs draw is only appended to by the poller. A test passes False.
+        # The vLLM metrics poller. Nothing else starts it, so without this the Metrics tab's
+        # table fills in (it is written by the generation threads) while every graph stays
+        # empty, because the ring the graphs draw is only appended to by the poller. A test
+        # passes False.
         self._start_metrics = start_metrics
         self._controller = None
         self._server = None
@@ -138,10 +135,9 @@ class Engine:
 
             # The Live Prompt Viewer's hook. `generation.py` calls
             # `update_live_prompt_preview()` before every request and forwards to
-            # `app_state.live_prompt_preview_hook`; the Tk window registered one that wrote
-            # into a Text widget, and the web app has no widget. Without this the hook stays
-            # `None` and the viewer tab would be permanently empty -- the same class of bug
-            # as the metrics poller never being started (v15.0.1).
+            # `app_state.live_prompt_preview_hook`. Without this the hook stays `None` and
+            # the viewer tab would be permanently empty -- the same class of bug as the
+            # metrics poller never being started (v15.0.1).
             try:
                 live_prompts.install()
             except Exception:  # noqa: BLE001 - a preview must never stop the app

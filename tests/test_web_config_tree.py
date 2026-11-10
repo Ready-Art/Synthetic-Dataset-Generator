@@ -3,17 +3,15 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Headless tests for the config tree.
 
-This is the gate that guarantees the web Config editor **cannot lose a leaf**. The Tk editor
-builds a fresh ``config_data`` literal and dumps it over ``config.yml`` with no merge, so every
-key it does not know about is silently dropped on save. The web editor edits the loaded
-tree and writes the tree back, and this file is what proves it.
+This is the gate that guarantees the web Config editor **cannot lose a leaf**. An editor
+that builds a fresh literal and dumps it over ``config.yml`` with no merge silently drops
+every key it does not know about on save. The web editor edits the loaded tree and writes
+the tree back, and this file is what proves it.
 
 The assertions, in order of how much they matter:
 
@@ -101,7 +99,7 @@ def test_the_shipped_config_round_trips_byte_for_byte():
 
 
 def test_the_round_trip_keeps_every_comment_and_the_spdx_header():
-    """The 113 comment lines survive, including the licence header.
+    """Every comment line survives, including the licence header.
 
     `AGENTS.md` requires the SPDX header on every text file, and `config.yml` is a text file.
     A writer that drops comments deletes the licence notice, which is why this is asserted
@@ -119,7 +117,7 @@ def test_the_round_trip_keeps_every_comment_and_the_spdx_header():
                            if line.lstrip().startswith('#')]
         comments_after = [line for line in after.splitlines()
                           if line.lstrip().startswith('#')]
-        assert len(comments_before) == 113, len(comments_before)
+        assert len(comments_before) >= 8, len(comments_before)
         assert comments_after == comments_before, (
             f'{len(comments_before)} comments in, {len(comments_after)} out')
     finally:

@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🐛 Troubleshooting
@@ -65,7 +63,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **Multi-character conversations not working** | Set `num_characters` to a value greater than 1 in the character config (max 10) |
 | **Anti-slop not triggering** | Verify `detection.anti_slop.enabled: true` (it ships `false` since v12.7.6), that `anti_slop.phrases` is populated, and that API Slot 6 is configured — or skip the fixer entirely and use the fork's [dev branch](https://github.com/Ready-Art/antislop-vllm-fork/tree/dev) (see [Slop & Anti-Slop](slop-and-antislop.md)) |
 | **Too many character cards in editor** | Adjust `max_character_cards` in generation settings (default: 10, max: 100) |
-| **Progress rows not moving** | Each slot has its own row, so a stuck row means that slot is not being fed. Check its rate limit and circuit state; the deprecated Tk window needs `ttkbootstrap` installed, the web UI does not |
+| **Progress rows not moving** | Each slot has its own row, so a stuck row means that slot is not being fed. Check its rate limit and circuit state |
 | **Character traits not appearing in prompts** | Verify the `traits` field is populated in character entries; it's injected alongside personality in the system prompt |
 | **Inner persona never shows up** | The persona is intentionally withheld until `persona_breakthrough_turn` (default 2), so on a 1-turn conversation you will only ever see the outward profile. Bump `generation.num_turns` above the breakthrough slot, or set `persona_breakthrough_turn: 1`, to expose the persona sooner |
 | **Persona or emotional state missing from the system prompt in the Prompt Viewer** | With the default `depth0` placement they are not in the system prompt: they are at the end of the last USER message of each Answer (and Greeting) request. Question and User Continuation requests never carry them, and the persona appears only from `persona_breakthrough_turn`. Set `persona_breakthrough_placement` or `emotional_states.placement` to `system` to send them in the system prompt, at the cost of prefix-cache reuse |
@@ -106,11 +104,10 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 | **A config save dropped my comments** | It should not: the writer splices only the changed spans, so an unchanged save is byte-identical. If comments vanish, the save went through `yaml.dump` somewhere else — use the Config screen, not a hand edit, and check `git diff` |
 | **An `/api/*` call returns 401 in a script** | Every route except `/login`, `/setup`, `/logout` and `/api/health` needs the session cookie. Log in first and send the cookie; there is no API token |
 
-## GUI Layout Testing (deprecated Tk window)
+## GUI Layout Testing
 
-The `tools/check_gui_layout.py` utility and its flags are documented in
-[Tk GUI layout testing](tk-layout-testing.md). It does not test the web UI,
-which is checked by `tests/test_web_overview.py` instead.
+Every screen must fit 1440x900 and 900x600 with no page scroll, and
+`tests/test_web_overview.py` asserts it. There is no separate layout tool.
 
 ## Gemma 4 Chat Template Fix for axolotl (outside this project)
 

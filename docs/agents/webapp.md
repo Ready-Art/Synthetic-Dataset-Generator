@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # `webapp/` — the web front end
@@ -18,9 +16,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 editor's routes or its writer, the Datasets or Profiles panel, or the `cli launch --gui` branch.
 
 **Related:** [`docs/agents/cli.md`](cli.md) (the socket and the controller the web app owns),
-[`docs/agents/config.md`](config.md) (the config file it edits),
-[`docs/agents/config-editor.md`](config-editor.md) (the Tk editor this replaced),
-[`docs/agents/ui-theme.md`](ui-theme.md) (the Tk token module this succeeded).
+[`docs/agents/config.md`](config.md) (the config file it edits).
 
 ## Contents
 
@@ -36,16 +32,13 @@ editor's routes or its writer, the Datasets or Profiles panel, or the `cli launc
 ## The one rule that matters
 
 **The web app is a second client of the same engine, not a rewrite of it.** It constructs a
-`HeadlessController` in-process and serves the control socket, exactly as `generate_tk.py` did when
-`control.enabled` was true. Nothing about a run — what is sent to an API, what is written to an
-output file, any config default — is allowed to change. A default run must stay byte-identical to
-v14.3.0.
+`HeadlessController` in-process and serves the control socket — the same controller `cli launch`
+starts as a daemon. Nothing
+about a run — what is sent to an API, what is written to an output file, any config default — is
+allowed to change. A default run must stay byte-identical to v14.3.0.
 
-Two corollaries, both load-bearing:
+One corollary, and it is load-bearing:
 
-- **Never import `generate_tk.py`.** It builds the entire Tk window at *import* time, so importing it
-  here would make every headless path need a display. `tests/test_web_engine.py` asserts it by
-  inspecting `sys.modules` and by grepping the source.
 - **`import webapp.app` must not start a server, open a socket or touch the network.** A test
   builds the app and asserts nothing bound.
 
@@ -120,8 +113,8 @@ because both are client-spoofable. Without that, the rate limiter would key ever
 
 ## The theme
 
-`webapp/theme.py` is the web successor to `ui_theme.py`, and the rule is the same: **no raw
-`#rrggbb` literal outside this module.** `tests/test_web_theme.py` greps for one.
+`webapp/theme.py` is the **only** stylesheet and palette definition in the project, and the rule is
+simple: **no raw `#rrggbb` literal outside this module.** `tests/test_web_theme.py` greps for one.
 
 The palette is **measured, not chosen by eye.** Two values from the mockup failed WCAG AA on the raised
 card surface — the accent `#6b9bf5` at 4.42:1 and the danger `#e06c75` at 3.81:1 — and became
@@ -163,12 +156,12 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
 |-------|--------|
 | `test_web_theme.py` | Tokens unique, no hex outside `theme.py`, the whole contrast table |
 | `test_web_auth.py` | The policy cases, the session cases, the route-table enumeration, the lockout |
-| `test_web_engine.py` | Every verb headless, the CLI against a web-owned controller, the singleton guard, no `generate_tk.py` import, the version agreement |
+| `test_web_engine.py` | Every verb headless, the CLI against a web-owned controller, the singleton guard, the version agreement |
 | `test_web_overview.py` | The cards, the progress, the issue panels, the graph |
 | `test_web_review.py` | List, detail, export, drop, dismiss |
 | `test_web_tabs.py` | The seven data tabs |
 | `test_web_config_tree.py` | The tree and the byte-for-byte round trip |
-| `test_web_config_editor.py` | All 1,291 leaves reach the browser exactly once |
+| The Config editor's renderer suite | All 1,291 leaves reach the browser exactly once |
 | `test_web_config_schema.py` | Every leaf decorated; every validator |
 | `test_web_datasets.py` | The panel, the alias editor, the column picker |
 | `test_web_profiles.py` | Save, load, the diff preview |
@@ -178,7 +171,6 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
 
 ## Traps
 
-- **Never import `generate_tk.py`.** It builds the Tk window at import time.
 - **Do not add a lock file.** The socket is the guard and it already exists.
 - **`app.include_router()` appends an `_IncludedRouter`** with no `.path` and no `.routes`. A flat
   scan of `app.routes` finds nothing; the real routes hang off `original_router`. Walk into it.
@@ -197,20 +189,19 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
   `Emulation.setFocusEmulationEnabled` fixes it.
 - **Chromium's `--screenshot` fires before ES modules run**, so it captures the pre-JS shell. Drive CDP instead.
 - **Kill by PID.** `pkill -f "python -m webapp"` matches the shell running it and kills your own session.
-- **`pkill -f "generate_tk.py"` kills your own shell.** Use `pkill -f "python generate_tk\\.py$"`.
 - **A re-render throws away every scroll position.** `main.js` replaces the whole screen on a stats
   tick, so a panel that scrolls must carry a stable `data-scroll-key` and the repaint must go through
   `dom.captureScroll()` / `restoreScroll()`. The Overview's Recent issues is the case that shipped broken.
 - **`preserveAspectRatio="none"` squashes SVG text.** The chart's viewBox must match the host's own
   width, or every glyph is scaled horizontally and the axis labels run together.
-- **A hook nobody installs is a feature nobody has.** `app_state.live_prompt_preview_hook` was only ever
-  set by `generate_tk.py`, so headless it stayed `None` and the viewer was permanently empty. The same
-  class of bug as the metrics poller never being started. If a feature needs a hook, `Engine.start()`
-  installs it and `Engine.stop()` removes it, and a test asserts both.
+- **A hook nobody installs is a feature nobody has.** `app_state.live_prompt_preview_hook` is only
+  useful once something sets it; left at `None` the viewer is permanently empty. The same class of bug
+  as the metrics poller never being started. If a feature needs a hook, `Engine.start()` installs it
+  and `Engine.stop()` removes it, and a test asserts both.
 - **A route function named after a module shadows that module for its whole body.** `def live_prompts(limit: int = 0)` shadowed the imported `live_prompts` module, so `live_prompts.snapshot(...)` called the function itself and raised `AttributeError: 'function' object has no attribute 'snapshot'`. FastAPI turned that into a `500` with a plain-text body, and the browser reported it as a **JSON parse error** — a message about the parser for a bug that was never about JSON. `tests/test_web_v151.py` scans every `*_routes.py` for a function whose name matches a module, so the whole class is caught. Name a route function `<thing>_route`.
 - **`response.json()` on a non-JSON body is a `SyntaxError`, not the failure.** A `500` answers `Internal Server Error` as text, so an unguarded `response.json()` replaces the real error with "Unexpected character at line 1 column 1". `tabs.js` `readJSON()` checks `Content-Type` first; every new fetch helper must go through it.
-- **`app_state.estimated_cost` is never written by a run.** It is declared and reset, and the only
-  writer was the Tk dashboard's label refresh. Compute a derived figure where it is read.
+- **`app_state.estimated_cost` is never written by a run.** It is declared and reset, and nothing
+  updates it afterwards. `control.py`'s `_estimated_cost(cfg)` computes the figure where it is read.
 
 ## Tasks that touch this file
 

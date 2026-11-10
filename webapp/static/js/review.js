@@ -31,7 +31,7 @@
 
 import { el, emptyState, num, toast } from './dom.js';
 
-// The four dimensions shown in the footer strip, in the Tk order. The payload's
+// The four dimensions shown in the footer strip. The payload's
 // `dimensions` is keyed by the scoring dimension names; a missing one shows as a dash.
 const FOOTER_DIMENSIONS = [
   { key: 'coherence', label: 'Coherence' },
@@ -55,7 +55,7 @@ let mounted = false;
 export function renderReview(appState) {
   // The tab is re-rendered on every stats tick, so the selection and the loaded detail
   // must live at module scope: rebuilding them on each tick would reset the reader's place
-  // in a conversation, which is the v11.4 bug the Tk tab records.
+  // in a conversation, which is the v11.4 bug this tab exists to avoid.
   if (!mounted) {
     mounted = true;
     refresh();

@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Design tokens for the web front end -- the **Storm** palette.
 
@@ -14,10 +12,9 @@ Pure data. Importing this module must never start a server, open a socket or tou
 network, so it is safe to import from a headless test, from ``webapp.app`` and from the
 theme test.
 
-This is the web successor to ``ui_theme.py``. The rule is the same one that file
-records: **no raw ``#rrggbb`` literal lives outside this module.** Call sites reference
-the semantic names below, or the CSS custom properties in :data:`STYLESHEET`, which are
-generated from them.
+This is the one definition of the palette. The rule is: **no raw ``#rrggbb`` literal
+lives outside this module.** Call sites reference the semantic names below, or the CSS custom
+properties in :data:`STYLESHEET`, which are generated from them.
 
 Why the values are what they are
 --------------------------------
@@ -25,7 +22,8 @@ Every foreground/background pair in :data:`CONTRAST_PAIRS` was measured, not cho
 eye. The mockup palette failed WCAG AA in two places -- ``--accent #6b9bf5`` was 4.42:1
 and ``--danger #e06c75`` was 3.81:1 against the raised card surface, which is where both
 are actually drawn. They became ``#7aa6f7`` (5.00:1) and ``#e8838a`` (4.66:1). This is
-the same class of bug ``ui_theme.py`` already documents for the Tk accent.
+the same class of bug the palette is measured against. This is
+the same class of bug the palette is measured against.
 
 ``tests/test_web_theme.py`` recomputes :data:`CONTRAST_PAIRS` from the constants below
 and fails on any pair under 4.5:1, so the table cannot drift from the palette.
@@ -67,7 +65,7 @@ CHART_SERIES = (
 )
 
 # --- Type scale ----------------------------------------------------------
-# The "massive text" bug in the Tk GUI was structural, not a font size: a 22px value
+# The "massive text" bug was structural, not a font size: a 22px value
 # inside a wraplength-220 label inside a 180px grid cell. In CSS a card sizes to its
 # content and a long value ellipsizes with a `title` tooltip, so these sizes are safe.
 
@@ -333,8 +331,8 @@ body {
 }
 
 /* Below 1100px the six-across row would clip a 28px value, so it drops to three
-   and the disclosure to two. This is the responsive rule the Tk ResponsiveGrid was
-   trying to be, expressed once instead of per widget. */
+   and the disclosure to two. This is the responsive rule, expressed once instead of
+   per widget. */
 @media (max-width: 1100px) {
   .metric-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .metric-row.secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -486,7 +484,7 @@ body {
   outline-offset: -2px;
 }
 
-/* The score column is colour-coded by severity, the same two tags the Tk table
+/* The score column is colour-coded by severity, the same two tags the Review table
    uses: critical below 40, warning otherwise. */
 .review-table td.score { font-weight: 700; font-variant-numeric: tabular-nums; }
 .review-table td.score.critical { color: var(--danger); }
@@ -1001,7 +999,7 @@ button:disabled, .btn:disabled {
   cursor: not-allowed;
 }
 
-/* Keyboard navigation is a Phase 8 requirement, and a focus ring that only the browser
+/* Keyboard navigation is a requirement, and a focus ring that only the browser
    draws is invisible on the raised surface in some engines. `:focus-visible` keeps the ring
    off a mouse click but shows it for Tab, which is the whole point of the pseudo-class. */
 button:focus-visible,
@@ -1461,7 +1459,7 @@ input:focus, select:focus, textarea:focus {
 .config-secret input { flex: 1 1 auto; }
 
 /* Help text sits under the control, never beside it: beside it would steal the width the
-   value needs, which is the mistake that produced the Tk "massive text" bug. */
+   value needs, which is the mistake that produced the "massive text" bug. */
 .config-help {
   margin: 0;
   font-size: 10.5px;
@@ -1633,7 +1631,7 @@ input:focus, select:focus, textarea:focus {
 
 .datasets-columns-head .spacer { flex: 1 1 auto; }
 
-/* Phase 7: the column-name filter. It sits above the table rather than in the
+/* The column-name filter. It sits above the table rather than in the
    header row so a long query does not squeeze the Import button. */
 .datasets-column-filter {
   display: flex;

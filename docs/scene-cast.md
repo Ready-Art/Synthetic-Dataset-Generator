@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # Scene Cast — Characters That Join and Leave
@@ -345,7 +343,7 @@ default for a reason.
 
 ## Turning it on
 
-Config Editor → **Character Engine** tab → **Scene Cast — Characters Join and Leave**.
+Config editor → **Character Engine** → **Scene Cast — Characters Join and Leave**.
 
 ```yaml
 prompts:
@@ -599,9 +597,9 @@ character and there are none to spare. Use 3+ characters, or set `min_present: 1
 | The retry branch | `generation.py` | `generate_answer_with_retries()` — after OOC, before Regex Watch |
 | The drop (v14.3) | `generation.py`, `quality.py` | the 4th element of `generate_answer_with_retries()`'s result, the `cast_violation_this_task` gate in `worker()`, `quality.DROP_REASON_SCENE_CONTINUITY` |
 | The Judge dimension | `quality.py` | `CAST_SCORING_DIMENSIONS`, `is_cast_scoring_enabled()`, the cast block in `_score_with_llm()` |
-| GUI | `config_editor.py` | Scene Cast panel (Character Engine), Scene Continuity Check panel (Detection), cast toggle (Quality Scoring) |
-| Dashboard | `generate_tk.py`, `dashboard.py`, `app_state.py` | Cast Drift metric card, issue panel, graph series, cast event log |
+| GUI | `webapp/config_schema.py`, `webapp/config_tree.py` | Scene Cast panel (Character Engine), Scene Continuity Check panel (Detection), cast toggle (Quality Scoring) |
+| Dashboard | `webapp/tabs_routes.py`, `webapp/static/js/overview.js`, `app_state.py` | Cast Drift metric card, issue panel, graph series, cast event log |
 | Config | `config/config.yml` | `prompts.scene_cast.*`, `detection.scene_continuity.*`, `quality.cast_continuity` |
 | Guard | `tests/test_scene_cast.py` | schedule invariants, the asymmetry, note cache stability, the detector, metadata v7, dimension gating, transition evidence, slot overrides, the v14.3 arrival-slot and preposition-object regressions |
 | Guard (drop) | `tests/test_scene_continuity_drop.py` | the real worker against a fake server: an unfixable violation writes no row, is recorded as a `scene_continuity` drop, and a clean conversation is still written |
-| Guard (GUI) | `tests/test_scene_cast_settings_ui.py` | the three v14.1 controls survive a save/reopen round trip through the real `ConfigEditor` |
+| Guard (GUI) | `tests/test_web_config_schema.py` | the three v14.1 controls are in the schema and survive a save/reopen round trip through the real config writer |

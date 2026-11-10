@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 📦 Requirements & Installation
@@ -16,7 +14,7 @@ compare against, treat this file as AGPLv3-only. See docs/licensing.md.
 - **PostgreSQL** (optional, for database storage)
 - **Valkey or Redis** (optional, for response caching)
 
-An older interpreter is rejected at startup: `generate_tk.py` checks `sys.version_info` and exits with a message telling you to install Python 3.11+.
+An older interpreter is rejected at startup: `cli.py` checks `sys.version_info` before the first project import and exits with a message telling you to install Python 3.11+.
 
 ## Python Dependencies
 
@@ -26,16 +24,13 @@ Install via `pip install -r requirements.txt`:
 requests>=2.32.4,<3
 python-dotenv==1.0.0
 PyYAML==6.0.1
-tk==0.1.0
-matplotlib
 psutil
 colorama
 redis
-ttkbootstrap
 psycopg2-binary
 ```
 
-**Note:** `tkinter` is usually included with Python installations but may need to be installed separately on some Linux distributions (e.g., `sudo apt-get install python3-tk`). It is only needed for the deprecated Tk window (`python generate_tk.py`).
+**Note:** there is no desktop toolkit dependency. The application needs no display to run or to test.
 
 ## Web Front End Dependencies
 
@@ -76,7 +71,7 @@ straight from `webapp/static/`. See [Web Front End](webapp.md).
 
 3. **Install dependencies:**
    ```bash
-   pip install requests redis psycopg2-binary PyYAML colorama ttkbootstrap matplotlib psutil
+   pip install -r requirements.txt && pip install -r requirements-web.txt
    ```
 
 4. **Run the application:**
@@ -86,8 +81,6 @@ straight from `webapp/static/`. See [Web Front End](webapp.md).
 
    The first start prints a one-time setup token to the console; open the URL, paste the token and
    choose a password. See [Web Front End](webapp.md).
-
-   The old Tk window still works for one deprecation release: `python generate_tk.py`.
 
 5. **Set up directories:**
    The application automatically creates `input/` and `output/` directories on first run.

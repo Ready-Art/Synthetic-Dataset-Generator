@@ -152,11 +152,11 @@ export function restoreScroll(root, offsets) {
 
 // --- toasts --------------------------------------------------------------
 
-// The Tk `ToastManager` used `success` / `error` / `warning` / `info`; the web callers
-// use `ok` / `warn` / `danger` / `info`. Both spellings are accepted and mapped to the
-// four CSS classes that actually exist, so a caller written against the Tk vocabulary gets a
-// styled toast instead of an unstyled one -- an unstyled toast is the silent-failure class
-// this plan keeps finding.
+// The older callers used `success` / `error` / `warning` / `info`; the web callers use
+// `ok` / `warn` / `danger` / `info`. Both spellings are accepted and mapped to the four CSS
+// classes that actually exist, so a caller written against the older vocabulary gets a styled
+// toast instead of an unstyled one -- an unstyled toast is the silent-failure class this plan
+// keeps finding.
 const TOAST_LEVELS = {
   info: 'info',
   ok: 'ok', success: 'ok',

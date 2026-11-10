@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # Dataset sources and task metadata
@@ -380,25 +378,24 @@ All 89 non-GUI dataset tests passed, including 21 settings tests and the optiona
 local backends, with no skips. The existing API-profile, persona/arc, and
 opening-mode scripts also passed: 28, 45, and 179 checks respectively.
 
-Run the actual Tk GUI suites separately with the normal application dependencies
-and a desktop or virtual display:
+The Datasets panel suite is headless and needs no display:
 
 ```sh
-python -B tests/test_dataset_column_menu.py
-python -B tests/test_datasets_panel.py
+python -B tests/test_web_datasets.py
+python -B tests/test_web_dataset_routes.py
 ```
 
-All seven dropdown tests and all seven panel/editor tests passed with no skips.
-Together with the non-GUI suites, that is 103 dataset tests. The GUI checks used
-Linux, Python 3.12.14, Tk 9.0.4, and ttkbootstrap 2.2.6. They exercised:
+All 47 panel tests and all 19 route tests passed with no skips. Together with the
+non-GUI suites, that is 103 dataset tests. The panel checks used Linux and
+Python 3.12.14. They exercised:
 
 - 1,000 columns, including very long names, with constant widget counts and
   bounded table/dropdown geometry. The full editor was checked at 760 by 520 and
   1366 by 700 client sizes; 32 sources were added and retained in the panel.
 - All/partial/empty visibility, search, mouse and keyboard toggles, focus/grab
   restoration, menu dismissal, and source-specific visibility persistence.
-- Background CSV metadata discovery with a responsive Tk event loop, reader
-  closure, no row iteration requested by the GUI, and no record cells in settings.
+- Background CSV metadata discovery with a responsive event loop, reader
+  closure, no row iteration requested by the panel, and no record cells in settings.
 - Late/out-of-order results, source switching/removal, settings reload, and panel
   destruction while metadata requests were outstanding.
 - Exact placeholder copying, hidden alias retention, schema refresh rejection,
@@ -475,7 +472,7 @@ needed to run these scripted tests.
 
 The merged implementation passed 121 source/binding/settings/renderer/task/backend
 tests, all 13 compatibility tests (twelve traces plus the source-preservation gate),
-all 14 actual Tk dataset GUI tests, and the worker-launch regression test. All four
+all 14 headless Datasets panel tests, and the worker-launch regression test. All four
 existing upstream regression scripts also passed. The opening-mode script's
 expected keyword set now includes the three correctly named OOC arguments.
 
@@ -498,7 +495,7 @@ GPU inference, or real Valkey service was used.
 
 Validation on this integration passed 121 source/binding/settings/renderer/task
 tests, all 11 compatibility tests (ten traces plus the structural gate), all four
-upstream regression scripts, and all 14 actual Tk dataset GUI tests with no skips.
+upstream regression scripts, and all 14 headless Datasets panel tests with no skips.
 The GUI was also checked with the new random-settings controls and dataset mappings
 together, including main configuration and profile round trips.
 

@@ -4,19 +4,17 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # Dataset binding
 
 Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the shared rules (setup, tests, boundaries, state, slots, thread safety).
 
-**Read this when:** you are touching `dataset_*.py`, `datasets_panel.py`, `docs/dataset-bindings.md` or `docs/input-folder.md`.
+**Read this when:** you are touching `dataset_*.py`, `webapp/datasets_routes.py`, `webapp/static/js/datasets.js`, `docs/dataset-bindings.md` or `docs/input-folder.md`.
 
-**Related:** [`docs/agents/generate-ui.md`](generate-ui.md), [`docs/agents/config-editor.md`](config-editor.md), [`docs/agents/generation.md`](generation.md)
+**Related:** [`docs/agents/webapp.md`](webapp.md), [`docs/agents/config.md`](config.md), [`docs/agents/generation.md`](generation.md)
 
 ## Contents
 
@@ -25,16 +23,15 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 - `dataset_bindings.py`
 - `dataset_templates.py`
 - `dataset_tasks.py`
-- `datasets_panel.py`
-- `dataset_column_menu.py`
+- `webapp/datasets_routes.py`
+- `webapp/static/js/datasets.js`
 - `tests/test_dataset_sources.py`
 - `tests/test_dataset_settings.py`
 - `tests/test_dataset_bindings.py`
 - `tests/test_dataset_templates.py`
 - `tests/test_dataset_tasks.py`
 - `tests/test_dataset_backends.py`
-- `tests/test_dataset_column_menu.py`
-- `tests/test_datasets_panel.py`
+- `tests/test_web_datasets.py`
 - `tests/test_dataset_pipeline.py`
 - `tests/test_dataset_compatibility.py`
 - `docs/dataset-bindings.md`
@@ -44,10 +41,10 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 ---
 
 ### `dataset_sources.py` [22]
-**Purpose:** Dataset readers for the optional dataset-binding foundation (CSV/TSV/JSON/JSONL stdlib; Parquet via optional `pyarrow`; Hugging Face Hub / saved-`DatasetDict` via optional `datasets` 4.x). No Tk/app/config imports; importing makes no network requests
+**Purpose:** Dataset readers for the optional dataset-binding foundation (CSV/TSV/JSON/JSONL stdlib; Parquet via optional `pyarrow`; Hugging Face Hub / saved-`DatasetDict` via optional `datasets` 4.x). No GUI/app/config imports; importing makes no network requests
 **Key:** `SourceSpec`, `DatasetSchema`, `DatasetRow`, `DatasetSource` (ABC), `LocalFileSource`, `HuggingFaceSource`, `SavedDatasetSource`, `open_source()`, `DatasetDependencyError`
 **Edit for:**
-- Add new source kind → New `DatasetSource` subclass + register in `open_source()` + `dataset_settings._SELECTOR_DEFAULTS` + `datasets_panel._KINDS`
+- Add new source kind → New `DatasetSource` subclass + register in `open_source()` + `dataset_settings._SELECTOR_DEFAULTS` + `webapp/datasets_routes.py` `KINDS` / `KIND_FIELDS`
 - Schema discovery → `schema()` returns column names + opaque fingerprint, never record values (JSON reads records internally to find keys, discards them)
 - Optional deps → Guarded by `_optional_module()` / `_datasets_backend()`; absent dependency → `DatasetDependencyError`
 
@@ -85,24 +82,25 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 **Purpose:** Attach optional dataset values to the generator's existing task identities. One attachment service per existing queue; original task tuples/IDs/retry rules untouched; in-memory only
 **Key:** `configure_queue_datasets()`, `bind_task_datasets()`, `render_task_inputs()`, `validate_task_templates()`, `render_question_task()` (v11.9.0: expands a questions-file task's line, returning `(task_id, file_name, index, line) + task[4:]` so identity/retries/resume are untouched), `DatasetTaskAttachments`
 **Edit for:**
-- Queue wiring → `configure_queue_datasets()` called from `generate_tk.py` at processing start; readers opened lazily by the first worker that needs a binding; `_OwnedReader` closes each reader once at queue lifetime end (an old worker finishing its queue is never cut off by a replacement run)
+- Queue wiring → `configure_queue_datasets()` called from `control.py` at processing start (both front ends run through `HeadlessController`); readers opened lazily by the first worker that needs a binding; `_OwnedReader` closes each reader once at queue lifetime end (an old worker finishing its queue is never cut off by a replacement run)
 - Task metadata entry → A *reference* to the immutable binding, not a mutable global "current row"
 
 ---
 
-### `datasets_panel.py` [27]
-**Purpose:** Names-only dataset configuration panel (the Configuration Editor **Datasets** tab), independent of generation workers
-**Key:** `DatasetsPanel`, `load_config()` / `get_config()` / `validate()`, `_metadata_worker()` (max 2 daemon threads)
+### `webapp/datasets_routes.py` [27]
+**Purpose:** The Datasets panel's server half — eight `/api/datasets` routes over the model layer, independent of generation workers. It never reimplements `dataset_settings`
+**Key:** `install_datasets()`, `KINDS`, `KIND_FIELDS`, `EDITABLE_FIELDS`, `STATUS`, `_sources()` / `_write_sources()` (normalize + validate before writing), `_status_for()`
 **Edit for:**
-- Add source kind UI → `_KINDS` tuple + kind/label maps; Hub sources expose config/split/revision, `hf_disk` exposes its split selector
-- Metadata inspection → Runs in background threads; Tk widgets touched only by the UI thread; column import calls the schema interface and never previews cell values
+- Add source kind UI → `KINDS` tuple + `KIND_FIELDS` map; Hub sources expose config/split/revision, `hf_disk` exposes its split selector
+- Metadata inspection → `POST /sources/{id}/import` is the only route that performs I/O; it calls `open_source(spec).schema()` and never previews cell values. The response carries the `selector` the read used, and a result whose selector no longer matches the source is dropped
+- Every write → goes through `_write_sources()`, so `validate_config` runs server-side before the file is touched
 
 ---
 
-### `dataset_column_menu.py` [28]
-**Purpose:** Bounded, searchable column-visibility picker for the Datasets panel — one Treeview shows all column names regardless of count
-**Key:** `ColumnVisibilityMenu` (`set_columns()`, `on_change(None | tuple_of_names)`) — `None` = all columns (incl. imported later); explicit empty = none
-**Edit for:** Selection semantics in the docstring: `set_columns` never fires `on_change`; canonicalization to `None` when every current column is selected; no application-wide event bindings
+### `webapp/static/js/datasets.js` [28]
+**Purpose:** The Datasets panel's browser half — source list, settings form, alias editor and the bounded, searchable column picker. No model logic lives here
+**Key:** `state`, `visibleSet()`, `visibilityRow()` (Show all / Show none / Invert / Only matching / Hide matching), `repaintKeepingFilter()`
+**Edit for:** Selection semantics: Show all and Show none act on the whole schema, never on the filtered subset; `visible_columns: null` means All (including columns imported later), an explicit `[]` means none; the filter is client-side only and never changes what a selection means
 
 ---
 
@@ -142,14 +140,8 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ---
 
-### `tests/test_dataset_column_menu.py` [35]
-**Purpose:** Unit tests for `dataset_column_menu.py` (selection semantics, large-column boundedness, grab/focus handling); skips cleanly without a display
-**Edit for:** Add picker behavior cases (run on a display for zero skips)
-
----
-
-### `tests/test_datasets_panel.py` [36]
-**Purpose:** Unit tests for `datasets_panel.py` (add/edit/import/alias/save-load flows, background metadata workers); synthetic column names only, optional screenshots via `READYART_GUI_SCREENSHOTS`
+### `tests/test_web_datasets.py` [35]
+**Purpose:** Unit tests for the Datasets panel (add/edit/import/alias/visibility/save-load flows through the routes); synthetic column names only, never a real dataset record
 **Edit for:** Add panel-flow cases
 
 ---
@@ -174,7 +166,7 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
 
 ### `docs/input-folder.md` [42]
 **Purpose:** User guide to the `input/` folder: which files chunk mode picks up, encoding/BOM rules, the `sanitize_input()` character strip, the `len > context_size` minimum-size rule, how a chunk is cut (random character offsets, not sentence boundaries), `questions.txt` line format, dataset variables in a questions-file line (v11.9.0: `{{ds:alias}}` placeholders and the single appended alias, and why chunk-mode `.txt` is deliberately not rendered), original worked examples, a pre-flight check snippet and a troubleshooting table
-**Edit for:** Update when the `input/` discovery rule in `generate_tk.py` (`os.listdir` + `.endswith('.txt')` + the `questions.txt` exclusion), `read_book()`/`read_txt()`, `sanitize_input()`, `render_question_line()` / `render_question_task()` or the `prompts.questions_dataset.*` settings, or the `generation.subject_size` / `context_size` / `num_random_chunks` / `sanitize_input_max_length` defaults change
+**Edit for:** Update when the `input/` discovery rule in `run_config.input_files()` (`os.listdir` + `.endswith('.txt')` + the `questions.txt` exclusion), `read_book()`/`read_txt()`, `sanitize_input()`, `render_question_line()` / `render_question_task()` or the `prompts.questions_dataset.*` settings, or the `generation.subject_size` / `context_size` / `num_random_chunks` / `sanitize_input_max_length` defaults change
 
 ---
 
@@ -185,19 +177,18 @@ stays readable on its own:
 
 | Page | Covers |
 |------|--------|
-| [`datasets-model.md`](datasets-model.md) | the names-only data model, `dataset_settings.py` (the pure model layer), `dataset_column_menu.py` |
+| [`datasets-model.md`](datasets-model.md) | the names-only data model, `dataset_settings.py` (the pure model layer), the column-visibility selection algebra |
 | [`datasets-bindings.md`](datasets-bindings.md) | `dataset_templates.py`, `dataset_bindings.py`, `dataset_tasks.py` |
-| [`datasets-panel-reference.md`](datasets-panel-reference.md) | `datasets_panel.py`, the direct answers, the FastAPI surface |
 
-Read the one page that owns the code you are editing. The port has already landed
-in `webapp/datasets_routes.py`, so these are a reference for changing it, not a work
-order.
+Read the one page that owns the code you are editing. `webapp/datasets_routes.py` and
+`webapp/static/js/datasets.js` are the panel that calls this model layer, so these pages
+are a reference for changing it, not a work order.
 
 ## Tasks that touch these files
 
 | Task | Files to edit |
 |------|---------------|
-| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `datasets_panel.py` (`_KINDS` list), `tests/test_dataset_sources.py` (or `tests/test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
+| Add dataset source type | `dataset_sources.py` (new `DatasetSource` subclass + register in `open_source()`), `dataset_settings.py` (`_SELECTOR_DEFAULTS`, `source_selector`), `webapp/datasets_routes.py` (`KINDS` / `KIND_FIELDS`), `webapp/static/js/datasets.js` (the kind select), `tests/test_dataset_sources.py` (or `tests/test_dataset_backends.py` for an optional package), `requirements-datasets.txt` (if it needs a new package) |
 | Modify dataset placeholder rendering | `dataset_templates.py` (`render_template()` / `render_with_native_placeholders()` / `validate_alias()`); worker-side call sites in `generation.py` (`render_task_inputs()`) |
-| Add/modify dataset variables in `input/questions.txt` (v11.9.0) | `dataset_templates.py` (`render_question_line()`, `DEFAULT_QUESTION_SEPARATOR`), `dataset_tasks.py` (`render_question_task()`), `generation.py` (the `use_questions_file_local` branch + `validate_task_templates(task[3], ...)` in the binding block), `generate_tk.py` (read `prompts.questions_dataset.*` at Start + the two worker kwargs), `config/config.yml` (defaults), `config_editor.py` (Prompts tab panel + module-level escape/value helpers + save/load/validate), `docs/input-folder.md`, `tests/test_dataset_templates.py` / `tests/test_dataset_tasks.py` / `tests/test_questions_dataset_ui.py` / `tests/test_dataset_compatibility.py` — keep chunk-mode source `.txt` unrendered (a chunk is cut at a random offset and could split a placeholder) |
+| Add/modify dataset variables in `input/questions.txt` (v11.9.0) | `dataset_templates.py` (`render_question_line()`, `DEFAULT_QUESTION_SEPARATOR`), `dataset_tasks.py` (`render_question_task()`), `generation.py` (the `use_questions_file_local` branch + `validate_task_templates(task[3], ...)` in the binding block), `run_config.py` (reads `prompts.questions_dataset.*` into the settings + the two worker kwargs), `config/config.yml` (defaults), `webapp/config_schema.py` (`prompts.questions_dataset.*` labels, the `escape` codec and the `_rule_append_alias` cross-field rule), `docs/input-folder.md`, `tests/test_dataset_templates.py` / `tests/test_dataset_tasks.py` / `tests/test_dataset_compatibility.py` — keep chunk-mode source `.txt` unrendered (a chunk is cut at a random offset and could split a placeholder) |
 | Change per-task row allocation | `dataset_bindings.py` (`DatasetBindingManager.bind()`), `dataset_tasks.py` (`bind_task_datasets()`) — keep exhaustion/invalid-data rules: no silent cycling, skipping, or partial publish |

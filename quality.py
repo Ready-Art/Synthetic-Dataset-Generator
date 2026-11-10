@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 # quality.py
 """Quality scoring layer for the Synthetic Dataset Generator.
@@ -26,7 +24,7 @@ toggle (GUI checkbox in the Configuration Editor). They carry heuristic base sco
 inner persona signal placement) and are refined by the LLM judge when available.
 
 The composite score is a weighted 0-100 value over the active dimensions.
-Reads shared state through app_state; never imports generate_tk.py (one-way dependency).
+Reads shared state through app_state; never imports a front end (one-way dependency).
 """
 
 import json
@@ -180,13 +178,13 @@ DROP_REASON_INVALID_JSON = "invalid_json"
 DROP_REASON_LOGIC_ZERO = "logic_zero"
 DROP_REASON_JUDGE_FAILED = "judge_failed"
 # v12.8.2: the operator dropped this conversation from the Review tab. It is recorded with
-# the judge's drop reasons so the dashboard, the log and a resumed run agree that the row is
+# the judge's drop reasons so the stats payload, the log and a resumed run agree that the row is
 # gone on purpose, but nothing in the scoring path ever produces it.
 DROP_REASON_MANUAL = "manual"
 # v14.3: a scene-continuity violation survived every fix round, so the row contradicts its own
 # cast (an exited/absent character still speaks or acts). Produced by the WORKER, not by the
 # judge: it is an objective fact about the text, so it never costs a judge call. Recorded with the
-# judge's reasons so the dashboard, the log and a resumed run all agree the row is gone on purpose.
+# judge's reasons so the stats payload, the log and a resumed run all agree the row is gone on purpose.
 DROP_REASON_SCENE_CONTINUITY = "scene_continuity"
 
 
@@ -320,7 +318,7 @@ def active_scoring_dimensions(config=None):
     """The ordered dimension names + weights that apply right now.
 
     The generic dimensions always count; the roleplay dimensions are appended when
-    the toggle is on. Order is stable (insertion order) so the dashboard can lay out
+    the toggle is on. Order is stable (insertion order) so the web UI can lay out
     labels and table columns from it without special-casing.
     """
     dims = dict(SCORING_DIMENSIONS)
@@ -2111,7 +2109,7 @@ def _call_logic_judge_once(api_url, model_name, api_key, scoring_api_slot, threa
 
         # LLM-judged OOC evidence: concrete out-of-character moments the judge spotted.
         # An explicit, non-empty list flags the row even when consistency stayed >= 40,
-        # so the dashboard can show persona drift without relying on phrase matching alone.
+        # so the web UI can show persona drift without relying on phrase matching alone.
         ooc_evidence = parsed.get('ooc_evidence')
         if isinstance(ooc_evidence, str):
             ooc_evidence = [ooc_evidence]
@@ -2353,7 +2351,7 @@ def _format_conversation_for_scoring(conversation_history):
 
 
 def get_quality_stats():
-    """Returns aggregated quality statistics for the dashboard."""
+    """Returns aggregated quality statistics for the stats payload and the web UI."""
     with app_state.quality_lock:
         scores = app_state.quality_scores
         active_dims = list(active_scoring_dimensions())
@@ -2779,7 +2777,7 @@ def _score_and_write_job(item):
         with app_state.quality_lock:
             app_state.quality_write_failures.add(task_id)
         # Keep the verdict: the judge's work is not thrown away just because the
-        # write failed, so the score is still on the dashboard and a retry can reuse it.
+        # write failed, so the score is still in the stats payload and a retry can reuse it.
         _record_quality_result(qr, task_id, thread_id, "Quality processor")
     else:
         _record_quality_result(qr, task_id, thread_id, "Quality processor")

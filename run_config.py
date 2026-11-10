@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Turn ``config/config.yml`` into everything a generation run needs (v13.0).
 
@@ -18,14 +16,13 @@ send identical requests and write identical rows.
 
 Two rules make that possible, and both are load-bearing:
 
-1. **Nothing here touches Tk.** No widget, no ``toast``, no ``messagebox``, no
-   ``app_state.root``. Every failure is returned as ``(False, "reason")`` (or raised as
+1. **Nothing here touches a GUI.** No widget, no ``toast``, no ``messagebox``, no window
+   handle. Every failure is returned as ``(False, "reason")`` (or raised as
    ``RunConfigError``) and the caller decides how to tell the user. That is what lets the
    module be imported and exercised headlessly, which is what makes it testable.
-2. **Nothing here imports ``generate_tk.py``.** That module builds the whole Tk window at
-   *import* time, so importing it from an engine-side module would make every headless path
-   need a display. The dependency is one-way, exactly as ``generation.py`` already does it:
-   ``generate_tk.py -> run_config.py -> generation.py``.
+2. **Nothing here imports a front end.** The dependency is one-way:
+   ``control.py -> run_config.py -> generation.py``, and ``webapp/`` sits on top of
+   ``control.py``.
 
 The config reads are a straight lift of the block that used to live inline in
 ``start_processing()``, including the v12.7.6 slop/anti-slop default-off gate and every
@@ -307,9 +304,9 @@ class RunSettings:
 def build_run_settings(config=None, master_duplication_enabled=None):
     """Resolve `config` into a :class:`RunSettings`.
 
-    ``master_duplication_enabled`` overrides the config value when given; the GUI passes the
-    live checkbox value there (it owns a Tk variable, and the checkbox is the source of truth
-    for the current window), while the CLI lets it come from the config file.
+    ``master_duplication_enabled`` overrides the config value when given; ``control.py`` passes
+    the value it resolved for the run, while a caller that has no opinion lets it come from the
+    config file.
     """
     cfg = app_state.global_config if config is None else config
     settings = RunSettings()
@@ -793,10 +790,10 @@ def count_worker_threads(api_configs, active_api_configs, master_duplication_ena
 
     THE one definition of the worker total. ``api.threads`` is a legacy scalar and is NOT
     the total: the workers are split per API slot, so the total is the sum over the slots
-    that will actually do work. Everything that reports a thread count -- the GUI's
-    "Start processing: N threads" line, the launch loop in ``generate_tk.py``, the CLI's
-    ``start`` plan and its ``status`` payload -- must come through here, or the number
-    shown to the user stops matching the number of threads actually started.
+    that will actually do work. Everything that reports a thread count -- the worker launch in
+    ``control.py``, the CLI's ``start`` plan and its ``status`` payload, the web UI's Overview --
+    must come through here, or the number shown to the user stops matching the number of threads
+    actually started.
 
     ``api_configs`` is the full six-slot runtime list, ``active_api_configs`` the
     non-duplication list of ``{'config': ..., 'original_slot_idx': ...}`` entries.

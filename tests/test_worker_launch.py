@@ -3,15 +3,16 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Check actual worker-launch argument wiring without importing the application.
 
 Run with ``python -B tests/test_worker_launch.py``. Source expressions remain
-AST nodes: no configuration, GUI, worker, network, or model code is evaluated.
+AST nodes: no configuration, worker, network, or model code is evaluated.
+
+The launch lives in ``control.HeadlessController.cmd_start``, so both checks parse
+``control.py``.
 """
 
 import ast
@@ -25,7 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _read_function(filename, name):
     tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"), filename=filename)
-    matches = [node for node in tree.body
+    # ``ast.walk``, not ``tree.body``: the launch is a method of
+    # ``HeadlessController`` now, so it is not a top-level statement.
+    matches = [node for node in ast.walk(tree)
                if isinstance(node, ast.FunctionDef) and node.name == name]
     if len(matches) != 1:
         raise AssertionError("Expected exactly one {} in {}".format(name, filename))
@@ -57,68 +60,67 @@ def _signature(function):
 
 class WorkerLaunchTests(unittest.TestCase):
     def test_start_processing_binds_worker_arguments(self):
+        """``_worker_args`` + ``_worker_kwargs`` must bind ``generation.worker``.
+
+        The launch builds the two lists in two methods on ``HeadlessController``, so
+        this binds their returned literals against the real signature instead of the
+        launch call site.
+        """
         signature = _signature(_read_function("generation.py", "worker"))
-        start = _read_function("generate_tk.py", "start_processing")
-        launches = []
-        for node in ast.walk(start):
-            if not (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "threading"
-                    and node.func.attr == "Thread"):
-                continue
-            fields = {keyword.arg: keyword.value for keyword in node.keywords}
-            target = fields.get("target")
-            if isinstance(target, ast.Name) and target.id == "worker":
-                launches.append((node.lineno, fields))
 
-        self.assertTrue(launches, "No threading.Thread(target=worker) launch found")
-        for line, fields in launches:
-            with self.subTest(line=line):
-                positional = fields.get("args")
-                keywords = fields.get("kwargs")
-                self.assertIsInstance(positional, (ast.Tuple, ast.List))
-                self.assertIsInstance(keywords, ast.Dict)
-                self.assertFalse(any(isinstance(value, ast.Starred) for value in positional.elts),
-                                 "Expanded worker args need explicit inspection")
-                keyword_values = {}
-                for key, value in zip(keywords.keys, keywords.values):
-                    self.assertIsInstance(key, ast.Constant,
-                                          "Expanded worker kwargs need explicit inspection")
-                    self.assertIsInstance(key.value, str)
-                    keyword_values[key.value] = value
-                try:
-                    bound = signature.bind(*positional.elts, **keyword_values)
-                except TypeError as exc:
-                    self.fail("Worker launch does not match worker signature: {}".format(exc))
+        args_function = _read_function("control.py", "_worker_args")
+        positional = next(node for node in ast.walk(args_function)
+                         if isinstance(node, ast.Return)).value
+        self.assertIsInstance(positional, (ast.Tuple, ast.List))
+        self.assertFalse(any(isinstance(value, ast.Starred) for value in positional.elts),
+                         "Expanded worker args need explicit inspection")
 
-                for name in ("current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled"):
-                    value = bound.arguments.get(name)
-                    self.assertIsInstance(value, ast.Name, "{} was not supplied".format(name))
-                    self.assertEqual(value.id, name, "Incorrect source for {}".format(name))
+        kwargs_function = _read_function("control.py", "_worker_kwargs")
+        keywords = next(node for node in ast.walk(kwargs_function)
+                        if isinstance(node, ast.Return)).value
+        self.assertIsInstance(keywords, ast.Dict)
+
+        keyword_values = {}
+        for key, value in zip(keywords.keys, keywords.values):
+            self.assertIsInstance(key, ast.Constant,
+                                   "Expanded worker kwargs need explicit inspection")
+            self.assertIsInstance(key.value, str)
+            keyword_values[key.value] = value
+
+        try:
+            bound = signature.bind(*positional.elts, **keyword_values)
+        except TypeError as exc:
+            self.fail("Worker launch does not match worker signature: {}".format(exc))
+
+        # The kwarg name carries the ``_local`` suffix; the settings attribute does not.
+        for name in ("current_ooc_phrases", "current_ooc_fixes", "current_ooc_enabled"):
+            value = bound.arguments.get(name)
+            self.assertIsNotNone(value, "{} was not supplied".format(name))
+            self.assertEqual(getattr(value, "attr", None), name.removeprefix("current_"),
+                             "Incorrect source for {}".format(name))
 
     def test_reported_thread_count_is_the_launched_thread_count(self):
-        """The "Start processing: N threads" line must report what is actually spawned.
+        """The "Started N worker threads" line must report what is actually spawned.
 
         Regression: it printed the legacy ``api.threads`` scalar, so a run with 30 threads
         split over the API slots announced "12 threads" next to the output format -- a
-        number that matched neither the GUI nor the threads that started. Both the log line
-        and the launch loop must read ONE resolved total, and that total must come from
-        ``run_config.count_worker_threads`` (the same helper the CLI uses).
+        number that matched neither the front end nor the threads that started. Both the log
+        line and the launch loop must read ONE resolved total, and that total must come
+        from ``run_config.total_threads_for_run``.
         """
-        start = _read_function("generate_tk.py", "start_processing")
+        start = _read_function("control.py", "cmd_start")
 
         # 1. The total is resolved through the shared helper, not from the scalar.
         resolves = [
             node for node in ast.walk(start)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "count_worker_threads"
+            and node.func.attr == "total_threads_for_run"
         ]
         self.assertTrue(
             resolves,
-            "start_processing does not call run_config.count_worker_threads(); the thread "
-            "total must come from the one shared definition")
+            "cmd_start does not call run_config.total_threads_for_run(); the thread total "
+            "must come from the one shared definition")
         total_line = min(node.lineno for node in resolves)
 
         # 2. The launch loop counts to that same variable.
@@ -145,7 +147,7 @@ class WorkerLaunchTests(unittest.TestCase):
             if not (isinstance(template, ast.JoinedStr) and template.values
                     and isinstance(template.values[0], ast.Constant)):
                 continue
-            if not str(template.values[0].value).startswith("Start processing:"):
+            if not str(template.values[0].value).startswith("Started "):
                 continue
             # Collect attribute names too: the buggy version read
             # `app_state.num_threads`, whose tail is an Attribute attr, not a Name.
@@ -155,17 +157,17 @@ class WorkerLaunchTests(unittest.TestCase):
                       if isinstance(value, ast.Attribute)}
             reported.append((node.lineno, names))
 
-        self.assertTrue(reported, "The 'Start processing:' log line is gone")
+        self.assertTrue(reported, "The 'Started N worker threads' log line is gone")
         for line, names in reported:
             with self.subTest(line=line):
                 self.assertIn("total_threads", names,
-                              "'Start processing:' does not report the resolved total")
+                              "the worker-count log line does not report the resolved total")
                 self.assertNotIn("num_threads", names,
-                                 "'Start processing:' still reports the legacy api.threads "
-                                 "scalar instead of the run total")
+                                 "the worker-count log line still reports the legacy "
+                                 "api.threads scalar instead of the run total")
                 self.assertGreater(line, total_line,
-                                   "'Start processing:' is logged before the total is "
-                                   "resolved, so it would report a stale value")
+                                   "the worker-count log line is logged before the total "
+                                   "is resolved, so it would report a stale value")
 
 
 if __name__ == "__main__":

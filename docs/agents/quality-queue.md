@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # The quality queue and judge concurrency (`quality.py`)
@@ -109,10 +107,10 @@ The writer is **injected** with `set_quality_write_handler(handler)`; `generatio
 registers it at run start, before `initialize_quality_queue()`. It is injected rather than imported
 because `generation.py` already imports `quality`, so `quality` importing `generation` would be circular.
 
-**`generate_tk.py` must import the generation MODULE, not only names from it.** The call site is
+**`control.py` must import the generation MODULE, not only names from it.** The call site is
 `generation._install_quality_write_handler()`, and `from generation import worker, ...` binds `worker`
 but never the name `generation`. v12.9 shipped without the plain `import generation` and every async
-run died on the first Start click with `NameError: name 'generation' is not defined` inside the Tk
+run died on the first Start click with `NameError: name 'generation' is not defined` inside the UI
 callback — invisible to the default run and to every import-time check, because the branch is gated on
 `async_scoring` **and** `use_llm_scoring`. The install must also stay BEFORE
 `initialize_quality_queue()`, so a processor can never pick up a job with no writer.
@@ -192,7 +190,7 @@ The judge calls `global_rate_limiter.wait_if_needed(slot)` and
 `RateLimiter.rates_per_slot` from `api_handler.RATE_LIMITER_SLOT_COUNT` (**7**, 0-6). Before v12.9
 that constant did not exist and all three were **6 wide (0-5)**, so every judge request raised
 `KeyError` inside a bare `try/except: pass`. The judge was therefore **never rate-limited and its
-latency was never recorded** — a saturated judge was invisible on the dashboard and `rate_limit_rpm`
+latency was never recorded** — a saturated judge was invisible in the stats payload and `rate_limit_rpm`
 on it did nothing. The limiter failure is now logged at `WARNING` rather than swallowed.
 
 `quality.scoring_api.slot_idx` (0-6, default 6) is a real config key with an editor field. Index 6 is the

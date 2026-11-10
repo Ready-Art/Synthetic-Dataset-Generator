@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """API compatibility profiles for outgoing LLM request payloads.
 
@@ -28,8 +26,8 @@ lock. The lock is a plain (non-reentrant) threading.Lock, so the public load_pro
 it and delegates to a lock-free _load_unlocked(); _ensure_loaded() uses double-checked locking so
 it never calls a locking function while already holding the lock.
 
-This module is a dependency leaf (stdlib + PyYAML + logging_config only) so both generate_tk.py and
-generation.py can import it without creating a cycle.
+This module is a dependency leaf (stdlib + PyYAML + logging_config only) so ``run_config``,
+``generation`` and ``control`` can all import it without creating a cycle.
 """
 import os
 import threading
@@ -213,7 +211,8 @@ def detect_profile(api_url):
 def set_slot_profile(slot_idx, profile_name, custom_allowed=None, api_url=None):
     """Record the compatibility profile for one API slot (0-5).
 
-    Called by generate_tk.py before workers start. An explicit non-default profile always wins; an
+    Called by ``run_config.register_api_profiles()`` before workers start. An explicit non-default
+    profile always wins; an
     unset/default profile falls back to host auto-detection (so a config pointed at Mistral still
     gets filtered even if it predates this feature), and a detection miss leaves it on the default
     passthrough profile.
@@ -288,7 +287,7 @@ def apply_profile_for_slot(payload_dict, slot_idx, api_url=None):
     """Filter payload_dict for the profile registered to API slot `slot_idx`.
 
     Falls back to host auto-detection (then the default passthrough profile) when the slot has no
-    registered profile -- e.g. when generation code runs outside a normal generate_tk.py worker start.
+    registered profile -- e.g. when generation code runs outside a normal worker start.
     Returns the same object unchanged when the resolved profile does no filtering or renaming.
     """
     _ensure_loaded()

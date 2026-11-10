@@ -3,30 +3,28 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Catch a global name that is used but never bound (v12.9.1).
 
 Run with ``python -B tests/test_undefined_globals.py``. Headless: no display, no
 configuration, no network, no model and no running server. Nothing here imports the
 application modules -- their source text is parsed with ``symtable`` instead, so this test
-cannot build the Tk UI, read a user's ``custom.yml`` or touch ``output/``.
+cannot start a run, read a user's ``custom.yml`` or touch ``output/``.
 
 Why this file exists
 --------------------
 
-v12.9 wired the async judge writer into ``generate.start_processing()`` with
+v12.9 wired the async judge writer into the run start with
 
     generation._install_quality_write_handler()
 
-but ``generate_tk.py`` only ever did ``from generation import worker, ...``, which binds the
+but the entry point only ever did ``from generation import worker, ...``, which binds the
 *names* it imports and NOT the module name ``generation``. The call therefore raised
 ``NameError: name 'generation' is not defined`` -- but only on a run with
 ``quality.async_scoring: true`` and LLM scoring on, so the default run, the default test
-run and every import-time check all passed. It surfaced as a Tkinter callback traceback
+run and every import-time check all passed. It surfaced as a traceback in the UI callback
 after the first Start click of an async run.
 
 No test caught it because the name is perfectly legal Python: it is a global lookup that
@@ -60,29 +58,24 @@ BUILTIN_NAMES = set(dir(builtins)) | {
     "WindowsError",
 }
 
-# The application modules checked by the generic sweep. `generate_tk.py` is the one that
+# The application modules checked by the generic sweep. `generation.py` is the one that
 # regressed; the rest are here so the check is a class guard, not a single-file patch.
 CHECKED_MODULES = (
-    "generate_tk.py",
     "generation.py",
     "quality.py",
     "api_handler.py",
     "api_profiles.py",
     "app_state.py",
     "config_loader.py",
-    "config_editor.py",
-    "dashboard.py",
     "detection.py",
     "logging_config.py",
     "style_metrics.py",
     "text_utils.py",
-    "ui_layout.py",
     "dataset_bindings.py",
     "dataset_settings.py",
     "dataset_sources.py",
     "dataset_tasks.py",
     "dataset_templates.py",
-    "datasets_panel.py",
     # v13.0: the headless / CLI control layer.
     "run_config.py",
     "control.py",
@@ -181,7 +174,9 @@ def test_no_module_references_an_unbound_global():
 
 def _function_node(filename, name):
     tree = ast.parse(_source(filename), filename=filename)
-    matches = [node for node in tree.body
+    # ``ast.walk``, not ``tree.body``: the launch is a method on
+    # ``HeadlessController`` now, so it is not a top-level statement.
+    matches = [node for node in ast.walk(tree)
                if isinstance(node, ast.FunctionDef) and node.name == name]
     assert len(matches) == 1, "expected exactly one {}() in {}".format(name, filename)
     return matches[0]
@@ -205,8 +200,8 @@ def _module_bindings(filename):
 
 
 def test_async_judge_wiring_calls_a_bound_module_attribute():
-    """v12.9.1: the async writer install in start_processing() must resolve."""
-    start = _function_node("generate_tk.py", "start_processing")
+    """v12.9.1: the async writer install in cmd_start() must resolve."""
+    start = _function_node("control.py", "cmd_start")
 
     # The call site: <module>._install_quality_write_handler()
     calls = [node for node in ast.walk(start)
@@ -214,17 +209,17 @@ def test_async_judge_wiring_calls_a_bound_module_attribute():
              and isinstance(node.func, ast.Attribute)
              and node.func.attr == "_install_quality_write_handler"]
     assert calls, (
-        "generate.start_processing() no longer installs the async-judge writer; if the "
+        "control.cmd_start() no longer installs the async-judge writer; if the "
         "wiring moved, move this check with it")
 
-    bindings = _module_bindings("generate_tk.py")
+    bindings = _module_bindings("control.py")
     for call in calls:
         owner = call.func.value
         assert isinstance(owner, ast.Name), (
             "line {}: the async writer install is not called on a plain module name"
             .format(call.lineno))
         assert owner.id in bindings, (
-            "line {}: '{}._install_quality_write_handler()' is called, but generate_tk.py "
+            "line {}: '{}._install_quality_write_handler()' is called, but control.py "
             "never binds the name '{}' at module level -- `from {} import x` binds x, not "
             "the module, so this raises NameError on any run with async scoring on"
             .format(call.lineno, owner.id, owner.id, owner.id))
@@ -245,19 +240,19 @@ def test_the_installed_handler_exists_in_generation():
         for target in node.targets if isinstance(target, ast.Name)
     )
     assert "_install_quality_write_handler" in defined, (
-        "generation._install_quality_write_handler() is called by generate_tk.py but is not "
+        "generation._install_quality_write_handler() is called by control.py but is not "
         "defined at module level in generation.py")
 
 
 def test_generate_imports_the_generation_module_object():
     """Pin the fix itself: the module object, not only names from it."""
-    bindings = _module_bindings("generate_tk.py")
+    bindings = _module_bindings("control.py")
     assert "generation" in bindings, (
-        "generate_tk.py must bind the name 'generation' (import generation) for the "
+        "control.py must bind the name 'generation' (import generation) for the "
         "async-judge wiring in start_processing(); `from generation import x` alone "
         "does not create it")
     assert bindings["generation"] == "generation", (
-        "the name 'generation' in generate_tk.py must be the module itself, not a re-export")
+        "the name 'generation' in control.py must be the module itself, not a re-export")
 
 
 def main():

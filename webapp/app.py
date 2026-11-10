@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """The FastAPI application -- the route table and nothing else.
 
@@ -15,12 +13,12 @@ server, open a socket or touch the network**, so a headless test can import it a
 the routes through ``TestClient``. Starting uvicorn is ``webapp.__main__``'s job.
 
 The engine seam is ``control.HeadlessController``, the same object ``cli.py`` talks to over
-a socket. This module never imports ``generate_tk.py`` -- that builds the whole Tk window at
-import time -- and ``tests/test_web_engine.py`` asserts the import graph stays clean.
+a socket. This module imports no GUI toolkit and needs no display; ``tests/test_web_engine.py``
+asserts the import graph stays clean.
 
-Phase 1 serves only the shell: the stylesheet, the static bundle and a health probe. The
-auth gate lands in Phase 2 and the engine routes in Phase 3; both plug into the hooks left
-here (``_install_auth`` / ``_install_api``) rather than being bolted on beside them.
+``create_app()`` assembles the whole route table: the shell and health probe, the auth gate
+(``_install_auth``) and the engine routes (``_install_api``), then the config, Datasets,
+Profiles, Review, Live Prompts and tab routes.
 """
 
 import asyncio
@@ -122,21 +120,21 @@ def create_app(config=None, controller_factory=None, serve_socket=True, start_me
     from .tabs_routes import install_tabs
     install_tabs(app)
 
-    # The Config editor. Phase 6b: one generic renderer over the whole config tree, so every
+    # The Config editor: one generic renderer over the whole config tree, so every
     # one of the 1,291 leaves is reachable and new ones can be added. Separate
     # module because it is the only route that *writes* the config, and that deserves to be
     # read on its own.
     from .config_routes import install_config
     install_config(app)
 
-    # The Datasets panel. Phase 6d-a: the Tk panel's 696 lines become routes over
-    # `dataset_settings`, which is already GUI-free. Separate module because it is the only
+    # The Datasets panel: routes over `dataset_settings`, which is already GUI-free.
+    # Separate module because it is the only
     # place that performs source I/O (reading column names) and the only writer of the
     # `datasets` subtree, and both deserve to be read on their own.
     from .datasets_routes import install_datasets
     install_datasets(app)
 
-    # The Profiles panel. Phase 6d-b: the last bespoke widget. Separate module because it is
+    # The Profiles panel. Separate module because it is
     # the only route that **replaces the whole config** in one operation, and because it has
     # to close two holes `config_loader.py` leaves open (a `yaml.dump` over `config.yml`, and
     # an unsanitized profile name that is a path component).

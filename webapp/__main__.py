@@ -3,10 +3,8 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """``python -m webapp`` -- start the web front end.
 
@@ -14,10 +12,10 @@ This is the only place that starts uvicorn. Importing ``webapp.app`` does not, s
 can build the app without binding a port.
 
 The web app **owns the engine**: it constructs the ``HeadlessController`` and starts the
-control socket, exactly as ``generate_tk.py`` does today when ``control.enabled`` is true.
-That is what keeps ``cli.py`` working against it and what makes the socket the singleton
-guard -- a second ``python -m webapp`` is refused by ``ControlServer._prepare_socket_path``
-with no new code. The engine seam wires that up; the HTTP server starts first.
+control socket. That is what keeps ``cli.py`` working against it and what makes the socket the
+singleton guard -- a second ``python -m webapp`` is refused by
+``ControlServer._prepare_socket_path`` with no new code. The engine seam wires that up; the
+HTTP server starts first.
 
 Usage::
 

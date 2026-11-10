@@ -3,17 +3,14 @@
 # ReadyArt Synthetic Dataset Generator
 # Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 #
-# All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-# Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-# it is unlikely any of that code survives. Unless you have the original MIT-era code to
-# compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
 
 """Tests for the v11.4 quality-judge retry / drop policy and the Review tab.
 
 Run separately: ``python -B tests/test_quality_judge_policy.py``. No model, network or
 display is required: the judge is exercised through a stubbed ``requests.post`` and the
-Review-tab helpers are called directly (no Tk is constructed here -- the display-dependent
-parts live in ``tests/test_review_tab_ui.py``).
+Review-tab helpers are called directly through ``review_data.py``, which is GUI-free.
 
 Covers:
   * a transient judge failure (HTTP error / timeout / exception) is retried 3 times and then

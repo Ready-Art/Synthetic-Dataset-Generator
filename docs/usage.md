@@ -4,10 +4,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ReadyArt Synthetic Dataset Generator
 Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
 
-All code here is AGPLv3, and has been for some time. Very early versions were MIT by
-Sleep Deprived and FrenzyBiscuit (WestFox35), but the generator has changed so much that
-it is unlikely any of that code survives. Unless you have the original MIT-era code to
-compare against, treat this file as AGPLv3-only. See docs/licensing.md.
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
 # 🎮 Usage
@@ -23,9 +21,7 @@ python -m webapp            # then open http://127.0.0.1:8765
 The first start prints a one-time setup token to the console; paste it at `/setup` and choose a
 password. See [Web Front End](webapp.md) for the flags, the login, nginx and the screens.
 
-`cli launch --gui` starts the same web app. The old Tk window is still reachable for one
-deprecation release via `cli launch --tk` or `python generate_tk.py`, but the web app is the
-supported GUI.
+`cli launch --gui` starts the same web app, and it is the only GUI.
 
 ## Starting a Generation Run
 
@@ -93,7 +89,7 @@ drop and dismiss. Selecting a row never navigates away
 - **Metrics** — The per-slot vLLM table and its graphs
 - **Prompts** — Real-time view of prompts being sent to APIs with rich formatting
 - **Queue** — Live view of pending and failed tasks with purge, retry and export
-- **Config** — The config editor, covering the whole config tree
+- **Config** — The Config editor, covering the whole config tree
 - **Datasets** — Dataset sources, aliases and column visibility
 - **Profiles** — Save and load a copy of the whole config
 
@@ -108,8 +104,7 @@ is no font to be missing.
 - **Thread status** — Shows spawned and active thread counts
 - **Search** — The Prompts screen has a search box; the Datasets column picker has its own
 filter, which is the difference between a list and a scroll on a wide source. The browser's
-`Ctrl+F` covers the rest of the page, so the Tk per-panel search bar and **Copy All** were
-dropped rather than reimplemented
+`Ctrl+F` covers the rest of the page, so there is no per-panel search bar and no **Copy All**
 
 ## Quality Dashboard & Review
 

@@ -264,7 +264,7 @@ export function legend(series) {
  *
  * `delta / seconds * 60`, and `None` for a sample where the counter went backwards (a
  * restarted server zeroed it) so the graph shows a gap rather than a spike. This is the same
- * rule `vllm_metrics._delta()` and the Tk panel apply.
+ * rule `vllm_metrics._delta()` and the Metrics screen apply.
  *
  * @param {Array<Object>} history - samples carrying `time` and `key`
  * @param {string} key - the cumulative counter to differentiate
