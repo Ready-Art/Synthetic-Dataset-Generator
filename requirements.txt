@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
+
+requests>=2.32.4,<3
+python-dotenv==1.0.0
+PyYAML==6.0.1
+psutil
+colorama
+redis
+psycopg2-binary

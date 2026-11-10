@@ -1,0 +1,110 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+ReadyArt Synthetic Dataset Generator
+Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+
+This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+under the GNU Affero General Public License v3.0 or later. See LICENSE.
+-->
+
+# 📁 File Structure
+
+```
+readyart-dataset-generator/
+├── README.md                # Master README: overview + index of the docs/ pages
+├── AGENTS.md                # Developer docs HUB for LLM agents (setup, tests, boundaries, architecture)
+├── webapp/                  # v15.0: the web front end (the GUI). app.py, engine.py, theme.py, security/, static/, *_routes.py
+├── generation.py            # Generation engine (worker loop, LLM calls, answer generation)
+├── detection.py             # Issue detection (refusals, user speaking, slop, anti-slop, quotes, non-Latin script)
+├── text_utils.py            # Text post-processing (reasoning removal, quote normalization, markdown stripping, em dash removal, repeated-word collapse)
+├── quality.py               # Quality scoring engine (hybrid: heuristic + optional LLM, 6 core + 3 opt-in roleplay dimensions)
+├── config_loader.py         # Configuration management, profiles, YAML load/save
+├── api_handler.py           # Rate limiting, Valkey/Redis caching, response time tracking
+├── api_profiles.py          # Per-endpoint payload compatibility profiles (thread-safe, auto-detection)
+├── logging_config.py        # Centralized logging with colorama (colored console + file output)
+├── review_data.py           # Flagged-conversation list, detail, drop, dismiss and export (GUI-free)
+├── vllm_metrics.py          # v13.1.0: vLLM /metrics reader for the 📊 Metrics tab (headless)
+├── cli.py                   # v13.0: argparse surface + client + daemon launcher (GUI-free)
+├── control.py               # v13.0: control protocol, socket server, HeadlessController (GUI-free)
+├── run_config.py            # v13.0: config -> run resolution, output/DB/JSONL plumbing (GUI-free)
+├── app_state.py             # Shared runtime state (counters, locks, task queue, quality scores, circuit breaker)
+├── tests/                   # Test scripts (run from the repository root: python -B tests/<name>.py)
+│   ├── test_api_profiles.py # Unit tests for API compatibility profiles
+│   ├── test_opening_mode.py # Integration tests for opening mode
+│   ├── test_persona_arc.py  # Unit tests for the persona-breakthrough + emotional-arc helpers
+│   └── ...                  # Remaining suites: dataset_*, quality_roleplay, random_settings, worker_launch
+├── docs/                    # User documentation (one page per topic; README.md is the index)
+│   ├── features.md          # generation, quality, detection, characters
+│   ├── features-ui.md       # dashboard, queue, cost, crash recovery, web screens
+│   ├── architecture.md      # Runtime diagram + module dependency table
+│   ├── installation.md      # Requirements, dependencies, first run
+│   ├── configuration.md     # config.yml reference: datasets, API slots, generation settings
+│   ├── prompts-and-characters.md  # Prompts, character engine, opening mode, samplers note
+│   ├── detection-and-quality.md   # Detection, Regex Watch, scene cast, quality scoring
+│   ├── slop-and-antislop.md       # Why slop/anti-slop ship off (v12.7.6) + use the fork's dev branch
+│   ├── samplers-and-infrastructure.md  # Sampler params, DB/cache, budget, circuit breaker, rate limits
+│   ├── usage.md             # Running a job, dashboards, queue, recovery
+│   ├── cli.md               # Headless / CLI control (v13.0): verbs, JSON, exit codes
+│   ├── output-formats.md    # ShareGPT rows + the record metadata block
+│   ├── how-it-works.md      # Pipelines and fix/fallback flows
+│   ├── troubleshooting.md   # Symptom -> fix table, env vars, logging
+│   ├── performance.md       # Throughput and cost tuning
+│   ├── key-configuration-details.md  # Injection formats and storage details
+│   ├── version-history.md   # Index of the changelogs
+│   ├── changelog-v16.md     # Current release notes
+│   ├── changelog-v15.md     # v15.x release notes
+│   ├── changelog-v14.md     # v14.x release notes
+│   ├── changelog-v13.md     # v13.x release notes
+│   ├── changelog-v12.md     # v12.x release notes
+│   ├── changelog-v11.md     # v11.x and earlier
+│   ├── license-and-credits.md  # AGPLv3, provenance, credits
+│   ├── input-folder.md      # The input/ folder format
+│   ├── dataset-bindings.md  # Dataset sources and {{ds:...}} variables
+│   ├── scene-cast.md        # Scene Cast design notes
+│   ├── dataset-comparison.md  # depth0 vs. system placement: output comparison (preliminary)
+│   ├── postgresql.md        # PostgreSQL backend
+│   ├── licensing.md         # Licensing reasoning
+│   ├── cleaner-pipeline.md  # The optional tools/cleaner_pipeline/ JSONL post-processor
+│   ├── gemma4-chat-template.md  # Out-of-scope axolotl helper
+│   └── agents/              # Developer docs TOPIC FILES (read the one for your area)
+│       ├── task-index.md    # "how do I add X?" -> files to edit
+│       ├── review-tab.md   # the Review screen, its count line and the flagged-id set
+│       ├── cli.md          # cli.py / control.py / run_config.py (headless control)
+│       ├── vllm-metrics.md  # vllm_metrics.py + the 📊 Metrics screen (per-endpoint vLLM speeds and load)
+│       ├── generation.md    # generation.py (worker loop, retries, metadata)
+│       ├── detection.md     # detection.py (issue checks)
+│       ├── quality.md       # quality.py (scoring, judge)
+│       ├── quality-queue.md # quality.py (scoring queue, judge concurrency, judge rate-limit slot)
+│       ├── config.md        # config/config.yml + api_profiles.yml reference
+│       ├── core-modules.md  # app_state, api_handler, config_loader, state/locks
+│       ├── datasets.md      # dataset_*.py, webapp/datasets_routes.py
+│       ├── datasets-model.md # the datasets config subtree + dataset_settings.py
+│       ├── datasets-bindings.md # templates, bindings, task attachment
+│       └── tools-and-docs.md # tools/*.py, user docs
+├── tools/
+│   ├── check_dataset_hub.py # Opt-in live Hugging Face Hub reader check
+│   ├── ui_harness.py       # Serve the real static bundle against seeded JSON, so a layout bug can be seen in a browser (not part of the app)
+│   ├── gemma4_thought_fix.py # OUT OF SCOPE: axolotl helper for Gemma 4 fine-tunes by Karki (Discord); see docs/gemma4-chat-template.md
+│   └── cleaner_pipeline/    # OPTIONAL standalone JSONL post-processor (not imported, not tested); see docs/cleaner-pipeline.md
+│       ├── run_all.sh       # Runs the nine stages in order (--from N, $SOURCE)
+│       ├── common.py        # The shared rules: tokens, control chars, whitespace, quote tests
+│       ├── 01_quote_guard.py ... 09_drop_unbalanced_quotes.py  # The nine stages
+│       ├── README.md        # The tool's own full reference and warnings
+│       └── build/           # Scratch output, gitignored
+├── config/
+│   ├── config.yml           # Main configuration file
+│   └── api_profiles.yml     # API compatibility profile definitions (OpenAI, Mistral, xAI, Gemini, Anthropic, custom)
+├── input/
+│   └── *.txt                # Source text files for chunking
+├── output/
+│   ├── output.jsonl         # Generated dataset (collaborative mode)
+│   ├── output_api_slot_*.jsonl  # Per-API output (duplication mode)
+│   ├── generation_state.json    # Crash recovery state (includes quality scores)
+│   ├── quality_review_flagged.jsonl  # Exported flagged conversations
+│   ├── log.txt              # Application log
+│   ├── debug_prompt*.jsonl  # Per-API debug logs
+│   ├── queue_export.csv     # Queue state export
+│   └── output_data_backup_*.zip # Auto-backups
+└── requirements.txt         # Python dependencies
+```

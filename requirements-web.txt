@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
+
+# Dependencies for the web front end (python -m webapp). This IS the GUI: the
+# project has no desktop toolkit dependency, so the browser is the interface.
+#
+# Kept separate from requirements.txt on purpose: a user who only wants the CLI
+# should not pull in a web server. Install both for the full application:
+#
+#     python -m pip install -r requirements.txt -r requirements-web.txt
+#
+# No build step and no Node toolchain: the browser bundle is plain ES modules.
+
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+argon2-cffi>=23.1
+
+# Required by the login and setup routes: `await request.form()` in
+# webapp/security/routes.py needs it to parse the password form. FastAPI raises
+# at request time without it, so it is a hard dependency, not an optional extra.
+python-multipart>=0.0.18

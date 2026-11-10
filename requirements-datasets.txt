@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# ReadyArt Synthetic Dataset Generator
+# Copyright (C) 2026 Sleep Deprived, FrenzyBiscuit (WestFox35) and other contributors
+#
+# This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
+# under the GNU Affero General Public License v3.0 or later. See LICENSE.
+
+# Optional Hugging Face, local Parquet, and saved-HF dataset support.
+# Requires Python 3.11 or later. Includes the normal application dependencies.
+-r requirements.txt
+datasets==4.4.2
