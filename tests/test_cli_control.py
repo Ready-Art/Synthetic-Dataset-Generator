@@ -1004,7 +1004,7 @@ def test_the_control_layer_delegates_database_work_to_the_shared_layer():
 # Version
 # ---------------------------------------------------------------------------
 
-VERSION = "16.0.1"
+VERSION = "16.1.0"
 
 
 def test_the_version_is_declared_everywhere_it_appears():
