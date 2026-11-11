@@ -1817,4 +1817,4 @@ def _version_string():
 
 
 # The one place the version string lives; the web UI and the CLI both read it from here.
-GENERATOR_VERSION = "16.0.1"
+GENERATOR_VERSION = "16.1.0"

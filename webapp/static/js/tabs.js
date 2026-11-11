@@ -24,7 +24,7 @@
  * only mutations here, and each says what it does before it does it.
  */
 
-import { el, emptyState, num, toast } from './dom.js';
+import { captureScroll, el, emptyState, num, restoreScroll, toast } from './dom.js';
 import { lineChart, legend, rateHistory } from './chart.js';
 
 // --- a tiny fetch helper -------------------------------------------------
@@ -99,12 +99,25 @@ async function postJSON(path, payload) {
  * `build` receives the payload and returns a screen element. `error` is rendered in place of the
  * body, so a failed fetch never leaves a blank screen with no explanation.
  *
- * `interval` (ms) makes the tab poll while it is mounted. Only the Live Prompts tab uses it: a
- * debugging view of what is being sent right now is worthless if it only updates on a click, and
- * every other tab's data changes slowly enough that a Refresh button is honest.
+ * `interval` (ms) makes the tab poll while it is mounted, and puts an **Auto refresh** switch in
+ * the toolbar so the reader can stop it. The Metrics tab needs it because the figures it shows are
+ * written by the generation threads and the vLLM poller on their own schedule -- a tab that only
+ * updates on a click shows a snapshot of a run that has moved on, which is what "the metrics tab
+ * does not refresh" meant. The Live Prompts tab needs it because a debugging view of what is being
+ * sent right now is worthless if it only updates on a click.
+ *
+ * `autoRefresh` defaults to on whenever an `interval` is set; pass `false` for a poll the reader
+ * cannot switch off.
  */
-function makeTab({ id, title, path, build, actions, interval }) {
+function makeTab({ id, title, path, build, actions, interval,
+                   autoRefresh = Boolean(interval) }) {
   const state = { data: null, error: null, loading: false, mounted: false, timer: null };
+
+  // Whether the reader has left auto-refresh on. It lives in this closure rather than in
+  // `localStorage`: `main.js` persists the selected tab and deliberately nothing else, and a
+  // polling preference is not worth a second exception to that rule. A tab switch keeps it
+  // because the tab object outlives the screen element.
+  const auto = { on: Boolean(interval) && Boolean(autoRefresh) };
 
   async function refresh() {
     state.loading = true;
@@ -119,16 +132,40 @@ function makeTab({ id, title, path, build, actions, interval }) {
     }
   }
 
+  function startTimer() {
+    if (!interval || !auto.on || state.timer !== null) return;
+    state.timer = window.setInterval(() => {
+      // A poll must not fight a repaint the reader triggered, and must not run after
+      // the tab is gone.
+      if (!state.loading && document.getElementById(`screen-${id}`)) refresh();
+    }, interval);
+  }
+
+  function stopTimer() {
+    if (state.timer !== null) {
+      window.clearInterval(state.timer);
+      state.timer = null;
+    }
+  }
+
   function repaint() {
     const main = document.getElementById('main');
     if (!main) return;
     const current = main.querySelector(`#screen-${id}`);
     if (!current) return;
+    // **A repaint replaces the whole screen, so it throws away every scroll offset with it.**
+    // On a polling tab that happens every couple of seconds, which is the difference between a
+    // panel you can read and one that snaps to the top while you read it. Every scroller that
+    // opts in with a stable `data-scroll-key` is captured here and put back after the swap.
+    const offsets = captureScroll(current);
     current.replaceChildren(...screen().childNodes);
+    restoreScroll(current, offsets);
   }
 
   function screen() {
-    const body = el('div', { class: 'tab-body' });
+    // The body carries a stable scroll key so a poll cannot throw the reader back to the top of
+    // a long table or a stack of graph panels.
+    const body = el('div', { class: 'tab-body', dataset: { scrollKey: `tab-body-${id}` } });
     if (state.error) {
       body.append(emptyState({ title: 'Could not load this tab', hint: state.error }));
     } else if (!state.data) {
@@ -141,6 +178,15 @@ function makeTab({ id, title, path, build, actions, interval }) {
         el('span', { class: 'section-header', style: { margin: '0' } }, title),
         el('span', { class: 'spacer' }),
         actions ? actions(state.data, refresh) : null,
+        interval
+          ? toggle('Auto refresh', auto.on, (value) => {
+              auto.on = value;
+              if (value) startTimer(); else stopTimer();
+              // Repaint so the switch's own checked state matches, through the same path a
+              // poll uses.
+              repaint();
+            }, `Re-fetch this tab every ${Math.round(interval / 1000)} s`)
+          : null,
         el('button', { type: 'button', onclick: () => refresh() }, 'Refresh'),
       ),
       body,
@@ -152,22 +198,13 @@ function makeTab({ id, title, path, build, actions, interval }) {
       if (!state.mounted) {
         state.mounted = true;
         refresh();
-        if (interval) {
-          state.timer = window.setInterval(() => {
-            // A poll must not fight a repaint the reader triggered, and must not run after
-            // the tab is gone.
-            if (!state.loading && document.getElementById(`screen-${id}`)) refresh();
-          }, interval);
-        }
+        startTimer();
       }
       return screen();
     },
     unmount() {
       state.mounted = false;
-      if (state.timer !== null) {
-        window.clearInterval(state.timer);
-        state.timer = null;
-      }
+      stopTimer();
     },
   };
 }
@@ -662,6 +699,13 @@ const metricsTab = makeTab({
   id: 'metrics',
   title: 'Metrics',
   path: '/api/metrics',
+  // **The figures on this tab are written by other threads, so a click-only refresh shows a
+  // snapshot of a run that has already moved on.** The per-slot ring is appended by the
+  // generation threads and the server/proxy rings by the vLLM poller, which polls every 2 s
+  // (`vllm_metrics.POLL_INTERVAL_SECONDS`). Polling the tab at the same cadence means what you
+  // read is what the poller last saw, and the Auto refresh switch in the toolbar stops it for a
+  // reader who wants the page to hold still.
+  interval: 2000,
   build(data, refresh) {
     // Two independent switches, in the toolbar. The brief asked for one each: the per-slot
     // throughput the generator measures itself, and the server/proxy figures the poller reads.
@@ -769,6 +813,20 @@ let liveSelected = null;
 // reader who has scrolled back through a retry sequence would otherwise be thrown to the top
 // every two seconds by the poll -- the same complaint the Overview's Recent issues had.
 let liveScrollTop = 0;
+// **Where the SELECTED row sits inside the list's viewport**, as `{seq, offset}`.
+//
+// A raw `scrollTop` is not enough here, and this is the bug the reader reported. The list is
+// newest-first, so every new prompt is PREPENDED: restoring the same `scrollTop` therefore
+// shows a different row, and the prompt being read slides down by one row height per new
+// prompt until it leaves the viewport. That reads as the viewer "scrolling up on its own".
+// Anchoring to the row instead means the row the reader clicked stays exactly where it is and
+// the new entries appear above it, out of the way.
+let liveAnchor = null;   // {seq: number, offset: number} or null
+// **Whether the reader has taken hold of the list.** Until they click a row or scroll it, the
+// viewer follows the live tail: the newest prompt is selected and the list sits at the top, which is
+// what a debugging view should do by default. The moment they pick a prompt, the viewer is pinned to
+// it and nothing the poll does may move it -- that is the whole point of the fix.
+let livePinned = false;
 
 const livePromptsTab = makeTab({
   id: 'live',
@@ -786,6 +844,11 @@ const livePromptsTab = makeTab({
           const body = await postJSON('/api/live-prompts/clear', {});
           toast(`Cleared ${num(body.data.cleared)} prompt(s).`, 'ok');
           liveSelected = null;
+          // An emptied ring has nothing to hold on to, so the viewer goes back to following the
+          // tail rather than staying pinned to an entry that no longer exists.
+          livePinned = false;
+          liveAnchor = null;
+          liveScrollTop = 0;
           refresh();
         } catch (error) {
           toast(String(error.message || error), 'danger');
@@ -812,9 +875,11 @@ const livePromptsTab = makeTab({
       });
     }
 
-    // Keep the selection if it still exists; otherwise open the newest, which is the one a
-    // reader opening the tab wants.
-    if (!entries.some((entry) => entry.seq === liveSelected)) {
+    // **Follow the tail until the reader takes hold of the list.** An unpinned viewer always shows
+    // the newest prompt, which is what someone opening the tab wants. A pinned one keeps the entry they
+    // chose for as long as it is still in the ring; once it ages out there is nothing left to hold on
+    // to, so the viewer falls back to following.
+    if (!livePinned || !entries.some((entry) => entry.seq === liveSelected)) {
       liveSelected = entries[0].seq;
     }
     const selected = entries.find((entry) => entry.seq === liveSelected) || entries[0];
@@ -824,6 +889,8 @@ const livePromptsTab = makeTab({
       const row = el('button', {
         class: `prompt-row${entry.seq === selected.seq ? ' selected' : ''}`,
         type: 'button',
+        // `data-seq` is how the scroll anchor finds this row again after a repaint.
+        dataset: { seq: String(entry.seq) },
         title: `${entry.message_type} · thread ${entry.thread_id ?? '—'}`,
       },
         el('span', { class: 'mono' }, `${entry.time} · ${entry.message_type}`),
@@ -831,6 +898,11 @@ const livePromptsTab = makeTab({
           `${num(entry.turns.length)} msg · ${num(entry.chars)} chars`));
       row.addEventListener('click', () => {
         liveSelected = entry.seq;
+        // **The reader picked this row, so the list must not move from here on.** The anchor is
+        // dropped and the plain offset is restored, which is the position the list is already at; the
+        // next poll re-anchors to the row the reader just chose.
+        livePinned = true;
+        liveAnchor = null;
         // Repaint through the tab's own path, so the click and the poll produce the same DOM.
         // `liveScrollTop` is already up to date from the scroll listener, so the repaint
         // restores it.
@@ -840,11 +912,55 @@ const livePromptsTab = makeTab({
     }
 
     const scroller = el('div', { class: 'live-list-scroll' }, list);
-    // Restore the offset after the browser has laid the list out. Without the frame the
-    // assignment happens before the content has a height and is clamped to 0.
-    requestAnimationFrame(() => { scroller.scrollTop = liveScrollTop; });
+
+    /** Where the selected row sits in the viewport, in pixels from the scroller's top edge. */
+    function readAnchor() {
+      const row = list.querySelector(`[data-seq="${liveSelected}"]`);
+      if (!row) return null;
+      return {
+        seq: liveSelected,
+        offset: row.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+      };
+    }
+
+    // Restore after the browser has laid the list out. Without the frame the assignment happens
+    // before the content has a height and is clamped to 0.
+    //
+    // **Anchored to the selected ROW, not to a raw offset.** The list is newest-first, so each
+    // new prompt is prepended above the one being read; restoring the same `scrollTop` would
+    // therefore show a different row every two seconds and the prompt under the cursor would
+    // drift down the viewport until it was gone. That is the "it autoscrolls up when new live
+    // prompts come in" complaint. Anchoring keeps the chosen row exactly where it was and lets
+    // the new entries land above it, out of the way.
+    requestAnimationFrame(() => {
+      // **Follow the newest prompt only when that is what the reader is looking at.** An unpinned
+      // viewer, or a pinned one that happens to be sitting on the newest entry at the top of the list,
+      // is watching the live tail and should see each new prompt arrive. Anything else is a reader
+      // reading, and the row they are on must not move.
+      const following = !livePinned
+        || (liveScrollTop === 0 && selected.seq === entries[0].seq);
+      const anchor = following ? null : liveAnchor;
+      if (anchor) {
+        const row = list.querySelector(`[data-seq="${anchor.seq}"]`);
+        if (row) {
+          const offset = row.getBoundingClientRect().top
+            - scroller.getBoundingClientRect().top;
+          scroller.scrollTop += offset - anchor.offset;
+          liveScrollTop = scroller.scrollTop;
+          liveAnchor = readAnchor();
+          return;
+        }
+      }
+      scroller.scrollTop = following ? 0 : liveScrollTop;
+      liveScrollTop = scroller.scrollTop;
+      liveAnchor = readAnchor();
+    });
     scroller.addEventListener('scroll', () => {
       liveScrollTop = scroller.scrollTop;
+      // Scrolling the list is the reader taking hold of it too, so a poll cannot yank them back to
+      // the top mid-read.
+      if (liveScrollTop > 0) livePinned = true;
+      liveAnchor = readAnchor();
     });
 
     const meta = el('div', { class: 'detail-head' },
@@ -872,7 +988,13 @@ const livePromptsTab = makeTab({
       ));
     }
 
-    const preview = el('div', { class: 'prompt-preview live-preview' }, meta, stats, body);
+    // The preview scrolls on its own, and its key carries the `seq` so a poll that repaints the
+    // SAME entry keeps the reader's place in a long prompt, while a click that opens a DIFFERENT
+    // entry starts at the top (a new key, so nothing is restored).
+    const preview = el('div', {
+      class: 'prompt-preview live-preview',
+      dataset: { scrollKey: `live-preview-${selected.seq}` },
+    }, meta, stats, body);
 
     return el('div', { class: 'prompt-grid live-grid' }, scroller, preview);
   },

@@ -8,7 +8,7 @@ This file is part of the ReadyArt Synthetic Dataset Generator and is licensed
 under the GNU Affero General Public License v3.0 or later. See LICENSE.
 -->
 
-# ReadyArt Synthetic Dataset Generator v16.0.1
+# ReadyArt Synthetic Dataset Generator v16.1.0
 
 A multi-threaded application for generating high-quality synthetic conversational datasets from LLM APIs. It runs in your browser (`python -m webapp`) or headless from a shell (`python -m cli`). Both front ends drive the same engine against the same `config/config.yml` and write the same output, so a run is identical either way.
 
@@ -94,7 +94,8 @@ The README is a master index: each topic below lives in its own file under [`doc
 | Page | What it covers |
 |------|----------------|
 | [Version History](docs/version-history.md) | Index of the changelogs |
-| [Changelog — v15.x](docs/changelog-v15.md) | Current release notes |
+| [Changelog — v16.x](docs/changelog-v16.md) | Current release notes |
+| [Changelog — v15.x](docs/changelog-v15.md) | v15.x release notes |
 | [Changelog — v14.x](docs/changelog-v14.md) | v14.x release notes |
 | [Changelog — v13.x](docs/changelog-v13.md) | v13.x release notes |
 | [Changelog — v12.x](docs/changelog-v12.md) | v12.x release notes |

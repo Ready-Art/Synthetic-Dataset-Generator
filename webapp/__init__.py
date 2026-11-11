@@ -35,4 +35,4 @@ __all__ = ['__version__']
 
 # Kept in step with ``control.GENERATOR_VERSION`` by tests/test_web_engine.py rather than
 # imported, so importing this package stays free of the engine's dependency graph.
-__version__ = '16.0.1'
+__version__ = '16.1.0'
