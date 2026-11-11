@@ -70,6 +70,36 @@ One corollary, and it is load-bearing:
 | `webapp/static/js/stats.js` | The `/ws/stats` client and its reconnect. |
 | `webapp/static/js/overview.js`, `review.js`, `tabs.js`, `config.js`, `datasets.js`, `profiles.js`, `chart.js` | One module per screen. |
 
+### `tabs.js` — the polling contract (v16.1.0)
+
+`makeTab({id, title, path, build, actions, interval, autoRefresh})` is the one factory the seven data
+tabs share. Two of its options are load-bearing:
+
+- **`interval` (ms) makes the tab poll while it is mounted, and adds an `Auto refresh` switch to the
+toolbar.** The switch is the point: a page that repaints under the reader has to be stoppable, and
+`autoRefresh` defaults to `Boolean(interval)` so a polling tab ships switched **on**. The choice lives in
+the factory's closure, not in `localStorage` -- `main.js` persists the selected tab and deliberately
+nothing else. `unmount()` calls `stopTimer()`, or the interval keeps firing at a detached screen.
+- **A repaint captures and restores every `data-scroll-key` scroller.** `repaint()` runs
+`dom.captureScroll()` before `replaceChildren` and `dom.restoreScroll()` after, and the tab body carries
+`scrollKey: 'tab-body-${id}'`. Without that a poll throws the reader back to the top of a long table
+every couple of seconds -- the same defect the Overview's Recent issues had (v15.1.0).
+
+The **Metrics** tab polls at `vllm_metrics.POLL_INTERVAL_SECONDS` (2 s). Its figures are written by the
+generation threads (the per-slot ring) and by the vLLM poller (the server/proxy rings), so a click-only
+refresh showed a snapshot of a run that had already moved on. `tests/test_web_v161.py` pins the interval
+to the poller's own constant, so the two cannot drift apart.
+
+The **Live Prompts** tab polls at 2 s too, and its list is the one screen with a second scroll rule:
+the ring is newest-first, so every new prompt is **prepended**. Restoring a raw `scrollTop` therefore
+showed a different row each poll and the prompt being read drifted down the viewport until it was gone --
+"it autoscrolls up when new prompts come in". `liveAnchor` records the selected row's offset **from the
+row itself** (`data-seq` + `getBoundingClientRect`), so a repaint shifts `scrollTop` by the row's delta and
+the chosen prompt stays exactly where it is. `livePinned` is the other half: an unpinned viewer follows the
+tail (newest selected, list at the top) and a click or a scroll pins it, so a poll can never undo the
+reader's choice. `live-preview-${seq}` is the preview's scroll key, so a repaint of the SAME entry keeps
+the reader's place in a long prompt while opening a DIFFERENT one starts at the top.
+
 ## The engine seam
 
 `webapp/engine.py` wraps `HeadlessController` and exposes only `BROWSER_COMMANDS`. The
@@ -168,6 +198,7 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
 | `test_web_polish.py` | Toasts, empty states, the tablist, window state, reconnect, emoji |
 | `test_web_ui_regressions.py` | The four v15.0.1 defects: the `recent` shape, the metrics poller, the download preflight, the two clipped panels |
 | `test_web_v151.py` | The v15.1.0 round: the two Metrics toggles, the measured viewBox, the live-prompt ring, scroll preservation, the computed cost, Clear queue, the export download, the Queue order, the polish |
+| `test_web_v161.py` | The v16.1.0 round: the Metrics tab polls (at the poller's own cadence) and the `Auto refresh` switch starts and stops it, a tab repaint preserves every keyed scroller, and the Live Prompt Viewer anchors to the selected ROW (`liveAnchor`, `data-seq`) with the `livePinned` tail-follow rule |
 
 ## Traps
 
@@ -192,6 +223,14 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
 - **A re-render throws away every scroll position.** `main.js` replaces the whole screen on a stats
   tick, so a panel that scrolls must carry a stable `data-scroll-key` and the repaint must go through
   `dom.captureScroll()` / `restoreScroll()`. The Overview's Recent issues is the case that shipped broken.
+- **A raw `scrollTop` is not a scroll position on a newest-first list.** `makeTab`'s repaint restores the
+  offset it captured, which is right for a table whose rows are appended and wrong for the Live Prompts ring,
+  whose rows are **prepended**: the same offset then shows a different row, so the prompt being read slides
+  down the viewport once per poll. That list anchors to the selected ROW instead (`liveAnchor`), and a
+  `livePinned` flag keeps a poll from undoing the reader's click. Do not "simplify" it back to an offset.
+- **A tab that polls must offer a way to stop.** `makeTab`'s `interval` adds the `Auto refresh` switch
+  automatically; a new polling tab that renders its own toolbar would lose it. The switch lives in the
+  factory's closure, so `unmount()` must still call `stopTimer()`.
 - **`preserveAspectRatio="none"` squashes SVG text.** The chart's viewBox must match the host's own
   width, or every glyph is scaled horizontally and the axis labels run together.
 - **A hook nobody installs is a feature nobody has.** `app_state.live_prompt_preview_hook` is only
@@ -206,6 +245,8 @@ Fifteen suites, all headless, all runnable with `python -B tests/<name>.py` or u
 ## Tasks that touch this file
 
 - Add a screen or a tab → `main.js` `TABS`, one module per screen, `theme.py` for any new class.
+  A data tab goes through `makeTab`; give it an `interval` if its figures are written by another
+  thread, and it gets the `Auto refresh` switch and the scroll-preserving repaint for free.
 - Add a route → the owning `*_routes.py`, `install_*()` from `app.py`, and a check in the matching suite.
   If it is not in `PUBLIC_PATHS`, the gate covers it automatically.
 - Change a colour, font or spacing value → `theme.py` only, then run `test_web_theme.py`.

@@ -69,6 +69,8 @@ it names; follow the file name to read the full step list:
 - Add UI metric
 - Add or change an outbound HTTP call / the connection pool (v14.2.0)
 - Add a metric to the 📊 Metrics tab (v13.1.0)
+- Make a data tab poll, or change its refresh cadence / the Auto refresh switch (v16.1.0 — `makeTab`'s `interval`, `tabs.js`)
+- Fix a polling tab that snaps back to the top, or a viewer that scrolls away from the row being read (v16.1.0 — `data-scroll-key`, `liveAnchor` / `livePinned`)
 - Change rate limit
 - Change judge retry/drop policy (v11.4)
 - Change/add the judge's vLLM priority (v11.8.x)

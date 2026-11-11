@@ -164,20 +164,19 @@ When a milestone (25%, 50%, 75%, 90%, 100%) is crossed, the progress bar briefly
 
 ## Live Prompt Preview
 
-The **Prompts** screen shows the exact messages being sent to the API in real-time, with rich formatting and utility controls:
+The **Live Prompts** screen shows the exact messages being sent to the API, newest first, refreshed every two seconds while it is open.
 
-**Display Features:**
-- **Role-based color coding** — System (purple), User (blue), Assistant (green) with bold role headers
-- **Metadata header** — Shows thread ID, API slot, message type (Question/Answer/User Continuation/Slop Fix/Anti-Slop Fix), attempt number, and timestamp
-- **Stats bar** — Message count, total character count, and estimated token count (~4 chars/token)
-- **Separator lines** — Visual dividers between messages for readability
+**Display features:**
+- **Role-based colour coding** — system, user and assistant turns are each their own card with a bold role header
+- **Metadata header** — thread ID, API slot, message type (Question / Answer / User Continuation / Slop Fix / Anti-Slop Fix), attempt number and timestamp
+- **Stats bar** — message count, total character count, and an estimated token count (~4 chars/token)
+- **Truncation notice** — an entry over 120,000 characters is cut for display and says so
 
-**Utility Controls:**
-- **🔍 Search** — Case-insensitive search with yellow highlighting of all matches; auto-scrolls to first match
-- **📋 System** — Copies only the system prompt section to clipboard
-- **📋 Latest** — Copies the most recent message to clipboard
-- **📋 All** — Copies the full prompt content to clipboard
-- **Auto-scroll toggle** — Enable/disable automatic scrolling to the latest prompt
+**Controls:**
+- **Auto refresh** — the two-second poll, switchable off
+- **Clear history** — empties the ring (a capped 40 entries). The run is not affected
+
+**The viewer stays on the prompt you clicked.** The list is newest-first, so a new prompt arriving is added *above* the one you are reading; the list is anchored to the selected row, so that row does not move and neither does the prompt body beside it. Until you click a row or scroll the list, the viewer follows the newest prompt, which is what you want when you open the tab mid-run.
 
 This is useful for:
 - Debugging prompt templates and variable substitution
@@ -186,7 +185,7 @@ This is useful for:
 - Monitoring the conversation context being passed to the LLM
 - Verifying slop/anti-slop fixer prompts
 
-The preview updates thread-safely from worker threads and respects the dashboard pause state.
+The preview is filled by a hook the engine installs when it starts, so it updates from worker threads without blocking them.
 
 ## Configuration Profiles
 

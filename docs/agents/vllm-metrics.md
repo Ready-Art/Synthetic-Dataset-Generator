@@ -73,6 +73,14 @@ Part of the `AGENTS.md` doc set. Start at [`AGENTS.md`](../../AGENTS.md) for the
   its own daemon thread whatever screen the browser is on. `webapp/static/js/tabs.js` fetches `/api/metrics`
   when the tab mounts, so switching to it shows the history that accumulated while you were elsewhere. Do not
   move the gate onto the poll.
+- **The tab POLLS while it is open (v16.1.0).** `metricsTab` passes `interval: 2000` to `makeTab`, which
+  re-fetches `/api/metrics` on that tick and puts an **Auto refresh** switch in the toolbar. Before that the
+  tab only re-fetched on a click, so with the page open the figures froze: the per-slot ring is appended by
+  the generation threads and the server/proxy rings by this module's poller, both on their own schedule, so a
+  click-only tab showed a snapshot of a run that had already moved on. **The tab's interval must stay equal to
+  `POLL_INTERVAL_SECONDS`** -- `tests/test_web_v161.py` asserts it against the constant, because polling
+  slower than the poller means the page is permanently behind what it could already show. The repaint goes
+  through `makeTab`'s scroll-preserving path, so a poll cannot throw the reader to the top of a graph stack.
 - **Formatting units.** `format_duration()`, `format_rate_per_minute()` and `format_ratio()` live in `vllm_metrics.py` with the other `format_*()` helpers. `format_ratio()` returns `-` for a zero denominator: "nothing has fired yet" is not "0%".
 
 ### The `note_slot_usage()` call sites
@@ -99,6 +107,10 @@ The `api_response_time` passed to each call is the SAME duration the response-ti
 **Key:** the route reports each slot with its own history and the server rows with both availability flags (`vllm_available`, `antislop_available`); it reports `antislop_available` when the fork answers and `antislop_columns` from the config; it never hands out the poller's own lists, and it copies the endpoint history so a tick cannot mutate what the page holds; the tab has **two independent toggles** (per-slot throughput on, server/proxy metrics off) and renders the server panels when switched on; the chart's viewBox is measured from its host, its gutter is sized to its labels, its axis ticks are whole numbers, and it redraws on a resize; and no module under `webapp/` carries a hex literal
 **Run:** `python -B tests/test_web_tabs.py` and `python -B tests/test_web_v151.py`
 **Edit for:** Add tab-behaviour cases; keep it free of source data, generation runs, network and model APIs
+
+**v16.1.0 addition:** `tests/test_web_v161.py` pins the tab's own refresh -- that `metricsTab` carries an
+`interval`, that the interval equals `vllm_metrics.POLL_INTERVAL_SECONDS * 1000`, that the toolbar switch
+starts and stops the timer, and that a repaint preserves every keyed scroller.
 
 **v13.5.0 additions:** the poll interval is short enough to be usable and the timeout stays below
 it; the history window is dense enough to read a trend; **one slow endpoint does not delay the
